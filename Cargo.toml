@@ -8,6 +8,11 @@ edition = "2021"
 license = "BSD-3-Clause"
 publish = false
 
+# The proof-of-work tests build datasets and do billions of multiply-adds: unoptimised is far too
+# slow. Overflow checks stay on in tests, so an accidental overflow fails a test.
+[profile.test]
+opt-level = 3
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

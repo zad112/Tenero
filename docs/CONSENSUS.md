@@ -239,6 +239,17 @@ A block that fails the cheap check is invalid. A block that passes it is **not**
 can grind a made-up `mix` to the target for the cost of about `difficulty` SHA-256 hashes, and only the full
 check rejects it. Validation therefore runs the cheap check first and the full one afterwards.
 
+Two details that the vectors pin down and that a second implementation must copy (clarifications found
+while writing the Rust version; neither changes a rule or a vector):
+
+- The reference also calls the cheap check with a target of exactly **2^256**, meaning "no limit": it then
+  checks only that the block is self-consistent (`sha256(seed + mix)` equals the hash), not that it meets a
+  target. 2^256 needs 257 bits, so it is not a valid *chain* target (section 7 clamps targets to at most
+  `2^256 - 1`); an implementation needs a separate "no target" case. `pow_misc.json` uses it.
+- The ChaCha20 block counter of the keystream **wraps modulo 2^32** (`chacha20.json` has a case that starts
+  three blocks below 2^32). The parameter rules keep every counter the proof of work uses below 2^32, so
+  consensus never depends on the wrap.
+
 ## 9. Validating a chain
 
 The reference `is_valid()` walks blocks `1..tip` in order, keeping `balances`, the set of signatures seen,

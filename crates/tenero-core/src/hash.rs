@@ -11,10 +11,28 @@ pub fn sha256(parts: &[&[u8]]) -> [u8; 32] {
     h.finalize().into()
 }
 
+/// Lower-case hexadecimal.
+pub fn hex_lower(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push(char::from(DIGITS[usize::from(b >> 4)]));
+        s.push(char::from(DIGITS[usize::from(b & 15)]));
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::vectors::hex;
+
+    #[test]
+    fn hex_round_trip() {
+        assert_eq!(hex_lower(&[0, 1, 0xab, 0xff]), "0001abff");
+        let all: Vec<u8> = (0..=255).collect();
+        assert_eq!(hex(&hex_lower(&all)).unwrap(), all);
+    }
 
     #[test]
     fn known_answers() {

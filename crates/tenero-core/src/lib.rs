@@ -4,4 +4,6 @@
 
 pub mod chacha20;
 pub mod hash;
+pub mod matmulhash;
+pub mod u256;
 pub mod vectors;
