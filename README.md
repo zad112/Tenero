@@ -9,6 +9,8 @@ earlier ones.
 > SHA-256, ChaCha20) but the design has not been audited, there is no networking yet (one node
 > only), and the proof of work is new and unreviewed. Do not use it to hold anything of value.
 
+Inspired by Monero's design ideas; not affiliated with or endorsed by the Monero project.
+
 ## What it has
 
 - **Chain and wallet.** Signed transactions with fees and memos, amounts in units of 0.0001,
@@ -98,11 +100,20 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-About 470 tests, no GPU needed. The CUDA kernels are checked by compiling the real kernel source with
+About 550 tests, no GPU needed. The CUDA kernels are checked by compiling the real kernel source with
 g++ and running it on the CPU (`tests/cuda_emulator.py`) against a numpy reference, which is itself
 checked against an independent OpenSSL-based implementation. If g++ is missing those tests are
 skipped. GitHub Actions is set up to run the suite on Linux for Python 3.12, 3.13 and 3.14
 (`.github/workflows/tests.yml`).
+
+## Documentation
+
+- [`docs/CONSENSUS.md`](docs/CONSENSUS.md): the rules, precisely enough to build another implementation from
+- [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md): verified flaws in the current design
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): how the parts fit, and what is measured
+- [`docs/REWRITE_PLAN.md`](docs/REWRITE_PLAN.md): the proposed plan for a native rewrite with privacy
+- [`tests/vectors/`](tests/vectors/README.md): golden test vectors that pin the reference down bit for bit
+  (`python tools/make_vectors.py --check`)
 
 ## Layout
 
@@ -119,7 +130,9 @@ toycoin/
   gpubackend.py     CUDA kernels, the PyTorch backend, the GPU self-test and searcher
   checker.py        the separate-process CPU double-check
   analysis.py       simulation of the cost of not keeping the whole dataset
-tests/
+docs/               the specification and plans
+tools/make_vectors.py  generates tests/vectors/ from the reference
+tests/              the tests; tests/vectors/ holds the golden vectors
 ```
 
 ## Measured on one machine (RTX 5070 Ti)
@@ -141,4 +154,4 @@ About 22,000 attempts per second (roughly 47 TOPS of int8 work), the 4 GiB datas
 
 ## License
 
-None chosen yet. Add a `LICENSE` file before accepting contributions or letting others reuse the code.
+BSD 3-Clause: see [`LICENSE`](LICENSE).

@@ -1,0 +1,138 @@
+{
+ "decimals": 4,
+ "description": "Parsing coins to units and formatting units as coins (4 decimals). Python also accepts exponent notation ('1e2') and surrounding spaces; a rewrite may choose to reject those.",
+ "format": [
+  {
+   "text": "0.0000",
+   "units": 0
+  },
+  {
+   "text": "0.0001",
+   "units": 1
+  },
+  {
+   "text": "0.0009",
+   "units": 9
+  },
+  {
+   "text": "1.0000",
+   "units": 10000
+  },
+  {
+   "text": "1.2345",
+   "units": 12345
+  },
+  {
+   "text": "12345.6789",
+   "units": 123456789
+  },
+  {
+   "text": "-0.0005",
+   "units": -5
+  },
+  {
+   "text": "-1.0000",
+   "units": -10000
+  },
+  {
+   "text": "20000000.0000",
+   "units": 200000000000
+  },
+  {
+   "text": "100000000000.0000",
+   "units": 1000000000000000
+  }
+ ],
+ "name": "units",
+ "parse": [
+  {
+   "text": "1",
+   "units": 10000
+  },
+  {
+   "text": "0.0001",
+   "units": 1
+  },
+  {
+   "text": "20",
+   "units": 200000
+  },
+  {
+   "text": "0.5",
+   "units": 5000
+  },
+  {
+   "text": "1.2345",
+   "units": 12345
+  },
+  {
+   "text": " 3 ",
+   "units": 30000
+  },
+  {
+   "text": "0",
+   "units": 0
+  },
+  {
+   "text": "-1",
+   "units": -10000
+  },
+  {
+   "text": "0.10",
+   "units": 1000
+  },
+  {
+   "text": "100.0000",
+   "units": 1000000
+  },
+  {
+   "text": "1e2",
+   "units": 1000000
+  },
+  {
+   "text": "1e-4",
+   "units": 1
+  },
+  {
+   "error": true,
+   "text": "0.00001"
+  },
+  {
+   "error": true,
+   "text": "1.23456"
+  },
+  {
+   "error": true,
+   "text": "abc"
+  },
+  {
+   "error": true,
+   "text": ""
+  },
+  {
+   "error": true,
+   "text": "nan"
+  },
+  {
+   "error": true,
+   "text": "inf"
+  },
+  {
+   "error": true,
+   "text": "1,5"
+  },
+  {
+   "text": "20000000",
+   "units": 200000000000
+  },
+  {
+   "error": true,
+   "text": "0.00009"
+  },
+  {
+   "text": "+2",
+   "units": 20000
+  }
+ ],
+ "schema": 1
+}

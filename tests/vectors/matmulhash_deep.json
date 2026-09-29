@@ -1,0 +1,87 @@
+{
+ "attempts": [
+  {
+   "c_sha256": "dbf8f7a3c64c48cd0efb165f15cce699391d1e4a6cedfb4dd87c9bc3eb209c3d",
+   "digest": "67897b927541657816a7c5634861aeed92e060fce11a497f6d9621206510ff1f",
+   "header_hash": "609974ac56f9e6d9c50245efd15d07ba6c4d0f1e552306daa2edc7c013fa8516",
+   "mix": "d89f4f1cb61f00006c761196fe1f00000baf9618c91f00001b81c26a362000006d3fc614f41f000029efe59eba1f000068fd8d82d21f0000abab5554d31f0000",
+   "nonce": 0,
+   "seed": "0886a1fdc88de27c953d7e9937074d0da463e7f8659ae17e96103bb5ec6db5ea",
+   "slice_index": 14,
+   "sums": [
+    "00001fb61c4f9fd8",
+    "00001ffe9611766c",
+    "00001fc91896af0b",
+    "000020366ac2811b",
+    "00001ff414c63f6d",
+    "00001fba9ee5ef29",
+    "00001fd2828dfd68",
+    "00001fd35455abab"
+   ],
+   "x_sha256": "3514fd20055bfa9cb804917348c57dc68123cb93b35a9586cb343c8512d3fee5"
+  },
+  {
+   "c_sha256": "ad2725e2b08e006bf48facca0b1f92edb62f3240da293d4084c9d16a33429f16",
+   "digest": "a1eda10bde6437a7d990da8195139a0c8701075b4d9c0f57b47673c14274cb1d",
+   "header_hash": "609974ac56f9e6d9c50245efd15d07ba6c4d0f1e552306daa2edc7c013fa8516",
+   "mix": "50a0be52da1f0000f689e3e9dd1f0000b5ae7335d51f0000c09f35491c20000040491490fa1f0000b3a0ffb618200000ad7111bafe1f0000a5def9a228200000",
+   "nonce": 5,
+   "seed": "a6b4b8fb1bc066a7331ed7251f7c45ec4c2e0eb90f978f4148cb0180c5a4aa64",
+   "slice_index": 65,
+   "sums": [
+    "00001fda52bea050",
+    "00001fdde9e389f6",
+    "00001fd53573aeb5",
+    "0000201c49359fc0",
+    "00001ffa90144940",
+    "00002018b6ffa0b3",
+    "00001ffeba1171ad",
+    "00002028a2f9dea5"
+   ],
+   "x_sha256": "85ab80c40f498b7d14a55e3065df27566c60ac02884f415f165ebd38dba01092"
+  },
+  {
+   "c_sha256": "28dde532022fd469a709b5cc86c670e87ae8a7db911bc2c5d7fdc9d7719e1bc7",
+   "digest": "cc7a5def9abe5e1b15da5dda7df11c0f1b5f28da2f70182df902e13c329ee409",
+   "header_hash": "609974ac56f9e6d9c50245efd15d07ba6c4d0f1e552306daa2edc7c013fa8516",
+   "mix": "f5490f1825200000b01f5d68172000002b271209092000005b7d68b6f41f00002bca97de15200000d48f83d91720000019e134bbe51f00008a312df249200000",
+   "nonce": 10,
+   "seed": "2fb3852db80f18131116f169b6f9c482ce888a84d3b31c4bfcb9e839c4aaaec3",
+   "slice_index": 25,
+   "sums": [
+    "00002025180f49f5",
+    "00002017685d1fb0",
+    "000020090912272b",
+    "00001ff4b6687d5b",
+    "00002015de97ca2b",
+    "00002017d9838fd4",
+    "00001fe5bb34e119",
+    "00002049f22d318a"
+   ],
+   "x_sha256": "895f3d4d125f52b30149968821892feb00f78209b72fc39831ee80abce702533"
+  }
+ ],
+ "dataset_key": "520a380058a7c0ff75b46683ccf2ecf36a27caa24e985a1d57a864020efa2fd3",
+ "description": "matmulhash v2 at the real parameters: slices up to 77 (each built from all the earlier ones through the data-dependent picks) and attempts on slices 8 to 77. Slow: checked only when TOYCOIN_SLOW_VECTORS=1.",
+ "epoch_seed": "74ee83d284cef26b206c1a1282e177d8deeb8768b7377f057828610f14e34abc",
+ "name": "matmulhash_deep",
+ "params": {
+  "k": 8192,
+  "m": 64,
+  "nb": 2048,
+  "num_blocks": 256
+ },
+ "schema": 1,
+ "slice_sha256": {
+  "0": "3aa8a17259fca366d7b809a969e302ca27818db35db014ddf0566e05e4b931a8",
+  "1": "32a64d70e9fcf10cf24cd02e7d1ca18c3478a091e9fd7c73e76eb57eac112248",
+  "15": "42784c7bc19d185632ff783e5f7a473191d25196626ff0f788cdbcb019192a80",
+  "2": "60fa04c16cae43001a5e7b3c701550ef6aeea95c5bee36b11b203309fad507fb",
+  "3": "1ab424ce018accfa789d273fce3a05bef0c0617313c75069bff345d0f4c91c06",
+  "31": "4609ab6724131cd249d133e91c3a3c2ee1ba0a55ce4b24b5c144b3d7cfe21157",
+  "63": "780c1cacfba0a736d78c6f8ded8c0e4736b988892419b1529b864b59dd75681b",
+  "7": "162f1df80aab875f68ab92e5106e4d5d4fc2530b10503b6d54189cd4e95ad354",
+  "77": "f059f87761bad647a2be7eb22ec90b7fb7a514ce1058120043371bcb549ed240"
+ },
+ "slices_built": 78
+}

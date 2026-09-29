@@ -1,0 +1,86 @@
+{
+ "attempts": [
+  {
+   "c_sha256": "0ffbab2119775ae4ac302db0e3e302c4780b10bd450bcf22c812f7b764d643e9",
+   "digest": "b553a086d54a0c92c77fa37dad03c25c954463735b22d5546278736e8140adca",
+   "header_hash": "609974ac56f9e6d9c50245efd15d07ba6c4d0f1e552306daa2edc7c013fa8516",
+   "mix": "98a9371cf81f000038c17ba73e200000c6dc2f3dee1f0000ef2266b5f31f0000533967a2092000003c48a7aa312000003c2eb5e31720000032143b2e13200000",
+   "nonce": 39,
+   "seed": "bfee62abd861c639a11904f3dbfbb707e8476c64b5aac0fd6ff757b1d73aa502",
+   "slice_index": 0,
+   "sums": [
+    "00001ff81c37a998",
+    "0000203ea77bc138",
+    "00001fee3d2fdcc6",
+    "00001ff3b56622ef",
+    "00002009a2673953",
+    "00002031aaa7483c",
+    "00002017e3b52e3c",
+    "000020132e3b1432"
+   ],
+   "x_sha256": "91599dd74fd32d47fef7bd0dc7aea31d9784d838e685fcceab8901ea0db5232c"
+  },
+  {
+   "c_sha256": "7a1a1adb5887aeee3aff7aa5337106b12f02fdb03a02a525acc1356964513df2",
+   "digest": "600acba6bde9c23a0bc60795b08e5284b41eee0f5748b35fa16ef364090091a4",
+   "header_hash": "609974ac56f9e6d9c50245efd15d07ba6c4d0f1e552306daa2edc7c013fa8516",
+   "mix": "d8d369b0e81f0000c07892e31120000000c8a75414200000b74f21d3dd1f0000bb2cbeb5ef1f0000c02384b51f2000005570cac6a91f0000229dc71eee1f0000",
+   "nonce": 107,
+   "seed": "22440ebad4516844ec421fd85b68a1cf1342870822c39cb282888647c81202af",
+   "slice_index": 7,
+   "sums": [
+    "00001fe8b069d3d8",
+    "00002011e39278c0",
+    "0000201454a7c800",
+    "00001fddd3214fb7",
+    "00001fefb5be2cbb",
+    "0000201fb58423c0",
+    "00001fa9c6ca7055",
+    "00001fee1ec79d22"
+   ],
+   "x_sha256": "215a62ece4abcbd859afb76d5561460f2bfd73e36fc082c33263a7c35f082a3f"
+  },
+  {
+   "c_sha256": "dd5633f395bdeea3726ff1c609eeebf6abb7557106e151e1ee9ecda1d7ad329f",
+   "digest": "0f8dadf3f6118a6b85ce1e5ef3784923e6a4614ee6eccaf786ef2f448e07606b",
+   "header_hash": "609974ac56f9e6d9c50245efd15d07ba6c4d0f1e552306daa2edc7c013fa8516",
+   "mix": "725aad630f2000000d2876c0de1f000000fc7766df1f00004c6024f9cc1f00004667998fe51f0000339c2035cc1f0000a0aa2f03f61f0000769e12b303200000",
+   "nonce": 120,
+   "seed": "e06866116ce08ec1fc5b8457c8596f67615b5e17f8004032b00d5cf595f8d33c",
+   "slice_index": 7,
+   "sums": [
+    "0000200f63ad5a72",
+    "00001fdec076280d",
+    "00001fdf6677fc00",
+    "00001fccf924604c",
+    "00001fe58f996746",
+    "00001fcc35209c33",
+    "00001ff6032faaa0",
+    "00002003b3129e76"
+   ],
+   "x_sha256": "4b6977bd823b03027f4dc211345ac65051aeadd61f66c676eb36b350daf55938"
+  }
+ ],
+ "dataset_key": "520a380058a7c0ff75b46683ccf2ecf36a27caa24e985a1d57a864020efa2fd3",
+ "description": "matmulhash v2 at the real parameters (epoch 0 seed): the first 8 slices of the 4 GiB dataset and full attempts whose slice is among them.",
+ "epoch_seed": "74ee83d284cef26b206c1a1282e177d8deeb8768b7377f057828610f14e34abc",
+ "name": "matmulhash_real",
+ "params": {
+  "k": 8192,
+  "m": 64,
+  "nb": 2048,
+  "num_blocks": 256
+ },
+ "schema": 1,
+ "slice_sha256": {
+  "0": "3aa8a17259fca366d7b809a969e302ca27818db35db014ddf0566e05e4b931a8",
+  "1": "32a64d70e9fcf10cf24cd02e7d1ca18c3478a091e9fd7c73e76eb57eac112248",
+  "2": "60fa04c16cae43001a5e7b3c701550ef6aeea95c5bee36b11b203309fad507fb",
+  "3": "1ab424ce018accfa789d273fce3a05bef0c0617313c75069bff345d0f4c91c06",
+  "4": "69e6dbab7410b887966d229b83e5cbb68778063172ae724b13fb03412ae4c7fe",
+  "5": "1c25b5b2fc08f53f9ceaaffbec55d199aacd597bfdd2b8c51064893597645e39",
+  "6": "63e4d044f5d98ac393f85021a2eb5450d77405537c0df2237bd90c4d56f41e9d",
+  "7": "162f1df80aab875f68ab92e5106e4d5d4fc2530b10503b6d54189cd4e95ad354"
+ },
+ "slices_built": 8
+}

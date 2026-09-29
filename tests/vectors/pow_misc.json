@@ -1,0 +1,456 @@
+{
+ "bits_to_target": [
+  {
+   "bits": 1,
+   "target": "57896044618658097711785492504343953926634992332820282019728792003956564819968"
+  },
+  {
+   "bits": 2,
+   "target": "28948022309329048855892746252171976963317496166410141009864396001978282409984"
+  },
+  {
+   "bits": 8,
+   "target": "452312848583266388373324160190187140051835877600158453279131187530910662656"
+  },
+  {
+   "bits": 20,
+   "target": "110427941548649020598956093796432407239217743554726184882600387580788736"
+  },
+  {
+   "bits": 64,
+   "target": "6277101735386680763835789423207666416102355444464034512896"
+  },
+  {
+   "bits": 128,
+   "target": "340282366920938463463374607431768211456"
+  },
+  {
+   "bits": 255,
+   "target": "2"
+  }
+ ],
+ "description": "Epoch seeds, epoch numbering, bits_to_target and the cheap pre-check.",
+ "epoch_of": [
+  {
+   "epoch": 0,
+   "epoch_blocks": 1,
+   "index": 1
+  },
+  {
+   "epoch": 1,
+   "epoch_blocks": 1,
+   "index": 2
+  },
+  {
+   "epoch": 2,
+   "epoch_blocks": 1,
+   "index": 3
+  },
+  {
+   "epoch": 3,
+   "epoch_blocks": 1,
+   "index": 4
+  },
+  {
+   "epoch": 4,
+   "epoch_blocks": 1,
+   "index": 5
+  },
+  {
+   "epoch": 98,
+   "epoch_blocks": 1,
+   "index": 99
+  },
+  {
+   "epoch": 99,
+   "epoch_blocks": 1,
+   "index": 100
+  },
+  {
+   "epoch": 100,
+   "epoch_blocks": 1,
+   "index": 101
+  },
+  {
+   "epoch": 101,
+   "epoch_blocks": 1,
+   "index": 102
+  },
+  {
+   "epoch": 198,
+   "epoch_blocks": 1,
+   "index": 199
+  },
+  {
+   "epoch": 199,
+   "epoch_blocks": 1,
+   "index": 200
+  },
+  {
+   "epoch": 200,
+   "epoch_blocks": 1,
+   "index": 201
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 2,
+   "index": 1
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 2,
+   "index": 2
+  },
+  {
+   "epoch": 1,
+   "epoch_blocks": 2,
+   "index": 3
+  },
+  {
+   "epoch": 1,
+   "epoch_blocks": 2,
+   "index": 4
+  },
+  {
+   "epoch": 2,
+   "epoch_blocks": 2,
+   "index": 5
+  },
+  {
+   "epoch": 49,
+   "epoch_blocks": 2,
+   "index": 99
+  },
+  {
+   "epoch": 49,
+   "epoch_blocks": 2,
+   "index": 100
+  },
+  {
+   "epoch": 50,
+   "epoch_blocks": 2,
+   "index": 101
+  },
+  {
+   "epoch": 50,
+   "epoch_blocks": 2,
+   "index": 102
+  },
+  {
+   "epoch": 99,
+   "epoch_blocks": 2,
+   "index": 199
+  },
+  {
+   "epoch": 99,
+   "epoch_blocks": 2,
+   "index": 200
+  },
+  {
+   "epoch": 100,
+   "epoch_blocks": 2,
+   "index": 201
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 3,
+   "index": 1
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 3,
+   "index": 2
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 3,
+   "index": 3
+  },
+  {
+   "epoch": 1,
+   "epoch_blocks": 3,
+   "index": 4
+  },
+  {
+   "epoch": 1,
+   "epoch_blocks": 3,
+   "index": 5
+  },
+  {
+   "epoch": 32,
+   "epoch_blocks": 3,
+   "index": 99
+  },
+  {
+   "epoch": 33,
+   "epoch_blocks": 3,
+   "index": 100
+  },
+  {
+   "epoch": 33,
+   "epoch_blocks": 3,
+   "index": 101
+  },
+  {
+   "epoch": 33,
+   "epoch_blocks": 3,
+   "index": 102
+  },
+  {
+   "epoch": 66,
+   "epoch_blocks": 3,
+   "index": 199
+  },
+  {
+   "epoch": 66,
+   "epoch_blocks": 3,
+   "index": 200
+  },
+  {
+   "epoch": 66,
+   "epoch_blocks": 3,
+   "index": 201
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 4,
+   "index": 1
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 4,
+   "index": 2
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 4,
+   "index": 3
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 4,
+   "index": 4
+  },
+  {
+   "epoch": 1,
+   "epoch_blocks": 4,
+   "index": 5
+  },
+  {
+   "epoch": 24,
+   "epoch_blocks": 4,
+   "index": 99
+  },
+  {
+   "epoch": 24,
+   "epoch_blocks": 4,
+   "index": 100
+  },
+  {
+   "epoch": 25,
+   "epoch_blocks": 4,
+   "index": 101
+  },
+  {
+   "epoch": 25,
+   "epoch_blocks": 4,
+   "index": 102
+  },
+  {
+   "epoch": 49,
+   "epoch_blocks": 4,
+   "index": 199
+  },
+  {
+   "epoch": 49,
+   "epoch_blocks": 4,
+   "index": 200
+  },
+  {
+   "epoch": 50,
+   "epoch_blocks": 4,
+   "index": 201
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 100,
+   "index": 1
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 100,
+   "index": 2
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 100,
+   "index": 3
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 100,
+   "index": 4
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 100,
+   "index": 5
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 100,
+   "index": 99
+  },
+  {
+   "epoch": 0,
+   "epoch_blocks": 100,
+   "index": 100
+  },
+  {
+   "epoch": 1,
+   "epoch_blocks": 100,
+   "index": 101
+  },
+  {
+   "epoch": 1,
+   "epoch_blocks": 100,
+   "index": 102
+  },
+  {
+   "epoch": 1,
+   "epoch_blocks": 100,
+   "index": 199
+  },
+  {
+   "epoch": 1,
+   "epoch_blocks": 100,
+   "index": 200
+  },
+  {
+   "epoch": 2,
+   "epoch_blocks": 100,
+   "index": 201
+  }
+ ],
+ "epoch_seed_0_label": "toycoin matmulhash epoch 0",
+ "epoch_seeds": {
+  "0": "74ee83d284cef26b206c1a1282e177d8deeb8768b7377f057828610f14e34abc",
+  "1": "6366f8c02505598f8d32fe771799c9a6c4516724f335dfabc2b13def9f34991c",
+  "10": "d88e9d7a3356d41bf227999cf3f0696ef8a329e16630cfbcbf6b7aaaf2d424ab",
+  "100": "c70568a595ee352a208537fb6b63a93814e8b6c87fb8c2bddbb1b122c4a0e52f",
+  "1000": "cf6a6d921ea5d393223121119b2668e68a7eaf18c952a8d8262753c4c286ccff",
+  "11": "b5165f56b19798505dd4f699a16dbddaf4edf3f10fe6406a2abaa0937083d3d4",
+  "12": "d2f0e315fad2ad35958b152fde46429675a4f4c9a522d2add7b9fb7c7228556d",
+  "2": "877a33f3c51ef2b9ec74ff013d12112904fb77d882561d4b2855943a30e30d1b",
+  "3": "fd2062e4c0299fa24d8970fc026c68a2c1dab7760eeaf81f7546e0a731ab4663",
+  "4": "e3e98b47b55079462db542a32c2a6458d48be886189cc91546b415f9de29ead3",
+  "5": "dcf04b921736fe948222434d658c80f2b9e9f118e1cfe770d547770b167c9289",
+  "6": "768ba2bdf66a0fc28a6709bc9c88692b0b21d6c1d320c53b1b1e62385d13cf9b",
+  "7": "c59c7ba4167559193fad5464abcec269837b4b2f925daaabfc50f964c3a4beaa",
+  "8": "34cc7621d678fce6f02036ff945979ec7c7f5b01bc0b725f77da5605711cec78",
+  "9": "bd0b68ebe6a1ac63d1c963f03fc24a34322e673c0f8fbfb12effe03e1068c7a9"
+ },
+ "name": "pow_misc",
+ "precheck": [
+  {
+   "expect": true,
+   "hash": "030b6bbdc01cf0db137dc43c88dde5c070ead3d289264e864dfb919d887a31e9",
+   "header_hash": "7834903469c0b073cc309b6f7cb2bd60e33cd6d7720abd0c3386c6f820093e81",
+   "mix": "f1fbaf1511000000e9817e790f000000fa1045d7100000007fd9fef20f000000e0a86f3b0d0000009fe7c38e0e00000060aa95fd10000000f06d7ba310000000",
+   "name": "valid: hash is just below the target",
+   "nonce": 17,
+   "target": "1377117465983253647099620646280281211350453618915523305753143173689565131242"
+  },
+  {
+   "expect": false,
+   "hash": "030b6bbdc01cf0db137dc43c88dde5c070ead3d289264e864dfb919d887a31e9",
+   "header_hash": "7834903469c0b073cc309b6f7cb2bd60e33cd6d7720abd0c3386c6f820093e81",
+   "mix": "f1fbaf1511000000e9817e790f000000fa1045d7100000007fd9fef20f000000e0a86f3b0d0000009fe7c38e0e00000060aa95fd10000000f06d7ba310000000",
+   "name": "the target is compared strictly (hash == target fails)",
+   "nonce": 17,
+   "target": "1377117465983253647099620646280281211350453618915523305753143173689565131241"
+  },
+  {
+   "expect": false,
+   "hash": "030b6bbdc01cf0db137dc43c88dde5c070ead3d289264e864dfb919d887a31e9",
+   "header_hash": "7834903469c0b073cc309b6f7cb2bd60e33cd6d7720abd0c3386c6f820093e81",
+   "mix": "f1fbaf1511000000e9817e790f000000fa1045d7100000007fd9fef20f000000e0a86f3b0d0000009fe7c38e0e00000060aa95fd10000000f06d7ba310000000",
+   "name": "wrong nonce",
+   "nonce": 18,
+   "target": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+  },
+  {
+   "expect": false,
+   "hash": "030b6bbdc01cf0db137dc43c88dde5c070ead3d289264e864dfb919d887a31e9",
+   "header_hash": "d9298a10d1b0735837dc4bd85dac641b0f3cef27a47e5d53a54f2f3f5b2fcffa",
+   "mix": "f1fbaf1511000000e9817e790f000000fa1045d7100000007fd9fef20f000000e0a86f3b0d0000009fe7c38e0e00000060aa95fd10000000f06d7ba310000000",
+   "name": "a different header",
+   "nonce": 17,
+   "target": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+  },
+  {
+   "expect": false,
+   "hash": "030b6bbdc01cf0db137dc43c88dde5c070ead3d289264e864dfb919d887a31e9",
+   "header_hash": "7834903469c0b073cc309b6f7cb2bd60e33cd6d7720abd0c3386c6f820093e81",
+   "mix": "f0fbaf1511000000e9817e790f000000fa1045d7100000007fd9fef20f000000e0a86f3b0d0000009fe7c38e0e00000060aa95fd10000000f06d7ba310000000",
+   "name": "mix with one bit flipped",
+   "nonce": 17,
+   "target": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+  },
+  {
+   "expect": false,
+   "hash": "030b6bbdc01cf0db137dc43c88dde5c070ead3d289264e864dfb919d887a31e9",
+   "header_hash": "7834903469c0b073cc309b6f7cb2bd60e33cd6d7720abd0c3386c6f820093e81",
+   "mix": "f1fbaf1511000000e9817e790f000000fa1045d7100000007fd9fef20f000000e0a86f3b0d0000009fe7c38e0e00000060aa95fd10000000f06d7ba3100000",
+   "name": "mix one byte short",
+   "nonce": 17,
+   "target": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+  },
+  {
+   "expect": false,
+   "hash": "030b6bbdc01cf0db137dc43c88dde5c070ead3d289264e864dfb919d887a31e9",
+   "header_hash": "7834903469c0b073cc309b6f7cb2bd60e33cd6d7720abd0c3386c6f820093e81",
+   "mix": "f1fbaf1511000000e9817e790f000000fa1045d7100000007fd9fef20f000000e0a86f3b0d0000009fe7c38e0e00000060aa95fd10000000f06d7ba31000000000",
+   "name": "mix one byte long",
+   "nonce": 17,
+   "target": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+  },
+  {
+   "expect": false,
+   "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "header_hash": "7834903469c0b073cc309b6f7cb2bd60e33cd6d7720abd0c3386c6f820093e81",
+   "mix": "f1fbaf1511000000e9817e790f000000fa1045d7100000007fd9fef20f000000e0a86f3b0d0000009fe7c38e0e00000060aa95fd10000000f06d7ba310000000",
+   "name": "hash does not follow from seed and mix",
+   "nonce": 17,
+   "target": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+  },
+  {
+   "expect": false,
+   "hash": "030B6BBDC01CF0DB137DC43C88DDE5C070EAD3D289264E864DFB919D887A31E9",
+   "header_hash": "7834903469c0b073cc309b6f7cb2bd60e33cd6d7720abd0c3386c6f820093e81",
+   "mix": "f1fbaf1511000000e9817e790f000000fa1045d7100000007fd9fef20f000000e0a86f3b0d0000009fe7c38e0e00000060aa95fd10000000f06d7ba310000000",
+   "name": "hash in upper case (comparison is on the lower-case hex)",
+   "nonce": 17,
+   "target": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+  },
+  {
+   "expect": false,
+   "hash": "030b6bbdc01cf0db137dc43c88dde5c070ead3d289264e864dfb919d887a31e9",
+   "header_hash": "7834903469c0b073cc309b6f7cb2bd60e33cd6d7720abd0c3386c6f820093e81",
+   "mix": "f1fbaf1511000000e9817e790f000000fa1045d7100000007fd9fef20f000000e0a86f3b0d0000009fe7c38e0e00000060aa95fd10000000f06d7ba310000000",
+   "name": "nonce 2**64 does not fit",
+   "nonce": 18446744073709551616,
+   "target": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+  },
+  {
+   "expect": true,
+   "hash": "763bf117476b489efca62f2bd8842494897e345b6e25131517065d36af8c1936",
+   "header_hash": "7834903469c0b073cc309b6f7cb2bd60e33cd6d7720abd0c3386c6f820093e81",
+   "mix": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+   "name": "the largest nonce is fine when the hash follows",
+   "nonce": 18446744073709551615,
+   "target": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+  }
+ ],
+ "schema": 1
+}

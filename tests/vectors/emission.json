@@ -1,0 +1,1756 @@
+{
+ "description": "Block rewards by height. All amounts are in units (0.0001 coins). scheduled = initial >> era; main_reward = min(scheduled, cap - issued_before); reward = max(main_reward, tail_reward); issued_before counts the main emission only.",
+ "name": "emission",
+ "schema": 1,
+ "sets": {
+  "default": {
+   "main_emission_end_from_1": 2334401,
+   "params": {
+    "halving_interval": 525600,
+    "initial_reward": 200000,
+    "max_supply": 200000000000,
+    "tail_reward": 5000
+   },
+   "rows": [
+    {
+     "height": 1,
+     "in_tail": false,
+     "issued_before": 0,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 2,
+     "in_tail": false,
+     "issued_before": 200000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 3,
+     "in_tail": false,
+     "issued_before": 400000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 4,
+     "in_tail": false,
+     "issued_before": 600000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 5,
+     "in_tail": false,
+     "issued_before": 800000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 10,
+     "in_tail": false,
+     "issued_before": 1800000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 11,
+     "in_tail": false,
+     "issued_before": 2000000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 12,
+     "in_tail": false,
+     "issued_before": 2200000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 13,
+     "in_tail": false,
+     "issued_before": 2400000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 100,
+     "in_tail": false,
+     "issued_before": 19800000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 525600,
+     "in_tail": false,
+     "issued_before": 105119800000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 525601,
+     "in_tail": false,
+     "issued_before": 105120000000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 1000000,
+     "in_tail": false,
+     "issued_before": 152559900000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 1051200,
+     "in_tail": false,
+     "issued_before": 157679900000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 1051201,
+     "in_tail": false,
+     "issued_before": 157680000000,
+     "main_reward": 50000,
+     "reward": 50000,
+     "scheduled": 50000
+    },
+    {
+     "height": 1576800,
+     "in_tail": false,
+     "issued_before": 183959950000,
+     "main_reward": 50000,
+     "reward": 50000,
+     "scheduled": 50000
+    },
+    {
+     "height": 1576801,
+     "in_tail": false,
+     "issued_before": 183960000000,
+     "main_reward": 25000,
+     "reward": 25000,
+     "scheduled": 25000
+    },
+    {
+     "height": 2102400,
+     "in_tail": false,
+     "issued_before": 197099975000,
+     "main_reward": 25000,
+     "reward": 25000,
+     "scheduled": 25000
+    },
+    {
+     "height": 2102401,
+     "in_tail": false,
+     "issued_before": 197100000000,
+     "main_reward": 12500,
+     "reward": 12500,
+     "scheduled": 12500
+    },
+    {
+     "height": 2334400,
+     "in_tail": false,
+     "issued_before": 199999987500,
+     "main_reward": 12500,
+     "reward": 12500,
+     "scheduled": 12500
+    },
+    {
+     "height": 2334401,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 12500
+    },
+    {
+     "height": 2334402,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 12500
+    },
+    {
+     "height": 2334403,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 12500
+    },
+    {
+     "height": 2628000,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 12500
+    },
+    {
+     "height": 2628001,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 6250
+    },
+    {
+     "height": 3153600,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 6250
+    },
+    {
+     "height": 3153601,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 3125
+    },
+    {
+     "height": 3679200,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 3125
+    },
+    {
+     "height": 3679201,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 1562
+    },
+    {
+     "height": 4204800,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 1562
+    },
+    {
+     "height": 4204801,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 781
+    },
+    {
+     "height": 1000000000,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 0
+    },
+    {
+     "height": 1000000000000,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 0
+    }
+   ]
+  },
+  "never_halves_2_years": {
+   "main_emission_end_from_1": 1000001,
+   "params": {
+    "halving_interval": 1051200,
+    "initial_reward": 200000,
+    "max_supply": 200000000000,
+    "tail_reward": 5000
+   },
+   "rows": [
+    {
+     "height": 1,
+     "in_tail": false,
+     "issued_before": 0,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 2,
+     "in_tail": false,
+     "issued_before": 200000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 3,
+     "in_tail": false,
+     "issued_before": 400000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 4,
+     "in_tail": false,
+     "issued_before": 600000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 5,
+     "in_tail": false,
+     "issued_before": 800000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 10,
+     "in_tail": false,
+     "issued_before": 1800000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 11,
+     "in_tail": false,
+     "issued_before": 2000000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 12,
+     "in_tail": false,
+     "issued_before": 2200000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 13,
+     "in_tail": false,
+     "issued_before": 2400000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 100,
+     "in_tail": false,
+     "issued_before": 19800000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 1000000,
+     "in_tail": false,
+     "issued_before": 199999800000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 1000001,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 200000
+    },
+    {
+     "height": 1000002,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 200000
+    },
+    {
+     "height": 1000003,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 200000
+    },
+    {
+     "height": 1051200,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 200000
+    },
+    {
+     "height": 1051201,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 100000
+    },
+    {
+     "height": 2102400,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 100000
+    },
+    {
+     "height": 2102401,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 50000
+    },
+    {
+     "height": 3153600,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 50000
+    },
+    {
+     "height": 3153601,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 25000
+    },
+    {
+     "height": 4204800,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 25000
+    },
+    {
+     "height": 4204801,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 12500
+    },
+    {
+     "height": 5256000,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 12500
+    },
+    {
+     "height": 5256001,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 6250
+    },
+    {
+     "height": 6307200,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 6250
+    },
+    {
+     "height": 6307201,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 3125
+    },
+    {
+     "height": 7358400,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 3125
+    },
+    {
+     "height": 7358401,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 1562
+    },
+    {
+     "height": 8409600,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 1562
+    },
+    {
+     "height": 8409601,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 781
+    },
+    {
+     "height": 1000000000,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 0
+    },
+    {
+     "height": 1000000000000,
+     "in_tail": true,
+     "issued_before": 200000000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 0
+    }
+   ]
+  },
+  "no_tail": {
+   "main_emission_end_from_1": 14,
+   "params": {
+    "halving_interval": 7,
+    "initial_reward": 100000,
+    "max_supply": 1000000,
+    "tail_reward": 0
+   },
+   "rows": [
+    {
+     "height": 1,
+     "in_tail": false,
+     "issued_before": 0,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 2,
+     "in_tail": false,
+     "issued_before": 100000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 3,
+     "in_tail": false,
+     "issued_before": 200000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 4,
+     "in_tail": false,
+     "issued_before": 300000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 5,
+     "in_tail": false,
+     "issued_before": 400000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 7,
+     "in_tail": false,
+     "issued_before": 600000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 8,
+     "in_tail": false,
+     "issued_before": 700000,
+     "main_reward": 50000,
+     "reward": 50000,
+     "scheduled": 50000
+    },
+    {
+     "height": 10,
+     "in_tail": false,
+     "issued_before": 800000,
+     "main_reward": 50000,
+     "reward": 50000,
+     "scheduled": 50000
+    },
+    {
+     "height": 11,
+     "in_tail": false,
+     "issued_before": 850000,
+     "main_reward": 50000,
+     "reward": 50000,
+     "scheduled": 50000
+    },
+    {
+     "height": 12,
+     "in_tail": false,
+     "issued_before": 900000,
+     "main_reward": 50000,
+     "reward": 50000,
+     "scheduled": 50000
+    },
+    {
+     "height": 13,
+     "in_tail": false,
+     "issued_before": 950000,
+     "main_reward": 50000,
+     "reward": 50000,
+     "scheduled": 50000
+    },
+    {
+     "height": 14,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 50000
+    },
+    {
+     "height": 15,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 25000
+    },
+    {
+     "height": 16,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 25000
+    },
+    {
+     "height": 21,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 25000
+    },
+    {
+     "height": 22,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 12500
+    },
+    {
+     "height": 28,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 12500
+    },
+    {
+     "height": 29,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 6250
+    },
+    {
+     "height": 35,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 6250
+    },
+    {
+     "height": 36,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 3125
+    },
+    {
+     "height": 42,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 3125
+    },
+    {
+     "height": 43,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 1562
+    },
+    {
+     "height": 49,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 1562
+    },
+    {
+     "height": 50,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 781
+    },
+    {
+     "height": 56,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 781
+    },
+    {
+     "height": 57,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 390
+    },
+    {
+     "height": 100,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 6
+    },
+    {
+     "height": 1000000,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 0
+    },
+    {
+     "height": 1000000000,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 0
+    },
+    {
+     "height": 1000000000000,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 0,
+     "reward": 0,
+     "scheduled": 0
+    }
+   ]
+  },
+  "tail_takes_over_early_20_500k": {
+   "main_emission_end_from_1": 9000001,
+   "params": {
+    "halving_interval": 500000,
+    "initial_reward": 200000,
+    "max_supply": 200000000000,
+    "tail_reward": 5000
+   },
+   "rows": [
+    {
+     "height": 1,
+     "in_tail": false,
+     "issued_before": 0,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 2,
+     "in_tail": false,
+     "issued_before": 200000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 3,
+     "in_tail": false,
+     "issued_before": 400000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 4,
+     "in_tail": false,
+     "issued_before": 600000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 5,
+     "in_tail": false,
+     "issued_before": 800000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 10,
+     "in_tail": false,
+     "issued_before": 1800000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 11,
+     "in_tail": false,
+     "issued_before": 2000000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 12,
+     "in_tail": false,
+     "issued_before": 2200000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 13,
+     "in_tail": false,
+     "issued_before": 2400000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 100,
+     "in_tail": false,
+     "issued_before": 19800000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 500000,
+     "in_tail": false,
+     "issued_before": 99999800000,
+     "main_reward": 200000,
+     "reward": 200000,
+     "scheduled": 200000
+    },
+    {
+     "height": 500001,
+     "in_tail": false,
+     "issued_before": 100000000000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 1000000,
+     "in_tail": false,
+     "issued_before": 149999900000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 1000001,
+     "in_tail": false,
+     "issued_before": 150000000000,
+     "main_reward": 50000,
+     "reward": 50000,
+     "scheduled": 50000
+    },
+    {
+     "height": 1500000,
+     "in_tail": false,
+     "issued_before": 174999950000,
+     "main_reward": 50000,
+     "reward": 50000,
+     "scheduled": 50000
+    },
+    {
+     "height": 1500001,
+     "in_tail": false,
+     "issued_before": 175000000000,
+     "main_reward": 25000,
+     "reward": 25000,
+     "scheduled": 25000
+    },
+    {
+     "height": 2000000,
+     "in_tail": false,
+     "issued_before": 187499975000,
+     "main_reward": 25000,
+     "reward": 25000,
+     "scheduled": 25000
+    },
+    {
+     "height": 2000001,
+     "in_tail": false,
+     "issued_before": 187500000000,
+     "main_reward": 12500,
+     "reward": 12500,
+     "scheduled": 12500
+    },
+    {
+     "height": 2500000,
+     "in_tail": false,
+     "issued_before": 193749987500,
+     "main_reward": 12500,
+     "reward": 12500,
+     "scheduled": 12500
+    },
+    {
+     "height": 2500001,
+     "in_tail": false,
+     "issued_before": 193750000000,
+     "main_reward": 6250,
+     "reward": 6250,
+     "scheduled": 6250
+    },
+    {
+     "height": 3000000,
+     "in_tail": false,
+     "issued_before": 196874993750,
+     "main_reward": 6250,
+     "reward": 6250,
+     "scheduled": 6250
+    },
+    {
+     "height": 3000001,
+     "in_tail": true,
+     "issued_before": 196875000000,
+     "main_reward": 3125,
+     "reward": 5000,
+     "scheduled": 3125
+    },
+    {
+     "height": 3500000,
+     "in_tail": true,
+     "issued_before": 198437496875,
+     "main_reward": 3125,
+     "reward": 5000,
+     "scheduled": 3125
+    },
+    {
+     "height": 3500001,
+     "in_tail": true,
+     "issued_before": 198437500000,
+     "main_reward": 1562,
+     "reward": 5000,
+     "scheduled": 1562
+    },
+    {
+     "height": 4000000,
+     "in_tail": true,
+     "issued_before": 199218498438,
+     "main_reward": 1562,
+     "reward": 5000,
+     "scheduled": 1562
+    },
+    {
+     "height": 4000001,
+     "in_tail": true,
+     "issued_before": 199218500000,
+     "main_reward": 781,
+     "reward": 5000,
+     "scheduled": 781
+    },
+    {
+     "height": 9000000,
+     "in_tail": true,
+     "issued_before": 199996999999,
+     "main_reward": 1,
+     "reward": 5000,
+     "scheduled": 1
+    },
+    {
+     "height": 9000001,
+     "in_tail": true,
+     "issued_before": 199997000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 0
+    },
+    {
+     "height": 9000002,
+     "in_tail": true,
+     "issued_before": 199997000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 0
+    },
+    {
+     "height": 9000003,
+     "in_tail": true,
+     "issued_before": 199997000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 0
+    },
+    {
+     "height": 1000000000,
+     "in_tail": true,
+     "issued_before": 199997000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 0
+    },
+    {
+     "height": 1000000000000,
+     "in_tail": true,
+     "issued_before": 199997000000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 0
+    }
+   ]
+  },
+  "tail_takes_over_early_50_200k": {
+   "main_emission_end_from_1": 3800001,
+   "params": {
+    "halving_interval": 200000,
+    "initial_reward": 500000,
+    "max_supply": 200000000000,
+    "tail_reward": 5000
+   },
+   "rows": [
+    {
+     "height": 1,
+     "in_tail": false,
+     "issued_before": 0,
+     "main_reward": 500000,
+     "reward": 500000,
+     "scheduled": 500000
+    },
+    {
+     "height": 2,
+     "in_tail": false,
+     "issued_before": 500000,
+     "main_reward": 500000,
+     "reward": 500000,
+     "scheduled": 500000
+    },
+    {
+     "height": 3,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 500000,
+     "reward": 500000,
+     "scheduled": 500000
+    },
+    {
+     "height": 4,
+     "in_tail": false,
+     "issued_before": 1500000,
+     "main_reward": 500000,
+     "reward": 500000,
+     "scheduled": 500000
+    },
+    {
+     "height": 5,
+     "in_tail": false,
+     "issued_before": 2000000,
+     "main_reward": 500000,
+     "reward": 500000,
+     "scheduled": 500000
+    },
+    {
+     "height": 10,
+     "in_tail": false,
+     "issued_before": 4500000,
+     "main_reward": 500000,
+     "reward": 500000,
+     "scheduled": 500000
+    },
+    {
+     "height": 11,
+     "in_tail": false,
+     "issued_before": 5000000,
+     "main_reward": 500000,
+     "reward": 500000,
+     "scheduled": 500000
+    },
+    {
+     "height": 12,
+     "in_tail": false,
+     "issued_before": 5500000,
+     "main_reward": 500000,
+     "reward": 500000,
+     "scheduled": 500000
+    },
+    {
+     "height": 13,
+     "in_tail": false,
+     "issued_before": 6000000,
+     "main_reward": 500000,
+     "reward": 500000,
+     "scheduled": 500000
+    },
+    {
+     "height": 100,
+     "in_tail": false,
+     "issued_before": 49500000,
+     "main_reward": 500000,
+     "reward": 500000,
+     "scheduled": 500000
+    },
+    {
+     "height": 200000,
+     "in_tail": false,
+     "issued_before": 99999500000,
+     "main_reward": 500000,
+     "reward": 500000,
+     "scheduled": 500000
+    },
+    {
+     "height": 200001,
+     "in_tail": false,
+     "issued_before": 100000000000,
+     "main_reward": 250000,
+     "reward": 250000,
+     "scheduled": 250000
+    },
+    {
+     "height": 400000,
+     "in_tail": false,
+     "issued_before": 149999750000,
+     "main_reward": 250000,
+     "reward": 250000,
+     "scheduled": 250000
+    },
+    {
+     "height": 400001,
+     "in_tail": false,
+     "issued_before": 150000000000,
+     "main_reward": 125000,
+     "reward": 125000,
+     "scheduled": 125000
+    },
+    {
+     "height": 600000,
+     "in_tail": false,
+     "issued_before": 174999875000,
+     "main_reward": 125000,
+     "reward": 125000,
+     "scheduled": 125000
+    },
+    {
+     "height": 600001,
+     "in_tail": false,
+     "issued_before": 175000000000,
+     "main_reward": 62500,
+     "reward": 62500,
+     "scheduled": 62500
+    },
+    {
+     "height": 800000,
+     "in_tail": false,
+     "issued_before": 187499937500,
+     "main_reward": 62500,
+     "reward": 62500,
+     "scheduled": 62500
+    },
+    {
+     "height": 800001,
+     "in_tail": false,
+     "issued_before": 187500000000,
+     "main_reward": 31250,
+     "reward": 31250,
+     "scheduled": 31250
+    },
+    {
+     "height": 1000000,
+     "in_tail": false,
+     "issued_before": 193749968750,
+     "main_reward": 31250,
+     "reward": 31250,
+     "scheduled": 31250
+    },
+    {
+     "height": 1000001,
+     "in_tail": false,
+     "issued_before": 193750000000,
+     "main_reward": 15625,
+     "reward": 15625,
+     "scheduled": 15625
+    },
+    {
+     "height": 1200000,
+     "in_tail": false,
+     "issued_before": 196874984375,
+     "main_reward": 15625,
+     "reward": 15625,
+     "scheduled": 15625
+    },
+    {
+     "height": 1200001,
+     "in_tail": false,
+     "issued_before": 196875000000,
+     "main_reward": 7812,
+     "reward": 7812,
+     "scheduled": 7812
+    },
+    {
+     "height": 1400000,
+     "in_tail": false,
+     "issued_before": 198437392188,
+     "main_reward": 7812,
+     "reward": 7812,
+     "scheduled": 7812
+    },
+    {
+     "height": 1400001,
+     "in_tail": true,
+     "issued_before": 198437400000,
+     "main_reward": 3906,
+     "reward": 5000,
+     "scheduled": 3906
+    },
+    {
+     "height": 1600000,
+     "in_tail": true,
+     "issued_before": 199218596094,
+     "main_reward": 3906,
+     "reward": 5000,
+     "scheduled": 3906
+    },
+    {
+     "height": 1600001,
+     "in_tail": true,
+     "issued_before": 199218600000,
+     "main_reward": 1953,
+     "reward": 5000,
+     "scheduled": 1953
+    },
+    {
+     "height": 3800000,
+     "in_tail": true,
+     "issued_before": 199998599999,
+     "main_reward": 1,
+     "reward": 5000,
+     "scheduled": 1
+    },
+    {
+     "height": 3800001,
+     "in_tail": true,
+     "issued_before": 199998600000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 0
+    },
+    {
+     "height": 3800002,
+     "in_tail": true,
+     "issued_before": 199998600000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 0
+    },
+    {
+     "height": 3800003,
+     "in_tail": true,
+     "issued_before": 199998600000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 0
+    },
+    {
+     "height": 1000000000,
+     "in_tail": true,
+     "issued_before": 199998600000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 0
+    },
+    {
+     "height": 1000000000000,
+     "in_tail": true,
+     "issued_before": 199998600000,
+     "main_reward": 0,
+     "reward": 5000,
+     "scheduled": 0
+    }
+   ]
+  },
+  "toy_128_2_500": {
+   "main_emission_end_from_1": 12,
+   "params": {
+    "halving_interval": 2,
+    "initial_reward": 1280000,
+    "max_supply": 5000000,
+    "tail_reward": 10000
+   },
+   "rows": [
+    {
+     "height": 1,
+     "in_tail": false,
+     "issued_before": 0,
+     "main_reward": 1280000,
+     "reward": 1280000,
+     "scheduled": 1280000
+    },
+    {
+     "height": 2,
+     "in_tail": false,
+     "issued_before": 1280000,
+     "main_reward": 1280000,
+     "reward": 1280000,
+     "scheduled": 1280000
+    },
+    {
+     "height": 3,
+     "in_tail": false,
+     "issued_before": 2560000,
+     "main_reward": 640000,
+     "reward": 640000,
+     "scheduled": 640000
+    },
+    {
+     "height": 4,
+     "in_tail": false,
+     "issued_before": 3200000,
+     "main_reward": 640000,
+     "reward": 640000,
+     "scheduled": 640000
+    },
+    {
+     "height": 5,
+     "in_tail": false,
+     "issued_before": 3840000,
+     "main_reward": 320000,
+     "reward": 320000,
+     "scheduled": 320000
+    },
+    {
+     "height": 6,
+     "in_tail": false,
+     "issued_before": 4160000,
+     "main_reward": 320000,
+     "reward": 320000,
+     "scheduled": 320000
+    },
+    {
+     "height": 7,
+     "in_tail": false,
+     "issued_before": 4480000,
+     "main_reward": 160000,
+     "reward": 160000,
+     "scheduled": 160000
+    },
+    {
+     "height": 8,
+     "in_tail": false,
+     "issued_before": 4640000,
+     "main_reward": 160000,
+     "reward": 160000,
+     "scheduled": 160000
+    },
+    {
+     "height": 9,
+     "in_tail": false,
+     "issued_before": 4800000,
+     "main_reward": 80000,
+     "reward": 80000,
+     "scheduled": 80000
+    },
+    {
+     "height": 10,
+     "in_tail": false,
+     "issued_before": 4880000,
+     "main_reward": 80000,
+     "reward": 80000,
+     "scheduled": 80000
+    },
+    {
+     "height": 11,
+     "in_tail": false,
+     "issued_before": 4960000,
+     "main_reward": 40000,
+     "reward": 40000,
+     "scheduled": 40000
+    },
+    {
+     "height": 12,
+     "in_tail": true,
+     "issued_before": 5000000,
+     "main_reward": 0,
+     "reward": 10000,
+     "scheduled": 40000
+    },
+    {
+     "height": 13,
+     "in_tail": true,
+     "issued_before": 5000000,
+     "main_reward": 0,
+     "reward": 10000,
+     "scheduled": 20000
+    },
+    {
+     "height": 14,
+     "in_tail": true,
+     "issued_before": 5000000,
+     "main_reward": 0,
+     "reward": 10000,
+     "scheduled": 20000
+    },
+    {
+     "height": 15,
+     "in_tail": true,
+     "issued_before": 5000000,
+     "main_reward": 0,
+     "reward": 10000,
+     "scheduled": 10000
+    },
+    {
+     "height": 16,
+     "in_tail": true,
+     "issued_before": 5000000,
+     "main_reward": 0,
+     "reward": 10000,
+     "scheduled": 10000
+    },
+    {
+     "height": 17,
+     "in_tail": true,
+     "issued_before": 5000000,
+     "main_reward": 0,
+     "reward": 10000,
+     "scheduled": 5000
+    },
+    {
+     "height": 100,
+     "in_tail": true,
+     "issued_before": 5000000,
+     "main_reward": 0,
+     "reward": 10000,
+     "scheduled": 0
+    },
+    {
+     "height": 1000000,
+     "in_tail": true,
+     "issued_before": 5000000,
+     "main_reward": 0,
+     "reward": 10000,
+     "scheduled": 0
+    },
+    {
+     "height": 1000000000,
+     "in_tail": true,
+     "issued_before": 5000000,
+     "main_reward": 0,
+     "reward": 10000,
+     "scheduled": 0
+    },
+    {
+     "height": 1000000000000,
+     "in_tail": true,
+     "issued_before": 5000000,
+     "main_reward": 0,
+     "reward": 10000,
+     "scheduled": 0
+    }
+   ]
+  },
+  "trimmed_final_reward": {
+   "main_emission_end_from_1": 19,
+   "params": {
+    "halving_interval": 10,
+    "initial_reward": 100000,
+    "max_supply": 1375000,
+    "tail_reward": 100
+   },
+   "rows": [
+    {
+     "height": 1,
+     "in_tail": false,
+     "issued_before": 0,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 2,
+     "in_tail": false,
+     "issued_before": 100000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 3,
+     "in_tail": false,
+     "issued_before": 200000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 4,
+     "in_tail": false,
+     "issued_before": 300000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 5,
+     "in_tail": false,
+     "issued_before": 400000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 10,
+     "in_tail": false,
+     "issued_before": 900000,
+     "main_reward": 100000,
+     "reward": 100000,
+     "scheduled": 100000
+    },
+    {
+     "height": 11,
+     "in_tail": false,
+     "issued_before": 1000000,
+     "main_reward": 50000,
+     "reward": 50000,
+     "scheduled": 50000
+    },
+    {
+     "height": 12,
+     "in_tail": false,
+     "issued_before": 1050000,
+     "main_reward": 50000,
+     "reward": 50000,
+     "scheduled": 50000
+    },
+    {
+     "height": 13,
+     "in_tail": false,
+     "issued_before": 1100000,
+     "main_reward": 50000,
+     "reward": 50000,
+     "scheduled": 50000
+    },
+    {
+     "height": 18,
+     "in_tail": false,
+     "issued_before": 1350000,
+     "main_reward": 25000,
+     "reward": 25000,
+     "scheduled": 50000
+    },
+    {
+     "height": 19,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 50000
+    },
+    {
+     "height": 20,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 50000
+    },
+    {
+     "height": 21,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 25000
+    },
+    {
+     "height": 30,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 25000
+    },
+    {
+     "height": 31,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 12500
+    },
+    {
+     "height": 40,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 12500
+    },
+    {
+     "height": 41,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 6250
+    },
+    {
+     "height": 50,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 6250
+    },
+    {
+     "height": 51,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 3125
+    },
+    {
+     "height": 60,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 3125
+    },
+    {
+     "height": 61,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 1562
+    },
+    {
+     "height": 70,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 1562
+    },
+    {
+     "height": 71,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 781
+    },
+    {
+     "height": 80,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 781
+    },
+    {
+     "height": 81,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 390
+    },
+    {
+     "height": 100,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 195
+    },
+    {
+     "height": 1000000,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 0
+    },
+    {
+     "height": 1000000000,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 0
+    },
+    {
+     "height": 1000000000000,
+     "in_tail": true,
+     "issued_before": 1375000,
+     "main_reward": 0,
+     "reward": 100,
+     "scheduled": 0
+    }
+   ]
+  }
+ }
+}
