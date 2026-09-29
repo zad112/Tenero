@@ -17,7 +17,9 @@ Decisions marked **DECIDE** are open. Each has a recommendation, which is only a
 
 ## Decisions to make first
 
-1. **Language split. DECIDE.** The FCMP++ cryptography is written in Rust, and Monero itself is a C++ core
+1. **Language split. DECIDED (2026-09-29): Rust only, option (b).** The owner does not need C++. The
+   CUDA kernels stay C++ (they are CUDA source), built with nvcc; everything else is Rust. CMake and Ninja
+   are not needed for the Rust parts. The reasoning below is kept as the record of the options. The FCMP++ cryptography is written in Rust, and Monero itself is a C++ core
    that links that Rust as a static library through a C interface. So realistic options are (a) a C++ core
    plus Rust for the proof systems, as Monero does; (b) a Rust core; (c) all C++ with the proof systems
    reimplemented (not recommended: it is the riskiest way to spend the effort). Recommendation: (a), if C++
@@ -91,7 +93,8 @@ Use those chain cases as a checklist of rules the new model must also enforce in
 
 1. `git checkout -b rewrite`; run `python -m pytest -q` and `python tools/make_vectors.py --check`. Confirm
    the baseline is green.
-2. On the owner's machine (it needs 4.3 GiB of free RAM): `python tools/make_vectors.py --full --threads 4`,
-   then commit `tests/vectors/matmulhash_full.json`.
+2. `tests/vectors/matmulhash_full.json` is already committed. Run the slow vector test once on the owner's
+   machine (4.3 GiB of free RAM) to confirm slices 78-255, which no other vector cross-checks:
+   `TENERO_SLOW_VECTORS=1 python -m pytest tests/test_vectors.py -q`.
 3. Read `docs/CONSENSUS.md` and `docs/KNOWN_ISSUES.md`; settle decisions 1 to 4.
 4. Build M0.

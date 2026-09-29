@@ -14,7 +14,7 @@ Read `docs/CONSENSUS.md` for what each rule means. Every file is JSON with `sche
 | `matmulhash_small.json` | the proof of work at small sizes: dataset hashes, every step of full attempts (seed, slice, X, C, fold sums, mix, digest), and the fold on its own | small |
 | `matmulhash_real.json` | the same at the real parameters, for the first 8 of the 256 slices | small |
 | `matmulhash_deep.json` | real parameters, slices up to 77 (each depends on all earlier ones) | slow to check |
-| `matmulhash_full.json` | a hash of every one of the 256 slices (**generate it yourself**: see below) | slow, 4.3 GiB RAM |
+| `matmulhash_full.json` | a hash of every one of the 256 slices (committed; regenerate with `--full`, see below) | slow, 4.3 GiB RAM |
 | `pow_misc.json` | epoch seeds and numbering, `bits_to_target`, the cheap pre-check | small |
 | `emission.json` | rewards by height for several schedules (including the edge cases) | small |
 | `difficulty.json` | the difficulty adjustment and the median-time rule over 20 block-time scenarios | small |
@@ -36,9 +36,11 @@ then `matmulhash_small.json`, then `chains.json`.
 
 ## The full vector
 
-`matmulhash_full.json` is not committed because it needs the whole 4 GiB dataset in memory to
-produce. Generate it once on a machine with about 4.3 GiB of free RAM (about a minute on 4 threads)
-and commit it:
+`matmulhash_full.json` is committed, but `--check` does not verify it, because that needs the whole
+4 GiB dataset in memory. It is checked only by the slow test
+(`TENERO_SLOW_VECTORS=1 python -m pytest tests/test_vectors.py`, about 4.3 GiB of RAM). Its slices
+0-3, 7, 15, 31, 63 and 77 also agree with `matmulhash_real.json` and `matmulhash_deep.json`. To
+regenerate it (only after a proof-of-work change), on a machine with about 4.3 GiB of free RAM:
 
 ```
 python tools/make_vectors.py --full --threads 4

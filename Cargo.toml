@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/tenero-core"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "BSD-3-Clause"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

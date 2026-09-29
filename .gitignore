@@ -25,6 +25,9 @@ __pycache__/
 build/
 dist/
 
+# Rust
+target/
+
 # editors and operating systems
 .vscode/
 .idea/
