@@ -168,19 +168,19 @@ def dec_output(r):
 
 
 def enc_input(i):
-    return w_fixed(i["key_image"], 32) + w_list(i["ring"], w_u64)
+    """An input in the prefix is only its key image: the ring it was signed against is in the prunable part."""
+    return w_fixed(i["key_image"], 32)
 
 
 def dec_input(r):
-    key_image = r.fixed(32)
-    n = r.count(0, MAX_RING)
-    return {"key_image": key_image, "ring": [r.u64() for _ in range(n)]}
+    return {"key_image": r.fixed(32)}
 
 
 # A transaction is a PREFIX (everything a node needs after it has been verified: the key images, the
-# outputs, the fee) followed by the PRUNABLE part (the proofs, needed only to verify it once). The id
-# commits to the prefix and to a hash of the prunable part, so a node that has discarded the proofs can
-# still recompute every transaction id and every Merkle root (docs/CONSENSUS_V2.md section 14).
+# outputs, the fee) followed by the PRUNABLE part (the rings and the proofs, needed only to verify it once).
+# The id commits to the prefix and to a hash of the prunable part, so a node that has discarded the
+# rings and proofs can still recompute every transaction id and every Merkle root
+# (docs/CONSENSUS_V2.md section 14).
 
 def enc_tx_prefix(t):
     return (w_u16(t["version"]) + w_list(t["inputs"], enc_input) + w_list(t["outputs"], enc_output)
@@ -195,22 +195,29 @@ def dec_tx_prefix(r):
     return {"version": version, "inputs": inputs, "outputs": outputs, "fee": fee, "extra": r.var(MAX_EXTRA)}
 
 
-def enc_prunable(proof_hex):
-    return w_var(proof_hex)
+def enc_prunable(t):
+    """The prunable part: one ring (a list of global output indexes) per input, then the proof bytes."""
+    return w_list(t["rings"], lambda ring: w_list(ring, w_u64)) + w_var(t["proof_data"])
 
 
 def enc_tx(t):
-    return enc_tx_prefix(t) + enc_prunable(t["proof_data"])
+    return enc_tx_prefix(t) + enc_prunable(t)
+
+
+def dec_prunable(r, n_inputs):
+    # exactly one ring per input; the count is checked before any ring is read
+    rings = [[r.u64() for _ in range(r.count(0, MAX_RING))] for _ in range(r.count(n_inputs, n_inputs))]
+    return {"rings": rings, "proof_data": r.var(MAX_PROOF)}
 
 
 def dec_tx(r):
     t = dec_tx_prefix(r)
-    t["proof_data"] = r.var(MAX_PROOF)
+    t.update(dec_prunable(r, len(t["inputs"])))
     return t
 
 
 def enc_pruned_tx(p):
-    """A transaction with its proofs discarded: the prefix and the 32-byte hash of the prunable part."""
+    """A transaction with its rings and proofs discarded: the prefix and the 32-byte hash of the prunable part."""
     return enc_tx_prefix(p) + w_fixed(p["prunable_hash"], 32)
 
 
@@ -220,14 +227,15 @@ def dec_pruned_tx(r):
     return p
 
 
-def prunable_hash(proof_hex):
-    return sha256(PRUNABLE_TAG, enc_prunable(proof_hex))
+def prunable_hash(t):
+    """SHA-256 over the tag and the serialized prunable part (the rings and the proof bytes)."""
+    return sha256(PRUNABLE_TAG, enc_prunable(t))
 
 
 def prune(t):
-    """The pruned form of a transaction."""
-    p = {k: v for k, v in t.items() if k != "proof_data"}
-    p["prunable_hash"] = prunable_hash(t["proof_data"]).hex()
+    """The pruned form of a transaction: the prefix and the hash of everything that was dropped."""
+    p = {k: v for k, v in t.items() if k not in ("proof_data", "rings")}
+    p["prunable_hash"] = prunable_hash(t).hex()
     return p
 
 
@@ -339,7 +347,7 @@ def block_id(h, pow_kind):
 
 def tx_id(t):
     """Over the prefix and the HASH of the prunable part, so it is the same for the full and the pruned form."""
-    return sha256(TX_TAG, enc_tx_prefix(t), prunable_hash(t["proof_data"]))
+    return sha256(TX_TAG, enc_tx_prefix(t), prunable_hash(t))
 
 
 def pruned_tx_id(p):
@@ -400,15 +408,20 @@ def sample_output(tag):
             "ephemeral_pubkey": h(tag + " de", 32), "anchor_enc": h(tag + " anchor", 16)}
 
 
-def sample_input(tag, ring_size=16):
-    ring = sorted({int.from_bytes(det_bytes(f"{tag} ring {i}", 4), "little") for i in range(ring_size)})
-    return {"key_image": h(tag + " ki", 32), "ring": ring}
+def sample_input(tag):
+    return {"key_image": h(tag + " ki", 32)}
 
 
-def sample_tx(tag, n_in=2, n_out=2, proof=200, extra=24, fee=123456):
+def sample_ring(tag, size=16):
+    return sorted({int.from_bytes(det_bytes(f"{tag} ring {i}", 4), "little") for i in range(size)})
+
+
+def sample_tx(tag, n_in=2, n_out=2, proof=200, extra=24, fee=123456, ring_size=16):
     return {"version": VERSION, "inputs": [sample_input(f"{tag} in{i}") for i in range(n_in)],
             "outputs": [sample_output(f"{tag} out{i}") for i in range(n_out)], "fee": fee,
-            "extra": h(tag + " extra", extra), "proof_data": h(tag + " proof", proof)}
+            "extra": h(tag + " extra", extra),
+            "rings": [sample_ring(f"{tag} in{i}", ring_size) for i in range(n_in)],
+            "proof_data": h(tag + " proof", proof)}
 
 
 def sample_cb_output(tag, amount):
@@ -468,8 +481,7 @@ def serialization_vectors():
 
     valid = [
         valid_case("output", sample_output("a"), "a fixed 123-byte output"),
-        valid_case("input", sample_input("a"), "a ring of 16 ascending indexes"),
-        valid_case("input", {"key_image": h("k", 32), "ring": []}, "an empty ring encodes (validation rejects it later)"),
+        valid_case("input", sample_input("a"), "an input in the prefix is only its key image"),
         valid_case("coinbase_output", sample_cb_output("a", 2_000_000_000), "a plaintext amount"),
         valid_case("coinbase", sample_coinbase(1), "one output"),
         valid_case("coinbase", sample_coinbase(525_601, n_out=3), "three outputs"),
@@ -481,6 +493,8 @@ def serialization_vectors():
         valid_case("transaction", sample_tx("c", n_in=MAX_INPUTS, n_out=MAX_OUTPUTS, proof=1000, extra=MAX_EXTRA),
                    "the maximum number of inputs and outputs and the maximum extra"),
         valid_case("transaction", sample_tx("d", proof=MAX_PROOF), "the maximum proof length"),
+        valid_case("transaction", sample_tx("f", ring_size=0), "empty rings encode (validation rejects them later)"),
+        valid_case("transaction", sample_tx("g", n_in=3, ring_size=MAX_RING), "three inputs, a full ring each"),
     ]
     txs = [sample_tx("blk1"), sample_tx("blk2", n_in=1)]
     ids = [tx_id(t).hex() for t in txs]
@@ -492,7 +506,7 @@ def serialization_vectors():
                             "a header, a coinbase and two transactions"))
     valid.append(valid_case("block", {"header": sample_header("empty"), "coinbase": sample_coinbase(8), "transactions": []},
                             "no transactions besides the coinbase"))
-    # the pruned forms: the same prefix, the proofs replaced by their 32-byte hash
+    # the pruned forms: the same prefix, the rings and proofs replaced by their 32-byte hash
     valid.append(valid_case("pruned_transaction", prune(sample_tx("a")), "the pruned form of the first transaction"))
     valid.append(valid_case("pruned_transaction", prune(sample_tx("c", n_in=MAX_INPUTS, n_out=MAX_OUTPUTS, proof=1000,
                                                                   extra=MAX_EXTRA)), "the pruned form at the size limits"))
@@ -526,8 +540,15 @@ def serialization_vectors():
                      "proof one byte too long"),
         invalid_case("transaction", good[:-4 - 200] + w_u32(0xFFFFFFFF) + b"", "length over maximum",
                      "a proof length of 2^32-1"),
-        invalid_case("input", enc_input({"key_image": h("k", 32), "ring": list(range(MAX_RING + 1))}),
+        invalid_case("input", enc_input(sample_input("a"))[:-1], "short read", "a key image one byte short"),
+        invalid_case("input", enc_input(sample_input("a")) + b"\x00", "trailing bytes", "an input with a trailing byte"),
+        invalid_case("transaction", enc_tx({**tx, "rings": [list(range(MAX_RING + 1)), tx["rings"][1]]}),
                      "count out of range", "a ring of 17"),
+        invalid_case("transaction", enc_tx({**tx, "rings": tx["rings"][:1]}), "count out of range",
+                     "one ring for two inputs"),
+        invalid_case("transaction", enc_tx({**tx, "rings": tx["rings"] + tx["rings"][:1]}), "count out of range",
+                     "three rings for two inputs"),
+        invalid_case("transaction", enc_tx({**tx, "rings": []}), "count out of range", "no rings at all"),
         invalid_case("coinbase", enc_coinbase({**sample_coinbase(1), "outputs": []}), "count out of range",
                      "a coinbase with no outputs"),
         invalid_case("coinbase", enc_coinbase({**sample_coinbase(1),
@@ -542,7 +563,7 @@ def serialization_vectors():
         invalid_case("pruned_transaction", enc_pruned_tx(prune(tx)) + b"\x00", "trailing bytes",
                      "a pruned transaction with a trailing byte"),
         invalid_case("pruned_transaction", good, "trailing bytes",
-                     "a FULL transaction is not a pruned one: its proofs are extra bytes"),
+                     "a FULL transaction is not a pruned one: its rings and proofs are extra bytes"),
         invalid_case("pruned_block", enc_header(sample_header("a")) + enc_coinbase(sample_coinbase(1))
                      + w_u32(MAX_BLOCK_TXS + 1), "count out of range",
                      "a pruned block with more transactions than the maximum"),
@@ -571,7 +592,9 @@ def ids_vectors():
     for t in txs:
         p = prune(t)
         assert pruned_tx_id(p) == tx_id(t)              # the pruned form has the same id
+        assert enc_tx(t) == enc_tx_prefix(t) + enc_prunable(t)
         tcases.append({"transaction": t, "bytes": enc_tx(t).hex(), "prefix_bytes": enc_tx_prefix(t).hex(),
+                       "prunable_bytes": enc_prunable(t).hex(),
                        "prunable_hash": p["prunable_hash"], "id": tx_id(t).hex(),
                        "pruned_bytes": enc_pruned_tx(p).hex(), "pruned_id": pruned_tx_id(p).hex()})
     cbs = [sample_coinbase(1), sample_coinbase(60, n_out=2)]

@@ -114,19 +114,47 @@ def test_a_pruned_transaction_has_the_same_id_as_the_full_one():
     for c in load("v2_ids")["transactions"]:
         full = bytes.fromhex(c["bytes"])
         prefix = bytes.fromhex(c["prefix_bytes"])
+        prunable = bytes.fromhex(c["prunable_bytes"])
         pruned = bytes.fromhex(c["pruned_bytes"])
-        assert full.startswith(prefix)                         # the prefix is the front of the full form
+        assert full == prefix + prunable                       # the full form is the prefix then the prunable part
         assert pruned == prefix + bytes.fromhex(c["prunable_hash"])
-        proofs = full[len(prefix) + 4:]
-        # pruned = prefix + 32, full = prefix + 4 + proofs: pruning saves bytes once proofs exceed 28 bytes
-        # (an empty proof, as in one sample, makes the pruned form 28 bytes LARGER: that is fine and expected)
-        assert len(pruned) - len(full) == 28 - len(proofs)
+        # pruned = prefix + 32, full = prefix + prunable: pruning saves bytes once the prunable part exceeds
+        # 32 bytes (with rings of 16 it is over 250 bytes even when the proof is empty)
+        assert len(pruned) - len(full) == 32 - len(prunable)
         assert c["id"] == c["pruned_id"]
-        # from scratch: id = SHA-256(tag, prefix, SHA-256(tag, u32 length, proofs))
-        assert struct.unpack("<I", full[len(prefix):len(prefix) + 4])[0] == len(proofs)
-        inner = hashlib.sha256(b"tenero tx prunable v2" + struct.pack("<I", len(proofs)) + proofs).digest()
+        # from scratch: id = SHA-256(tag, prefix, SHA-256(tag, prunable part)); the prunable part is one ring
+        # per input (a u32 count, then that many u64 indexes) followed by the proof (u32 length, bytes)
+        n_inputs = len(c["transaction"]["inputs"])
+        at = 0
+        assert struct.unpack("<I", prunable[at:at + 4])[0] == n_inputs
+        at += 4
+        for ring in c["transaction"]["rings"]:
+            assert struct.unpack("<I", prunable[at:at + 4])[0] == len(ring)
+            at += 4 + 8 * len(ring)
+        proof = bytes.fromhex(c["transaction"]["proof_data"])
+        assert struct.unpack("<I", prunable[at:at + 4])[0] == len(proof)
+        assert prunable[at + 4:] == proof
+        inner = hashlib.sha256(b"tenero tx prunable v2" + prunable).digest()
         assert inner.hex() == c["prunable_hash"]
         assert hashlib.sha256(b"tenero tx v2" + prefix + inner).hexdigest() == c["id"]
+
+
+def test_the_prefix_holds_no_ring_and_the_id_still_covers_every_ring_index():
+    t = v2.sample_tx("rings")
+    prefix = v2.enc_tx_prefix(t)
+    # the ring indexes are not in the prefix: 2 (version) + 4 + 2 * 32 (key images) + outputs + fee + extra
+    assert len(prefix) == 2 + 4 + 2 * 32 + 4 + 2 * 123 + 8 + 4 + 24
+    assert not any(v2.w_u64(i) in prefix for ring in t["rings"] for i in ring[:1])
+    base = v2.tx_id(t)
+    for which in (0, 1):
+        changed = [list(r) for r in t["rings"]]
+        changed[which][3] += 1                                     # one ring member differs
+        assert v2.tx_id({**t, "rings": changed}) != base, which   # so a ring cannot be swapped under an id
+    swapped = [t["rings"][1], t["rings"][0]]
+    assert v2.tx_id({**t, "rings": swapped}) != base                # nor the rings exchanged between inputs
+    assert v2.tx_id({**t, "rings": [t["rings"][0][:-1], t["rings"][1]]}) != base
+    # the pruned form still has the same id, from the prefix and the hash alone
+    assert v2.pruned_tx_id(v2.prune(t)) == base
 
 
 def test_the_id_changes_with_any_proof_byte_and_any_prefix_byte():

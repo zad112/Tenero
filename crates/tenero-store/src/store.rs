@@ -222,11 +222,8 @@ impl Store {
                 StoreError::Corrupt(format!("block {height}: a transaction row is missing"))
             })?;
             let row: TxRow = from_bytes(row.value())?;
-            let proof_data = prunable.get(id.as_slice())?.map(|g| g.value().to_vec());
-            transactions.push(StoredTx {
-                tx: row.tx,
-                proof_data,
-            });
+            let bytes = prunable.get(id.as_slice())?.map(|g| g.value().to_vec());
+            transactions.push(StoredTx::with_prunable_bytes(row.tx, bytes)?);
         }
         Ok(Some(StoredBlock {
             index: idx,
@@ -246,16 +243,13 @@ impl Store {
         else {
             return Ok(None);
         };
-        let proof_data = txn
+        let bytes = txn
             .open_table(TX_PRUNABLE)?
             .get(id.as_slice())?
             .map(|g| g.value().to_vec());
         Ok(Some((
             row.height,
-            StoredTx {
-                tx: row.tx,
-                proof_data,
-            },
+            StoredTx::with_prunable_bytes(row.tx, bytes)?,
         )))
     }
 
@@ -401,7 +395,10 @@ impl Store {
                 {
                     return Err(StoreError::Duplicate("transaction"));
                 }
-                prunable.insert(id.as_slice(), t.proof_data.as_slice())?;
+                prunable.insert(
+                    id.as_slice(),
+                    t.prunable.to_bytes(t.prefix.inputs.len())?.as_slice(),
+                )?;
                 for input in &t.prefix.inputs {
                     if images.insert(input.key_image.as_slice(), height)?.is_some() {
                         return Err(StoreError::DoubleSpend(input.key_image));
@@ -493,7 +490,7 @@ impl Store {
                     })?;
                     from_bytes(g.value())?
                 };
-                let proof_data = prunable.remove(id.as_slice())?.map(|g| g.value().to_vec());
+                let bytes = prunable.remove(id.as_slice())?.map(|g| g.value().to_vec());
                 for input in &row.tx.prefix.inputs {
                     let spent_at = images
                         .remove(input.key_image.as_slice())?
@@ -505,10 +502,7 @@ impl Store {
                         )));
                     }
                 }
-                transactions.push(StoredTx {
-                    tx: row.tx,
-                    proof_data,
-                });
+                transactions.push(StoredTx::with_prunable_bytes(row.tx, bytes)?);
             }
             for i in tip.first_output_index..tip.first_output_index + u64::from(tip.output_count) {
                 if outputs.remove(i)?.is_none() {
@@ -588,7 +582,7 @@ impl Store {
                 for id in ids {
                     if let Some(old) = prunable.remove(id.as_slice())? {
                         s.transactions_pruned += 1;
-                        s.proof_bytes_freed += old.value().len() as u64;
+                        s.prunable_bytes_freed += old.value().len() as u64;
                     }
                 }
             }
@@ -620,7 +614,7 @@ impl Store {
             let next = height.min(at.saturating_add(step));
             let s = self.prune_below(next)?;
             total.transactions_pruned += s.transactions_pruned;
-            total.proof_bytes_freed += s.proof_bytes_freed;
+            total.prunable_bytes_freed += s.prunable_bytes_freed;
             total.pruned_below = s.pruned_below;
             at = next;
         }

@@ -28,7 +28,7 @@ fn output_json(o: &Output) -> Value {
 }
 
 fn input_json(i: &Input) -> Value {
-    json!({"key_image": hx(&i.key_image), "ring": i.ring})
+    json!({"key_image": hx(&i.key_image)})
 }
 
 fn prefix_fields(p: &TxPrefix) -> serde_json::Map<String, Value> {
@@ -49,7 +49,8 @@ fn prefix_fields(p: &TxPrefix) -> serde_json::Map<String, Value> {
 
 fn tx_json(t: &Transaction) -> Value {
     let mut m = prefix_fields(&t.prefix);
-    m.insert("proof_data".into(), hx(&t.proof_data));
+    m.insert("rings".into(), json!(t.prunable.rings));
+    m.insert("proof_data".into(), hx(&t.prunable.proof_data));
     Value::Object(m)
 }
 
@@ -289,17 +290,25 @@ fn encoding_refuses_what_no_decoder_would_accept() {
     t.prefix.extra = vec![0; MAX_EXTRA + 1];
     assert_eq!(t.to_bytes(), Err(EncodeError::LengthOverMaximum));
     let mut t = tx.clone();
-    t.proof_data = vec![0; MAX_PROOF + 1];
+    t.prunable.proof_data = vec![0; MAX_PROOF + 1];
     assert_eq!(t.to_bytes(), Err(EncodeError::LengthOverMaximum));
     let mut t = tx.clone();
-    t.prefix.inputs[0].ring = (0..=MAX_RING as u64).collect();
+    t.prunable.rings[0] = (0..=MAX_RING as u64).collect();
+    assert_eq!(t.to_bytes(), Err(EncodeError::CountOutOfRange));
+    // exactly one ring per input: fewer or more can never be read back
+    let mut t = tx.clone();
+    t.prunable.rings.pop();
+    assert_eq!(t.to_bytes(), Err(EncodeError::CountOutOfRange));
+    let mut t = tx.clone();
+    t.prunable.rings.push(vec![1, 2, 3]);
     assert_eq!(t.to_bytes(), Err(EncodeError::CountOutOfRange));
     // the id of an object that cannot be encoded is an error too, not a hash of something else
     assert!(ids::tx_id(&t).is_err());
+    assert!(t.prune().is_err());
     // and the limits themselves are accepted
     let mut t = tx.clone();
     t.prefix.extra = vec![0; MAX_EXTRA];
-    t.proof_data = vec![0; MAX_PROOF];
+    t.prunable.proof_data = vec![0; MAX_PROOF];
     assert!(t.to_bytes().is_ok());
 }
 
@@ -350,9 +359,18 @@ fn transaction_ids_full_and_pruned() {
         let bytes = bytes_of(&c["bytes"]);
         let tx = Transaction::from_bytes(&bytes).unwrap();
         assert_eq!(tx_json(&tx), c["transaction"]);
+        let n = tx.prefix.inputs.len();
         assert_eq!(tx.prefix.to_bytes().unwrap(), bytes_of(&c["prefix_bytes"]));
         assert_eq!(
-            hex_lower(&ids::prunable_hash(&tx.proof_data).unwrap()),
+            tx.prunable.to_bytes(n).unwrap(),
+            bytes_of(&c["prunable_bytes"])
+        );
+        assert_eq!(
+            Prunable::from_bytes(&bytes_of(&c["prunable_bytes"]), n).unwrap(),
+            tx.prunable
+        );
+        assert_eq!(
+            hex_lower(&ids::prunable_hash(&tx.prunable, n).unwrap()),
             c["prunable_hash"].as_str().unwrap()
         );
         assert_eq!(
@@ -376,6 +394,43 @@ fn transaction_ids_full_and_pruned() {
             "pruning must not change the id"
         );
     }
+}
+
+/// The reason the rings can leave the prefix: the id still covers every ring index, so a ring cannot be
+/// changed, swapped between inputs, or shortened under an existing id.
+#[test]
+fn the_prefix_holds_no_ring_and_the_id_covers_every_ring_index() {
+    let v = load("v2_ids").unwrap();
+    let c = &v["transactions"].as_array().unwrap()[0];
+    let tx = Transaction::from_bytes(&bytes_of(&c["bytes"])).unwrap();
+    let id = ids::tx_id(&tx).unwrap();
+    // 2 (version) + 4 + 2 * 32 (key images) + 4 + 2 * 123 + 8 + 4 + 24 (extra)
+    assert_eq!(tx.prefix.to_bytes().unwrap().len(), 356);
+    assert_eq!(tx.prefix.inputs.len(), 2);
+
+    for input in 0..2 {
+        for member in 0..tx.prunable.rings[input].len() {
+            let mut t = tx.clone();
+            t.prunable.rings[input][member] ^= 1;
+            assert_ne!(ids::tx_id(&t).unwrap(), id, "ring {input} member {member}");
+        }
+    }
+    let mut swapped = tx.clone();
+    swapped.prunable.rings.swap(0, 1);
+    assert_ne!(
+        ids::tx_id(&swapped).unwrap(),
+        id,
+        "rings exchanged between inputs"
+    );
+    let mut shorter = tx.clone();
+    shorter.prunable.rings[0].pop();
+    assert_ne!(
+        ids::tx_id(&shorter).unwrap(),
+        id,
+        "a ring one member shorter"
+    );
+    // and the pruned form, which has neither rings nor proofs, still has the same id
+    assert_eq!(ids::pruned_tx_id(&tx.prune().unwrap()).unwrap(), id);
 }
 
 #[test]
@@ -423,7 +478,7 @@ fn a_blocks_tx_root_commits_to_its_coinbase_and_transactions() {
     cb.extra[0] ^= 1;
     assert_ne!(root(&cb, &b.transactions), b.header.tx_root);
     let mut txs = b.transactions.clone();
-    txs[1].proof_data[0] ^= 1;
+    txs[1].prunable.proof_data[0] ^= 1;
     assert_ne!(root(&b.coinbase, &txs), b.header.tx_root);
     assert_ne!(root(&b.coinbase, &b.transactions[..1]), b.header.tx_root);
     // and the pruned block has the same root, from prefixes and prunable hashes alone

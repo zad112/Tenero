@@ -90,8 +90,11 @@ impl Maker {
         let inputs = (0..2)
             .map(|_| Input {
                 key_image: self.key_image(),
-                ring: (0..16).collect(), // a ring of the real size (the store does not look at it)
             })
+            .collect();
+        // a ring of the real size for each input (the store does not look at them)
+        let rings = (0..2)
+            .map(|_| (0..16).map(|_| self.rng.next() % 10_000_000).collect())
             .collect();
         let outputs = (0..2)
             .map(|_| Output {
@@ -113,9 +116,12 @@ impl Maker {
                 inputs,
                 outputs,
                 fee: 1000,
-                extra: vec![],
+                extra: vec![7; 24],
             },
-            proof_data: proof,
+            prunable: Prunable {
+                rings,
+                proof_data: proof,
+            },
         }
     }
 
@@ -322,7 +328,7 @@ fn blocks_are_stored_indexed_and_read_back_exactly() {
                 assert_eq!(s.key_image_height(&inp.key_image).unwrap(), Some(height));
             }
             let (h, st) = s.tx(&ids::tx_id(t).unwrap()).unwrap().unwrap();
-            assert_eq!((h, st.proof_data.as_ref()), (height, Some(&t.proof_data)));
+            assert_eq!((h, st.prunable.as_ref()), (height, Some(&t.prunable)));
             assert_eq!(st.tx, t.prune().unwrap());
         }
         expected_first = idx;
@@ -486,7 +492,11 @@ fn pruning_removes_only_proofs_and_changes_no_id_root_or_state() {
     let stats = s.prune_below(40).unwrap();
     // blocks 1..=39, two transactions each
     assert_eq!(stats.transactions_pruned, 39 * 2);
-    assert_eq!(stats.proof_bytes_freed, 39 * 2 * 1900);
+    // per transaction: 4 (ring count) + 2 rings of (4 + 16 * 8) + 4 (proof length) + 1900 (proof)
+    assert_eq!(
+        stats.prunable_bytes_freed,
+        39 * 2 * (4 + 2 * (4 + 16 * 8) + 4 + 1900)
+    );
     assert_eq!(stats.pruned_below, 40);
     assert_eq!(s.pruned_below().unwrap(), 40);
 
@@ -512,7 +522,7 @@ fn pruning_removes_only_proofs_and_changes_no_id_root_or_state() {
                 .unwrap()
                 .expect("the prefix row survives pruning");
             assert_eq!(h, height);
-            assert_eq!(st.proof_data.is_some(), height >= 40);
+            assert_eq!(st.prunable.is_some(), height >= 40);
             assert_eq!(
                 ids::pruned_tx_id(&st.tx).unwrap(),
                 ids::tx_id(t).unwrap(),
@@ -666,7 +676,7 @@ fn compaction_returns_the_space_of_pruned_proofs() {
     store.compact().unwrap();
     let full = store.file_size().unwrap();
     let stats = store.prune_below(150).unwrap();
-    let proofs = stats.proof_bytes_freed;
+    let proofs = stats.prunable_bytes_freed;
     let after_prune = store.file_size().unwrap();
     store.compact().unwrap();
     let after_compact = store.file_size().unwrap();

@@ -2,8 +2,8 @@
 //! hash, the block id, transaction and coinbase ids, the Merkle root, the genesis block and the chain
 //! id. Every hash carries a domain tag, so no two kinds of object share an input.
 
-use super::codec::{EncodeError, Wire, Writer};
-use super::types::{BlockHeader, Coinbase, PrunedTransaction, Transaction, MAX_PROOF, VERSION};
+use super::codec::{EncodeError, Wire};
+use super::types::{BlockHeader, Coinbase, Prunable, PrunedTransaction, Transaction, VERSION};
 use crate::hash::sha256;
 use crate::matmulhash;
 
@@ -48,11 +48,10 @@ pub fn block_id(h: &BlockHeader, pow: PowKind) -> [u8; 32] {
     }
 }
 
-/// The hash of a transaction's prunable part (the `u32` length and the proof bytes).
-pub fn prunable_hash(proof_data: &[u8]) -> Result<[u8; 32], EncodeError> {
-    let mut w = Writer::new();
-    w.var(proof_data, MAX_PROOF)?;
-    Ok(sha256(&[PRUNABLE_TAG, &w.into_bytes()]))
+/// The hash of a transaction's prunable part: its serialized bytes (one ring per input, then the proofs),
+/// so it covers every ring index as well as every proof byte. `n_inputs` is the prefix's input count.
+pub fn prunable_hash(p: &Prunable, n_inputs: usize) -> Result<[u8; 32], EncodeError> {
+    Ok(sha256(&[PRUNABLE_TAG, &p.to_bytes(n_inputs)?]))
 }
 
 /// The id of a full transaction: over the prefix and the hash of the prunable part.
@@ -60,7 +59,7 @@ pub fn tx_id(t: &Transaction) -> Result<[u8; 32], EncodeError> {
     Ok(sha256(&[
         TX_TAG,
         &t.prefix.to_bytes()?,
-        &prunable_hash(&t.proof_data)?,
+        &prunable_hash(&t.prunable, t.prefix.inputs.len())?,
     ]))
 }
 
@@ -74,11 +73,11 @@ pub fn coinbase_id(c: &Coinbase) -> Result<[u8; 32], EncodeError> {
 }
 
 impl Transaction {
-    /// The pruned form: the same prefix, the proofs replaced by their hash.
+    /// The pruned form: the same prefix, the rings and proofs replaced by their hash.
     pub fn prune(&self) -> Result<PrunedTransaction, EncodeError> {
         Ok(PrunedTransaction {
             prefix: self.prefix.clone(),
-            prunable_hash: prunable_hash(&self.proof_data)?,
+            prunable_hash: prunable_hash(&self.prunable, self.prefix.inputs.len())?,
         })
     }
 }

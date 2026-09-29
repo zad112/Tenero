@@ -166,16 +166,21 @@ prefix   = version        u16
            outputs        list<Output>    2 ..= MAX_OUTPUTS        (at least 2: see below)
            fee            u64             units, public
            extra          bytes           <= MAX_EXTRA
-prunable = proof_data     bytes           <= MAX_PROOF: the range proof, the pseudo-output commitments and
-                                                         the membership proofs, in the format of `version`
-Input    = key_image      [32]            the spend-once tag
-           membership     variant by version: 6.3
+prunable = rings          list<list<u64>> exactly one ring per input, in the order of the inputs; each ring is
+                                          at most MAX_RING global output indexes (P1, 6.3)
+           proof_data     bytes           <= MAX_PROOF: the range proof, the pseudo-output commitments and
+                                          the membership proofs, in the format of `version`
+Input    = key_image      [32]            the spend-once tag: the ONLY thing an input holds in the prefix
 ```
 
 - **The split matters** (section 14): the prefix is what a node needs after it has verified a transaction (the
   key images and the outputs), and the prunable part, which is most of the bytes, is only needed to verify it
-  once. The id (6.4) commits to the prefix and to a hash of the prunable part, so the proofs can be discarded
-  later without losing the ability to recompute any id or Merkle root.
+  once. The id (6.4) commits to the prefix and to a hash of the prunable part, so the rings and proofs can be
+  discarded later without losing the ability to recompute any id or Merkle root.
+- **The rings are in the prunable part, not in the prefix** (decided 2026-09-29): nothing needs a ring after the
+  transaction has been verified, and the id still covers every ring index through the prunable hash, so a ring
+  cannot be changed, swapped between inputs or shortened under an existing id. This takes a typical prefix
+  from about 620 to **356 bytes**.
 - **At least two outputs** in every spend (the second is the sender's own "change", possibly worth zero), as
   the Carrot design requires, so that every spend has a self-send output.
 - **PROVISIONAL constants** (approved by the owner for now, to be re-measured once real proofs exist in M7):
@@ -194,9 +199,11 @@ Input    = key_image      [32]            the spend-once tag
 An input proves "the spent output is one of many, without saying which", and reveals its key image so that
 spending it twice is detected.
 
-- **P1 (the stand-in)**: a **ring**: `ring: list<u64>` of exactly `RING_SIZE = 16` distinct **global output
-  indexes** in ascending order, plus a **CLSAG** signature inside `proof_data`. Every ring member must exist
-  and be mature. **DECIDED: 16, fixed** (Monero's current size, and every transaction looks alike).
+- **P1 (the stand-in)**: a **ring** per input, in the prunable part (6.2): exactly `RING_SIZE = 16` distinct
+  **global output indexes** in ascending order (the serialization only bounds a ring to `MAX_RING = 16` and
+  requires one ring per input; the validator requires exactly 16, distinct and ascending), plus a **CLSAG**
+  signature inside `proof_data`. Every ring member must exist and be mature. **DECIDED: 16, fixed** (Monero's
+  current size, and every transaction looks alike).
 - **P2 (FCMP++, when a stable and audited implementation exists)**: the membership variant becomes a
   reference to a curve-tree root (a block height) plus a proof. **The output format above does not change**:
   the leaf for an output is `(Ko, its key-image generator, Ca)`, all derivable from the fields it already has.
@@ -207,9 +214,9 @@ spending it twice is detected.
 ### 6.4 Identity, replay and malleability [issue 1]
 
 - **The transaction id** is `SHA-256( "tenero tx v2" ‖ serialized prefix ‖ prunable_hash )`, where
-  `prunable_hash = SHA-256( "tenero tx prunable v2" ‖ serialized prunable part )` (the `u32` length and the
-  proof bytes). So it commits to every byte, proofs included, and is **identical for the full and the pruned
-  form** of a transaction. The **coinbase id** is `SHA-256( "tenero coinbase v2" ‖
+  `prunable_hash = SHA-256( "tenero tx prunable v2" ‖ serialized prunable part )` (the rings, then the `u32`
+  proof length and the proof bytes). So it commits to every byte, rings and proofs included, and is
+  **identical for the full and the pruned form** of a transaction. The **coinbase id** is `SHA-256( "tenero coinbase v2" ‖
   serialized coinbase )`: a different tag, so bytes that happened to parse as both never share an id.
 - **What stops a payment being replayed or doubled is the key image, not the id.** A key image can appear
   once in the whole chain. Changing a signature's bytes gives a different id but the same key image, so the
@@ -339,7 +346,7 @@ Vectors for the parts that need no cryptography are produced by a small standard
 
 | file | what it pins down |
 |---|---|
-| `v2_serialization.json` | the primitive encodings; 17 valid objects with their exact bytes (an output, an input, a transaction at its limits, a coinbase, a header, a block, and the **pruned** forms of a transaction and a block); 25 invalid encodings covering all four failure kinds (short read, trailing bytes, a count out of range, a length over its maximum), including counts of `2^32 - 1` that must be refused without allocating |
+| `v2_serialization.json` | the primitive encodings; 18 valid objects with their exact bytes (an output, an input, transactions at their limits and with empty rings, a coinbase, a header, a block, and the **pruned** forms of a transaction and a block); 30 invalid encodings covering all four failure kinds (short read, trailing bytes, a count out of range, a length over its maximum), including counts of `2^32 - 1` that must be refused without allocating, and a wrong number of rings |
 | `v2_ids.json` | the header hash, the proof-of-work seed, the block id (matmul and SHA-256 test chain), transaction ids (with the prunable hash, and the **same id from the pruned form**), coinbase ids, and domain separation |
 | `v2_fees.json` | the dynamic minimum fee (76 cases, including three that overflow a `u64` and must be refused) and the oversize penalty in the 8-decimal units |
 | `v2_emission.json` | the emission in the 8-decimal units: the default schedule up to 2^40, and a small schedule that trims its final reward |
@@ -452,7 +459,7 @@ Separate tables, so the prunable one can be emptied without touching the others:
 | `coinbase` | height -> coinbase bytes |
 | `block_txs` | height -> the transaction ids in order |
 | `tx_prefix` | transaction id -> prefix bytes, `prunable_hash`, height and position |
-| `tx_prunable` | transaction id -> proof bytes: **the deletable table**, with a `pruned_below` height in `meta` |
+| `tx_prunable` | transaction id -> the prunable part (the rings and the proof bytes): **the deletable table**, with a `pruned_below` height in `meta` |
 | `outputs` | global index -> one-time address, commitment, height, kind (coinbase or not) |
 | `key_images` | key image -> height (the spent set) |
 | `meta` | chain id, tip, cumulative work, `pruned_below`, the assume-valid checkpoint |
@@ -463,55 +470,67 @@ change). It is tested against an in-memory model through a random history of app
 through pruned blocks) and prunings, and every stored block's Merkle root is recomputed from the pruned data.
 
 **Measured** (`crates/tenero-store/tests/store.rs`, the compaction test; `redb` 4.3.0 on Windows; 150 blocks of
-40 transactions, fields of the real sizes, **random stand-in proofs of 1,900 bytes**, not real ones):
+40 transactions, fields of the real sizes with 16-member rings in the prunable part, and **random stand-in
+proofs of 1,900 bytes**, not real ones; a transaction is 356 bytes of prefix and 2,172 bytes of prunable data):
 
 | | file size |
 |---|---|
 | as written, one commit per block | 33.7 MB |
-| the same, compacted (the honest baseline: about 4.1 kB per transaction) | 24.7 MB |
-| the proofs alone | 11.3 MB (46% of the compacted file) |
-| after pruning, **before** compaction | **49.4 MB** (it grew) |
-| after pruning **and** compaction | **8.1 MB, 33% of the compacted full chain** (about 1.35 kB per transaction) |
+| the same, compacted (the honest baseline: about 5.2 kB per transaction) | 30.9 MB |
+| the prunable parts alone (rings and proofs) | 12.9 MB (42% of the compacted file) |
+| after pruning, **before** compaction | **61.8 MB** (it doubled) |
+| after pruning **and** compaction | **6.2 MB, 20% of the compacted full chain** (about 1.04 kB per transaction) |
+
+The same measurement with the rings still in the prefix (the layout before this change) left **8.1 MB**, so
+moving the rings into the prunable part made a pruned chain **23% smaller**, as predicted (about a fifth).
 
 What this shows:
 
-- **Pruning plus compaction leaves about a third of the file**, which matches the estimate of 14.4.
+- **Pruning plus compaction leaves a fifth of the file** here. The pruned node's cost per transaction is about
+  1 kB: the prefix (about 400 bytes with its row overhead), the outputs and the key images.
 - **Pruning alone does not shrink the file**, and one big prune transaction roughly **doubled** it, because a
   copy-on-write database needs room for the pages it is replacing. So pruning is done in bounded steps
   (`prune_below_in_steps`) followed by `compact`, and a node needs spare disk while it does so.
-- **On disk a transaction costs about 4.1 kB, not the 2.5 kB of its raw bytes** (about 1.65 times): the output
-  and key-image tables repeat some of what the transaction row holds, and the B-trees have overhead. At the
-  worst-case 31 million transactions a year that is **about 127 GB a year for an archive node and about 42 GB
-  for a pruned one**, higher than the raw arithmetic of 14.4 (79 and 27 GB). These extrapolate a small
-  measurement with fake proofs, so they are indications, not measurements.
+- **On disk an archive transaction costs about 5.2 kB, twice the 2.5 kB of its raw bytes.** Some of that is the
+  output and key-image tables repeating fields, and the B-trees' overhead; **a large part is page packing**:
+  redb keeps rows in 4 KiB pages, and once the prunable row grew to 2.2 kB (with the rings in it) two of them no
+  longer fit in one page, so each takes a page and wastes about 1.9 kB. The archive file grew by 25% (24.7 to
+  30.9 MB) when its raw bytes grew by 6%. It depends on how rows happen to pack, and real proofs will land
+  somewhere else. **A pruned node is unaffected** (the wasted pages are the ones pruning frees).
+- **Extrapolated to the worst-case 31 million transactions a year** (a small test with fake proofs, so an
+  indication, not a measurement): **about 160 GB a year for an archive node and about 32 GB for a pruned
+  one**, against raw-byte estimates of 79 and 19 GB (14.4).
+- **A design consequence, not yet acted on:** the prunable data is large, written once, never modified and
+  deleted in whole ranges of blocks. A B-tree in a copy-on-write database is the wrong home for it: it
+  causes the page waste above, the temporary doubling and the need to compact. **Flat segment files**, one per
+  range of blocks, with an offset kept in the database, would make pruning "delete a file": no doubling, no
+  compaction and no packing waste, and a node's disk use would follow the raw bytes. `redb` would keep the
+  index and the state. This is the recommended next storage decision.
 
 ### 14.4 How big, roughly (my arithmetic, **not measured**; M6 measures)
 
-For a typical 2-input, 2-output transaction: a prefix of about 620 bytes (two inputs of 164 bytes with their
-rings, two outputs of 123, the fee, a little `extra`) and a prunable part of about 1.9 kB (two CLSAG
-signatures, two pseudo-output commitments and one aggregated range proof, from the published sizes of those
-schemes). That is about 2.5 kB a transaction, **about three quarters of it prunable**. At the worst case
-(every block full to the 150 kB floor, all such transactions, about 31 million a year):
+For a typical 2-input, 2-output transaction: a prefix of **356 bytes** (two 32-byte key images, two outputs of
+123, the fee, a little `extra`) and a prunable part of about **2.2 kB** (two rings of 16, and about 1.9 kB of two
+CLSAG signatures, two pseudo-output commitments and one aggregated range proof, from the published sizes of
+those schemes). That is about 2.55 kB a transaction, **about 86% of it prunable**. At the worst case (every
+block full to the 150 kB floor, all such transactions, about 31 million a year), in raw bytes:
 
 | | per year, worst case |
 |---|---|
 | everything (archive) | about 79 GB |
-| prefixes only | about 19 GB |
+| prefixes only | about 11 GB |
 | state (outputs and key images, about 230 bytes a transaction) | about 7 GB |
 | headers (146 bytes a block) | about 77 MB |
 | the last 5,500 blocks in full | about 0.8 GB |
 
-So a pruned node (prefixes, state, the recent blocks and the headers: about 27 GB) is about **a third** the
+So a pruned node (prefixes, state, the recent blocks and the headers: about 19 GB) is about **a quarter** the
 size of an archive node, and a snapshot node (state, recent blocks and headers: about 8 GB) about **a tenth**.
 A young chain will be nowhere near the worst case; these are ceilings, and the ratios rest on my size
-estimates above.
+estimates above. (On disk the numbers are higher: see the measurements in 14.3.)
 
-**A cheap saving to decide before launch (not done): move the ring indexes into the prunable part.** Each input
-carries 16 ring indexes of 8 bytes (128 bytes, so about 256 bytes of a 620-byte prefix). Nothing needs them
-after the transaction has been verified, and the id would still cover them through the prunable hash. Moving
-them takes the prefix from about 620 to about 364 bytes, which is **about a fifth off a pruned node's size**
-(roughly 34 GB instead of 42 GB a year at the worst case, by the same rough scaling). It changes the
-serialization and its vectors, which is free now and expensive after launch.
+**Moving the ring indexes out of the prefix was done** (6.2): each input had carried 16 ring indexes of 8 bytes,
+about 256 of a 620-byte prefix, which nothing needs after verification. The measured effect on a pruned
+chain was 23% smaller (14.3).
 
 ### 14.5 What this does not solve
 

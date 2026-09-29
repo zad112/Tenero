@@ -2,8 +2,8 @@
 
 use crate::error::Result;
 use tenero_core::v2::{
-    BlockHeader, Coinbase, DecodeError, EncodeError, PrunedBlock, PrunedTransaction, Reader,
-    Transaction, Wire, Writer,
+    BlockHeader, Coinbase, DecodeError, EncodeError, Prunable, PrunedBlock, PrunedTransaction,
+    Reader, Transaction, Wire, Writer,
 };
 
 /// What is kept about a block besides its transactions: 226 bytes.
@@ -109,11 +109,24 @@ impl Wire for TxRow {
     }
 }
 
-/// A transaction as stored: always the pruned form, and the proofs while they have not been pruned.
+/// A transaction as stored: always the pruned form (prefix and prunable hash), and the prunable part
+/// (the rings and the proofs) while it has not been pruned.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredTx {
     pub tx: PrunedTransaction,
-    pub proof_data: Option<Vec<u8>>,
+    pub prunable: Option<Prunable>,
+}
+
+impl StoredTx {
+    /// Decodes a stored prunable part, which needs the number of inputs of the transaction's prefix.
+    pub(crate) fn with_prunable_bytes(
+        tx: PrunedTransaction,
+        bytes: Option<Vec<u8>>,
+    ) -> Result<StoredTx> {
+        let n = tx.prefix.inputs.len();
+        let prunable = bytes.map(|b| Prunable::from_bytes(&b, n)).transpose()?;
+        Ok(StoredTx { tx, prunable })
+    }
 }
 
 /// A block as stored.
@@ -125,13 +138,13 @@ pub struct StoredBlock {
 }
 
 impl StoredBlock {
-    /// The full block, if every transaction still has its proofs.
+    /// The full block, if every transaction still has its rings and proofs.
     pub fn into_full(self) -> Option<tenero_core::v2::Block> {
         let mut txs = Vec::with_capacity(self.transactions.len());
         for t in self.transactions {
             txs.push(Transaction {
                 prefix: t.tx.prefix,
-                proof_data: t.proof_data?,
+                prunable: t.prunable?,
             });
         }
         Some(tenero_core::v2::Block {
@@ -150,9 +163,9 @@ impl StoredBlock {
         }
     }
 
-    /// Whether any transaction has lost its proofs.
+    /// Whether any transaction has lost its rings and proofs.
     pub fn is_pruned(&self) -> bool {
-        self.transactions.iter().any(|t| t.proof_data.is_none())
+        self.transactions.iter().any(|t| t.prunable.is_none())
     }
 }
 
@@ -169,7 +182,8 @@ pub struct AppendInfo {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PruneStats {
     pub transactions_pruned: u64,
-    pub proof_bytes_freed: u64,
+    /// Bytes of prunable parts deleted (the rings and the proofs), not counting database overhead.
+    pub prunable_bytes_freed: u64,
     pub pruned_below: u64,
 }
 

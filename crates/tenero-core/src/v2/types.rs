@@ -55,27 +55,22 @@ impl Wire for Output {
     }
 }
 
-/// A spend: its key image and, for the ring stand-in (P1), the ring of global output indexes.
+/// A spend, as the prefix records it: only its key image (the spend-once tag). The ring it was signed
+/// against is in the prunable part, because nothing needs it once the transaction has been verified.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Input {
     pub key_image: [u8; 32],
-    pub ring: Vec<u64>,
 }
 
 impl Wire for Input {
     fn write(&self, w: &mut Writer) -> Result<(), EncodeError> {
         w.raw(&self.key_image);
-        w.count(self.ring.len(), 0, MAX_RING)?;
-        for index in &self.ring {
-            w.u64(*index);
-        }
         Ok(())
     }
 
     fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Input {
             key_image: r.array()?,
-            ring: r.list(0, MAX_RING, |r| r.u64())?,
         })
     }
 }
@@ -119,29 +114,79 @@ impl Wire for TxPrefix {
     }
 }
 
-/// A full transaction: the prefix and the proofs.
+/// What is needed only to VERIFY a transaction, once: the ring of each input and the proofs. It is the
+/// bulk of a transaction's bytes and the part a pruned node throws away.
+///
+/// Its wire form depends on the prefix (there is exactly one ring per input), so it is read with
+/// [`Prunable::read`], given the number of inputs, not through `Wire`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Prunable {
+    /// One ring per input, in the order of the inputs: global output indexes (`MAX_RING` at most each).
+    pub rings: Vec<Vec<u64>>,
+    /// The range proof, the pseudo-output commitments and the membership proofs.
+    pub proof_data: Vec<u8>,
+}
+
+impl Prunable {
+    /// Writes the rings then the proof bytes. `n_inputs` is the prefix's input count: a different
+    /// number of rings can never be read back, so it is refused here too.
+    pub fn write(&self, w: &mut Writer, n_inputs: usize) -> Result<(), EncodeError> {
+        // exactly one ring per input (the count is checked against `n_inputs` on both sides)
+        w.count(self.rings.len(), n_inputs, n_inputs)?;
+        for ring in &self.rings {
+            w.count(ring.len(), 0, MAX_RING)?;
+            for index in ring {
+                w.u64(*index);
+            }
+        }
+        w.var(&self.proof_data, MAX_PROOF)
+    }
+
+    /// Reads exactly one ring per input, then the proof bytes.
+    pub fn read(r: &mut Reader<'_>, n_inputs: usize) -> Result<Prunable, DecodeError> {
+        let rings = r.list(n_inputs, n_inputs, |r| r.list(0, MAX_RING, |r| r.u64()))?;
+        Ok(Prunable {
+            rings,
+            proof_data: r.var(MAX_PROOF)?,
+        })
+    }
+
+    /// The bytes the `prunable_hash` covers and a store keeps.
+    pub fn to_bytes(&self, n_inputs: usize) -> Result<Vec<u8>, EncodeError> {
+        let mut w = Writer::new();
+        self.write(&mut w, n_inputs)?;
+        Ok(w.into_bytes())
+    }
+
+    pub fn from_bytes(data: &[u8], n_inputs: usize) -> Result<Prunable, DecodeError> {
+        let mut r = Reader::new(data);
+        let p = Prunable::read(&mut r, n_inputs)?;
+        r.finish()?;
+        Ok(p)
+    }
+}
+
+/// A full transaction: the prefix and the prunable part.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Transaction {
     pub prefix: TxPrefix,
-    /// The range proof, the pseudo-output commitments and the membership proofs (the prunable part).
-    pub proof_data: Vec<u8>,
+    pub prunable: Prunable,
 }
 
 impl Wire for Transaction {
     fn write(&self, w: &mut Writer) -> Result<(), EncodeError> {
         self.prefix.write(w)?;
-        w.var(&self.proof_data, MAX_PROOF)
+        self.prunable.write(w, self.prefix.inputs.len())
     }
 
     fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
-        Ok(Transaction {
-            prefix: TxPrefix::read(r)?,
-            proof_data: r.var(MAX_PROOF)?,
-        })
+        let prefix = TxPrefix::read(r)?;
+        let prunable = Prunable::read(r, prefix.inputs.len())?;
+        Ok(Transaction { prefix, prunable })
     }
 }
 
-/// A transaction whose proofs have been discarded: the prefix and the 32-byte hash of the proofs.
+/// A transaction whose rings and proofs have been discarded: the prefix and the 32-byte hash of them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrunedTransaction {
     pub prefix: TxPrefix,
