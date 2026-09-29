@@ -2,4 +2,6 @@
 //!
 //! Every rule here must reproduce `tests/vectors/` exactly (see `docs/CONSENSUS.md`).
 
+pub mod chacha20;
+pub mod hash;
 pub mod vectors;
