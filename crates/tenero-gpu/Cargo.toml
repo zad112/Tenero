@@ -1,0 +1,22 @@
+[package]
+name = "tenero-gpu"
+description = "Tenero GPU miner (CUDA), experimental. The only crate that may use unsafe."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tenero-core = { path = "../tenero-core" }
+cudarc = { version = "0.19", default-features = false, features = ["std", "driver", "nvrtc", "cublaslt", "dynamic-loading", "cuda-13040"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+# Unlike the rest of the workspace, unsafe is allowed here (FFI and kernel launches). It is denied
+# by default so that every use has to say why: put `#[allow(unsafe_code)]` with a SAFETY comment.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

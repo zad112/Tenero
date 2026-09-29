@@ -67,6 +67,12 @@ Decisions marked **DECIDE** are open. Each has a recommendation, which is only a
   `units`, `emission`, `difficulty` and `fees_and_size` pass.
 - **M4. The GPU miner without Python.** Reuse the CUDA kernels. *Done when* its self-test matches the CPU
   reference and the owner measures at least the current baseline (about 22,000 attempts/s).
+  *Status (2026-09-29): the engine is done, the miner is not.* `crates/tenero-gpu` runs the same three
+  kernels (NVRTC) and the cuBLASLt int8 matmul, passes 11 GPU tests including all the golden vectors, and
+  measures about 30,000 to 35,000 attempts/s (`docs/BENCHMARKS.md`; the 22,000 baseline is an earlier Python
+  measurement, not a same-day one). Not done: a miner program (it needs the chain, so M6 and M8), epoch
+  switching and prefetching the next dataset, overlapping the CPU work with the GPU, more than one GPU.
+  The CUDA source is a byte-identical copy checked by `tests/test_kernel_source_copy.py`.
 - **M5. The new data model, on paper first.** The output model, the canonical serialization, a fixed genesis
   and chain id. Write `CONSENSUS.md` v2 and its vectors before writing the validator.
 - **M6. Chain state and validation** in the new model, storage, fork choice, reorganisations.

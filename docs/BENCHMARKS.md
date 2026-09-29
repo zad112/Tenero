@@ -20,6 +20,36 @@ is one data point (KNOWN_ISSUES 13). Rerun it before relying on any figure.
 | cheap precheck (no dataset) | 0.2 us | not measured |
 | attempts/s, 6 threads | 31.7 | 164 |
 
+## GPU (the Rust engine, `crates/tenero-gpu`)
+
+**Measured** with `cargo run --release -p tenero-gpu --example bench` on the same machine (RTX 5070 Ti,
+compute capability 12.0, driver 617.14, CUDA toolkit 13.4), 2026-09-29. The engine is the first working
+version and is **untuned**: one CUDA stream, one cuBLASLt call per attempt, the CPU hashing between batches
+without overlapping the GPU. The search used a target that is never met, so every batch is fully computed.
+
+| batch of attempts | attempts/s | ms per batch |
+|---|---|---|
+| 8 | 30,315 | 0.26 |
+| 16 | 32,508 | 0.49 |
+| 32 | 33,316 | 0.96 |
+| 64 | 34,130 | 1.88 |
+| 128 | 34,890 | 3.67 |
+| 256 | 35,247 | 7.26 |
+
+The whole 4 GiB dataset builds on the GPU in **0.116 s** (measured; the README's earlier figure is about
+0.10 s). All 256 slices match `matmulhash_full.json`.
+
+- **The Python miner's documented figure is about 22,000 attempts/s.** That was measured earlier, and the
+  Python GPU path cannot run here now (no torch or CuPy in the venv), so this is **not** a same-day,
+  same-setup comparison. The Rust engine is about 1.4 to 1.6 times that documented number.
+- **It is close to memory bound.** Each attempt reads one 16 MiB slice, so 35,000 attempts/s is about
+  590 GB/s of slice reads. Compare it with the card's spec-sheet bandwidth (about 900 GB/s, from the
+  manufacturer, not measured here) before hoping for a big further gain: the remaining headroom is probably
+  tens of percent, from overlapping the CPU work and the copies with the GPU.
+- The correctness of every one of these runs is not assumed: the same engine passes 11 GPU tests (see
+  `crates/tenero-gpu/tests/gpu_selftest.rs`), including the golden vectors and 256-attempt batches compared
+  with the CPU one by one.
+
 ## What this says
 
 - **The matmul is 99% of an attempt.** Everything else (the ChaCha keystream, the fold, SHA-256) is about
