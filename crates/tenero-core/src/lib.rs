@@ -10,4 +10,5 @@ pub mod hash;
 pub mod matmulhash;
 pub mod u256;
 pub mod units;
+pub mod v2;
 pub mod vectors;
