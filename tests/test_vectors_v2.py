@@ -110,6 +110,68 @@ def test_the_merkle_root_has_no_duplicate_leaf_or_leaf_node_confusion():
     assert p["node_is_not_a_leaf"]["root_of_a_b"] != p["node_is_not_a_leaf"]["root_of_one_leaf_holding_node_a_b"]
 
 
+def test_a_pruned_transaction_has_the_same_id_as_the_full_one():
+    for c in load("v2_ids")["transactions"]:
+        full = bytes.fromhex(c["bytes"])
+        prefix = bytes.fromhex(c["prefix_bytes"])
+        pruned = bytes.fromhex(c["pruned_bytes"])
+        assert full.startswith(prefix)                         # the prefix is the front of the full form
+        assert pruned == prefix + bytes.fromhex(c["prunable_hash"])
+        proofs = full[len(prefix) + 4:]
+        # pruned = prefix + 32, full = prefix + 4 + proofs: pruning saves bytes once proofs exceed 28 bytes
+        # (an empty proof, as in one sample, makes the pruned form 28 bytes LARGER: that is fine and expected)
+        assert len(pruned) - len(full) == 28 - len(proofs)
+        assert c["id"] == c["pruned_id"]
+        # from scratch: id = SHA-256(tag, prefix, SHA-256(tag, u32 length, proofs))
+        assert struct.unpack("<I", full[len(prefix):len(prefix) + 4])[0] == len(proofs)
+        inner = hashlib.sha256(b"tenero tx prunable v2" + struct.pack("<I", len(proofs)) + proofs).digest()
+        assert inner.hex() == c["prunable_hash"]
+        assert hashlib.sha256(b"tenero tx v2" + prefix + inner).hexdigest() == c["id"]
+
+
+def test_the_id_changes_with_any_proof_byte_and_any_prefix_byte():
+    t = v2.sample_tx("flip")
+    base = v2.tx_id(t)
+    proof = bytearray(bytes.fromhex(t["proof_data"]))
+    proof[len(proof) // 2] ^= 1
+    assert v2.tx_id({**t, "proof_data": bytes(proof).hex()}) != base
+    assert v2.tx_id({**t, "fee": t["fee"] + 1}) != base
+    assert v2.tx_id({**t, "extra": "00" + t["extra"][2:]}) != base
+
+
+def test_the_dynamic_minimum_fee_is_the_documented_formula():
+    v = load("v2_fees")
+    assert v["constants"]["FEE_REFERENCE_WEIGHT"] == 3000
+    for c in v["dynamic_min_fee"]:
+        exact = (c["base_reward"] * 3000 * c["size"] + c["median"] ** 2 - 1) // c["median"] ** 2   # ceil, by hand
+        exact = max(1, exact)
+        assert c["fee"] == (exact if exact < 2 ** 64 else None), c
+    # the headline numbers used in the design document
+    got = {(c["base_reward"], c["median"], c["size"]): c["fee"] for c in v["dynamic_min_fee"]}
+    assert got[(2_000_000_000, 300_000, 2500)] == 166_667
+    assert got[(2_000_000_000, 300_000, 300_000)] == 20_000_000
+
+
+def test_the_v2_emission_is_the_v1_schedule_scaled_by_ten_thousand():
+    v2s = load("v2_emission")["sets"]["default_8_decimals"]
+    v1s = load("emission")["sets"]["default"]
+    assert v2s["main_emission_end_from_1"] == v1s["main_emission_end_from_1"]
+    assert v2s["params"]["max_supply"] == v1s["params"]["max_supply"] * 10 ** 4
+    by_height = {r["height"]: r for r in v1s["rows"]}
+    checked = 0
+    for r in v2s["rows"]:
+        old = by_height.get(r["height"])
+        if old is None:
+            continue
+        checked += 1
+        for key in ("scheduled", "issued_before", "main_reward", "reward"):
+            assert r[key] == old[key] * 10 ** 4, (r["height"], key)
+        assert r["in_tail"] == old["in_tail"]
+    assert checked >= 8                      # they share enough heights for this to mean something
+    assert v2s["params"]["max_supply"] < 2 ** 64 // 9000                 # room to spare in a u64
+    assert 20_000_000 * 10 ** 12 > 2 ** 64                             # why 12 decimals were not chosen
+
+
 def test_genesis_and_the_chain_id():
     cases = load("v2_genesis")["cases"]
     assert cases[0]["label"] == v2.NETWORK_LABEL

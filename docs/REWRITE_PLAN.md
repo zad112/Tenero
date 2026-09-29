@@ -17,6 +17,13 @@ Decisions marked **DECIDE** are open. Each has a recommendation, which is only a
 
 ## Decisions to make first
 
+**Outcome (2026-09-29), details in `CONSENSUS_V2.md` section 13:** 1 Rust only. 2 the cryptography comes from
+the audited Rust crates (`curve25519-dalek`, and the `monero-oxide` CLSAG and Bulletproofs+ crates once their
+audit report is read and a version pinned), not from Monero's C++. 3 CLSAG rings as a stand-in behind an
+FCMP++-ready output format. 4 one canonical fixed-width little-endian serialization, with vectors. 5 Carrot.
+6 8 decimals. 7 `redb`, laid out for pruning. 8 Cargo and MSVC (no CMake). New requirement, decision 11: the
+chain must be able to run pruned (`CONSENSUS_V2.md` section 14). The original options follow as the record.
+
 1. **Language split. DECIDED (2026-09-29): Rust only, option (b).** The owner does not need C++. The
    CUDA kernels stay C++ (they are CUDA source), built with nvcc; everything else is Rust. CMake and Ninja
    are not needed for the Rust parts. The reasoning below is kept as the record of the options. The FCMP++ cryptography is written in Rust, and Monero itself is a C++ core
@@ -50,6 +57,10 @@ Decisions marked **DECIDE** are open. Each has a recommendation, which is only a
 9. **What happens to the Python. Recommendation:** keep it as the executable reference, the vector
    generator and the tooling, but do not ship it. Retire a Python module only when the native code passes
    its vectors, and say so in the commit.
+11. **Pruning. DECIDED as a requirement.** A node can run with most of the history discarded, and a new node
+    need not download all of it: the transaction prefix/prunable split, the id over a hash of the prunable
+    part, pruned wire forms, deterministic output indexes, and a table layout whose proof table can be
+    emptied. See `CONSENSUS_V2.md` section 14 for the layers, the trade-offs and the (unmeasured) sizes.
 10. **Networking. DECIDE later.** A peer-to-peer protocol, Dandelion++ for transaction propagation, Tor or
     I2P support, and the **cumulative-work fork rule** (the chain with the largest sum of `2^256 // target`).
 
@@ -75,6 +86,11 @@ Decisions marked **DECIDE** are open. Each has a recommendation, which is only a
   The CUDA source is a byte-identical copy checked by `tests/test_kernel_source_copy.py`.
 - **M5. The new data model, on paper first.** The output model, the canonical serialization, a fixed genesis
   and chain id. Write `CONSENSUS.md` v2 and its vectors before writing the validator.
+  *Status (2026-09-29): done as `docs/CONSENSUS_V2.md`, a draft, with six vector files
+  (`v2_serialization`, `v2_ids`, `v2_merkle`, `v2_genesis`, `v2_fees`, `v2_emission`) made by
+  `tools/make_vectors_v2.py`. The dynamic minimum fee and the version 2 emission are already implemented in
+  Rust and pass their vectors. Not vectorised, because it needs the upstream libraries: everything
+  cryptographic (Carrot, CLSAG, Bulletproofs+).*
 - **M6. Chain state and validation** in the new model, storage, fork choice, reorganisations.
 - **M7. Privacy in stages.** (P1) one-time addresses, Pedersen commitments, range proofs, key images, and the
   stand-in membership proof; (P2) FCMP++ when a stable, audited implementation exists; (P3) subaddresses,

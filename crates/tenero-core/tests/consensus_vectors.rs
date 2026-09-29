@@ -84,7 +84,22 @@ fn units_reject_malformed_text() {
 
 #[test]
 fn emission_schedules() {
-    let v = load("emission").unwrap();
+    check_emission_sets("emission");
+}
+
+/// The same rules in the version 2 units (8 decimals): amounts up to 2 * 10^15, past the cap, and at
+/// height 2^40. A wrong constant or an overflow in the scaling shows here.
+#[test]
+fn emission_schedules_in_the_version_2_units() {
+    check_emission_sets("v2_emission");
+    let v = load("v2_emission").unwrap();
+    let set = &v["sets"]["default_8_decimals"];
+    assert_eq!(u(&set["params"]["max_supply"]), 2_000_000_000_000_000);
+    assert_eq!(u(&set["params"]["initial_reward"]), 20 * 100_000_000);
+}
+
+fn check_emission_sets(file: &str) {
+    let v = load(file).unwrap();
     for (name, set) in v["sets"].as_object().unwrap() {
         let p = &set["params"];
         let e = Emission {
@@ -294,6 +309,82 @@ fn median_time_window() {
 }
 
 // ------------------------------------------------------------------ fees_and_size.json
+
+// ------------------------------------------------------------------ v2_fees.json
+
+#[test]
+fn the_dynamic_minimum_fee() {
+    let v = load("v2_fees").unwrap();
+    let c = &v["constants"];
+    assert_eq!(u(&c["FEE_REFERENCE_WEIGHT"]), fees::FEE_REFERENCE_WEIGHT);
+    assert_eq!(u(&c["MIN_BLOCK_MEDIAN"]), fees::MIN_BLOCK_MEDIAN);
+    let cases = v["dynamic_min_fee"].as_array().unwrap();
+    assert!(cases.len() > 70);
+    let mut nulls = 0;
+    for c in cases {
+        let (size, base, median) = (u(&c["size"]), u(&c["base_reward"]), u(&c["median"]));
+        let got = fees::dynamic_min_fee(size, base, median);
+        match c["fee"].as_u64() {
+            Some(fee) => assert_eq!(got, Ok(fee), "size {size} reward {base} median {median}"),
+            None => {
+                nulls += 1;
+                assert!(c["fee"].is_null());
+                assert!(
+                    got.is_err(),
+                    "size {size} reward {base} median {median} does not fit"
+                );
+            }
+        }
+    }
+    assert_eq!(nulls, 3);
+}
+
+#[test]
+fn the_dynamic_fee_at_the_real_numbers() {
+    // a 2,500-byte transaction, the 20-coin reward, the 300 kB median: 0.00166667 coins
+    assert_eq!(
+        fees::dynamic_min_fee(2_500, 2_000_000_000, 300_000),
+        Ok(166_667)
+    );
+    // a block filled to the median pays at least reward * 3000 / median = 1% of a 20-coin reward
+    assert_eq!(
+        fees::dynamic_min_fee(300_000, 2_000_000_000, 300_000),
+        Ok(20_000_000)
+    );
+    // the fee is never zero, and a zero median is an error, not a division by zero
+    assert_eq!(fees::dynamic_min_fee(0, 1, 300_000), Ok(1));
+    assert!(fees::dynamic_min_fee(1, 1, 0).is_err());
+}
+
+#[test]
+fn the_dynamic_fee_moves_the_way_it_should() {
+    let f = |size, reward, median| fees::dynamic_min_fee(size, reward, median).unwrap();
+    // bigger transaction, more fee; bigger reward, more fee; bigger median (busier chain), less fee
+    assert!(f(5_000, 2_000_000_000, 300_000) >= f(2_500, 2_000_000_000, 300_000));
+    assert!(f(2_500, 2_000_000_000, 300_000) > f(2_500, 50_000_000, 300_000));
+    assert!(f(2_500, 2_000_000_000, 300_000) > f(2_500, 2_000_000_000, 600_000));
+    // doubling the median divides the fee by four (median squared), up to the rounding up
+    let (a, b) = (
+        f(1_000_000, 2_000_000_000, 300_000),
+        f(1_000_000, 2_000_000_000, 600_000),
+    );
+    assert!(a.div_ceil(4) == b || a / 4 == b);
+}
+
+#[test]
+fn the_oversize_penalty_in_the_version_2_units() {
+    let v = load("v2_fees").unwrap();
+    let cases = v["penalty"].as_array().unwrap();
+    assert!(cases.len() >= 20);
+    for c in cases {
+        let (base, size, median) = (u(&c["base"]), u(&c["size"]), u(&c["median"]));
+        assert_eq!(
+            fees::penalty(base, size, median),
+            Ok(u(&c["penalty"])),
+            "base {base} size {size} median {median}"
+        );
+    }
+}
 
 #[test]
 fn fee_constants_match_the_vector() {

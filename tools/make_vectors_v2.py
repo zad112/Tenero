@@ -1,9 +1,11 @@
 """The reference for the version 2 DATA MODEL (docs/CONSENSUS_V2.md) and its golden vectors.
 
-This covers only what needs no cryptography: the canonical binary serialization, the block header and
-its hashes, the block id inputs, transaction ids, the Merkle root, and the genesis block and chain id.
-It uses nothing but the standard library, so it is an independent implementation the Rust code of
-milestone M6 can be checked against.
+This covers only what needs no cryptography: the canonical binary serialization (including the
+pruned forms), the block header and its hashes, the block id inputs, transaction ids, the Merkle root,
+the genesis block and chain id, the dynamic minimum fee and the emission in the version 2 units.
+It uses only the standard library, except that the emission vectors are computed with the version 1
+reference (`tenero.chain`), whose arithmetic is unit-agnostic and is what the Rust code already matches.
+It is an independent implementation the Rust code of milestone M6 can be checked against.
 
 It does NOT cover Carrot, CLSAG, Bulletproofs+ or FCMP++: for those we import the upstream projects' own
 test vectors when their code is added (a vector made by our own reference would only prove we agree
@@ -25,9 +27,9 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VECTOR_DIR = os.path.join(ROOT, "tests", "vectors")
 SCHEMA = 1
-FILES = ("v2_serialization", "v2_ids", "v2_merkle", "v2_genesis")
+FILES = ("v2_serialization", "v2_ids", "v2_merkle", "v2_genesis", "v2_fees", "v2_emission")
 
-# ---------------------------------------------------------------- consensus limits (PROPOSED)
+# ---------------------------------------------------------------- consensus limits (PROVISIONAL)
 MAX_INPUTS, MIN_INPUTS = 32, 1
 MAX_OUTPUTS, MIN_OUTPUTS = 16, 2
 MAX_COINBASE_OUTPUTS, MIN_COINBASE_OUTPUTS = 16, 1
@@ -42,11 +44,20 @@ LIMITS = {"MAX_INPUTS": MAX_INPUTS, "MIN_INPUTS": MIN_INPUTS, "MAX_OUTPUTS": MAX
 
 HEADER_TAG = b"tenero block header v2"
 TX_TAG = b"tenero tx v2"
+PRUNABLE_TAG = b"tenero tx prunable v2"
 COINBASE_TAG = b"tenero coinbase v2"
 GENESIS_TAG = b"tenero genesis"
 GENESIS_ID_TAG = b"tenero genesis id v2"
 NETWORK_LABEL = "tenero experimental network 1"
 VERSION = 2
+
+# Units: 8 decimals, so 1 coin = 10**8 units and the 20,000,000-coin cap is 2 * 10**15 units.
+DECIMALS = 8
+UNIT = 10 ** DECIMALS
+# The dynamic minimum fee (section 8): fee >= ceil(base_reward * FEE_REFERENCE_WEIGHT * size / median^2).
+FEE_REFERENCE_WEIGHT = 3000
+MIN_BLOCK_MEDIAN = 300_000
+U64_MAX = 2 ** 64 - 1
 
 
 class DecodeError(Exception):
@@ -163,18 +174,58 @@ def dec_input(r):
     return {"key_image": key_image, "ring": [r.u64() for _ in range(n)]}
 
 
-def enc_tx(t):
+# A transaction is a PREFIX (everything a node needs after it has been verified: the key images, the
+# outputs, the fee) followed by the PRUNABLE part (the proofs, needed only to verify it once). The id
+# commits to the prefix and to a hash of the prunable part, so a node that has discarded the proofs can
+# still recompute every transaction id and every Merkle root (docs/CONSENSUS_V2.md section 14).
+
+def enc_tx_prefix(t):
     return (w_u16(t["version"]) + w_list(t["inputs"], enc_input) + w_list(t["outputs"], enc_output)
-            + w_u64(t["fee"]) + w_var(t["extra"]) + w_var(t["proof_data"]))
+            + w_u64(t["fee"]) + w_var(t["extra"]))
 
 
-def dec_tx(r):
+def dec_tx_prefix(r):
     version = r.u16()
     inputs = [dec_input(r) for _ in range(r.count(MIN_INPUTS, MAX_INPUTS))]
     outputs = [dec_output(r) for _ in range(r.count(MIN_OUTPUTS, MAX_OUTPUTS))]
     fee = r.u64()
-    return {"version": version, "inputs": inputs, "outputs": outputs, "fee": fee,
-            "extra": r.var(MAX_EXTRA), "proof_data": r.var(MAX_PROOF)}
+    return {"version": version, "inputs": inputs, "outputs": outputs, "fee": fee, "extra": r.var(MAX_EXTRA)}
+
+
+def enc_prunable(proof_hex):
+    return w_var(proof_hex)
+
+
+def enc_tx(t):
+    return enc_tx_prefix(t) + enc_prunable(t["proof_data"])
+
+
+def dec_tx(r):
+    t = dec_tx_prefix(r)
+    t["proof_data"] = r.var(MAX_PROOF)
+    return t
+
+
+def enc_pruned_tx(p):
+    """A transaction with its proofs discarded: the prefix and the 32-byte hash of the prunable part."""
+    return enc_tx_prefix(p) + w_fixed(p["prunable_hash"], 32)
+
+
+def dec_pruned_tx(r):
+    p = dec_tx_prefix(r)
+    p["prunable_hash"] = r.fixed(32)
+    return p
+
+
+def prunable_hash(proof_hex):
+    return sha256(PRUNABLE_TAG, enc_prunable(proof_hex))
+
+
+def prune(t):
+    """The pruned form of a transaction."""
+    p = {k: v for k, v in t.items() if k != "proof_data"}
+    p["prunable_hash"] = prunable_hash(t["proof_data"]).hex()
+    return p
 
 
 def enc_cb_output(o):
@@ -218,10 +269,23 @@ def dec_block(r):
     return {"header": header, "coinbase": coinbase, "transactions": txs}
 
 
+def enc_pruned_block(b):
+    return enc_header(b["header"]) + enc_coinbase(b["coinbase"]) + w_list(b["transactions"], enc_pruned_tx)
+
+
+def dec_pruned_block(r):
+    header = dec_header(r)
+    coinbase = dec_coinbase(r)
+    txs = [dec_pruned_tx(r) for _ in range(r.count(0, MAX_BLOCK_TXS))]
+    return {"header": header, "coinbase": coinbase, "transactions": txs}
+
+
 KINDS = {
     "output": (enc_output, dec_output),
     "input": (enc_input, dec_input),
     "transaction": (enc_tx, dec_tx),
+    "pruned_transaction": (enc_pruned_tx, dec_pruned_tx),
+    "pruned_block": (enc_pruned_block, dec_pruned_block),
     "coinbase_output": (enc_cb_output, dec_cb_output),
     "coinbase": (enc_coinbase, dec_coinbase),
     "header": (enc_header, dec_header),
@@ -271,7 +335,12 @@ def block_id(h, pow_kind):
 
 
 def tx_id(t):
-    return sha256(TX_TAG, enc_tx(t))
+    """Over the prefix and the HASH of the prunable part, so it is the same for the full and the pruned form."""
+    return sha256(TX_TAG, enc_tx_prefix(t), prunable_hash(t["proof_data"]))
+
+
+def pruned_tx_id(p):
+    return sha256(TX_TAG, enc_tx_prefix(p), bytes.fromhex(p["prunable_hash"]))
 
 
 def coinbase_id(c):
@@ -420,6 +489,12 @@ def serialization_vectors():
                             "a header, a coinbase and two transactions"))
     valid.append(valid_case("block", {"header": sample_header("empty"), "coinbase": sample_coinbase(8), "transactions": []},
                             "no transactions besides the coinbase"))
+    # the pruned forms: the same prefix, the proofs replaced by their 32-byte hash
+    valid.append(valid_case("pruned_transaction", prune(sample_tx("a")), "the pruned form of the first transaction"))
+    valid.append(valid_case("pruned_transaction", prune(sample_tx("c", n_in=MAX_INPUTS, n_out=MAX_OUTPUTS, proof=1000,
+                                                                  extra=MAX_EXTRA)), "the pruned form at the size limits"))
+    valid.append(valid_case("pruned_block", {"header": hdr, "coinbase": cb, "transactions": [prune(t) for t in txs]},
+                            "the pruned form of the block above"))
 
     tx = sample_tx("e")
     good = enc_tx(tx)
@@ -459,6 +534,15 @@ def serialization_vectors():
                      "count out of range", "more transactions than the block maximum"),
         invalid_case("block", enc_block({"header": sample_header("a"), "coinbase": sample_coinbase(1), "transactions": []})[:-2],
                      "short read", "a block whose transaction count is cut short"),
+        invalid_case("pruned_transaction", enc_pruned_tx(prune(tx))[:-1], "short read",
+                     "a pruned transaction one byte short"),
+        invalid_case("pruned_transaction", enc_pruned_tx(prune(tx)) + b"\x00", "trailing bytes",
+                     "a pruned transaction with a trailing byte"),
+        invalid_case("pruned_transaction", good, "trailing bytes",
+                     "a FULL transaction is not a pruned one: its proofs are extra bytes"),
+        invalid_case("pruned_block", enc_header(sample_header("a")) + enc_coinbase(sample_coinbase(1))
+                     + w_u32(MAX_BLOCK_TXS + 1), "count out of range",
+                     "a pruned block with more transactions than the maximum"),
     ]
     return wrap("v2_serialization",
                 "Canonical binary serialization of the version 2 objects (docs/CONSENSUS_V2.md section 4): fixed-width "
@@ -480,7 +564,13 @@ def ids_vectors():
             "block_id_matmul": block_id(hd, "matmul").hex(),
             "block_id_sha256": block_id({**hd, "mix": "00" * 64}, "sha256").hex()})
     txs = [sample_tx("t1"), sample_tx("t2", n_in=1, n_out=3, proof=0, extra=0)]
-    tcases = [{"transaction": t, "bytes": enc_tx(t).hex(), "id": tx_id(t).hex()} for t in txs]
+    tcases = []
+    for t in txs:
+        p = prune(t)
+        assert pruned_tx_id(p) == tx_id(t)              # the pruned form has the same id
+        tcases.append({"transaction": t, "bytes": enc_tx(t).hex(), "prefix_bytes": enc_tx_prefix(t).hex(),
+                       "prunable_hash": p["prunable_hash"], "id": tx_id(t).hex(),
+                       "pruned_bytes": enc_pruned_tx(p).hex(), "pruned_id": pruned_tx_id(p).hex()})
     cbs = [sample_coinbase(1), sample_coinbase(60, n_out=2)]
     ccases = [{"coinbase": c, "bytes": enc_coinbase(c).hex(), "id": coinbase_id(c).hex()} for c in cbs]
     # a change of any single byte of a transaction changes its id, and a coinbase and a transaction with the
@@ -491,10 +581,12 @@ def ids_vectors():
     return wrap("v2_ids",
                 "Header hash (the proof-of-work input, over the header without nonce and mix, with the tag "
                 "'tenero block header v2'), the proof-of-work seed, the block id (the PoW digest) for matmul and for the "
-                "SHA-256 test chain, and transaction and coinbase ids (SHA-256 over a domain tag and the serialized bytes). "
+                "SHA-256 test chain, transaction ids (SHA-256 over 'tenero tx v2', the serialized PREFIX and the hash of "
+                "the prunable part, which is SHA-256 over 'tenero tx prunable v2' and the serialized prunable part; the "
+                "pruned form has the same id) and coinbase ids (SHA-256 over a tag and the serialized bytes). "
                 "The mix in `header` is arbitrary here: these vectors test the id arithmetic, not a solved proof of work.",
                 {"tags": {"header": HEADER_TAG.decode(), "transaction": TX_TAG.decode(),
-                          "coinbase": COINBASE_TAG.decode()},
+                          "prunable": PRUNABLE_TAG.decode(), "coinbase": COINBASE_TAG.decode()},
                  "headers": hcases, "transactions": tcases, "coinbases": ccases, "domain_separation": same_bytes})
 
 
@@ -532,8 +624,86 @@ def genesis_vectors():
                 {"cases": cases})
 
 
+def dynamic_min_fee(size, base_reward, median):
+    """The minimum fee, in units, of a transaction of `size` bytes in a block whose base reward is
+    `base_reward` and whose block-size median is `median` (both known before the block):
+    max(1, ceil(base_reward * FEE_REFERENCE_WEIGHT * size / median^2)). None if it does not fit in a u64."""
+    assert median > 0
+    fee = max(1, -(-(base_reward * FEE_REFERENCE_WEIGHT * size) // (median * median)))
+    return fee if fee <= U64_MAX else None
+
+
+def oversize_penalty(base, size, median):
+    """ceil(base * over^2 / median^2) for size > median, else 0 (the same rule as version 1)."""
+    if size <= median or base == 0:
+        return 0
+    over = size - median
+    return -(-(base * over * over) // (median * median))
+
+
+def fees_vectors():
+    rewards = [20 * UNIT, 10 * UNIT, UNIT // 2, 1]
+    medians = [MIN_BLOCK_MEDIAN, 600_000, 10_000_000]
+    sizes = [0, 1, 427, 2500, 100_000, 300_000]
+    fee_cases = [{"base_reward": r, "median": m, "size": s, "fee": dynamic_min_fee(s, r, m)}
+                 for r in rewards for m in medians for s in sizes]
+    fee_cases += [{"base_reward": r, "median": m, "size": s, "fee": dynamic_min_fee(s, r, m)} for r, m, s in (
+        (2 ** 63, MIN_BLOCK_MEDIAN, 2 ** 32),        # large but it fits
+        (U64_MAX, 1, 10 ** 12),                      # does not fit in a u64: null
+        (U64_MAX, MIN_BLOCK_MEDIAN, U64_MAX),        # does not fit: null
+        (20 * UNIT, 1, 1),                           # a median of 1 byte
+    )]
+    penalty_cases = [{"base": b, "median": m, "size": s, "penalty": oversize_penalty(b, s, m)}
+                     for b in (20 * UNIT, UNIT // 2) for m in (MIN_BLOCK_MEDIAN, 1_000_000)
+                     for s in (m - 1, m, m + 1, m * 3 // 2, m * 2, 777_777)]
+    return wrap("v2_fees",
+                "The dynamic minimum fee of the version 2 rules (docs/CONSENSUS_V2.md section 8): fee >= max(1, "
+                "ceil(base_reward * FEE_REFERENCE_WEIGHT * size / median^2)), in units of 10^-8 coins, where base_reward "
+                "is the block's reward before any penalty and median is the block-size median that block is judged "
+                "against. `fee` is null when the result does not fit in a u64. Also the oversize penalty in the new units "
+                "(the version 1 rule, unchanged).",
+                {"constants": {"FEE_REFERENCE_WEIGHT": FEE_REFERENCE_WEIGHT, "MIN_BLOCK_MEDIAN": MIN_BLOCK_MEDIAN,
+                               "DECIMALS": DECIMALS},
+                 "dynamic_min_fee": fee_cases, "penalty": penalty_cases})
+
+
+def emission_vectors():
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from tenero.chain import Blockchain          # the version 1 reference: its arithmetic does not care about units
+
+    def rows(bc, heights):
+        return [{"height": h, "scheduled": bc.scheduled_reward(h), "issued_before": bc.issued_before(h),
+                 "main_reward": bc.main_reward_at(h), "reward": bc.reward_at(h), "in_tail": bc.in_tail(h)}
+                for h in heights]
+
+    sets = {}
+    p = {"initial_reward": 20 * UNIT, "halving_interval": 525_600, "max_supply": 20_000_000 * UNIT,
+         "tail_reward": UNIT // 2}
+    bc = Blockchain(**p)
+    era = 525_600
+    heights = sorted({1, 2, 3, era - 1, era, era + 1, era + 2, 2 * era, 2 * era + 1, 3 * era, 3 * era + 1,
+                      4 * era, 4 * era + 1, 5 * era, 5 * era + 1, 2_334_399, 2_334_400, 2_334_401, 2_334_402,
+                      3_000_000, 10_000_000, 2 ** 40})
+    sets["default_8_decimals"] = {"params": p, "main_emission_end_from_1": bc.main_emission_end(1),
+                                  "rows": rows(bc, heights)}
+    q = {"initial_reward": 100_000 * 10 ** 4, "halving_interval": 10, "max_supply": 1_375_000 * 10 ** 4,
+         "tail_reward": 100 * 10 ** 4}
+    bq = Blockchain(**q)
+    sets["trimmed_final_reward_scaled"] = {"params": q, "main_emission_end_from_1": bq.main_emission_end(1),
+                                           "rows": rows(bq, range(1, 31))}
+    # the last three rows of the default schedule must reproduce the version 1 numbers times 10^4
+    return wrap("v2_emission",
+                "Block rewards in the version 2 units (8 decimals: 1 coin = 10^8 units, the 20,000,000-coin cap is "
+                "2 * 10^15 units). The rules are those of version 1 (docs/CONSENSUS.md section 5); the schedule is the "
+                "same as v1's default with every amount multiplied by 10^4, and a small schedule that trims its final "
+                "reward. These vectors guard the scaling: a wrong constant or an overflow shows here.",
+                {"sets": sets})
+
+
 BUILDERS = {"v2_serialization": serialization_vectors, "v2_ids": ids_vectors,
-            "v2_merkle": merkle_vectors, "v2_genesis": genesis_vectors}
+            "v2_merkle": merkle_vectors, "v2_genesis": genesis_vectors,
+            "v2_fees": fees_vectors, "v2_emission": emission_vectors}
 
 
 def path_of(name):

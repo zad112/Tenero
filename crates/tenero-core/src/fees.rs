@@ -14,6 +14,26 @@ pub fn min_fee(size: u64, rate_units_per_1000_bytes: u64) -> Option<u64> {
     u64::try_from(f.max(1)).ok()
 }
 
+/// Version 2: the reference transaction size of the dynamic minimum fee, in bytes.
+pub const FEE_REFERENCE_WEIGHT: u64 = 3000;
+
+/// Version 2's dynamic minimum fee, in units: `max(1, ceil(base_reward * FEE_REFERENCE_WEIGHT * size /
+/// median^2))`. `base_reward` is the block's reward before any penalty and `median` the block-size
+/// median the block is judged against; both are known before the block, so this is a rule every node
+/// computes the same way. An error when `median` is 0 or the result does not fit in a `u64`.
+pub fn dynamic_min_fee(size: u64, base_reward: u64, median: u64) -> Result<u64, String> {
+    if median == 0 {
+        return Err("the median cannot be 0".into());
+    }
+    let numerator = u128::from(base_reward)
+        .checked_mul(u128::from(FEE_REFERENCE_WEIGHT))
+        .and_then(|x| x.checked_mul(u128::from(size)))
+        .ok_or("the minimum fee does not fit")?;
+    let m = u128::from(median);
+    let fee = numerator.div_ceil(m * m).max(1);
+    u64::try_from(fee).map_err(|_| "the minimum fee does not fit in 64 bits".to_string())
+}
+
 /// The upper median of `sizes` (the element at index `len / 2` once sorted), at least `floor`.
 /// With no sizes it is `floor`.
 pub fn median(sizes: &[u64], floor: u64) -> u64 {

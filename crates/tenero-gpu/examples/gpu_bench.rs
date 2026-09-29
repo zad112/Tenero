@@ -1,6 +1,6 @@
 //! Attempts per second on the GPU at the real chain parameters (a 4 GiB dataset).
 //!
-//!     cargo run --release -p tenero-gpu --example bench [-- --seconds 5]
+//!     cargo run --release -p tenero-gpu --example gpu_bench [-- --seconds 5]
 //!
 //! Needs an NVIDIA GPU, the CUDA toolkit's DLLs on PATH and about 4.5 GiB of video memory. The
 //! search uses a target that is never met, so every batch is fully computed; a real search stops

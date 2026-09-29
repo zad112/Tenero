@@ -22,7 +22,7 @@ is one data point (KNOWN_ISSUES 13). Rerun it before relying on any figure.
 
 ## GPU (the Rust engine, `crates/tenero-gpu`)
 
-**Measured** with `cargo run --release -p tenero-gpu --example bench` on the same machine (RTX 5070 Ti,
+**Measured** with `cargo run --release -p tenero-gpu --example gpu_bench` on the same machine (RTX 5070 Ti,
 compute capability 12.0, driver 617.14, CUDA toolkit 13.4), 2026-09-29. The engine is the first working
 version and is **untuned**: one CUDA stream, one cuBLASLt call per attempt, the CPU hashing between batches
 without overlapping the GPU. The search used a target that is never met, so every batch is fully computed.
