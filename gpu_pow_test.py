@@ -4,7 +4,7 @@ Every attempt multiplies its own small int8 matrix (ChaCha20 keystream) by ONE s
 dataset chosen by the attempt's seed, so different attempts read different memory. The dataset
 lives in your GPU's VRAM (4 GiB by default, sized so a card with 8 GB holds it with room for the
 desktop, the CUDA context and working buffers) and is built from ChaCha20 in a way that makes
-each slice depend on the earlier ones (see toycoin/matmulhash.py).
+each slice depend on the earlier ones (see tenero/matmulhash.py).
 
 It needs CuPy for the CUDA kernels:  pip install "cupy-cuda13x[ctk]"
 
@@ -41,9 +41,9 @@ import time
 
 import numpy as np
 
-from toycoin import analysis, chacha
-from toycoin import matmulhash as mh
-from toycoin.gpubackend import (  # noqa: F401 - re-exported: the tests use g.<name>
+from tenero import analysis, chacha
+from tenero import matmulhash as mh
+from tenero.gpubackend import (  # noqa: F401 - re-exported: the tests use g.<name>
     CHUNK, EPOCH, HEADER, KERNEL_SOURCE, FusedKernels, TorchBackend, check, make_fused,
     self_test)
 

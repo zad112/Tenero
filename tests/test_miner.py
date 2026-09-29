@@ -8,11 +8,11 @@ import pytest
 np = pytest.importorskip("numpy")
 
 import miner  # noqa: E402
-from toycoin import config  # noqa: E402
-from toycoin import chain as chain_module  # noqa: E402
-from toycoin import gpubackend as gb  # noqa: E402
-from toycoin.chain import Blockchain  # noqa: E402
-from toycoin.mempool import Mempool  # noqa: E402
+from tenero import config  # noqa: E402
+from tenero import chain as chain_module  # noqa: E402
+from tenero import gpubackend as gb  # noqa: E402
+from tenero.chain import Blockchain  # noqa: E402
+from tenero.mempool import Mempool  # noqa: E402
 
 from . import cuda_emulator as emu  # noqa: E402
 from .fake_torch import FakeTorch  # noqa: E402
@@ -189,7 +189,7 @@ class FlakySearcher:
     attempts = 0
 
     def __init__(self, lies):
-        from toycoin.pow import CpuSearcher
+        from tenero.pow import CpuSearcher
         self.lies, self.real, self.resets = lies, CpuSearcher(), 0
 
     def search(self, params, seed, header_hash, target, start, seconds=None):
@@ -229,7 +229,7 @@ def test_the_fault_count_is_of_faults_in_a_row(sandbox, capsys):
         attempts = 0
 
         def __init__(self):
-            from toycoin.pow import CpuSearcher
+            from tenero.pow import CpuSearcher
             self.real, self.calls, self.resets = CpuSearcher(), 0, 0
 
         def search(self, params, seed, header_hash, target, start, seconds=None):
@@ -269,7 +269,7 @@ def test_an_existing_chain_ignores_a_new_epoch_length(sandbox):
 
 
 def test_the_scratch_folder_is_announced(sandbox, monkeypatch, capsys):
-    from toycoin import paths
+    from tenero import paths
     monkeypatch.setattr(paths, "DATA_DIR", "/somewhere/scratch")
     miner.main([ADDRESS, "--blocks", "1", "--pow", "sha256"])
     assert "scratch data folder: /somewhere/scratch" in capsys.readouterr().out
@@ -286,7 +286,7 @@ def test_saved_chain_records_the_algorithm(sandbox):
 
 import threading  # noqa: E402
 
-from toycoin.pow import CpuSearcher, GpuFault, MatmulPow  # noqa: E402
+from tenero.pow import CpuSearcher, GpuFault, MatmulPow  # noqa: E402
 
 
 class CountingSearcher(CpuSearcher):
@@ -497,10 +497,10 @@ def test_overlapped_mining_works_across_epoch_changes(sandbox, capsys):
 
 
 def test_transactions_are_never_mined_twice_when_blocks_overlap(sandbox):
-    from toycoin.mempool import Mempool
-    from toycoin.transaction import Transaction
-    from toycoin.units import UNIT
-    from toycoin.wallet import Wallet
+    from tenero.mempool import Mempool
+    from tenero.transaction import Transaction
+    from tenero.units import UNIT
+    from tenero.wallet import Wallet
     me, friend = Wallet(), Wallet()
     miner.main([me.address, "--blocks", "1", "--cpu"])         # gives `me` a block reward
     tx = Transaction(me.address, friend.address, 5 * UNIT, fee=UNIT)
@@ -554,7 +554,7 @@ def test_a_bad_block_is_caught_by_the_process_checker_too(sandbox, capsys):
 
 def test_a_dead_checker_process_falls_back_to_checking_here(sandbox, monkeypatch, capsys):
     from concurrent.futures.process import BrokenProcessPool
-    import toycoin.checker as checker_module
+    import tenero.checker as checker_module
 
     class DeadCheck:
         def done(self):
@@ -590,7 +590,7 @@ def test_a_dead_checker_process_falls_back_to_checking_here(sandbox, monkeypatch
 
 def test_a_dead_checker_still_catches_a_bad_block(sandbox, monkeypatch, capsys):
     from concurrent.futures.process import BrokenProcessPool
-    import toycoin.checker as checker_module
+    import tenero.checker as checker_module
 
     class DeadCheck:
         def done(self):
@@ -621,7 +621,7 @@ def test_a_dead_checker_still_catches_a_bad_block(sandbox, monkeypatch, capsys):
 
 def test_the_baseline_is_measured_for_a_real_gpu_searcher_only(gpu_searcher, sandbox):
     gpu = gpu_searcher
-    from toycoin.pow import default_pow
+    from tenero.pow import default_pow
     work = default_pow("matmul")
     rate = miner.measure_baseline(gpu, work, seconds=0.1)
     assert rate is not None and rate > 0
@@ -749,7 +749,7 @@ def test_running_out_of_ram_for_the_cpu_dataset_stops_cleanly(sandbox, monkeypat
 
 def test_a_checker_that_died_before_preparing_falls_back_to_a_thread(sandbox, monkeypatch, capsys):
     from concurrent.futures.process import BrokenProcessPool
-    import toycoin.checker as checker_module
+    import tenero.checker as checker_module
 
     class DeadChecker:
         def __init__(self, **kw):
@@ -787,7 +787,7 @@ def test_the_budget_line_is_honest_when_no_checks_run(sandbox, capsys):
 
 
 def test_the_default_budget_is_six_cores(sandbox, monkeypatch, capsys):
-    from toycoin import matmulhash as mh
+    from tenero import matmulhash as mh
     monkeypatch.setattr(mh, "BUILD_THREADS", 1)
     assert config.MINER_MAX_CORES == 6
     assert miner.main([ADDRESS, "--blocks", "1", "--cpu"]) == 0
@@ -798,7 +798,7 @@ def test_the_default_budget_is_six_cores(sandbox, monkeypatch, capsys):
 
 @pytest.mark.parametrize("cores,threads", [(4, 2), (2, 1), (12, 10)])
 def test_max_cores_sets_the_build_threads(sandbox, monkeypatch, capsys, cores, threads):
-    from toycoin import matmulhash as mh
+    from tenero import matmulhash as mh
     monkeypatch.setattr(mh, "BUILD_THREADS", 1)
     miner.main([ADDRESS, "--blocks", "1", "--cpu", "--max-cores", str(cores)])
     assert mh.BUILD_THREADS == threads
@@ -812,7 +812,7 @@ def test_a_budget_too_small_to_run_is_refused(sandbox, capsys):
 
 
 def test_a_sha256_chain_does_not_touch_the_build_threads(sandbox, monkeypatch, capsys):
-    from toycoin import matmulhash as mh
+    from tenero import matmulhash as mh
     monkeypatch.setattr(mh, "BUILD_THREADS", 7)
     miner.main([ADDRESS, "--blocks", "1", "--pow", "sha256"])
     assert mh.BUILD_THREADS == 7 and "CPU budget" not in capsys.readouterr().out
@@ -820,7 +820,7 @@ def test_a_sha256_chain_does_not_touch_the_build_threads(sandbox, monkeypatch, c
 
 def test_the_checker_process_is_given_the_build_threads(sandbox, monkeypatch):
     from concurrent.futures.process import BrokenProcessPool
-    import toycoin.checker as checker_module
+    import tenero.checker as checker_module
     made = {}
 
     class DeadCheck:
@@ -882,7 +882,7 @@ def test_the_decision_function():
 
 def test_a_checker_that_fails_at_submit_falls_back_to_a_thread(sandbox, monkeypatch, capsys):
     from concurrent.futures.process import BrokenProcessPool
-    import toycoin.checker as checker_module
+    import tenero.checker as checker_module
 
     class BrokenAtSubmit:
         def __init__(self, **kw):
@@ -926,7 +926,7 @@ def test_the_miner_never_builds_two_cpu_datasets_at_once(sandbox, monkeypatch, c
     # --epoch-blocks 2 makes the miner ask for two epochs' datasets at startup; within the core
     # budget they must be built one after the other, not side by side
     import time as _t
-    from toycoin import matmulhash as mh
+    from tenero import matmulhash as mh
     real = mh.build_dataset
     state = {"now": 0, "peak": 0, "built": 0}
     lock = threading.Lock()

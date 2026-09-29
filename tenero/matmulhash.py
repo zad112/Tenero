@@ -92,7 +92,7 @@ def set_build_threads(n):
     """How many threads dataset builds may use in this process (at least 1)."""
     global BUILD_THREADS
     BUILD_THREADS = max(1, int(n))
-DATASET_LABEL = b"toycoin matmulhash v2 dataset"
+DATASET_LABEL = b"tenero matmulhash v2 dataset"
 
 
 @dataclass(frozen=True)
@@ -271,6 +271,11 @@ class DatasetCache:
                 raise
             finally:
                 BUILD_SLOT.finish(ticket)
+
+    def discard(self, params, epoch_seed):
+        """Frees one cached dataset (a finished epoch's). True if it was there."""
+        with self._lock:
+            return self._items.pop((params, epoch_seed), None) is not None
 
     def clear(self):
         with self._lock:

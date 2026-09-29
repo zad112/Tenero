@@ -1,4 +1,4 @@
-# toycoin
+# Tenero
 
 An experimental proof-of-work cryptocurrency in Python, built to learn how these things work.
 The interesting part is its **GPU proof of work, "matmulhash v2"**: an int8 matrix multiplication
@@ -26,7 +26,7 @@ Inspired by Monero's design ideas; not affiliated with or endorsed by the Monero
     cores, exact int32 results) and folds the product with the ChaCha20 permutation.
   - The 256-slice dataset changes every epoch (100 blocks). Each slice is built from the previous
     one plus three data-dependent picks from anywhere earlier, so keeping only part of the dataset
-    makes rebuilding a missing slice snowball (see `toycoin/analysis.py`).
+    makes rebuilding a missing slice snowball (see `tenero/analysis.py`).
   - Blocks carry the fold result (`mix`), so a node can reject a tampered block in microseconds
     (SHA-256 of seed + mix must equal the hash and meet the target) before doing the expensive
     recomputation.
@@ -85,10 +85,10 @@ file holds a private key, so `.gitignore` excludes them, and **you should never 
 data elsewhere (a scratch chain for experiments):
 
 ```powershell
-$env:TOYCOIN_DATA = "$HOME\scratch"
+$env:TENERO_DATA = "$HOME\scratch"
 ```
 
-Settings are in `toycoin/config.py`. The supply, halving, tail, block-time and difficulty settings are
+Settings are in `tenero/config.py`. The supply, halving, tail, block-time and difficulty settings are
 saved into `chain.json` when a chain is created, so editing them only affects a new chain: delete
 `chain.json` and `mempool.json` to apply a change. The fee and block-size settings apply immediately
 to whatever chain is loaded and are consensus rules, so changing them can invalidate an existing chain.
@@ -122,7 +122,7 @@ miner.py            the miner            cli.py     the wallet
 view.py             print the chain      demo.py    a tiny SHA-256 demo
 gpu_pow_test.py     GPU vs CPU checks and benchmark
 difficulty_sim.py   try difficulty settings without waiting for blocks
-toycoin/
+tenero/
   chain.py block.py transaction.py wallet.py mempool.py storage.py units.py config.py paths.py
   pow.py            proof-of-work algorithms and the searchers
   matmulhash.py     matmulhash v2 (CPU reference: dataset, attempt, fold, cheap pre-check)

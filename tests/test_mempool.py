@@ -1,11 +1,11 @@
 import pytest
 
-from toycoin.chain import Blockchain, min_fee_for
-from toycoin.config import MAX_MEMO_BYTES
-from toycoin.mempool import Mempool
-from toycoin.transaction import Transaction
-from toycoin.units import UNIT
-from toycoin.wallet import Wallet
+from tenero.chain import Blockchain, min_fee_for
+from tenero.config import MAX_MEMO_BYTES
+from tenero.mempool import Mempool
+from tenero.transaction import Transaction
+from tenero.units import UNIT
+from tenero.wallet import Wallet
 
 EASY = 2**248
 

@@ -7,15 +7,15 @@ What the code is, how the parts fit, and what is expected to survive a rewrite. 
 
 | file | job | survives a rewrite? |
 |---|---|---|
-| `toycoin/chacha.py` | ChaCha20 in numpy | as a **reference** (the algorithm is fixed by RFC 8439) |
-| `toycoin/matmulhash.py` | matmulhash v2 on the CPU: dataset, attempt, fold, cheap pre-check | as the **reference**; a fast native version must match it bit for bit |
-| `toycoin/gpubackend.py` | the three CUDA kernels, the PyTorch backend, the GPU self-test, the searcher | the **CUDA source is already C++** and should carry over unchanged |
-| `toycoin/pow.py` | proof-of-work algorithms, epoch seeds, the searchers | logic carries over |
-| `toycoin/checker.py`, `miner.py` | the miner and its separate-process CPU double-check | the design carries over |
-| `toycoin/chain.py` | rules: rewards, difficulty, block size, validation | **emission, difficulty and fee/size rules carry over; the account-model validation is replaced** |
-| `toycoin/block.py`, `transaction.py`, `wallet.py` | account model, ECDSA, JSON | **replaced** by the output model |
-| `toycoin/mempool.py`, `storage.py`, `cli.py` | policy, JSON files, wallet UI | replaced |
-| `toycoin/analysis.py` | simulation of the cost of not keeping the dataset | reference |
+| `tenero/chacha.py` | ChaCha20 in numpy | as a **reference** (the algorithm is fixed by RFC 8439) |
+| `tenero/matmulhash.py` | matmulhash v2 on the CPU: dataset, attempt, fold, cheap pre-check | as the **reference**; a fast native version must match it bit for bit |
+| `tenero/gpubackend.py` | the three CUDA kernels, the PyTorch backend, the GPU self-test, the searcher | the **CUDA source is already C++** and should carry over unchanged |
+| `tenero/pow.py` | proof-of-work algorithms, epoch seeds, the searchers | logic carries over |
+| `tenero/checker.py`, `miner.py` | the miner and its separate-process CPU double-check | the design carries over |
+| `tenero/chain.py` | rules: rewards, difficulty, block size, validation | **emission, difficulty and fee/size rules carry over; the account-model validation is replaced** |
+| `tenero/block.py`, `transaction.py`, `wallet.py` | account model, ECDSA, JSON | **replaced** by the output model |
+| `tenero/mempool.py`, `storage.py`, `cli.py` | policy, JSON files, wallet UI | replaced |
+| `tenero/analysis.py` | simulation of the cost of not keeping the dataset | reference |
 | `tools/make_vectors.py`, `tests/vectors/` | the golden vectors | **the bridge to any new implementation** |
 | `tests/cuda_emulator.py` | compiles the real CUDA source with g++ and runs it on the CPU | carries over (it already tests C++) |
 

@@ -1,7 +1,7 @@
 """What does it cost to NOT keep the whole dataset in memory? A simulation on the CPU reference.
 
 The dataset is built so that a block depends on the previous block of the previous slice and on
-several data-dependent picks from anywhere earlier (see toycoin.matmulhash). A miner that keeps
+several data-dependent picks from anywhere earlier (see tenero.matmulhash). A miner that keeps
 only some slices must rebuild a missing one from what it has, and the picks make that snowball.
 
 This measures it on a stack of `num_slices` slices (the REAL depth, 256 by default) whose slices

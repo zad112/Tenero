@@ -63,7 +63,7 @@ minimum relay fee as policy instead.
 ## The proof of work
 
 **11. Memory-hardness is simulated, not proven (from the code and the simulation).** The dependency
-structure was measured on a 256-slice stack of small slices (`toycoin/analysis.py`), and the slowdown for
+structure was measured on a 256-slice stack of small slices (`tenero/analysis.py`), and the slowdown for
 keeping only part of the dataset is an estimate built from that and from one GPU's measured times. The fill
 and fold construction (a ChaCha20 core with feed-forward and XORs, used as a compression function) is
 original to this project and has had no cryptanalysis or independent review.

@@ -7,10 +7,10 @@ a pure function of the block height, so it can be checked for all 2.3 million bl
 """
 import pytest
 
-from toycoin import chain as chain_module
-from toycoin import config
-from toycoin.chain import Blockchain, min_fee_for
-from toycoin.units import UNIT, to_units
+from tenero import chain as chain_module
+from tenero import config
+from tenero.chain import Blockchain, min_fee_for
+from tenero.units import UNIT, to_units
 
 pytestmark = pytest.mark.real_floor      # these check config.py's own numbers, not the test floor
 
@@ -250,7 +250,7 @@ def test_a_trimmed_final_reward_is_handled():
 
 
 def test_durations_are_shown_in_a_friendly_unit():
-    from toycoin.chain import format_duration
+    from tenero.chain import format_duration
     assert format_duration(2_334_400 * 60).startswith("4.4 years")
     assert format_duration(3 * 86400) == "3.0 days"
     assert format_duration(5 * 3600) == "5.0 hours"

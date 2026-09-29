@@ -1,10 +1,10 @@
 import os
 import time
 
-from toycoin.chain import Blockchain
-from toycoin.transaction import Transaction
-from toycoin.units import fmt, to_units
-from toycoin.wallet import Wallet
+from tenero.chain import Blockchain
+from tenero.transaction import Transaction
+from tenero.units import fmt, to_units
+from tenero.wallet import Wallet
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WALLET_DIR = os.path.join(HERE, "wallets")

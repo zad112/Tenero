@@ -7,9 +7,9 @@ np = pytest.importorskip("numpy")
 
 from concurrent.futures import Future  # noqa: E402
 
-from toycoin import checker  # noqa: E402
-from toycoin import pow as powmod  # noqa: E402
-from toycoin.pow import GpuFault  # noqa: E402
+from tenero import checker  # noqa: E402
+from tenero import pow as powmod  # noqa: E402
+from tenero.pow import GpuFault  # noqa: E402
 
 from .test_pow import MINER, TINY, forged_block, matmul_chain, mine  # noqa: E402
 
@@ -90,7 +90,7 @@ def test_the_cheap_check_rejects_without_waiting_for_the_worker():
 
 
 def test_start_prepare_builds_the_dataset_in_a_background_thread():
-    from toycoin import matmulhash as mh
+    from tenero import matmulhash as mh
     work = powmod.MatmulPow(TINY, 3)
     spec = work.to_dict()
     checker._PREPARING.clear()
@@ -111,7 +111,7 @@ def test_the_worker_reports_check_time_without_the_dataset_wait():
     work = powmod.MatmulPow(mh_params(), 3)
     bc = mine(matmul_chain(params=mh_params()), 1)
     checker._WORK.clear()
-    from toycoin import matmulhash as mh
+    from tenero import matmulhash as mh
     mh.DEFAULT_CACHE.clear()                                   # nothing cached: a build is needed
     digest, seconds = checker.compute(bc.pow.to_dict(), 1, bc.chain[1]._header_bytes(),
                                       bc.chain[1].nonce)
@@ -181,7 +181,23 @@ def test_the_worker_is_told_how_many_threads_a_dataset_build_may_use(process_che
 
 
 def test_the_parent_keeps_its_own_build_thread_setting(process_checker):
-    from toycoin import matmulhash as mh
+    from tenero import matmulhash as mh
     before = mh.BUILD_THREADS
     process_checker.executor.submit(checker.worker_threads).result(30)
     assert mh.BUILD_THREADS == before                       # the worker changed ITS setting only
+
+
+def test_the_worker_frees_finished_epochs_as_it_checks():
+    from tenero import matmulhash as mh
+    mh.DEFAULT_CACHE.clear()
+    bc = mine(matmul_chain(epoch_blocks=2), 5)                  # epochs 0, 1, 2
+    checker._WORK.clear()
+    mh.DEFAULT_CACHE.clear()
+    spec = bc.pow.to_dict()
+    for epoch in (0, 1):
+        mh.cached_dataset(TINY, powmod.epoch_seed(epoch))
+    block = bc.chain[5]                                         # a block of epoch 2
+    digest, _ = checker.compute(spec, block.index, block._header_bytes(), block.nonce)
+    assert digest == block.hash
+    cached = {e for e in range(6) if (TINY, powmod.epoch_seed(e)) in mh.DEFAULT_CACHE._items}
+    assert cached == {2}                                        # epochs 0 and 1 were freed

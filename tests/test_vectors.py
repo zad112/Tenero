@@ -6,7 +6,7 @@ integer matmul instead of float, hand-built JSON headers, OpenSSL), so the vecto
 the code agreeing with itself. `test_the_committed_vectors_are_current` fails if the reference
 changed without the vectors being regenerated: that is a consensus change and must be deliberate.
 
-The deep and full vectors are large: set TOYCOIN_SLOW_VECTORS=1 to check them.
+The deep and full vectors are large: set TENERO_SLOW_VECTORS=1 to check them.
 """
 import copy
 import dataclasses
@@ -17,19 +17,19 @@ import os
 import numpy as np
 import pytest
 
-from toycoin import chacha
-from toycoin import chain as chain_module
-from toycoin import matmulhash as mh
-from toycoin import pow as powmod
-from toycoin.block import Block
-from toycoin.chain import Blockchain, min_fee_for
-from toycoin.transaction import Transaction
-from toycoin.units import fmt, to_units
-from toycoin.wallet import Wallet
+from tenero import chacha
+from tenero import chain as chain_module
+from tenero import matmulhash as mh
+from tenero import pow as powmod
+from tenero.block import Block
+from tenero.chain import Blockchain, min_fee_for
+from tenero.transaction import Transaction
+from tenero.units import fmt, to_units
+from tenero.wallet import Wallet
 from tools import make_vectors as mv
 
 pytestmark = pytest.mark.real_floor      # each test states the block-size floor it needs
-SLOW = os.environ.get("TOYCOIN_SLOW_VECTORS") == "1"
+SLOW = os.environ.get("TENERO_SLOW_VECTORS") == "1"
 
 RFC_BLOCK = ("10f1e7e4d13b5915500fdd1fa32071c4c7d1f4c733c068030422aa9ac3d46c4e"
              "d2826446079faa0914c2d705d98b02a2b5129cd1de164eb9cbd083e8a2503c4e")
@@ -166,7 +166,7 @@ def test_real_size_slices_and_attempts():
         check_attempt(p, data, a)
 
 
-@pytest.mark.skipif(not SLOW, reason="slow: set TOYCOIN_SLOW_VECTORS=1")
+@pytest.mark.skipif(not SLOW, reason="slow: set TENERO_SLOW_VECTORS=1")
 def test_deep_slices_and_attempts():
     doc = load("matmulhash_deep")
     p = mh.Params(**doc["params"])
@@ -178,7 +178,7 @@ def test_deep_slices_and_attempts():
 
 
 @pytest.mark.skipif(not SLOW or not os.path.exists(mv.path_of("matmulhash_full")),
-                    reason="slow and needs 4.3 GiB of RAM: set TOYCOIN_SLOW_VECTORS=1 after `--full`")
+                    reason="slow and needs 4.3 GiB of RAM: set TENERO_SLOW_VECTORS=1 after `--full`")
 def test_every_slice_of_the_full_dataset():
     doc = load("matmulhash_full")
     p = mh.Params(**doc["params"])
@@ -230,7 +230,7 @@ def test_emission_schedule():
 
 
 def test_the_default_schedule_matches_config():
-    from toycoin import config
+    from tenero import config
     d = load("emission")["sets"]["default"]["params"]
     assert d == {"initial_reward": to_units(config.INITIAL_REWARD), "halving_interval": config.HALVING_INTERVAL,
                  "max_supply": to_units(config.MAX_SUPPLY), "tail_reward": to_units(config.TAIL_REWARD)}

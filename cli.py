@@ -5,14 +5,14 @@ import sys
 import time
 from fractions import Fraction
 
-from toycoin import paths
-from toycoin.chain import (Blockchain, BASE_TX_SIZE, format_duration, format_hashrate,
+from tenero import paths
+from tenero.chain import (Blockchain, BASE_TX_SIZE, format_duration, format_hashrate,
                            format_tops)
-from toycoin.config import MIN_FEE_RATE, MAX_MEMO_BYTES
-from toycoin.mempool import Mempool
-from toycoin.transaction import Transaction, COINBASE
-from toycoin.units import DECIMALS, UNIT, fmt, to_units
-from toycoin.wallet import Wallet
+from tenero.config import MIN_FEE_RATE, MAX_MEMO_BYTES
+from tenero.mempool import Mempool
+from tenero.transaction import Transaction, COINBASE
+from tenero.units import DECIMALS, UNIT, fmt, to_units
+from tenero.wallet import Wallet
 
 WALLET_DIR = paths.WALLET_DIR
 
@@ -348,7 +348,7 @@ def main():
 
     if paths.using_scratch_folder():
         print(f"(scratch data folder: {paths.DATA_DIR})")
-    print(f"toycoin wallet '{app.wallet_name}': {app.wallet.address}")
+    print(f"Tenero wallet '{app.wallet_name}': {app.wallet.address}")
     print("type 'help' for commands")
     while True:
         try:

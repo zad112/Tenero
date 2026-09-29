@@ -1,4 +1,4 @@
-"""Checks the logic of the GPU layer (toycoin/gpubackend.py) WITHOUT a GPU.
+"""Checks the logic of the GPU layer (tenero/gpubackend.py) WITHOUT a GPU.
 
 A numpy-backed stand-in plays the part of torch and the real CUDA kernel source runs on the CPU
 through the emulator, so this catches typos and logic mistakes in the whole GPU path (dataset
@@ -15,11 +15,11 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-from toycoin import gpubackend as g  # noqa: E402
-from toycoin import matmulhash as mh  # noqa: E402
-from toycoin import pow as powmod  # noqa: E402
-from toycoin.chain import Blockchain  # noqa: E402
-from toycoin.units import UNIT  # noqa: E402
+from tenero import gpubackend as g  # noqa: E402
+from tenero import matmulhash as mh  # noqa: E402
+from tenero import pow as powmod  # noqa: E402
+from tenero.chain import Blockchain  # noqa: E402
+from tenero.units import UNIT  # noqa: E402
 
 from . import cuda_emulator as emu  # noqa: E402
 from .fake_torch import FT, FakeTorch, NoIntMm  # noqa: E402
@@ -90,7 +90,7 @@ def test_stages_compose_to_the_same_result(fused):
     b = make_backend(fused)
     W = b.build_dataset(P, EPOCH)
     seeds = [mh.attempt_seed(HEADER, n) for n in range(5)]
-    from toycoin import chacha
+    from tenero import chacha
     keys = np.stack([chacha.key_words(s) for s in seeds])
     blocks = [mh.attempt_slice(s, P.num_blocks) for s in seeds]
     X = b.stage_generate(P, keys)

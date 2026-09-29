@@ -1,4 +1,4 @@
-"""The stages of gpu_pow_test.py and toycoin/analysis.py, without a GPU (emulated kernels)."""
+"""The stages of gpu_pow_test.py and tenero/analysis.py, without a GPU (emulated kernels)."""
 import argparse
 import dataclasses
 import pathlib
@@ -11,9 +11,9 @@ import pytest
 np = pytest.importorskip("numpy")
 
 import gpu_pow_test as g  # noqa: E402
-from toycoin import analysis  # noqa: E402
-from toycoin import gpubackend as gb  # noqa: E402
-from toycoin import matmulhash as mh  # noqa: E402
+from tenero import analysis  # noqa: E402
+from tenero import gpubackend as gb  # noqa: E402
+from tenero import matmulhash as mh  # noqa: E402
 
 from . import cuda_emulator as emu  # noqa: E402
 from .fake_torch import FakeTorch  # noqa: E402

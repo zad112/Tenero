@@ -12,11 +12,11 @@ import json
 import pytest
 from ecdsa import SECP256k1, VerifyingKey
 
-from toycoin.block import Block
-from toycoin.chain import Blockchain
-from toycoin.transaction import Transaction
-from toycoin.units import UNIT
-from toycoin.wallet import Wallet
+from tenero.block import Block
+from tenero.chain import Blockchain
+from tenero.transaction import Transaction
+from tenero.units import UNIT
+from tenero.wallet import Wallet
 
 from .test_chain import new_chain
 

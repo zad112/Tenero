@@ -1,11 +1,11 @@
 import pytest
-from toycoin.block import Block
-from toycoin.chain import Blockchain, BASE_TX_SIZE, min_fee_for
-from toycoin import chain as chain_module
-from toycoin.config import MEDIAN_WINDOW, MAX_MEMO_BYTES
-from toycoin.transaction import Transaction, COINBASE
-from toycoin.units import UNIT, fmt, to_units
-from toycoin.wallet import Wallet
+from tenero.block import Block
+from tenero.chain import Blockchain, BASE_TX_SIZE, min_fee_for
+from tenero import chain as chain_module
+from tenero.config import MEDIAN_WINDOW, MAX_MEMO_BYTES
+from tenero.transaction import Transaction, COINBASE
+from tenero.units import UNIT, fmt, to_units
+from tenero.wallet import Wallet
 
 EASY = 2**248  # ~256 attempts per block, instant in tests
 

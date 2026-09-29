@@ -1,10 +1,10 @@
 import os
 
-from toycoin.chain import Blockchain
-from toycoin.units import fmt
-from toycoin.wallet import Wallet
+from tenero.chain import Blockchain
+from tenero.units import fmt
+from tenero.wallet import Wallet
 
-from toycoin import paths
+from tenero import paths
 
 WALLET_DIR = paths.WALLET_DIR
 

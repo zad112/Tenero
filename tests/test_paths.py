@@ -1,23 +1,23 @@
 import os
 
-from toycoin import paths
+from tenero import paths
 
 
 def test_default_is_the_project_folder(monkeypatch):
-    monkeypatch.delenv("TOYCOIN_DATA", raising=False)
+    monkeypatch.delenv("TENERO_DATA", raising=False)
     assert paths.data_dir() == paths.PROJECT_DIR
     assert paths.data_dir("") == paths.PROJECT_DIR
 
 
 def test_the_environment_variable_selects_a_folder_and_creates_it(monkeypatch, tmp_path):
     target = tmp_path / "scratch"
-    monkeypatch.setenv("TOYCOIN_DATA", str(target))
+    monkeypatch.setenv("TENERO_DATA", str(target))
     assert paths.data_dir() == str(target)
     assert target.is_dir()
 
 
 def test_an_explicit_value_wins_over_the_environment(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOYCOIN_DATA", str(tmp_path / "from_env"))
+    monkeypatch.setenv("TENERO_DATA", str(tmp_path / "from_env"))
     other = tmp_path / "explicit"
     assert paths.data_dir(str(other)) == str(other)
 
@@ -35,6 +35,6 @@ def test_all_the_data_files_live_in_the_data_folder():
 
 
 def test_the_modules_use_these_paths():
-    from toycoin import chain, mempool
+    from tenero import chain, mempool
     assert chain.DEFAULT_PATH == paths.CHAIN_PATH
     assert mempool.DEFAULT_MEMPOOL == paths.MEMPOOL_PATH

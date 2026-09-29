@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-**toycoin** (the GitHub repo is called monero-lite): an experimental proof-of-work coin in Python with a
+**Tenero**: an experimental proof-of-work coin in Python with a
 GPU proof of work ("matmulhash v2"), being prepared for a rewrite to native code with Monero-style
 privacy. It is a learning project: unaudited, one node, not for real value. Never describe it otherwise.
 
@@ -11,10 +11,10 @@ privacy. It is a learning project: unaudited, one node, not for real value. Neve
 pip install -r requirements-dev.txt
 python -m pytest -q                          # about 550 tests, no GPU needed
 python tools/make_vectors.py --check         # do the golden vectors still match the reference?
-$env:TOYCOIN_SLOW_VECTORS = "1"; python -m pytest tests/test_vectors.py -q     # also the deep vectors
+$env:TENERO_SLOW_VECTORS = "1"; python -m pytest tests/test_vectors.py -q     # also the deep vectors
 .\gpu_test.bat                               # the REAL GPU check: only on the owner's machine
 python miner.py <address> [--pow sha256]     # sha256 = a small chain a CPU can mine
-$env:TOYCOIN_DATA = "$HOME\scratch"          # do experiments on a scratch chain, not the real one
+$env:TENERO_DATA = "$HOME\scratch"          # do experiments on a scratch chain, not the real one
 ```
 
 ## Where things are

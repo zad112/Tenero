@@ -15,7 +15,7 @@ from .storage import atomic_write_json, read_json
 from .transaction import Transaction, COINBASE
 from .units import DECIMALS, UNIT, to_units
 
-# chain.json lives in the project folder (or $TOYCOIN_DATA), wherever you launch from
+# chain.json lives in the project folder (or $TENERO_DATA), wherever you launch from
 DEFAULT_PATH = paths.CHAIN_PATH
 
 # everything below the config layer works in whole units (0.0001 coins)

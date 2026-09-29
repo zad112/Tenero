@@ -1,4 +1,4 @@
-"""Runs the REAL CUDA kernel source (toycoin.gpubackend.KERNEL_SOURCE) on the CPU, for tests.
+"""Runs the REAL CUDA kernel source (tenero.gpubackend.KERNEL_SOURCE) on the CPU, for tests.
 
 The source is compiled with a C++ compiler behind a tiny shim that defines what CUDA provides
 (threadIdx, blockIdx, atomicAdd, ...). A launch loops over every block and thread one after
@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import types
 
-from toycoin import gpubackend as g
+from tenero import gpubackend as g
 
 SHIM = r"""
 struct Dim3 { unsigned x, y, z; };

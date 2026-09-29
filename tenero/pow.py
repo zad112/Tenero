@@ -1,7 +1,7 @@
 """The proof-of-work algorithms a chain can use.
 
 sha256  block hash = SHA-256(header + nonce). Mined on a CPU, and cheap to check.
-matmul  block hash = the matmulhash digest (see toycoin.matmulhash): an int8 matrix
+matmul  block hash = the matmulhash digest (see tenero.matmulhash): an int8 matrix
         multiplication against a big sequentially dependent dataset, built for GPUs. Finding a
         block takes a GPU. Checking one takes a CPU that holds the dataset in RAM (built once per
         epoch) a fraction of a second. Blocks carry `mix` (the fold sums the hash commits to), so
@@ -20,7 +20,7 @@ import time
 
 from . import config
 
-_EPOCH_SEEDS = [hashlib.sha256(b"toycoin matmulhash epoch 0").digest()]
+_EPOCH_SEEDS = [hashlib.sha256(b"tenero matmulhash epoch 0").digest()]
 
 
 def epoch_seed(epoch):
@@ -140,6 +140,14 @@ class MatmulPow:
         except (TypeError, ValueError):
             return False
 
+    def release_older(self, epoch):
+        """Frees the cached CPU datasets of epochs before `epoch`: blocks are checked in order, so
+        a finished epoch's 4 GiB is dead weight. (Without this the cache held it until the NEXT
+        epoch's build began, so two datasets, about 8.6 GiB, were in RAM almost all the time.)"""
+        mh = _matmulhash()
+        for old in range(max(0, epoch - 3), epoch):
+            mh.DEFAULT_CACHE.discard(self.params, epoch_seed(old))
+
     def digest_for(self, index, header, nonce):
         """The hash a block at `index` with these header bytes and nonce SHOULD have (a full CPU
         recomputation), from plain parts so another process can compute it. None for a nonce that
@@ -147,7 +155,9 @@ class MatmulPow:
         if not isinstance(nonce, int) or isinstance(nonce, bool) or not 0 <= nonce < 2**64:
             return None
         mh = _matmulhash()
-        data = mh.cached_dataset(self.params, epoch_seed(self.epoch_of(index)))
+        epoch = self.epoch_of(index)
+        data = mh.cached_dataset(self.params, epoch_seed(epoch))
+        self.release_older(epoch)          # this epoch is under way: earlier ones are finished
         digest = mh.compute_attempts(self.params, data, hashlib.sha256(header).digest(),
                                      [nonce])[0][0]
         return digest.hex()

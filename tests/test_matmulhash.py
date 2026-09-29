@@ -5,8 +5,8 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-from toycoin import chacha  # noqa: E402
-from toycoin import matmulhash as mh  # noqa: E402
+from tenero import chacha  # noqa: E402
+from tenero import matmulhash as mh  # noqa: E402
 
 from .test_chacha import py_core  # noqa: E402
 
@@ -630,3 +630,14 @@ def test_two_callers_for_the_same_dataset_share_one_build_and_one_turn(monkeypat
     [t.join(10) for t in threads]
     assert cache.builds == 1 and all(r is results[0] for r in results)
     assert cache.get(p, b"another") is not None           # the queue was not left waiting on a turn
+
+
+def test_discard_frees_one_dataset_and_says_whether_it_was_there():
+    cache = mh.DatasetCache()
+    p = mh.Params(m=4, k=16, nb=8, num_blocks=3)
+    cache.get(p, b"a")
+    cache.get(p, b"b")
+    assert cache.discard(p, b"a") is True
+    assert cache.discard(p, b"a") is False                # already gone
+    assert (p, b"a") not in cache._items and (p, b"b") in cache._items
+    assert cache.get(p, b"a") is not None and cache.builds == 3      # asking again rebuilds it

@@ -7,7 +7,7 @@ tested with a small floor, and tests marked `real_floor` run against the value i
 """
 import pytest
 
-from toycoin import chain as chain_module
+from tenero import chain as chain_module
 
 SMALL_FLOOR = 2200      # bytes: about five plain transactions
 

@@ -6,7 +6,7 @@ tested without a GPU.
 
 Three CUDA kernels (compiled at run time by CuPy) do all the generating; PyTorch does the int8
 matrix multiply on the tensor cores. Every kernel is an exact integer version of a function in
-toycoin.chacha / toycoin.matmulhash, and the self-test checks each one bit for bit.
+tenero.chacha / tenero.matmulhash, and the self-test checks each one bit for bit.
 """
 import hashlib
 import time
@@ -18,13 +18,13 @@ from . import matmulhash as mh
 
 CHUNK = 512  # fp32 fallback matmul: partial sums stay below 2**23, so float32 is still exact
 
-HEADER = hashlib.sha256(b"toycoin gpu pow test header").digest()
-EPOCH = b"toycoin-epoch-0"
+HEADER = hashlib.sha256(b"tenero gpu pow test header").digest()
+EPOCH = b"tenero-epoch-0"
 
 INSTALL_HINT = 'pip install "cupy-cuda13x[ctk]"'
 
 # The CUDA kernels. Written without any #include so NVRTC can compile them anywhere. PICKS is
-# filled in from toycoin.matmulhash so the two can never disagree.
+# filled in from tenero.matmulhash so the two can never disagree.
 KERNEL_SOURCE = r'''
 #define PICKS __PICKS__
 
@@ -40,7 +40,7 @@ __device__ __forceinline__ void quarter_round(unsigned &a, unsigned &b, unsigned
 }
 
 // The ChaCha20 permutation plus the feed-forward add, in place on 16 words
-// (the same as toycoin.chacha.chacha_core).
+// (the same as tenero.chacha.chacha_core).
 __device__ __forceinline__ void chacha_core(unsigned x[16]) {
     unsigned s[16];
     #pragma unroll
@@ -105,7 +105,7 @@ __global__ void keystream_kernel(const unsigned long long keys_ptr,
 // (num_slices, blocks_per_slice, 16) words. Block u of slice j takes block u of slice j-1, makes
 // PICKS data-dependent picks from anywhere in slices 0..j-1 (chosen by the words of that previous
 // block), XORs the picks together, and mixes it all with one ChaCha20 block.
-// (Identical to toycoin.matmulhash.fill_slice.) Launch it for j = 1, 2, 3... in order.
+// (Identical to tenero.matmulhash.fill_slice.) Launch it for j = 1, 2, 3... in order.
 __global__ void fill_kernel(const unsigned long long data_ptr,
                             const unsigned long long blocks_per_slice,
                             const unsigned slice_j)
@@ -150,7 +150,7 @@ __global__ void fill_kernel(const unsigned long long data_ptr,
 
 // The fold. Every 16-word chunk of C (int32; the position is XORed into word 0) goes through the
 // ChaCha20 permutation, and its words are added into 8 sums (word i and word i+8 into sum i).
-// (Identical to toycoin.matmulhash.fold_sums.) grid = (blocks per attempt, number of attempts).
+// (Identical to tenero.matmulhash.fold_sums.) grid = (blocks per attempt, number of attempts).
 // Integer addition is exact and order-independent, so the atomics stay deterministic.
 __global__ void fold_kernel(const unsigned long long c_ptr,      // int[num_attempts][chunks * 16]
                             const unsigned long long sums_ptr,   // unsigned long long[num_attempts][8]
@@ -294,7 +294,7 @@ def make_fused(torch, device):
 
 
 class TorchBackend:
-    """The same math as toycoin.matmulhash, on the GPU. `torch` is passed in so this layer can
+    """The same math as tenero.matmulhash, on the GPU. `torch` is passed in so this layer can
     be tested without a GPU."""
 
     def __init__(self, torch, device, backend="auto", fused=None):
@@ -453,11 +453,11 @@ def self_test(backend, title="[2] SELF-TEST (small dataset): does the GPU agree 
 
 
 class GpuSearcher:
-    """Finds proof-of-work nonces on the GPU for a matmul chain (see toycoin.pow).
+    """Finds proof-of-work nonces on the GPU for a matmul chain (see tenero.pow).
 
     Keeps the current epoch's dataset in VRAM and rebuilds it only when the epoch changes, so
     consecutive blocks in one epoch reuse it. `search` matches the interface of
-    toycoin.pow.CpuSearcher, so the chain code does not care which one it is given.
+    tenero.pow.CpuSearcher, so the chain code does not care which one it is given.
     """
 
     def __init__(self, backend, batch=32, log=None):

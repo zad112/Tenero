@@ -8,11 +8,11 @@ block.
 """
 import pytest
 
-from toycoin import chain as chain_module
-from toycoin import config
-from toycoin.chain import Blockchain, min_fee_for
-from toycoin.units import UNIT
-from toycoin.wallet import Wallet
+from tenero import chain as chain_module
+from tenero import config
+from tenero.chain import Blockchain, min_fee_for
+from tenero.units import UNIT
+from tenero.wallet import Wallet
 
 from .test_chain import c, make_chain, manual_block, signed_tx
 

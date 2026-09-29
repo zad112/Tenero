@@ -5,11 +5,11 @@ import time
 
 import pytest
 
-import toycoin.block as block_mod
-from toycoin.block import Block
-from toycoin.chain import Blockchain
-from toycoin.transaction import Transaction, COINBASE
-from toycoin.units import UNIT
+import tenero.block as block_mod
+from tenero.block import Block
+from tenero.chain import Blockchain
+from tenero.transaction import Transaction, COINBASE
+from tenero.units import UNIT
 
 T = 30              # target block time used in these tests
 START = 2**250      # starting target: about 64 attempts per block, so mining is instant

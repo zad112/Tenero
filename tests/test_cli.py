@@ -1,14 +1,14 @@
 import cli
-from toycoin.chain import Blockchain
-from toycoin.mempool import Mempool
-from toycoin.units import UNIT
+from tenero.chain import Blockchain
+from tenero.mempool import Mempool
+from tenero.units import UNIT
 
 
 def make_app(tmp_path, monkeypatch):
     # point the CLI at a scratch folder so it never touches your real chain
     monkeypatch.setattr(cli, "WALLET_DIR", str(tmp_path / "wallets"))
-    import toycoin.chain as chain_mod
-    import toycoin.mempool as mempool_mod
+    import tenero.chain as chain_mod
+    import tenero.mempool as mempool_mod
     chain_path = str(tmp_path / "chain.json")
     mempool_path = str(tmp_path / "mempool.json")
     monkeypatch.setattr(chain_mod, "DEFAULT_PATH", chain_path)
@@ -52,7 +52,7 @@ def test_difficulty_command(tmp_path, monkeypatch, capsys):
     app = make_app(tmp_path, monkeypatch)
     app.run(["difficulty"])
     out = capsys.readouterr().out
-    from toycoin.config import TARGET_BLOCK_TIME
+    from tenero.config import TARGET_BLOCK_TIME
     assert f"target block time: {TARGET_BLOCK_TIME}s" in out
     assert "hashes per block" in out
 
@@ -60,9 +60,9 @@ def test_difficulty_command(tmp_path, monkeypatch, capsys):
 # ---- chains with an expensive proof of work ----
 
 def matmul_chain_in_place(app_bc_saver, blocks=3):
-    from toycoin import matmulhash as mh
-    from toycoin.pow import MatmulPow
-    from toycoin.units import UNIT
+    from tenero import matmulhash as mh
+    from tenero.pow import MatmulPow
+    from tenero.units import UNIT
     bc = Blockchain(target=2**256 // 8, initial_reward=50 * UNIT, halving_interval=10_000,
                     max_supply=10**9 * UNIT, tail_reward=0, difficulty_window=0,
                     pow=MatmulPow(mh.Params(m=8, k=64, nb=32, num_blocks=4), 2))
@@ -128,9 +128,9 @@ def test_difficulty_names_the_proof_of_work(tmp_path, monkeypatch, capsys):
 
 def test_difficulty_explains_units_and_shows_tops_for_a_matmul_chain(tmp_path, monkeypatch, capsys):
     app = make_app(tmp_path, monkeypatch)
-    from toycoin import matmulhash as mh
-    from toycoin.pow import MatmulPow
-    from toycoin.units import UNIT
+    from tenero import matmulhash as mh
+    from tenero.pow import MatmulPow
+    from tenero.units import UNIT
     bc = Blockchain(target=2**256 // 8, initial_reward=50 * UNIT, halving_interval=10_000,
                     max_supply=10**9 * UNIT, tail_reward=0, difficulty_window=4,
                     pow=MatmulPow(mh.Params(m=8, k=64, nb=32, num_blocks=4), 2))

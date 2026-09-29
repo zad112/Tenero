@@ -8,12 +8,12 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-from toycoin import matmulhash as mh  # noqa: E402
-from toycoin import pow as powmod  # noqa: E402
-from toycoin.block import Block  # noqa: E402
-from toycoin.chain import Blockchain  # noqa: E402
-from toycoin.transaction import Transaction, COINBASE  # noqa: E402
-from toycoin.units import UNIT  # noqa: E402
+from tenero import matmulhash as mh  # noqa: E402
+from tenero import pow as powmod  # noqa: E402
+from tenero.block import Block  # noqa: E402
+from tenero.chain import Blockchain  # noqa: E402
+from tenero.transaction import Transaction, COINBASE  # noqa: E402
+from tenero.units import UNIT  # noqa: E402
 
 TINY = mh.Params(m=8, k=64, nb=32, num_blocks=6)
 START = 2**256 // 16          # about 16 attempts per block: instant even on the CPU
@@ -358,7 +358,7 @@ def test_sha256_chains_are_unchanged():
 
 
 def test_a_new_chain_takes_its_algorithm_from_the_config(monkeypatch, tmp_path):
-    from toycoin import config
+    from tenero import config
     monkeypatch.setattr(config, "POW_DATASET_GIB", 0.00002)
     monkeypatch.setattr(config, "POW_M", 8)
     monkeypatch.setattr(config, "POW_K", 64)
@@ -368,7 +368,7 @@ def test_a_new_chain_takes_its_algorithm_from_the_config(monkeypatch, tmp_path):
     bc = Blockchain.load_or_new(path)
     assert bc.pow.name == "matmul" and bc.pow.epoch_blocks == 7
     assert bc.pow.params.k == 64 and bc.pow.params.num_blocks >= 1
-    from toycoin import chain as chain_module
+    from tenero import chain as chain_module
     assert bc.target == 2**256 // chain_module.MATMUL_START_ATTEMPTS
     assert Blockchain.load_or_new(path, algorithm="sha256").pow.name == "sha256"
     with pytest.raises(ValueError):
@@ -376,7 +376,7 @@ def test_a_new_chain_takes_its_algorithm_from_the_config(monkeypatch, tmp_path):
 
 
 def test_default_pow_takes_an_epoch_override(monkeypatch):
-    from toycoin import config
+    from tenero import config
     monkeypatch.setattr(config, "POW_DATASET_GIB", 0.00002)
     monkeypatch.setattr(config, "POW_M", 8)
     monkeypatch.setattr(config, "POW_K", 64)

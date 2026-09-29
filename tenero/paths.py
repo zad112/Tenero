@@ -1,12 +1,12 @@
 """Where chain.json, mempool.json and the wallets live.
 
-Normally that is the project folder. Setting the TOYCOIN_DATA environment variable points
+Normally that is the project folder. Setting the TENERO_DATA environment variable points
 everything (miner, wallet, view) at another folder instead, which is handy for a scratch
 chain you can experiment on without touching your real one:
 
-    PowerShell:   $env:TOYCOIN_DATA = "scratch"      (then run miner.bat / cli.bat as usual)
-    cmd:          set TOYCOIN_DATA=scratch
-    back to normal:   Remove-Item Env:TOYCOIN_DATA      (or close the window)
+    PowerShell:   $env:TENERO_DATA = "scratch"      (then run miner.bat / cli.bat as usual)
+    cmd:          set TENERO_DATA=scratch
+    back to normal:   Remove-Item Env:TENERO_DATA      (or close the window)
 """
 import os
 
@@ -14,8 +14,8 @@ PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def data_dir(value=None):
-    """The data folder: `value` if given, else $TOYCOIN_DATA, else the project folder."""
-    value = os.environ.get("TOYCOIN_DATA") if value is None else value
+    """The data folder: `value` if given, else $TENERO_DATA, else the project folder."""
+    value = os.environ.get("TENERO_DATA") if value is None else value
     if not value:
         return PROJECT_DIR
     path = os.path.abspath(value)

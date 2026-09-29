@@ -28,7 +28,7 @@ Read `docs/CONSENSUS.md` for what each rule means. Every file is JSON with `sche
 ```
 python tools/make_vectors.py --check          # do the committed files match the reference?
 python -m pytest tests/test_vectors.py -q     # Python checks itself against them
-TOYCOIN_SLOW_VECTORS=1 python -m pytest tests/test_vectors.py -q     # also deep and full
+TENERO_SLOW_VECTORS=1 python -m pytest tests/test_vectors.py -q     # also deep and full
 ```
 
 A new implementation should load these files and reproduce every value. Start with `chacha20.json`,

@@ -6,8 +6,8 @@
 #     python difficulty_sim.py
 import random
 
-from toycoin.chain import Blockchain, format_hashrate
-from toycoin.config import TARGET_BLOCK_TIME
+from tenero.chain import Blockchain, format_hashrate
+from tenero.config import TARGET_BLOCK_TIME
 
 WINDOW = 30          # blocks the adjustment averages over (try 10, 30, 60, 120)
 BLOCK_TIME = TARGET_BLOCK_TIME   # target seconds per block (from config.py)

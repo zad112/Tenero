@@ -34,15 +34,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from toycoin import chacha  # noqa: E402
-from toycoin import chain as chain_module  # noqa: E402
-from toycoin import matmulhash as mh  # noqa: E402
-from toycoin import pow as powmod  # noqa: E402
-from toycoin.block import Block  # noqa: E402
-from toycoin.chain import Blockchain, min_fee_for  # noqa: E402
-from toycoin.transaction import COINBASE, Transaction  # noqa: E402
-from toycoin.units import UNIT, fmt, to_units  # noqa: E402
-from toycoin.wallet import Wallet, address_from_pubkey_hex  # noqa: E402
+from tenero import chacha  # noqa: E402
+from tenero import chain as chain_module  # noqa: E402
+from tenero import matmulhash as mh  # noqa: E402
+from tenero import pow as powmod  # noqa: E402
+from tenero.block import Block  # noqa: E402
+from tenero.chain import Blockchain, min_fee_for  # noqa: E402
+from tenero.transaction import COINBASE, Transaction  # noqa: E402
+from tenero.units import UNIT, fmt, to_units  # noqa: E402
+from tenero.wallet import Wallet, address_from_pubkey_hex  # noqa: E402
 
 VECTOR_DIR = os.path.join(ROOT, "tests", "vectors")
 SCHEMA = 1
@@ -56,7 +56,7 @@ def det_bytes(label, n):
     """n deterministic bytes from a label (SHA-256 in counter mode: portable, no PRNG needed)."""
     out, i = b"", 0
     while len(out) < n:
-        out += hashlib.sha256(f"toycoin vectors {label} {i}".encode()).digest()
+        out += hashlib.sha256(f"tenero vectors {label} {i}".encode()).digest()
         i += 1
     return out[:n]
 
@@ -215,7 +215,7 @@ def small_vectors():
                 {"cases": cases, "fold": folds})
 
 
-REAL_HEADER = hashlib.sha256(b"toycoin vectors real header").digest()
+REAL_HEADER = hashlib.sha256(b"tenero vectors real header").digest()
 
 
 def real_case(slices, hash_indices, low, high, count=3):
@@ -245,7 +245,7 @@ def real_vectors():
 def deep_vectors():
     return wrap("matmulhash_deep", "matmulhash v2 at the real parameters: slices up to 77 (each built "
                 "from all the earlier ones through the data-dependent picks) and attempts on slices "
-                "8 to 77. Slow: checked only when TOYCOIN_SLOW_VECTORS=1.",
+                "8 to 77. Slow: checked only when TENERO_SLOW_VECTORS=1.",
                 real_case(78, (0, 1, 2, 3, 7, 15, 31, 63, 77), 8, 77))
 
 
@@ -256,7 +256,7 @@ def full_vectors(params=None, seed=None, threads=4, progress=None):
     data = mh.build_dataset(p, seed, progress=progress, threads=threads)
     return wrap("matmulhash_full", "matmulhash v2 at the real parameters: the sha256 of every one of "
                 "the 256 slices of the epoch-0 dataset. Slow and RAM-hungry (4.3 GiB): checked only "
-                "when TOYCOIN_SLOW_VECTORS=1.",
+                "when TENERO_SLOW_VECTORS=1.",
                 {"params": params_dict(p), "epoch_seed": seed.hex(),
                  "dataset_sha256": sha(data.astype("<u4").tobytes()),
                  "slice_sha256": [slice_hash(data, j) for j in range(p.num_blocks)]})
@@ -291,7 +291,7 @@ def pow_misc_vectors():
     case("the largest nonce is fine when the hash follows", header, 2**64 - 1, b"\x00" * 64,
          mh.digest_of(mh.attempt_seed(header, 2**64 - 1), b"\x00" * 64).hex(), 2**256, True)
     return wrap("pow_misc", "Epoch seeds, epoch numbering, bits_to_target and the cheap pre-check.",
-                {"epoch_seed_0_label": "toycoin matmulhash epoch 0",
+                {"epoch_seed_0_label": "tenero matmulhash epoch 0",
                  "epoch_seeds": {str(e): powmod.epoch_seed(e).hex() for e in (*range(13), 100, 1000)},
                  "epoch_of": [{"epoch_blocks": eb, "index": h,
                                "epoch": powmod.MatmulPow(SMALL_PARAMS[1], eb).epoch_of(h)}
@@ -816,7 +816,7 @@ def matmul_cases():
     header = hashlib.sha256(blk._header_bytes()).digest()
     nonce = 0
     while True:
-        fake = hashlib.sha256(b"toycoin vectors fake mix" + nonce.to_bytes(8, "little")).digest() * 2
+        fake = hashlib.sha256(b"tenero vectors fake mix" + nonce.to_bytes(8, "little")).digest() * 2
         digest = mh.digest_of(mh.attempt_seed(header, nonce), fake)
         if int.from_bytes(digest, "big") < required:
             break

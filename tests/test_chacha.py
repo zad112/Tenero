@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from toycoin import chacha
+from tenero import chacha
 
 # RFC 8439 section 2.3.2: key 00 01 .. 1f, counter 1, nonce 00 00 00 09 00 00 00 4a 00 00 00 00.
 # The expected block is the one printed in the RFC (also confirmed against OpenSSL).

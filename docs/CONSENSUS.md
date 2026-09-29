@@ -1,7 +1,7 @@
 # Consensus rules
 
 This is the specification of what makes a block and a chain **valid** in the current reference
-implementation (the Python code in `toycoin/`). It is written so that another implementation can be
+implementation (the Python code in `tenero/`). It is written so that another implementation can be
 built from it and checked against `tests/vectors/`.
 
 How to read it:
@@ -36,7 +36,7 @@ Every number below is checked by a vector file, named in the last section.
 ## 2. Chain parameters
 
 Saved in `chain.json` (`params`, plus `target` at the top level) when a chain is created; an existing
-chain keeps them. Defaults are in `toycoin/config.py`.
+chain keeps them. Defaults are in `tenero/config.py`.
 
 | parameter | default | meaning |
 |---|---|---|
@@ -201,8 +201,8 @@ uint32**; "ChaCha20 core" means the 20-round permutation followed by adding the 
 64, `m*nb` a multiple of 16, `k * 128 * 128 < 2^31`, counters below 2^32.
 
 **Epochs.** Block `index` belongs to epoch `(index - 1) // epoch_blocks` (default `epoch_blocks = 100`).
-`epoch_seed(0) = sha256("toycoin matmulhash epoch 0")` and `epoch_seed(e+1) = sha256(epoch_seed(e))`.
-`dataset_key = sha256("toycoin matmulhash v2 dataset" + epoch_seed)`.
+`epoch_seed(0) = sha256("tenero matmulhash epoch 0")` and `epoch_seed(e+1) = sha256(epoch_seed(e))`.
+`dataset_key = sha256("tenero matmulhash v2 dataset" + epoch_seed)`.
 
 **The dataset** (for one epoch):
 

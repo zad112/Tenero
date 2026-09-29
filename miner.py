@@ -8,9 +8,10 @@ An existing chain keeps whatever proof of work it was created with. Run only ONE
 
 On a matmul chain, each block is re-checked on the CPU before it is kept. By default that check
 runs in the background while the GPU already searches for the next block (--no-overlap turns
-that off; --no-double-check skips the check). The check needs the epoch's dataset in RAM (4 GiB
-at full size, built in the background, one to two minutes per epoch; the next epoch's is prepared
-ahead of time), after which each check takes a fraction of a second.
+that off; --no-double-check skips the check). The check needs the epoch's dataset in RAM (about
+4.3 GiB at full size, built in the background, one to two minutes per epoch). The next epoch's is
+prepared during the last 10 blocks, so both are in RAM (about 8.6 GiB) for those blocks only; a
+finished epoch's dataset is freed as soon as a check for the next epoch starts.
 """
 import os
 
@@ -26,11 +27,11 @@ import threading  # noqa: E402
 import time  # noqa: E402
 from concurrent.futures.process import BrokenProcessPool  # noqa: E402
 
-from toycoin import config, paths  # noqa: E402
-from toycoin.chain import Blockchain, format_hashrate, format_tops  # noqa: E402
-from toycoin.pow import GpuFault, epoch_seed  # noqa: E402
-from toycoin.mempool import Mempool  # noqa: E402
-from toycoin.units import fmt  # noqa: E402
+from tenero import config, paths  # noqa: E402
+from tenero.chain import Blockchain, format_hashrate, format_tops  # noqa: E402
+from tenero.pow import GpuFault, epoch_seed  # noqa: E402
+from tenero.mempool import Mempool  # noqa: E402
+from tenero.units import fmt  # noqa: E402
 
 
 MAX_FAULTS = 3   # stop after this many GPU results in a row that the CPU rejects
@@ -54,7 +55,7 @@ def wants_process_check(args, searcher):
         return False
     if args.check_process:
         return True
-    from toycoin.gpubackend import GpuSearcher
+    from tenero.gpubackend import GpuSearcher
     return isinstance(searcher, GpuSearcher)
 
 
@@ -66,7 +67,7 @@ def make_gpu_searcher(skip_selftest=False, log=print):
     """Sets up the GPU and checks it against the CPU reference. Raises RuntimeError with a
     plain message if it cannot (no PyTorch, no CUDA GPU, no CuPy for the CUDA kernels, or the
     GPU disagrees with the CPU)."""
-    from toycoin import gpubackend as gb
+    from tenero import gpubackend as gb
     try:
         import torch
     except ImportError:
@@ -129,7 +130,7 @@ class BackgroundCheck:
 def measure_baseline(searcher, work, seconds=None):
     """The GPU search speed (attempts per second) with nothing else running, so the speed
     during a background check can be compared with it. None if the searcher cannot tell."""
-    from toycoin.gpubackend import GpuSearcher
+    from tenero.gpubackend import GpuSearcher
     if not isinstance(searcher, GpuSearcher):
         return None      # only the real GPU searcher has a meaningful baseline
     seconds = BASELINE_SECONDS if seconds is None else seconds
@@ -188,7 +189,8 @@ class Session:
         self.prepared.add(epoch)
         work, p = bc.pow, bc.pow.params
         print(f"  preparing the CPU reference dataset for epoch {epoch} in the background "
-              f"({p.dataset_bytes / 2**30:.2f} GiB of RAM; one to two minutes at full size)")
+              f"(about {p.dataset_bytes * 1.08 / 2**30:.1f} GiB of RAM; one to two minutes at "
+              f"full size; the finished epoch's is freed)")
         if self.checker is not None:
             try:
                 self.checker.prepare(work, epoch)  # built in the checker process's memory
@@ -439,7 +441,7 @@ class Session:
 
 
 def main(argv=None, searcher=None):
-    ap = argparse.ArgumentParser(description="toycoin miner")
+    ap = argparse.ArgumentParser(description="Tenero miner")
     ap.add_argument("address", nargs="?", help="payout address (40 hex characters)")
     ap.add_argument("--blocks", type=int, help="stop after this many blocks")
     ap.add_argument("--pow", choices=("matmul", "sha256"), default=None,
@@ -502,7 +504,7 @@ def main(argv=None, searcher=None):
 
     if start.pow.name == "matmul" and searcher is None:
         if args.cpu:
-            from toycoin.pow import CpuSearcher
+            from tenero.pow import CpuSearcher
             searcher = CpuSearcher()
             print("CPU search: correct but very slow at full size.")
         else:
@@ -514,7 +516,7 @@ def main(argv=None, searcher=None):
 
     threads = build_threads_for(args.max_cores)
     if start.pow.name == "matmul":
-        from toycoin import matmulhash
+        from tenero import matmulhash
         matmulhash.set_build_threads(threads)
         if args.no_double_check:
             print(f"CPU budget: at most {args.max_cores} cores; with no CPU checks the only "
@@ -527,7 +529,7 @@ def main(argv=None, searcher=None):
     session = Session(args, address, searcher, mempool)
     session.overlap = (not start.pow.cheap and not args.no_overlap and not args.no_double_check)
     if session.overlap and wants_process_check(args, searcher):
-        from toycoin.checker import ProcessChecker
+        from tenero.checker import ProcessChecker
         session.checker = ProcessChecker(build_threads=threads)
     if start.pow.name == "matmul":
         if session.overlap:
