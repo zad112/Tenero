@@ -457,8 +457,33 @@ Separate tables, so the prunable one can be emptied without touching the others:
 | `key_images` | key image -> height (the spent set) |
 | `meta` | chain id, tip, cumulative work, `pruned_below`, the assume-valid checkpoint |
 
-`redb` is a copy-on-write database; deleting rows does not shrink the file by itself, and its compaction is to
-be tested in M6 before this table plan is trusted.
+This layout is implemented in `crates/tenero-store` (`Store::append_block`, `pop_block` for reorganisations,
+`prune_below`, `prune_below_in_steps`, `prune_keeping`, `compact`, and a `state_digest` that pruning must never
+change). It is tested against an in-memory model through a random history of appends, reorganisations (also
+through pruned blocks) and prunings, and every stored block's Merkle root is recomputed from the pruned data.
+
+**Measured** (`crates/tenero-store/tests/store.rs`, the compaction test; `redb` 4.3.0 on Windows; 150 blocks of
+40 transactions, fields of the real sizes, **random stand-in proofs of 1,900 bytes**, not real ones):
+
+| | file size |
+|---|---|
+| as written, one commit per block | 33.7 MB |
+| the same, compacted (the honest baseline: about 4.1 kB per transaction) | 24.7 MB |
+| the proofs alone | 11.3 MB (46% of the compacted file) |
+| after pruning, **before** compaction | **49.4 MB** (it grew) |
+| after pruning **and** compaction | **8.1 MB, 33% of the compacted full chain** (about 1.35 kB per transaction) |
+
+What this shows:
+
+- **Pruning plus compaction leaves about a third of the file**, which matches the estimate of 14.4.
+- **Pruning alone does not shrink the file**, and one big prune transaction roughly **doubled** it, because a
+  copy-on-write database needs room for the pages it is replacing. So pruning is done in bounded steps
+  (`prune_below_in_steps`) followed by `compact`, and a node needs spare disk while it does so.
+- **On disk a transaction costs about 4.1 kB, not the 2.5 kB of its raw bytes** (about 1.65 times): the output
+  and key-image tables repeat some of what the transaction row holds, and the B-trees have overhead. At the
+  worst-case 31 million transactions a year that is **about 127 GB a year for an archive node and about 42 GB
+  for a pruned one**, higher than the raw arithmetic of 14.4 (79 and 27 GB). These extrapolate a small
+  measurement with fake proofs, so they are indications, not measurements.
 
 ### 14.4 How big, roughly (my arithmetic, **not measured**; M6 measures)
 
@@ -480,6 +505,13 @@ So a pruned node (prefixes, state, the recent blocks and the headers: about 27 G
 size of an archive node, and a snapshot node (state, recent blocks and headers: about 8 GB) about **a tenth**.
 A young chain will be nowhere near the worst case; these are ceilings, and the ratios rest on my size
 estimates above.
+
+**A cheap saving to decide before launch (not done): move the ring indexes into the prunable part.** Each input
+carries 16 ring indexes of 8 bytes (128 bytes, so about 256 bytes of a 620-byte prefix). Nothing needs them
+after the transaction has been verified, and the id would still cover them through the prunable hash. Moving
+them takes the prefix from about 620 to about 364 bytes, which is **about a fifth off a pruned node's size**
+(roughly 34 GB instead of 42 GB a year at the worst case, by the same rough scaling). It changes the
+serialization and its vectors, which is free now and expensive after launch.
 
 ### 14.5 What this does not solve
 

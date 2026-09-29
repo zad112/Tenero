@@ -11,6 +11,24 @@ pub fn sha256(parts: &[&[u8]]) -> [u8; 32] {
     h.finalize().into()
 }
 
+/// SHA-256 over data that arrives in pieces (for hashing more than fits comfortably in memory).
+#[derive(Default)]
+pub struct Sha256Stream(Sha256);
+
+impl Sha256Stream {
+    pub fn new() -> Sha256Stream {
+        Sha256Stream(Sha256::new())
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+
+    pub fn finalize(self) -> [u8; 32] {
+        self.0.finalize().into()
+    }
+}
+
 /// Lower-case hexadecimal.
 pub fn hex_lower(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -45,6 +63,17 @@ mod tests {
             sha256(&[b"abc"]).to_vec(),
             hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad").unwrap()
         );
+    }
+
+    #[test]
+    fn a_stream_gives_the_same_hash_as_one_shot_however_it_is_split() {
+        let data: Vec<u8> = (0..1000u32).map(|i| (i * 7) as u8).collect();
+        for split in [0, 1, 63, 64, 65, 500, 999, 1000] {
+            let mut s = Sha256Stream::new();
+            s.update(&data[..split]);
+            s.update(&data[split..]);
+            assert_eq!(s.finalize(), sha256(&[&data]), "split at {split}");
+        }
     }
 
     #[test]

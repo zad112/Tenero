@@ -95,8 +95,10 @@ chain must be able to run pruned (`CONSENSUS_V2.md` section 14). The original op
 - **M6. Chain state and validation** in the new model, storage, fork choice, reorganisations.
   *Status (2026-09-29): started.* Done: `tenero_core::v2`, the canonical wire form of every version 2 object
   (including the pruned forms), strict decoding, ids, the Merkle root and the genesis block, matching all the
-  `v2_*` vectors made by the independent Python reference. Next: the `redb` storage laid out for pruning
-  (`CONSENSUS_V2.md` 14.3), then block validation without the cryptographic proofs, then fork choice.
+  `v2_*` vectors made by the independent Python reference. Also done: `crates/tenero-store`, the `redb`
+  storage laid out for pruning (`CONSENSUS_V2.md` 14.3): append, reorganisation (also through pruned blocks),
+  pruning in steps, compaction and a state digest, tested against an in-memory model. Next: block validation
+  without the cryptographic proofs, then fork choice (which needs cumulative-work arithmetic).
 - **M7. Privacy in stages.** (P1) one-time addresses, Pedersen commitments, range proofs, key images, and the
   stand-in membership proof; (P2) FCMP++ when a stable, audited implementation exists; (P3) subaddresses,
   view keys, integrated addresses, multisig; (P4) network privacy.
