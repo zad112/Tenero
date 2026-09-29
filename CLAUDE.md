@@ -15,6 +15,13 @@ $env:TENERO_SLOW_VECTORS = "1"; python -m pytest tests/test_vectors.py -q     # 
 .\gpu_test.bat                               # the REAL GPU check: only on the owner's machine
 python miner.py <address> [--pow sha256]     # sha256 = a small chain a CPU can mine
 $env:TENERO_DATA = "$HOME\scratch"          # do experiments on a scratch chain, not the real one
+
+# The native rewrite (branch `rewrite`; Rust only): cargo is in $HOME\.cargo\bin
+cargo test --workspace                       # the Rust code against the golden vectors; no GPU needed
+cargo clippy --workspace --all-targets -- -D warnings
+$env:TENERO_SLOW_VECTORS = "1"; cargo test --test pow_vectors      # the deep and full (4.3 GiB) vectors
+cargo test --release -p tenero-gpu -- --ignored --test-threads=1  # the GPU checks: owner's machine, CUDA 13.4 bin\x64 on PATH
+python tools/make_vectors_v2.py --check      # the version 2 data-model vectors (a DRAFT design)
 ```
 
 ## Where things are
@@ -22,7 +29,10 @@ $env:TENERO_DATA = "$HOME\scratch"          # do experiments on a scratch chain,
 - `docs/CONSENSUS.md` the rules, in enough detail to build another implementation from
 - `docs/KNOWN_ISSUES.md` verified flaws not to carry over; `docs/ARCHITECTURE.md` the parts;
   `docs/REWRITE_PLAN.md` the proposed plan and the open decisions
-- `tests/vectors/` golden vectors (see its README); `tools/make_vectors.py` generates them
+- `docs/CONSENSUS_V2.md` the DRAFT design of the rewrite's data model (outputs, serialization, genesis,
+  privacy staging); `docs/BENCHMARKS.md` measured CPU and GPU numbers; `crates/` the Rust code
+- `tests/vectors/` golden vectors (see its README); `tools/make_vectors.py` generates them, and
+  `tools/make_vectors_v2.py` the version 2 data-model ones
 
 ## Rules
 
