@@ -30,6 +30,13 @@ Every number below is checked by a vector file, named in the last section.
   occur fits in a signed 64-bit integer (the main emission is at most 2 * 10^11 units), but two
   computations need wider intermediates: the oversize penalty (`base * over * over`) and the
   difficulty adjustment (256-bit targets multiplied by solve times).
+- **Widths chosen by the Rust implementation** (`crates/tenero-core`; the vectors pass with them, and an
+  overflow is an explicit error, never a wrap): amounts and rewards are `i64`/`u64` units; block sizes
+  are `u64` bytes; timestamps are `i64` seconds; the oversize penalty's `base * over^2` is computed in
+  `u128`; the difficulty adjustment averages targets and multiplies by the weighted solve times in a
+  320-bit integer, and refuses a `block_time`/`window` whose weighted times or divisor exceed 64 bits.
+  Text amounts are parsed strictly (digits, an optional `-`, at most 4 decimals): no spaces, `+`,
+  exponents, `1.` or `.5`.
 - A **target** is a 256-bit unsigned integer. A hash is **valid** when it is *strictly below* the
   target, comparing the hash as a big-endian integer.
 
