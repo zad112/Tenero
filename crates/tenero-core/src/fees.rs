@@ -3,8 +3,11 @@
 
 /// Minimum fee rate: 0.01 coins per 1000 bytes = 100 units per 1000 bytes.
 pub const MIN_FEE_RATE_UNITS_PER_1000_BYTES: u64 = 100;
-/// The median never goes below this, in bytes.
+/// The median never goes below this, in bytes (version 1).
 pub const MIN_BLOCK_MEDIAN: u64 = 300_000;
+/// The same floor in version 2: 150,000 bytes. It is the size up to which a block carries no penalty,
+/// so it bounds the free growth of the chain (about 79 GB a year at 60-second blocks, at the very most).
+pub const V2_MIN_BLOCK_MEDIAN: u64 = 150_000;
 /// The median is taken over this many recent blocks.
 pub const MEDIAN_WINDOW: usize = 10;
 

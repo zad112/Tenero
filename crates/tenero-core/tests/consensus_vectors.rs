@@ -317,9 +317,10 @@ fn the_dynamic_minimum_fee() {
     let v = load("v2_fees").unwrap();
     let c = &v["constants"];
     assert_eq!(u(&c["FEE_REFERENCE_WEIGHT"]), fees::FEE_REFERENCE_WEIGHT);
-    assert_eq!(u(&c["MIN_BLOCK_MEDIAN"]), fees::MIN_BLOCK_MEDIAN);
+    assert_eq!(u(&c["MIN_BLOCK_MEDIAN"]), fees::V2_MIN_BLOCK_MEDIAN);
+    assert_eq!(u(&c["MEDIAN_WINDOW"]) as usize, fees::MEDIAN_WINDOW);
     let cases = v["dynamic_min_fee"].as_array().unwrap();
-    assert!(cases.len() > 70);
+    assert!(cases.len() >= 100);
     let mut nulls = 0;
     for c in cases {
         let (size, base, median) = (u(&c["size"]), u(&c["base_reward"]), u(&c["median"]));
@@ -337,6 +338,68 @@ fn the_dynamic_minimum_fee() {
         }
     }
     assert_eq!(nulls, 3);
+}
+
+/// The version 2 floor is 150 kB: the median (and so the free block size, and the fee) starts there.
+#[test]
+fn the_version_2_median_floor_and_the_fee_it_gives() {
+    assert_eq!(fees::V2_MIN_BLOCK_MEDIAN, 150_000);
+    // a 2,500-byte transaction at the floor with the 20-coin reward: 0.00666667 coins
+    assert_eq!(
+        fees::dynamic_min_fee(2_500, 2_000_000_000, fees::V2_MIN_BLOCK_MEDIAN),
+        Ok(666_667)
+    );
+    // a block filled to the floor pays at least reward * 3000 / median = 2% of the reward = 0.4 coins
+    assert_eq!(
+        fees::dynamic_min_fee(150_000, 2_000_000_000, fees::V2_MIN_BLOCK_MEDIAN),
+        Ok(40_000_000)
+    );
+    // with no history, and with blocks smaller than the floor, the median is the floor
+    assert_eq!(fees::median_at(&[], 1, fees::V2_MIN_BLOCK_MEDIAN), 150_000);
+    assert_eq!(
+        fees::median(&[149_999; 10], fees::V2_MIN_BLOCK_MEDIAN),
+        150_000
+    );
+    assert_eq!(
+        fees::median(&[150_001; 10], fees::V2_MIN_BLOCK_MEDIAN),
+        150_001
+    );
+    // nothing is free above twice the median, and the size up to the floor carries no penalty
+    assert_eq!(fees::penalty(2_000_000_000, 150_000, 150_000), Ok(0));
+    assert_eq!(
+        fees::penalty(2_000_000_000, 300_000, 150_000),
+        Ok(2_000_000_000)
+    );
+    assert!(!fees::over_hard_limit(300_000, 150_000));
+    assert!(fees::over_hard_limit(300_001, 150_000));
+}
+
+#[test]
+fn the_version_2_block_size_median() {
+    let v = load("v2_fees").unwrap();
+    for c in v["median"].as_array().unwrap() {
+        let sizes: Vec<u64> = c["sizes"].as_array().unwrap().iter().map(u).collect();
+        assert_eq!(
+            fees::median(&sizes, u(&c["floor"])),
+            u(&c["median"]),
+            "{sizes:?}"
+        );
+    }
+    let h = &v["median_history"];
+    let sizes: Vec<u64> = h["sizes_by_position_0_is_genesis"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(u)
+        .collect();
+    for c in h["windowed"].as_array().unwrap() {
+        let pos = u(&c["pos"]) as usize;
+        assert_eq!(
+            fees::median_at(&sizes, pos, fees::V2_MIN_BLOCK_MEDIAN),
+            u(&c["median"]),
+            "pos {pos}"
+        );
+    }
 }
 
 #[test]

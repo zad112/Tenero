@@ -19,7 +19,8 @@ How to read it: **Carried over** means the v1 rule is kept as it is (same vector
   pre-check and the full check. Its input is a 32-byte `header_hash`; how that is computed changes (section 5).
 - **Emission**: schedule, halving, cap and tail (section 5 of v1), **60 s blocks**, **LWMA difficulty** with its
   clamps, the **median-time rule**, and the **block-size median, penalty and hard limit** (sections 6 and 7 of
-  v1). Their Rust implementations already pass the v1 vectors.
+  v1), except that the median's floor is **150,000 bytes instead of 300,000** (section 8.2). Their Rust
+  implementations already pass the v1 vectors.
 - **The reward rule**: the coinbase pays exactly `reward(height) - penalty + fees`.
 
 What v1 did with accounts, ECDSA, JSON and balances is **replaced** (sections 3 to 7).
@@ -268,10 +269,10 @@ All three are known before the block, so every node computes the same number, an
 cheaper transaction is invalid. The computation is exact integer arithmetic (a 128-bit intermediate; a result
 that does not fit in a `u64` is an error). `v2_fees.json` pins it.
 
-What it does, with the default numbers (reward 20 coins, median 300 kB):
+What it does, with the default numbers (reward 20 coins, median at its 150 kB floor, section 8.2):
 
-- A 2,500-byte transaction needs 166,667 units (**0.00166667 coins**).
-- A block filled up to the median pays **at least `reward * 3000 / median` = 1% of the reward** in fees.
+- A 2,500-byte transaction needs 666,667 units (**0.00666667 coins**).
+- A block filled up to the median pays **at least `reward * 3000 / median` = 2% of the reward** in fees.
 - The fee **scales with the reward**, so it falls as the emission halves (in the tail, 0.5 coins, it is 40
   times lower), and with **1 / median^2**: when blocks have been big for a while, fees fall (room is cheap),
   and when they are small they rise. This is the same shape as Monero's dynamic fee; it is the design of this
@@ -286,8 +287,26 @@ Consequences to know about:
 - **A miner can influence the median** by stuffing recent blocks, which lowers the fee for the next ones. The
   oversize penalty (quadratic beyond the median) is what makes that expensive, and the cost is not zero.
 - **Nothing here stops a miner filling their own blocks**: they can pay the fee to themselves. What limits
-  that is the 300 kB size floor (blocks up to it carry no penalty), so the worst case is about 430 MB of chain
-  growth a day. That is what pruning (section 14) is for.
+  that is the 150 kB size floor (blocks up to it carry no penalty, section 8.2), so the worst case is about
+  216 MB of chain growth a day. That is what pruning (section 14) is for.
+
+### 8.2 The block-size floor: 150,000 bytes  (**DECIDED**)
+
+The block-size median (v1 section 6: the upper median of the last 10 block sizes) never goes below
+**`MIN_BLOCK_MEDIAN = 150,000` bytes** in version 2 (v1 used 300,000). A block is penalty-free up to the median,
+loses reward quadratically above it, and is invalid above twice the median (v1's rules, unchanged). The floor is
+therefore the size a block may be **for free**, so it bounds how fast the chain can grow without anyone paying
+for it:
+
+- **`150,000 bytes * 525,600 blocks a year = about 79 GB a year`, at the very most.** With v1's 300 kB it was
+  158 GB. (Monero's 2-minute blocks with a 300 kB floor have the same ceiling of about 79 GB, at half the blocks.)
+- **What it costs**: at 150 kB a block holds about 60 ordinary transactions, roughly one a second, before any
+  penalty. It is not a cap: sustained demand raises the median, but each block above the median pays a
+  quadratic penalty out of the miner's reward, which is the price of growth.
+- **The fee formula scales with it**: `fee` is proportional to `1 / median^2`, so the floor makes fees 4 times
+  higher than they would be at 300 kB (8.1).
+- It is a consensus constant of rules version 2; changing it later is a new version (section 10). `v2_fees.json`
+  pins the floor and the median rule.
 
 ## 9. Addresses and keys  (decision 5, **DECIDED: Carrot**)
 
@@ -369,6 +388,7 @@ Decided by the owner on 2026-09-29:
 | 6 | genesis label (5.4) and limits (6.2) | label **`"tenero experimental network 1"`**; the limits are **PROVISIONAL** |
 | 7 | CLSAG and Bulletproofs+ (section 2) | **the `monero-oxide` crates**, after the audit is read and a version is pinned (M7) |
 | 8 | pruning (section 14) | **required**: the chain must be able to run pruned so nobody has to download hundreds of gigabytes |
+| 9 | block-size floor (8.2) | **150,000 bytes** (v1: 300,000), to bound the free growth of the chain |
 
 Still open, none of which blocks M6:
 
@@ -446,18 +466,18 @@ For a typical 2-input, 2-output transaction: a prefix of about 620 bytes (two in
 rings, two outputs of 123, the fee, a little `extra`) and a prunable part of about 1.9 kB (two CLSAG
 signatures, two pseudo-output commitments and one aggregated range proof, from the published sizes of those
 schemes). That is about 2.5 kB a transaction, **about three quarters of it prunable**. At the worst case
-(every block full to the 300 kB median, all such transactions, about 62 million a year):
+(every block full to the 150 kB floor, all such transactions, about 31 million a year):
 
 | | per year, worst case |
 |---|---|
-| everything (archive) | about 158 GB |
-| prefixes only | about 38 GB |
-| state (outputs and key images, about 230 bytes a transaction) | about 14 GB |
+| everything (archive) | about 79 GB |
+| prefixes only | about 19 GB |
+| state (outputs and key images, about 230 bytes a transaction) | about 7 GB |
 | headers (146 bytes a block) | about 77 MB |
-| the last 5,500 blocks in full | about 1.6 GB |
+| the last 5,500 blocks in full | about 0.8 GB |
 
-So a pruned node (prefixes, state, the recent blocks and the headers: about 54 GB) is about **a third** the
-size of an archive node, and a snapshot node (state, recent blocks and headers: about 16 GB) about **a tenth**.
+So a pruned node (prefixes, state, the recent blocks and the headers: about 27 GB) is about **a third** the
+size of an archive node, and a snapshot node (state, recent blocks and headers: about 8 GB) about **a tenth**.
 A young chain will be nowhere near the worst case; these are ceilings, and the ratios rest on my size
 estimates above.
 

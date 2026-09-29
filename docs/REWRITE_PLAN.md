@@ -12,7 +12,8 @@ Decisions marked **DECIDE** are open. Each has a recommendation, which is only a
 - **matmulhash v2**, bit for bit as in `CONSENSUS.md` section 8, and the CUDA source in
   `tenero/gpubackend.py` (it is already C++).
 - **Emission** (20 coins, halving every 525,600 blocks, 20,000,000 coin cap, 0.5 tail), **60 s blocks**,
-  **LWMA** difficulty, the **300 kB block-size floor with the quadratic penalty and the 2x hard limit**.
+  **LWMA** difficulty, the **block-size floor with the quadratic penalty and the 2x hard limit** (300 kB in
+  v1; **150 kB in version 2**, `CONSENSUS_V2.md` 8.2).
 - **`tests/vectors/`** define conformance for all of it.
 
 ## Decisions to make first

@@ -56,7 +56,10 @@ DECIMALS = 8
 UNIT = 10 ** DECIMALS
 # The dynamic minimum fee (section 8): fee >= ceil(base_reward * FEE_REFERENCE_WEIGHT * size / median^2).
 FEE_REFERENCE_WEIGHT = 3000
-MIN_BLOCK_MEDIAN = 300_000
+# The block-size median never goes below this (version 1 used 300,000): it is the size up to which a block
+# carries no penalty, so it bounds the free growth of the chain. DECIDED 150,000 (docs/CONSENSUS_V2.md 8.2).
+MIN_BLOCK_MEDIAN = 150_000
+MEDIAN_WINDOW = 10
 U64_MAX = 2 ** 64 - 1
 
 
@@ -641,18 +644,39 @@ def oversize_penalty(base, size, median):
     return -(-(base * over * over) // (median * median))
 
 
+def block_median(sizes, floor):
+    """The upper median of the recent block sizes (the element at index len // 2 once sorted), at least
+    `floor`; with no sizes it is `floor`."""
+    s = sorted(sizes)
+    return max(floor, s[len(s) // 2] if s else 0)
+
+
+def median_at(sizes_by_position, pos, floor, window=MEDIAN_WINDOW):
+    """The median the block at position `pos` is judged against: the `window` positions before it, from
+    position 1 on (position 0 is the genesis block and is never counted)."""
+    return block_median(sizes_by_position[max(1, pos - window):pos], floor)
+
+
 def fees_vectors():
     rewards = [20 * UNIT, 10 * UNIT, UNIT // 2, 1]
-    medians = [MIN_BLOCK_MEDIAN, 600_000, 10_000_000]
+    medians = [MIN_BLOCK_MEDIAN, 300_000, 600_000, 10_000_000]
     sizes = [0, 1, 427, 2500, 100_000, 300_000]
     fee_cases = [{"base_reward": r, "median": m, "size": s, "fee": dynamic_min_fee(s, r, m)}
                  for r in rewards for m in medians for s in sizes]
     fee_cases += [{"base_reward": r, "median": m, "size": s, "fee": dynamic_min_fee(s, r, m)} for r, m, s in (
-        (2 ** 63, MIN_BLOCK_MEDIAN, 2 ** 32),        # large but it fits
+        (2 ** 63, MIN_BLOCK_MEDIAN, 2 ** 32),        # does not fit in a u64: null
         (U64_MAX, 1, 10 ** 12),                      # does not fit in a u64: null
         (U64_MAX, MIN_BLOCK_MEDIAN, U64_MAX),        # does not fit: null
         (20 * UNIT, 1, 1),                           # a median of 1 byte
     )]
+    floor = MIN_BLOCK_MEDIAN
+    size_lists = [[], [100] * 10, [1_000_000] * 10, [0] * 9 + [10_000_000], [200_000] * 4 + [0] * 6,
+                  [200_000] * 5 + [0] * 5, [floor - 1] * 10, [floor + 1] * 10, [floor] * 10, [floor + 1] * 5 + [0] * 5]
+    median_cases = [{"floor": floor, "sizes": sl, "median": block_median(sl, floor)} for sl in size_lists]
+    by_position = [0, 300, 500_000, 0, 620_000, 10, 700_000, 400_000, 350_000, 900, 450_000, 5, 320_000, 600_000]
+    history = {"sizes_by_position_0_is_genesis": by_position,
+               "windowed": [{"pos": pos, "median": median_at(by_position, pos, floor)}
+                            for pos in range(1, len(by_position) + 1)]}
     penalty_cases = [{"base": b, "median": m, "size": s, "penalty": oversize_penalty(b, s, m)}
                      for b in (20 * UNIT, UNIT // 2) for m in (MIN_BLOCK_MEDIAN, 1_000_000)
                      for s in (m - 1, m, m + 1, m * 3 // 2, m * 2, 777_777)]
@@ -661,10 +685,12 @@ def fees_vectors():
                 "ceil(base_reward * FEE_REFERENCE_WEIGHT * size / median^2)), in units of 10^-8 coins, where base_reward "
                 "is the block's reward before any penalty and median is the block-size median that block is judged "
                 "against. `fee` is null when the result does not fit in a u64. Also the oversize penalty in the new units "
-                "(the version 1 rule, unchanged).",
+                "(the version 1 rule, unchanged), and the block-size median with the version 2 floor of 150,000 bytes "
+                "(the rule of version 1, with a different floor).",
                 {"constants": {"FEE_REFERENCE_WEIGHT": FEE_REFERENCE_WEIGHT, "MIN_BLOCK_MEDIAN": MIN_BLOCK_MEDIAN,
-                               "DECIMALS": DECIMALS},
-                 "dynamic_min_fee": fee_cases, "penalty": penalty_cases})
+                               "MEDIAN_WINDOW": MEDIAN_WINDOW, "DECIMALS": DECIMALS},
+                 "dynamic_min_fee": fee_cases, "penalty": penalty_cases,
+                 "median": median_cases, "median_history": history})
 
 
 def emission_vectors():

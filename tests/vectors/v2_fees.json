@@ -2,10 +2,47 @@
  "constants": {
   "DECIMALS": 8,
   "FEE_REFERENCE_WEIGHT": 3000,
-  "MIN_BLOCK_MEDIAN": 300000
+  "MEDIAN_WINDOW": 10,
+  "MIN_BLOCK_MEDIAN": 150000
  },
- "description": "The dynamic minimum fee of the version 2 rules (docs/CONSENSUS_V2.md section 8): fee >= max(1, ceil(base_reward * FEE_REFERENCE_WEIGHT * size / median^2)), in units of 10^-8 coins, where base_reward is the block's reward before any penalty and median is the block-size median that block is judged against. `fee` is null when the result does not fit in a u64. Also the oversize penalty in the new units (the version 1 rule, unchanged).",
+ "description": "The dynamic minimum fee of the version 2 rules (docs/CONSENSUS_V2.md section 8): fee >= max(1, ceil(base_reward * FEE_REFERENCE_WEIGHT * size / median^2)), in units of 10^-8 coins, where base_reward is the block's reward before any penalty and median is the block-size median that block is judged against. `fee` is null when the result does not fit in a u64. Also the oversize penalty in the new units (the version 1 rule, unchanged), and the block-size median with the version 2 floor of 150,000 bytes (the rule of version 1, with a different floor).",
  "dynamic_min_fee": [
+  {
+   "base_reward": 2000000000,
+   "fee": 1,
+   "median": 150000,
+   "size": 0
+  },
+  {
+   "base_reward": 2000000000,
+   "fee": 267,
+   "median": 150000,
+   "size": 1
+  },
+  {
+   "base_reward": 2000000000,
+   "fee": 113867,
+   "median": 150000,
+   "size": 427
+  },
+  {
+   "base_reward": 2000000000,
+   "fee": 666667,
+   "median": 150000,
+   "size": 2500
+  },
+  {
+   "base_reward": 2000000000,
+   "fee": 26666667,
+   "median": 150000,
+   "size": 100000
+  },
+  {
+   "base_reward": 2000000000,
+   "fee": 80000000,
+   "median": 150000,
+   "size": 300000
+  },
   {
    "base_reward": 2000000000,
    "fee": 1,
@@ -112,6 +149,42 @@
    "base_reward": 2000000000,
    "fee": 18000,
    "median": 10000000,
+   "size": 300000
+  },
+  {
+   "base_reward": 1000000000,
+   "fee": 1,
+   "median": 150000,
+   "size": 0
+  },
+  {
+   "base_reward": 1000000000,
+   "fee": 134,
+   "median": 150000,
+   "size": 1
+  },
+  {
+   "base_reward": 1000000000,
+   "fee": 56934,
+   "median": 150000,
+   "size": 427
+  },
+  {
+   "base_reward": 1000000000,
+   "fee": 333334,
+   "median": 150000,
+   "size": 2500
+  },
+  {
+   "base_reward": 1000000000,
+   "fee": 13333334,
+   "median": 150000,
+   "size": 100000
+  },
+  {
+   "base_reward": 1000000000,
+   "fee": 40000000,
+   "median": 150000,
    "size": 300000
   },
   {
@@ -225,6 +298,42 @@
   {
    "base_reward": 50000000,
    "fee": 1,
+   "median": 150000,
+   "size": 0
+  },
+  {
+   "base_reward": 50000000,
+   "fee": 7,
+   "median": 150000,
+   "size": 1
+  },
+  {
+   "base_reward": 50000000,
+   "fee": 2847,
+   "median": 150000,
+   "size": 427
+  },
+  {
+   "base_reward": 50000000,
+   "fee": 16667,
+   "median": 150000,
+   "size": 2500
+  },
+  {
+   "base_reward": 50000000,
+   "fee": 666667,
+   "median": 150000,
+   "size": 100000
+  },
+  {
+   "base_reward": 50000000,
+   "fee": 2000000,
+   "median": 150000,
+   "size": 300000
+  },
+  {
+   "base_reward": 50000000,
+   "fee": 1,
    "median": 300000,
    "size": 0
   },
@@ -328,6 +437,42 @@
    "base_reward": 50000000,
    "fee": 450,
    "median": 10000000,
+   "size": 300000
+  },
+  {
+   "base_reward": 1,
+   "fee": 1,
+   "median": 150000,
+   "size": 0
+  },
+  {
+   "base_reward": 1,
+   "fee": 1,
+   "median": 150000,
+   "size": 1
+  },
+  {
+   "base_reward": 1,
+   "fee": 1,
+   "median": 150000,
+   "size": 427
+  },
+  {
+   "base_reward": 1,
+   "fee": 1,
+   "median": 150000,
+   "size": 2500
+  },
+  {
+   "base_reward": 1,
+   "fee": 1,
+   "median": 150000,
+   "size": 100000
+  },
+  {
+   "base_reward": 1,
+   "fee": 1,
+   "median": 150000,
    "size": 300000
   },
   {
@@ -441,7 +586,7 @@
   {
    "base_reward": 9223372036854775808,
    "fee": null,
-   "median": 300000,
+   "median": 150000,
    "size": 4294967296
   },
   {
@@ -453,7 +598,7 @@
   {
    "base_reward": 18446744073709551615,
    "fee": null,
-   "median": 300000,
+   "median": 150000,
    "size": 18446744073709551615
   },
   {
@@ -463,42 +608,269 @@
    "size": 1
   }
  ],
+ "median": [
+  {
+   "floor": 150000,
+   "median": 150000,
+   "sizes": []
+  },
+  {
+   "floor": 150000,
+   "median": 150000,
+   "sizes": [
+    100,
+    100,
+    100,
+    100,
+    100,
+    100,
+    100,
+    100,
+    100,
+    100
+   ]
+  },
+  {
+   "floor": 150000,
+   "median": 1000000,
+   "sizes": [
+    1000000,
+    1000000,
+    1000000,
+    1000000,
+    1000000,
+    1000000,
+    1000000,
+    1000000,
+    1000000,
+    1000000
+   ]
+  },
+  {
+   "floor": 150000,
+   "median": 150000,
+   "sizes": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    10000000
+   ]
+  },
+  {
+   "floor": 150000,
+   "median": 150000,
+   "sizes": [
+    200000,
+    200000,
+    200000,
+    200000,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "floor": 150000,
+   "median": 200000,
+   "sizes": [
+    200000,
+    200000,
+    200000,
+    200000,
+    200000,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "floor": 150000,
+   "median": 150000,
+   "sizes": [
+    149999,
+    149999,
+    149999,
+    149999,
+    149999,
+    149999,
+    149999,
+    149999,
+    149999,
+    149999
+   ]
+  },
+  {
+   "floor": 150000,
+   "median": 150001,
+   "sizes": [
+    150001,
+    150001,
+    150001,
+    150001,
+    150001,
+    150001,
+    150001,
+    150001,
+    150001,
+    150001
+   ]
+  },
+  {
+   "floor": 150000,
+   "median": 150000,
+   "sizes": [
+    150000,
+    150000,
+    150000,
+    150000,
+    150000,
+    150000,
+    150000,
+    150000,
+    150000,
+    150000
+   ]
+  },
+  {
+   "floor": 150000,
+   "median": 150001,
+   "sizes": [
+    150001,
+    150001,
+    150001,
+    150001,
+    150001,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  }
+ ],
+ "median_history": {
+  "sizes_by_position_0_is_genesis": [
+   0,
+   300,
+   500000,
+   0,
+   620000,
+   10,
+   700000,
+   400000,
+   350000,
+   900,
+   450000,
+   5,
+   320000,
+   600000
+  ],
+  "windowed": [
+   {
+    "median": 150000,
+    "pos": 1
+   },
+   {
+    "median": 150000,
+    "pos": 2
+   },
+   {
+    "median": 500000,
+    "pos": 3
+   },
+   {
+    "median": 150000,
+    "pos": 4
+   },
+   {
+    "median": 500000,
+    "pos": 5
+   },
+   {
+    "median": 150000,
+    "pos": 6
+   },
+   {
+    "median": 500000,
+    "pos": 7
+   },
+   {
+    "median": 400000,
+    "pos": 8
+   },
+   {
+    "median": 400000,
+    "pos": 9
+   },
+   {
+    "median": 350000,
+    "pos": 10
+   },
+   {
+    "median": 400000,
+    "pos": 11
+   },
+   {
+    "median": 400000,
+    "pos": 12
+   },
+   {
+    "median": 350000,
+    "pos": 13
+   },
+   {
+    "median": 400000,
+    "pos": 14
+   }
+  ]
+ },
  "name": "v2_fees",
  "penalty": [
   {
    "base": 2000000000,
-   "median": 300000,
+   "median": 150000,
    "penalty": 0,
-   "size": 299999
+   "size": 149999
   },
   {
    "base": 2000000000,
-   "median": 300000,
+   "median": 150000,
    "penalty": 0,
+   "size": 150000
+  },
+  {
+   "base": 2000000000,
+   "median": 150000,
+   "penalty": 1,
+   "size": 150001
+  },
+  {
+   "base": 2000000000,
+   "median": 150000,
+   "penalty": 500000000,
+   "size": 225000
+  },
+  {
+   "base": 2000000000,
+   "median": 150000,
+   "penalty": 2000000000,
    "size": 300000
   },
   {
    "base": 2000000000,
-   "median": 300000,
-   "penalty": 1,
-   "size": 300001
-  },
-  {
-   "base": 2000000000,
-   "median": 300000,
-   "penalty": 500000000,
-   "size": 450000
-  },
-  {
-   "base": 2000000000,
-   "median": 300000,
-   "penalty": 2000000000,
-   "size": 600000
-  },
-  {
-   "base": 2000000000,
-   "median": 300000,
-   "penalty": 5072685817,
+   "median": 150000,
+   "penalty": 35031463265,
    "size": 777777
   },
   {
@@ -539,38 +911,38 @@
   },
   {
    "base": 50000000,
-   "median": 300000,
+   "median": 150000,
    "penalty": 0,
-   "size": 299999
+   "size": 149999
   },
   {
    "base": 50000000,
-   "median": 300000,
+   "median": 150000,
    "penalty": 0,
+   "size": 150000
+  },
+  {
+   "base": 50000000,
+   "median": 150000,
+   "penalty": 1,
+   "size": 150001
+  },
+  {
+   "base": 50000000,
+   "median": 150000,
+   "penalty": 12500000,
+   "size": 225000
+  },
+  {
+   "base": 50000000,
+   "median": 150000,
+   "penalty": 50000000,
    "size": 300000
   },
   {
    "base": 50000000,
-   "median": 300000,
-   "penalty": 1,
-   "size": 300001
-  },
-  {
-   "base": 50000000,
-   "median": 300000,
-   "penalty": 12500000,
-   "size": 450000
-  },
-  {
-   "base": 50000000,
-   "median": 300000,
-   "penalty": 50000000,
-   "size": 600000
-  },
-  {
-   "base": 50000000,
-   "median": 300000,
-   "penalty": 126817146,
+   "median": 150000,
+   "penalty": 875786582,
    "size": 777777
   },
   {

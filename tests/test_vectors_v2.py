@@ -148,8 +148,29 @@ def test_the_dynamic_minimum_fee_is_the_documented_formula():
         assert c["fee"] == (exact if exact < 2 ** 64 else None), c
     # the headline numbers used in the design document
     got = {(c["base_reward"], c["median"], c["size"]): c["fee"] for c in v["dynamic_min_fee"]}
-    assert got[(2_000_000_000, 300_000, 2500)] == 166_667
+    # the version 2 floor is 150,000 bytes
+    assert v["constants"]["MIN_BLOCK_MEDIAN"] == 150_000
+    assert got[(2_000_000_000, 150_000, 2500)] == 666_667                 # 0.00666667 coins
+    assert got[(2_000_000_000, 150_000, 100_000)] == 26_666_667
+    assert got[(2_000_000_000, 300_000, 2500)] == 166_667                 # the same rule at a busier median
     assert got[(2_000_000_000, 300_000, 300_000)] == 20_000_000
+
+
+def test_the_v2_block_size_median_uses_the_150k_floor():
+    v = load("v2_fees")
+    floor = v["constants"]["MIN_BLOCK_MEDIAN"]
+    assert floor == 150_000
+    for c in v["median"]:
+        s = sorted(c["sizes"])
+        assert c["floor"] == floor
+        assert c["median"] == max(floor, s[len(s) // 2] if s else 0), c       # by hand
+    # the window is the 10 blocks before, from position 1 on, and an empty window gives the floor
+    h = v["median_history"]
+    sizes = h["sizes_by_position_0_is_genesis"]
+    for w in h["windowed"]:
+        window = sorted(sizes[max(1, w["pos"] - 10):w["pos"]])
+        assert w["median"] == max(floor, window[len(window) // 2] if window else 0), w
+    assert h["windowed"][0]["median"] == floor                                 # position 1: nothing before it
 
 
 def test_the_v2_emission_is_the_v1_schedule_scaled_by_ten_thousand():
