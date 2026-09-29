@@ -1,0 +1,35 @@
+# ============================================================================
+# NEVER commit these: your keys and your coins.
+# By default the wallets, the chain and the mempool are stored in the project
+# folder (see toycoin/paths.py), so they MUST be ignored. A wallet file holds a
+# private key: anyone who can read it can spend that wallet.
+# ============================================================================
+wallets/
+chain.json
+mempool.json
+demo_chain.json
+*.tmp
+
+# a scratch chain inside the project (TOYCOIN_DATA=scratch)
+scratch/
+data/
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# downloaded update bundles
+*.zip

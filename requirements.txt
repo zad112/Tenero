@@ -1,0 +1,7 @@
+# What the code needs to run (the CPU/SHA-256 test chain, the wallet, and the CPU reference of
+# the GPU proof of work).
+numpy>=2.0
+ecdsa>=0.19
+
+# Mining on a GPU also needs PyTorch (a CUDA build) and CuPy. They depend on your GPU and CUDA
+# version, so they are not listed here: see "GPU mining" in the README.

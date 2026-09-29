@@ -1,0 +1,6 @@
+# let git normalise line endings, but keep Windows launchers Windows-style
+* text=auto
+*.bat text eol=crlf
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
