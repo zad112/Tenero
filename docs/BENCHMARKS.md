@@ -62,6 +62,36 @@ The whole 4 GiB dataset builds on the GPU in **0.116 s** (measured; the README's
   owner's RTX 5070 Ti) is roughly 130 times the 6-thread native CPU figure. CPU mining is a test-chain
   curiosity, not a competitor.
 
+## Syncing a chain with the real proof of work (measured on the owner's machine, 2026-10)
+
+`cargo test --release -p tenero-chain --test real_pow_sync -- --ignored --nocapture`: 30 blocks mined on the CPU with
+the real parameters (m 64, k 8192, nb 2048, 256 slices) at an easy target, then taken by fresh nodes. **Generic
+x86-64 build (no `target-cpu=native`)**, so the per-block figure is the "default" one above. CPU time in
+`Chain::submit_block` only: coinbase-only blocks, no transaction proofs, no network.
+
+| | 100 blocks per dataset | 10 blocks per dataset (3 datasets) |
+|---|---|---|
+| everything checked, total for 30 blocks | 8.02 s | 13.55 s |
+| a block, median (one attempt, dataset present) | 179.4 ms | 179.6 ms |
+| the first block (builds the dataset) | 2.82 s | 2.81 s |
+| so one dataset build is about | 2.64 s | 2.63 s |
+| assume-valid, the 25 assumed blocks | 0.05 s (2.0 ms each) | 0.05 s (1.9 ms each) |
+| assume-valid, the last 5 checked in full | 3.66 s (incl. one dataset build) | 3.54 s |
+| assume-valid, whole run | 3.71 s | 3.59 s |
+
+- **Agrees with the benchmarks above:** 0.18 s a block and 2.6 s a dataset (earlier: 0.18 s, 2.7 to 3.9 s).
+  The 10-block-epoch run fits too: 3 builds (7.9 s) + 30 x 0.18 s = 13.3 s against 13.55 s measured.
+- **What an assumed block costs:** about 2 ms, which is the non-proof checks and the state update, against 179 ms
+  for a full check: about 90 times less, per block, on these coinbase-only blocks. Blocks with transactions cost
+  more to apply; that is not measured here.
+- **Estimates, not measurements** (a straight line from 30 blocks; a year is 525,600 blocks at one a minute, 5,256
+  datasets): checking a year in full is about 26 hours of attempts plus about 4 hours of dataset builds on this
+  build, against about 18 minutes to apply a year of assumed blocks, plus the tail checked in full. A
+  `target-cpu=native` build should cut the attempt part several times (0.04 s a block in the table above); that
+  was not run here.
+- **What it does not include:** the network, the transaction proofs (their own cost, measured in M7), disk beyond
+  the store, and any block with transactions in it.
+
 ## Caveats
 
 - Multi-thread attempt timings are noisy: each thread does only 3 attempts, and one run gave 2 threads at

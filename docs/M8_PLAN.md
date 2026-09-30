@@ -148,7 +148,7 @@ two links dialled by the same side at once (which the dialling rules avoid creat
 consistently and may both be dropped, after which the nodes redial; the timing and size numbers are untuned
 defaults; and it is unreviewed (M9).
 
-### M8.3 Sync (size L, the hard part)
+### M8.3 Sync (size L, the hard part) **DONE 2026-10** (`crates/tenero-net` sync, `tenero-chain` assume-valid and orphan pool, `tenero-node` pool file)
 A new node learns the chain: ask a peer for its tip and work, fetch the block ids, then the blocks, validate and
 add them in order through `Chain`. Out-of-order blocks and orphans are held (gap 3 closed by a bounded persisted
 pool). **The cost is real:** the full proof of work is checked per block on the CPU (measured in
@@ -213,13 +213,16 @@ host reading the whole book by reconnecting; it does **not** stop an attacker wi
 What Monero adds beyond this, as far as I know it (separate white and gray lists, transport encryption,
 Dandelion++ for transactions, Tor and I2P): white and gray are the tried and new entries of the address book here;
 encryption is M8.4; Dandelion++ and Tor/I2P are later work, not started.
-**Real-proof-of-work sync time (harness written, NOT YET RUN on the real parameters):**
+**Real-proof-of-work sync time (DONE, measured on the owner's machine):**
 `crates/tenero-chain/tests/real_pow_sync.rs`, an `#[ignore]`d test that mines a short chain with the real matmulhash
 on the CPU at an easy target, then feeds it to fresh nodes, once checked in full and once with assume-valid (all
-but the last few blocks), timing every `submit_block`. It was checked with tiny parameters only (a harness check,
-not a measurement); the real run needs about 4.3 GiB of RAM and is the owner's to do. It measures the
-proof-of-work cost only: no network, no transaction proofs.
-**Not done:** the real-parameter measurement itself.
+but the last 5 blocks), timing every `submit_block`. **Measured (30 blocks, generic x86-64 build):** a full check
+costs 179 ms a block plus about 2.6 s for each epoch's dataset (8.0 s for the chain with one dataset, 13.6 s with
+three); an assumed block costs about 2 ms; assume-valid took the run from 8.0 s to 3.7 s (the last 5 blocks and one
+dataset build being most of what is left). Full tables and the straight-line estimates for a year of blocks
+(about 30 hours in full against about 18 minutes assumed, **estimates**) are in `docs/BENCHMARKS.md`. Proof-of-work
+cost only: no network, no transaction proofs, coinbase-only blocks, no `target-cpu=native`.
+**M8.3 is done** apart from what its notes list as limits; the next step is M8.4 (real sockets and Noise).
 
 ### M8.4 Real sockets (size M)
 TCP transport, the Noise channel (decision 3), inbound and outbound limits, per-peer rate limits and a ban score,
