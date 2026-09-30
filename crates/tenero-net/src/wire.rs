@@ -8,10 +8,11 @@
 //! No cryptography lives here: the Noise channel of M8.4 wraps these frames.
 
 use tenero_core::v2::codec::{DecodeError, EncodeError, Reader, Writer};
-use tenero_core::v2::{Block, Transaction, Wire};
+use tenero_core::v2::{Block, BlockHeader, Transaction, Wire};
 
 use crate::message::{
-    Hello, Message, PeerAddr, MAX_ADDRS, MAX_BLOCKS, MAX_IDS, MAX_LOCATOR, MAX_NOT_FOUND, MAX_TXS,
+    Hello, Message, PeerAddr, MAX_ADDRS, MAX_BLOCKS, MAX_HEADERS, MAX_IDS, MAX_LOCATOR,
+    MAX_NOT_FOUND, MAX_TXS,
 };
 
 /// The most a frame's `length` may ever be (blocks and transactions lists).
@@ -92,6 +93,11 @@ const GET_TXS: u8 = 11;
 const TXS: u8 = 12;
 const GET_ADDRS: u8 = 13;
 const ADDRS: u8 = 14;
+const GET_HEADERS: u8 = 15;
+const HEADERS: u8 = 16;
+
+/// A block header on the wire: version 2, previous id 32, timestamp 8, transaction root 32, nonce 8, mix 64.
+const HEADER_SIZE: usize = 2 + 32 + 8 + 32 + 8 + 64;
 
 /// The largest `length` (kind byte and body) each kind may declare; `None` for an unknown kind.
 fn cap_of(kind: u8) -> Option<usize> {
@@ -107,6 +113,8 @@ fn cap_of(kind: u8) -> Option<usize> {
         NEW_TX | GET_TXS => 1 + 4 + MAX_TXS * 32,
         GET_ADDRS => 1,
         ADDRS => 1 + 4 + MAX_ADDRS * 26,
+        GET_HEADERS => 1 + 4 + MAX_LOCATOR * 32,
+        HEADERS => 1 + 8 + 4 + MAX_HEADERS * HEADER_SIZE,
         _ => return None,
     })
 }
@@ -127,6 +135,8 @@ fn kind_of(msg: &Message) -> u8 {
         Message::Txs { .. } => TXS,
         Message::GetAddrs => GET_ADDRS,
         Message::Addrs { .. } => ADDRS,
+        Message::GetHeaders { .. } => GET_HEADERS,
+        Message::Headers { .. } => HEADERS,
     }
 }
 
@@ -166,6 +176,17 @@ pub fn encode(msg: &Message) -> Result<Vec<u8>, WireError> {
         Message::BlockIds { first_height, ids } => {
             w.u64(*first_height);
             write_ids(&mut w, ids, MAX_IDS)?;
+        }
+        Message::GetHeaders { locator } => write_ids(&mut w, locator, MAX_LOCATOR)?,
+        Message::Headers {
+            first_height,
+            headers,
+        } => {
+            w.u64(*first_height);
+            w.count(headers.len(), 0, MAX_HEADERS)?;
+            for h in headers {
+                h.write(&mut w)?;
+            }
         }
         Message::GetBlocks { ids } => write_ids(&mut w, ids, MAX_BLOCKS)?,
         Message::NotFound { ids } => write_ids(&mut w, ids, MAX_NOT_FOUND)?,
@@ -279,6 +300,21 @@ fn decode_body(kind: u8, body: &[u8]) -> Result<Message, WireError> {
             first_height: r.u64()?,
             ids: read_ids(&mut r, MAX_IDS)?,
         },
+        GET_HEADERS => Message::GetHeaders {
+            locator: read_ids(&mut r, MAX_LOCATOR)?,
+        },
+        HEADERS => {
+            let first_height = r.u64()?;
+            let n = r.count(0, MAX_HEADERS)?;
+            let mut headers = Vec::with_capacity(n);
+            for _ in 0..n {
+                headers.push(BlockHeader::read(&mut r)?);
+            }
+            Message::Headers {
+                first_height,
+                headers,
+            }
+        }
         GET_BLOCKS => Message::GetBlocks {
             ids: read_ids(&mut r, MAX_BLOCKS)?,
         },

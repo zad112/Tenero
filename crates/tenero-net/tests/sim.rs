@@ -184,6 +184,33 @@ fn oversized_lists_are_protocol_violations() {
         ),
         ("empty locator", Message::GetBlockIds { locator: vec![] }),
         (
+            "header locator",
+            Message::GetHeaders {
+                locator: vec![[1; 32]; lim.max_locator + 1],
+            },
+        ),
+        (
+            "empty header locator",
+            Message::GetHeaders { locator: vec![] },
+        ),
+        (
+            "headers",
+            Message::Headers {
+                first_height: 1,
+                headers: vec![
+                    BlockHeader {
+                        version: VERSION,
+                        prev_id: [0; 32],
+                        timestamp: 0,
+                        tx_root: [0; 32],
+                        nonce: 0,
+                        mix: [0; 64],
+                    };
+                    lim.max_headers + 1
+                ],
+            },
+        ),
+        (
             "get blocks",
             Message::GetBlocks {
                 ids: vec![[1; 32]; lim.max_blocks + 1],
@@ -1282,6 +1309,107 @@ fn an_orphan_block_starts_a_sync_with_the_peer_that_sent_it() {
         .iter()
         .any(|m| matches!(m, Message::GetBlockIds { .. })));
     assert_eq!(sim.tip(0).0, 0, "an orphan is not applied");
+}
+
+#[test]
+fn headers_are_served_up_to_the_limit_even_by_a_pruned_node_and_match_the_block_ids() {
+    let rigs = SimRig::rigs("servingheaders", 1);
+    let engine = EngineConfig {
+        limits: tenero_net::Limits {
+            max_headers: 5,
+            ..tenero_net::Limits::default()
+        },
+        ..EngineConfig::default()
+    };
+    let mut sim = Sim::new(&rigs, T0, SimConfig::default(), engine);
+    mine_with_txs(&mut sim, 0, 20);
+    sim.engines[0].node().store().prune_keeping(3).unwrap();
+    let index = |sim: &Sim<'_>, h: u64| {
+        sim.engines[0]
+            .node()
+            .store()
+            .block_index(h)
+            .unwrap()
+            .unwrap()
+    };
+    let (genesis, b3) = (index(&sim, 0).block_id, index(&sim, 3).block_id);
+    let h = sim.add_hostile(0, "header-asker");
+    sim.hostile_send(h, hello_for(&rigs[0], 0, zero_work()));
+    sim.run_for(SEC);
+    sim.hostile_send(
+        h,
+        Message::GetHeaders {
+            locator: vec![genesis],
+        },
+    );
+    sim.hostile_send(
+        h,
+        Message::GetHeaders {
+            locator: vec![b3, genesis],
+        },
+    );
+    sim.hostile_send(
+        h,
+        Message::GetHeaders {
+            locator: vec![[9; 32]],
+        },
+    );
+    sim.run_for(2 * SEC);
+    let replies: Vec<&Message> = sim.hostiles[h]
+        .inbox
+        .iter()
+        .filter(|m| matches!(m, Message::Headers { .. }))
+        .collect();
+    assert_eq!(replies.len(), 3);
+    let want = |from: u64, to: u64| Message::Headers {
+        first_height: from,
+        headers: (from..=to).map(|k| index(&sim, k).header).collect(),
+    };
+    assert_eq!(
+        replies[0],
+        &want(1, 5),
+        "five of them, the limit, oldest first"
+    );
+    assert_eq!(replies[1], &want(4, 8), "the ones after block 3");
+    assert_eq!(
+        replies[2],
+        &Message::Headers {
+            first_height: 1,
+            headers: vec![]
+        },
+        "an unknown locator gets nothing"
+    );
+    assert_eq!(score(&sim, h), Some(20), "and is punished");
+    // the node is pruned (blocks 1 to 17 have lost their proofs) and the headers are served all the same
+    assert_eq!(sim.engines[0].node().store().pruned_below().unwrap(), 18);
+    // each header hashes to the id the node has for that block
+    let Message::Headers { headers, .. } = replies[0] else {
+        unreachable!()
+    };
+    for (i, hd) in headers.iter().enumerate() {
+        assert_eq!(
+            block_id(hd, PowKind::Sha256),
+            index(&sim, 1 + i as u64).block_id
+        );
+    }
+}
+
+#[test]
+fn headers_nobody_asked_for_are_punished() {
+    let rigs = SimRig::rigs("unsolicitedheaders", 1);
+    let mut sim = new_sim(&rigs);
+    let h = sim.add_hostile(0, "header-sender");
+    sim.hostile_send(h, hello_for(&rigs[0], 0, zero_work()));
+    sim.run_for(SEC);
+    sim.hostile_send(
+        h,
+        Message::Headers {
+            first_height: 1,
+            headers: vec![],
+        },
+    );
+    sim.run_for(SEC);
+    assert_eq!(score(&sim, h), Some(20));
 }
 
 #[test]

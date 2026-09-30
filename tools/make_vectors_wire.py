@@ -1,7 +1,7 @@
 """The reference for the peer-to-peer WIRE PROTOCOL (docs/WIRE_PROTOCOL.md) and its golden vectors.
 
 An independent implementation, in Python and the standard library only, of how the messages of
-crates/tenero-net become bytes: the frame, the twelve message layouts, the caps, and the order in which a
+crates/tenero-net become bytes: the frame, the sixteen message layouts, the caps, and the order in which a
 decoder checks a frame. The transaction and block encodings inside `blocks` and `txs` come from the version 2
 data-model reference (`tools/make_vectors_v2.py`), which is itself checked against the Rust code.
 
@@ -31,10 +31,12 @@ MAX_BLOCKS = 32
 MAX_TXS = 64
 MAX_NOT_FOUND = 64
 MAX_ADDRS = 100
+MAX_HEADERS = 500
+HEADER_SIZE = 2 + 32 + 8 + 32 + 8 + 64
 
 KINDS = {1: "hello", 2: "ping", 3: "pong", 4: "get_block_ids", 5: "block_ids", 6: "get_blocks",
          7: "blocks", 8: "not_found", 9: "new_block", 10: "new_tx", 11: "get_txs", 12: "txs",
-         13: "get_addrs", 14: "addrs"}
+         13: "get_addrs", 14: "addrs", 15: "get_headers", 16: "headers"}
 BY_NAME = {v: k for k, v in KINDS.items()}
 
 # the largest allowed value of `length` (kind byte + body), per kind
@@ -52,11 +54,13 @@ CAPS = {
     "txs": MAX_FRAME,
     "get_addrs": 1,
     "addrs": 1 + 4 + MAX_ADDRS * 26,
+    "get_headers": 1 + 4 + MAX_LOCATOR * 32,
+    "headers": 1 + 8 + 4 + MAX_HEADERS * HEADER_SIZE,
 }
 # the largest allowed count in a list, per kind
 MAX_COUNT = {"get_block_ids": MAX_LOCATOR, "block_ids": MAX_IDS, "get_blocks": MAX_BLOCKS, "blocks": MAX_BLOCKS,
              "not_found": MAX_NOT_FOUND, "new_tx": MAX_TXS, "get_txs": MAX_TXS, "txs": MAX_TXS,
-             "addrs": MAX_ADDRS}
+             "addrs": MAX_ADDRS, "get_headers": MAX_LOCATOR, "headers": MAX_HEADERS}
 
 ERRORS = ("short frame", "empty frame", "unknown kind", "frame too large", "trailing bytes",
           "count out of range", "short read", "length over maximum")
@@ -87,10 +91,12 @@ def enc_body(m):
                 + ids_hex([m["cumulative_work"]]) + ids_hex([m["tip_id"]]) + struct.pack("<QQ", m["pruned_below"], m["nonce"]))
     if k in ("ping", "pong"):
         return struct.pack("<Q", m["nonce"])
-    if k == "get_block_ids":
+    if k in ("get_block_ids", "get_headers"):
         return struct.pack("<I", len(m["locator"])) + ids_hex(m["locator"])
     if k == "block_ids":
         return struct.pack("<QI", m["first_height"], len(m["ids"])) + ids_hex(m["ids"])
+    if k == "headers":
+        return struct.pack("<QI", m["first_height"], len(m["headers"])) + b"".join(bytes.fromhex(x) for x in m["headers"])
     if k in ("get_blocks", "not_found", "new_tx", "get_txs"):
         return struct.pack("<I", len(m["ids"])) + ids_hex(m["ids"])
     if k in ("blocks", "txs"):
@@ -117,7 +123,7 @@ def encode(m):
     if 1 + len(body) > CAPS[k]:
         raise ValueError(f"{k}: over the cap")
     if k in MAX_COUNT:
-        n = struct.unpack("<I", body[:4] if k not in ("block_ids",) else body[8:12])[0]
+        n = struct.unpack("<I", body[:4] if k not in ("block_ids", "headers") else body[8:12])[0]
         if n > MAX_COUNT[k]:
             raise ValueError(f"{k}: count over the cap")
     return frame(BY_NAME[k], body)
@@ -215,8 +221,11 @@ def decode_body(kind, body):
                  tip_id=r.h32(), pruned_below=r.u64(), nonce=r.u64())
     elif kind in ("ping", "pong"):
         m["nonce"] = r.u64()
-    elif kind == "get_block_ids":
+    elif kind in ("get_block_ids", "get_headers"):
         m["locator"] = [r.h32() for _ in range(r.count(kind))]
+    elif kind == "headers":
+        m["first_height"] = r.u64()
+        m["headers"] = [r.take(HEADER_SIZE).hex() for _ in range(r.count(kind))]
     elif kind == "block_ids":
         m["first_height"] = r.u64()
         m["ids"] = [r.h32() for _ in range(r.count(kind))]
@@ -261,6 +270,10 @@ def block_hex(tag, ntx=1):
     return v2.enc_block(sample_block(tag, ntx)).hex()
 
 
+def header_hex(tag):
+    return v2.enc_header(v2.sample_header(tag)).hex()
+
+
 def tx_hex(tag, **kw):
     return v2.enc_tx(v2.sample_tx(tag, **kw)).hex()
 
@@ -283,6 +296,13 @@ def valid_messages():
         ("no block ids", {"kind": "block_ids", "first_height": 1, "ids": []}),
         ("block ids at the cap of 500", {"kind": "block_ids", "first_height": 2 ** 64 - 501,
                                          "ids": [h(f"bulk{i}") for i in range(500)]}),
+        ("a header request with a locator of two ids", {"kind": "get_headers", "locator": [h("tip"), h("genesis")]}),
+        ("an empty header locator (well formed; the engine refuses its meaning)", {"kind": "get_headers", "locator": []}),
+        ("a header locator at the cap of 32", {"kind": "get_headers", "locator": [h(f"hloc{i}") for i in range(32)]}),
+        ("headers", {"kind": "headers", "first_height": 90, "headers": [header_hex(f"hd{i}") for i in range(3)]}),
+        ("no headers", {"kind": "headers", "first_height": 1, "headers": []}),
+        ("headers at the cap of 500", {"kind": "headers", "first_height": 2 ** 64 - 501,
+                                       "headers": [header_hex(f"bulkh{i}") for i in range(500)]}),
         ("a request for blocks", {"kind": "get_blocks", "ids": [h("a"), h("b")]}),
         ("a request for 32 blocks", {"kind": "get_blocks", "ids": [h(f"r{i}") for i in range(32)]}),
         ("two blocks", {"kind": "blocks", "blocks": [block_hex("first", 1), block_hex("second", 2)]}),
@@ -342,7 +362,7 @@ def invalid_cases():
         bad("a length of zero", u32(0) + b"\x02", "empty frame"),
         bad("a length of zero and nothing else", u32(0), "empty frame"),
         bad("kind 0", u32(9) + b"\x00" + b"\x00" * 8, "unknown kind"),
-        bad("kind 15", u32(9) + b"\x0f" + b"\x00" * 8, "unknown kind"),
+        bad("kind 17", u32(9) + b"\x11" + b"\x00" * 8, "unknown kind"),
         bad("kind 255", u32(1) + b"\xff", "unknown kind"),
         bad("an unknown kind is reported before a too-large length", u32(0xFFFFFFFF) + b"\x00", "unknown kind"),
         bad("a ping declaring one byte too many", u32(10) + b"\x02" + b"\x00" * 9, "frame too large"),
@@ -393,6 +413,14 @@ def invalid_cases():
         bad("addresses claiming 2 and holding one", u32(1 + 4 + 26) + b"\x0e" + u32(2) + b"\x00" * 26, "short read"),
         bad("addresses claiming 1 and holding 27 bytes", u32(1 + 4 + 27) + b"\x0e" + u32(1) + b"\x00" * 27,
             "trailing bytes"),
+        bad("headers claiming 501", u32(1 + 8 + 4) + b"\x10" + struct.pack("<Q", 1) + u32(501), "count out of range"),
+        bad("a header locator claiming 33 ids", u32(1 + 4) + b"\x0f" + u32(33), "count out of range"),
+        bad("headers claiming one and holding 145 bytes", u32(1 + 8 + 4 + 145) + b"\x10" + struct.pack("<Q", 1) + u32(1)
+            + b"\x00" * 145, "short read"),
+        bad("headers claiming one and holding 147 bytes", u32(1 + 8 + 4 + 147) + b"\x10" + struct.pack("<Q", 1) + u32(1)
+            + b"\x00" * 147, "trailing bytes"),
+        bad("no headers but bytes after the count", u32(1 + 8 + 4 + 1) + b"\x10" + struct.pack("<Q", 1) + u32(0) + b"\x00",
+            "trailing bytes"),
         bad("a message announcing a block with a body one byte long", u32(2) + b"\x09" + b"\x00", "short read"),
     ]
     # every kind with a cap below 16 MiB: one byte over the cap is refused from the header alone
@@ -429,7 +457,8 @@ def build():
                        "decoder must already fail. Made by tools/make_vectors_wire.py. `blocks` and `txs` hold "
                        "the wire form (CONSENSUS_V2.md) of each block and transaction as hex.",
         "limits": {"max_frame": MAX_FRAME, "max_locator": MAX_LOCATOR, "max_ids": MAX_IDS, "max_blocks": MAX_BLOCKS,
-                   "max_txs": MAX_TXS, "max_not_found": MAX_NOT_FOUND, "max_addrs": MAX_ADDRS},
+                   "max_txs": MAX_TXS, "max_not_found": MAX_NOT_FOUND, "max_addrs": MAX_ADDRS,
+                   "max_headers": MAX_HEADERS},
         "kinds": {str(k): v for k, v in KINDS.items()},
         "caps": CAPS,
         "valid": valid_cases(),

@@ -49,10 +49,10 @@ def test_the_frame_caps_are_the_ones_the_document_states():
     doc = open(os.path.join(os.path.dirname(w.ROOT + "/x"), "docs", "WIRE_PROTOCOL.md"), encoding="utf-8").read()
     stated = {"hello": 125, "ping": 9, "pong": 9, "new_block": 73, "get_block_ids": 1029, "get_blocks": 1029,
               "not_found": 2053, "new_tx": 2053, "get_txs": 2053, "block_ids": 16013, "blocks": 16_777_216,
-              "txs": 16_777_216, "get_addrs": 1, "addrs": 2605}
+              "txs": 16_777_216, "get_addrs": 1, "addrs": 2605, "get_headers": 1029, "headers": 73013}
     assert w.CAPS == stated
     # the document's own numbers agree with the table above
-    for number in ("125", "1029", "2053", "16013", "16,777,216", "2605"):
+    for number in ("125", "1029", "2053", "16013", "16,777,216", "2605", "73013"):
         assert number in doc
 
 
@@ -61,6 +61,8 @@ def test_every_cap_is_what_the_layout_implies():
     assert w.CAPS["hello"] == 1 + 4 + 32 + 8 + 32 + 32 + 8 + 8 == 125
     assert w.CAPS["block_ids"] == 1 + 8 + 4 + 500 * 32
     assert w.CAPS["get_block_ids"] == 1 + 4 + 32 * 32
+    assert w.CAPS["headers"] == 1 + 8 + 4 + 500 * 146
+    assert w.CAPS["get_headers"] == w.CAPS["get_block_ids"]
     assert w.CAPS["new_tx"] == 1 + 4 + 64 * 32
     assert w.CAPS["new_block"] == 1 + 32 + 8 + 32
 

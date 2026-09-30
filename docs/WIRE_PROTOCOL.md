@@ -1,4 +1,4 @@
-# The peer-to-peer wire protocol, version 1 (a DRAFT, milestones M8.2 and M8.3a)
+# The peer-to-peer wire protocol, version 1 (a DRAFT, milestones M8.2, M8.3a and M8.3)
 
 Status: **draft, 2026-09-30, unreviewed.** This is how the messages of `crates/tenero-net` (`Message`) become
 bytes. It reuses the version 2 codec of `CONSENSUS_V2.md` section 4: fixed-width little-endian integers, no
@@ -30,13 +30,15 @@ frame  = length u32      the number of bytes that follow: 1 (the kind) + the bod
 |---|---|
 | ids in a block locator (`get_block_ids`) | 0 to 32 |
 | ids in `block_ids` | 0 to 500 |
+| ids in a header locator (`get_headers`) | 0 to 32 |
+| headers in `headers` | 0 to 500 |
 | ids in `get_blocks`, blocks in `blocks` | 0 to 32 |
 | ids in `not_found`, `new_tx`, `get_txs`; transactions in `txs` | 0 to 64 |
 | addresses in `addrs` | 0 to 100 |
 | frame length (kind + body) | per kind, below |
 
 Caps on `length`: `hello` 125, `ping` and `pong` 9, `get_addrs` 1, `addrs` 2605, `new_block` 73, `get_block_ids` and `get_blocks` 1029,
-`not_found`, `new_tx` and `get_txs` 2053, `block_ids` 16013, and **`blocks` and `txs` 16,777,216 (16 MiB)**. The
+`not_found`, `new_tx` and `get_txs` 2053, `get_headers` 1029, `headers` 73013, `block_ids` 16013, and **`blocks` and `txs` 16,777,216 (16 MiB)**. The
 engine's own limits (`Limits`, configurable) may be lower than these; the wire caps are the ceiling a decoder
 never exceeds. What a count of zero *means* (an empty locator is a protocol violation, for example) is the
 engine's rule, not the codec's.
@@ -59,8 +61,13 @@ engine's rule, not the codec's.
 | 12 | `txs` | `count` u32, then `count` transactions, each in the full wire form of `CONSENSUS_V2.md` 6.2 |
 | 13 | `get_addrs` | (empty) |
 | 14 | `addrs` | `count` u32, then `count` addresses: `ip` 16 (IPv6; IPv4 as `::ffff:a.b.c.d`), `port` u16, `last_seen` u64 (Unix seconds) |
+| 15 | `get_headers` | `count` u32, then `count` block ids (32 each): the locator, newest first (the same as `get_block_ids`) |
+| 16 | `headers` | `first_height` u64, `count` u32, then `count` block headers, oldest first, each 146 bytes: `version` u16, `prev_id` 32, `timestamp` u64, `tx_root` 32, `nonce` u64, `mix` 64 (the header form of `CONSENSUS_V2.md` 4) |
 
-Every other kind byte (0 and 15 to 255) is an error. The objects inside `blocks` and `txs` are decoded by the
+A header does not carry its own id: the receiver computes it from the header. A pruned node keeps every header, so
+it can serve `headers` for its whole chain even where it can no longer serve `blocks`.
+
+Every other kind byte (0 and 17 to 255) is an error. The objects inside `blocks` and `txs` are decoded by the
 strict decoders of the data model, so a block or transaction that is malformed *inside* a well-formed frame is
 refused with that decoder's error.
 

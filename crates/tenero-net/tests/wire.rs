@@ -3,10 +3,10 @@
 //! message one encoding, no panic on any input, and a bounded buffer.
 
 use serde_json::Value;
-use tenero_core::v2::{Block, Transaction, Wire};
+use tenero_core::v2::{Block, BlockHeader, Transaction, Wire};
 use tenero_core::vectors::{hex, load};
 use tenero_net::message::{
-    PeerAddr, MAX_ADDRS, MAX_BLOCKS, MAX_IDS, MAX_LOCATOR, MAX_NOT_FOUND, MAX_TXS,
+    PeerAddr, MAX_ADDRS, MAX_BLOCKS, MAX_HEADERS, MAX_IDS, MAX_LOCATOR, MAX_NOT_FOUND, MAX_TXS,
 };
 use tenero_net::{
     decode_frame, encode, FrameDecoder, Hello, Limits, Message, WireError, MAX_FRAME,
@@ -41,6 +41,18 @@ fn message(m: &Value) -> Message {
         "block_ids" => Message::BlockIds {
             first_height: n("first_height"),
             ids: ids(&m["ids"]),
+        },
+        "get_headers" => Message::GetHeaders {
+            locator: ids(&m["locator"]),
+        },
+        "headers" => Message::Headers {
+            first_height: n("first_height"),
+            headers: m["headers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|h| BlockHeader::from_bytes(&hex(h.as_str().unwrap()).unwrap()).unwrap())
+                .collect(),
         },
         "get_blocks" => Message::GetBlocks {
             ids: ids(&m["ids"]),
@@ -123,11 +135,18 @@ fn the_limits_in_the_vector_file_are_the_ones_in_the_code() {
     assert_eq!(l["max_txs"].as_u64().unwrap() as usize, MAX_TXS);
     assert_eq!(l["max_not_found"].as_u64().unwrap() as usize, MAX_NOT_FOUND);
     assert_eq!(l["max_addrs"].as_u64().unwrap() as usize, MAX_ADDRS);
+    assert_eq!(l["max_headers"].as_u64().unwrap() as usize, MAX_HEADERS);
     // and the engine's defaults are the same ceilings
     let d = Limits::default();
     assert_eq!(
-        (d.max_locator, d.max_ids, d.max_blocks, d.max_txs),
-        (MAX_LOCATOR, MAX_IDS, MAX_BLOCKS, MAX_TXS)
+        (
+            d.max_locator,
+            d.max_ids,
+            d.max_headers,
+            d.max_blocks,
+            d.max_txs
+        ),
+        (MAX_LOCATOR, MAX_IDS, MAX_HEADERS, MAX_BLOCKS, MAX_TXS)
     );
 }
 
@@ -432,11 +451,11 @@ fn random_bytes_never_panic_the_decoders() {
 }
 
 #[test]
-fn every_kind_byte_but_one_to_fourteen_is_unknown() {
+fn every_kind_byte_but_one_to_sixteen_is_unknown() {
     for kind in 0u8..=255 {
         let frame = [1u8, 0, 0, 0, kind];
         let r = decode_frame(&frame);
-        if (1..=14).contains(&kind) {
+        if (1..=16).contains(&kind) {
             assert!(!matches!(r, Err(WireError::UnknownKind(_))), "kind {kind}");
         } else {
             assert_eq!(r, Err(WireError::UnknownKind(kind)));

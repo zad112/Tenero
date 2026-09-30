@@ -1,7 +1,7 @@
 //! The messages two nodes exchange, and the limits that keep a hostile peer from making us do unbounded
 //! work. Typed here; the wire encoding is M8.2.
 
-use tenero_core::v2::{Block, Transaction};
+use tenero_core::v2::{Block, BlockHeader, Transaction};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
@@ -9,6 +9,8 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// lower, never higher.
 pub const MAX_LOCATOR: usize = 32;
 pub const MAX_IDS: usize = 500;
+/// Headers in one `Headers` reply (each is 146 bytes on the wire).
+pub const MAX_HEADERS: usize = 500;
 pub const MAX_BLOCKS: usize = 32;
 pub const MAX_TXS: usize = 64;
 pub const MAX_NOT_FOUND: usize = 64;
@@ -22,6 +24,8 @@ pub struct Limits {
     pub max_locator: usize,
     /// Ids in one `BlockIds` reply.
     pub max_ids: usize,
+    /// Headers in one `Headers` reply.
+    pub max_headers: usize,
     /// Ids in one `GetBlocks` request, and blocks in one `Blocks` reply.
     pub max_blocks: usize,
     /// Ids in one `NewTx` announcement or `GetTxs` request, and transactions in one `Txs` reply.
@@ -35,6 +39,7 @@ impl Default for Limits {
         Limits {
             max_locator: MAX_LOCATOR,
             max_ids: MAX_IDS,
+            max_headers: MAX_HEADERS,
             max_blocks: MAX_BLOCKS,
             max_txs: MAX_TXS,
             max_addrs: MAX_ADDRS,
@@ -80,6 +85,16 @@ pub enum Message {
         first_height: u64,
         ids: Vec<[u8; 32]>,
     },
+    /// "Which headers do you have after the newest of these that you know?" The same locator as `GetBlockIds`.
+    GetHeaders {
+        locator: Vec<[u8; 32]>,
+    },
+    /// The headers of the chain after the common block, oldest first; `first_height` is the first one's height.
+    /// A header is the part of a block that proves its place and its work, so it is served even by a pruned node.
+    Headers {
+        first_height: u64,
+        headers: Vec<BlockHeader>,
+    },
     GetBlocks {
         ids: Vec<[u8; 32]>,
     },
@@ -123,6 +138,8 @@ impl Message {
             Message::Pong(_) => "pong",
             Message::GetBlockIds { .. } => "get_block_ids",
             Message::BlockIds { .. } => "block_ids",
+            Message::GetHeaders { .. } => "get_headers",
+            Message::Headers { .. } => "headers",
             Message::GetBlocks { .. } => "get_blocks",
             Message::Blocks { .. } => "blocks",
             Message::NotFound { .. } => "not_found",

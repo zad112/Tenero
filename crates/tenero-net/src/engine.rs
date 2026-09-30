@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use tenero_chain::{BlockError, Submitted};
 use tenero_core::u256::U256;
 use tenero_core::v2::ids::{block_id, tx_id};
-use tenero_core::v2::{Block, Transaction};
+use tenero_core::v2::{Block, BlockHeader, Transaction};
 use tenero_node::{AddOutcome, Node, PoolError};
 
 use crate::addrbook::{
@@ -663,6 +663,7 @@ impl<'a> Engine<'a> {
                     msg,
                     Message::Blocks { .. }
                         | Message::BlockIds { .. }
+                        | Message::Headers { .. }
                         | Message::Txs { .. }
                         | Message::Pong(_)
                         | Message::NotFound { .. }
@@ -700,6 +701,21 @@ impl<'a> Engine<'a> {
                     self.penalize(peer, 50, "bad locator", out);
                 } else {
                     self.on_get_block_ids(peer, locator, out);
+                }
+            }
+            Message::GetHeaders { locator } => {
+                if locator.is_empty() || locator.len() > lim.max_locator {
+                    self.penalize(peer, 50, "bad locator", out);
+                } else {
+                    self.on_get_headers(peer, locator, out);
+                }
+            }
+            Message::Headers { headers, .. } => {
+                if headers.len() > lim.max_headers {
+                    self.penalize(peer, 50, "too many headers", out);
+                } else {
+                    // nothing asks for headers yet (the header-first sync comes next): so none are welcome
+                    self.penalize(peer, 20, "unsolicited headers", out);
                 }
             }
             Message::BlockIds { first_height, ids } => {
@@ -792,6 +808,40 @@ impl<'a> Engine<'a> {
             Message::BlockIds {
                 first_height: common + 1,
                 ids,
+            },
+            out,
+        );
+    }
+
+    /// Headers after the newest locator entry we know, up to `max_headers`. A pruned node still has every header.
+    fn on_get_headers(&mut self, peer: PeerId, locator: Vec<[u8; 32]>, out: &mut Vec<Action>) {
+        let store = self.node.store();
+        let common = locator
+            .iter()
+            .find_map(|id| store.height_of(id).ok().flatten());
+        let Some(common) = common else {
+            self.penalize(peer, 20, "locator shares nothing with our chain", out);
+            self.send(
+                peer,
+                Message::Headers {
+                    first_height: 1,
+                    headers: vec![],
+                },
+                out,
+            );
+            return;
+        };
+        let (tip_h, _, _) = self.tip();
+        let last = tip_h.min(common + self.cfg.limits.max_headers as u64);
+        let headers: Vec<BlockHeader> = ((common + 1)..=last)
+            .filter_map(|h| self.node.store().block_index(h).ok().flatten())
+            .map(|i| i.header)
+            .collect();
+        self.send(
+            peer,
+            Message::Headers {
+                first_height: common + 1,
+                headers,
             },
             out,
         );

@@ -165,10 +165,12 @@ work); (2) **pruned peers**: a peer whose `pruned_below` is past the next block 
 peer, on any path (before this, an orphan block started a sync with it, which got `NotFound` and punished an
 honest pruned node; found by the test, which needed real transactions in the old blocks because pruning a
 coinbase-only block deletes nothing); a node that is only a few blocks behind still syncs from a pruned peer.
+**Headers on the wire (done, second slice):** `get_headers` (kind 15) and `headers` (kind 16, 146 bytes per header, 500 at most) are in the wire format, the independent Python reference, the regenerated vectors (now about 510 KiB) and `docs/WIRE_PROTOCOL.md`; the engine serves them (a pruned node too, since it keeps every header) and punishes headers nobody asked for. 8 of 9 injected faults in that code are caught; the survivor (a `headers` reply should reset the unanswered-request count) only matters once the engine asks for headers, so its test comes with that slice. Protocol version stays 1: nothing is deployed and the format is a draft.
 **Not done:** real-proof-of-work sync time (needs a real-PoW test chain; the per-block cost is the measured attempt
 cost in `docs/BENCHMARKS.md` plus a dataset per epoch, but no end-to-end figure yet), the persisted pool of
 out-of-order blocks, and assume-valid (needs block headers to be fetched before bodies so the chain to the
-checkpoint can be proved linked before anything is applied without full checks; a wire change, to be decided).
+checkpoint can be proved linked before anything is applied without full checks; the wire messages exist now, the
+client side does not).
 
 ### M8.4 Real sockets (size M)
 TCP transport, the Noise channel (decision 3), inbound and outbound limits, per-peer rate limits and a ban score,
