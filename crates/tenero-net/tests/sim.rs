@@ -30,6 +30,7 @@ fn hello_for(rig: &SimRig, height: u64, work: U256) -> Message {
         cumulative_work: work.to_be_bytes(),
         tip_id: [9; 32],
         pruned_below: 0,
+        nonce: 0,
     })
 }
 
@@ -673,6 +674,7 @@ fn connection_limits_are_enforced() {
     let cfg = EngineConfig {
         max_peers: 3,
         max_inbound: 64,
+        max_addr_only: 0,
         ..EngineConfig::default()
     };
     let mut sim = Sim::new(&rigs, T0, SimConfig::default(), cfg);
@@ -690,6 +692,7 @@ fn connection_limits_are_enforced() {
     let cfg = EngineConfig {
         max_peers: 64,
         max_inbound: 2,
+        max_addr_only: 0,
         ..EngineConfig::default()
     };
     let mut sim = Sim::new(&rigs, T0, SimConfig::default(), cfg);

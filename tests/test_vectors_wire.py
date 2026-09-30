@@ -47,18 +47,18 @@ def test_the_early_cases_are_what_a_stream_decoder_can_know():
 
 def test_the_frame_caps_are_the_ones_the_document_states():
     doc = open(os.path.join(os.path.dirname(w.ROOT + "/x"), "docs", "WIRE_PROTOCOL.md"), encoding="utf-8").read()
-    stated = {"hello": 117, "ping": 9, "pong": 9, "new_block": 73, "get_block_ids": 1029, "get_blocks": 1029,
+    stated = {"hello": 125, "ping": 9, "pong": 9, "new_block": 73, "get_block_ids": 1029, "get_blocks": 1029,
               "not_found": 2053, "new_tx": 2053, "get_txs": 2053, "block_ids": 16013, "blocks": 16_777_216,
-              "txs": 16_777_216}
+              "txs": 16_777_216, "get_addrs": 1, "addrs": 2605}
     assert w.CAPS == stated
     # the document's own numbers agree with the table above
-    for number in ("117", "1029", "2053", "16013", "16,777,216"):
+    for number in ("125", "1029", "2053", "16013", "16,777,216", "2605"):
         assert number in doc
 
 
 def test_every_cap_is_what_the_layout_implies():
     # kind byte + the fixed fields (+ count + the largest list)
-    assert w.CAPS["hello"] == 1 + 4 + 32 + 8 + 32 + 32 + 8 == 117
+    assert w.CAPS["hello"] == 1 + 4 + 32 + 8 + 32 + 32 + 8 + 8 == 125
     assert w.CAPS["block_ids"] == 1 + 8 + 4 + 500 * 32
     assert w.CAPS["get_block_ids"] == 1 + 4 + 32 * 32
     assert w.CAPS["new_tx"] == 1 + 4 + 64 * 32
@@ -113,7 +113,8 @@ def test_the_encoder_refuses_what_the_decoder_would_refuse():
     for m in [{"kind": "get_block_ids", "locator": ["00" * 32] * 33},
               {"kind": "block_ids", "first_height": 1, "ids": ["00" * 32] * 501},
               {"kind": "get_blocks", "ids": ["00" * 32] * 33},
-              {"kind": "new_tx", "ids": ["00" * 32] * 65}]:
+              {"kind": "new_tx", "ids": ["00" * 32] * 65},
+              {"kind": "addrs", "addrs": [{"ip": "00" * 16, "port": 1, "last_seen": 1}] * 101}]:
         try:
             w.encode(m)
         except ValueError:

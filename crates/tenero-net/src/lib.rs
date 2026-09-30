@@ -7,6 +7,7 @@
 //! reference, is [`wire`] (`docs/WIRE_PROTOCOL.md`).
 //! **Experimental and unaudited.**
 
+pub mod addrbook;
 pub mod engine;
 pub mod message;
 pub mod sim;

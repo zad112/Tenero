@@ -1,4 +1,4 @@
-# The peer-to-peer wire protocol, version 1 (a DRAFT, milestone M8.2)
+# The peer-to-peer wire protocol, version 1 (a DRAFT, milestones M8.2 and M8.3a)
 
 Status: **draft, 2026-09-30, unreviewed.** This is how the messages of `crates/tenero-net` (`Message`) become
 bytes. It reuses the version 2 codec of `CONSENSUS_V2.md` section 4: fixed-width little-endian integers, no
@@ -32,9 +32,10 @@ frame  = length u32      the number of bytes that follow: 1 (the kind) + the bod
 | ids in `block_ids` | 0 to 500 |
 | ids in `get_blocks`, blocks in `blocks` | 0 to 32 |
 | ids in `not_found`, `new_tx`, `get_txs`; transactions in `txs` | 0 to 64 |
+| addresses in `addrs` | 0 to 100 |
 | frame length (kind + body) | per kind, below |
 
-Caps on `length`: `hello` 117, `ping` and `pong` 9, `new_block` 73, `get_block_ids` and `get_blocks` 1029,
+Caps on `length`: `hello` 125, `ping` and `pong` 9, `get_addrs` 1, `addrs` 2605, `new_block` 73, `get_block_ids` and `get_blocks` 1029,
 `not_found`, `new_tx` and `get_txs` 2053, `block_ids` 16013, and **`blocks` and `txs` 16,777,216 (16 MiB)**. The
 engine's own limits (`Limits`, configurable) may be lower than these; the wire caps are the ceiling a decoder
 never exceeds. What a count of zero *means* (an empty locator is a protocol violation, for example) is the
@@ -44,7 +45,7 @@ engine's rule, not the codec's.
 
 | kind | name | body |
 |---|---|---|
-| 1 | `hello` | `version` u32, `chain_id` 32, `tip_height` u64, `cumulative_work` 32 (big-endian number), `tip_id` 32, `pruned_below` u64 |
+| 1 | `hello` | `version` u32, `chain_id` 32, `tip_height` u64, `cumulative_work` 32 (big-endian number), `tip_id` 32, `pruned_below` u64, `nonce` u64 (random per run; equal nonces mean the same node) |
 | 2 | `ping` | `nonce` u64 |
 | 3 | `pong` | `nonce` u64 |
 | 4 | `get_block_ids` | `count` u32, then `count` block ids (32 each): the locator, newest first |
@@ -56,8 +57,10 @@ engine's rule, not the codec's.
 | 10 | `new_tx` | `count` u32, then transaction ids |
 | 11 | `get_txs` | `count` u32, then transaction ids |
 | 12 | `txs` | `count` u32, then `count` transactions, each in the full wire form of `CONSENSUS_V2.md` 6.2 |
+| 13 | `get_addrs` | (empty) |
+| 14 | `addrs` | `count` u32, then `count` addresses: `ip` 16 (IPv6; IPv4 as `::ffff:a.b.c.d`), `port` u16, `last_seen` u64 (Unix seconds) |
 
-Every other kind byte (0 and 13 to 255) is an error. The objects inside `blocks` and `txs` are decoded by the
+Every other kind byte (0 and 15 to 255) is an error. The objects inside `blocks` and `txs` are decoded by the
 strict decoders of the data model, so a block or transaction that is malformed *inside* a well-formed frame is
 refused with that decoder's error.
 

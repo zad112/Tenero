@@ -5,7 +5,9 @@
 use serde_json::Value;
 use tenero_core::v2::{Block, Transaction, Wire};
 use tenero_core::vectors::{hex, load};
-use tenero_net::message::{MAX_BLOCKS, MAX_IDS, MAX_LOCATOR, MAX_NOT_FOUND, MAX_TXS};
+use tenero_net::message::{
+    PeerAddr, MAX_ADDRS, MAX_BLOCKS, MAX_IDS, MAX_LOCATOR, MAX_NOT_FOUND, MAX_TXS,
+};
 use tenero_net::{
     decode_frame, encode, FrameDecoder, Hello, Limits, Message, WireError, MAX_FRAME,
 };
@@ -29,6 +31,7 @@ fn message(m: &Value) -> Message {
             cumulative_work: h32(&m["cumulative_work"]),
             tip_id: h32(&m["tip_id"]),
             pruned_below: n("pruned_below"),
+            nonce: n("nonce"),
         }),
         "ping" => Message::Ping(n("nonce")),
         "pong" => Message::Pong(n("nonce")),
@@ -63,6 +66,19 @@ fn message(m: &Value) -> Message {
         },
         "get_txs" => Message::GetTxs {
             ids: ids(&m["ids"]),
+        },
+        "get_addrs" => Message::GetAddrs,
+        "addrs" => Message::Addrs {
+            addrs: m["addrs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| PeerAddr {
+                    ip: hex(a["ip"].as_str().unwrap()).unwrap().try_into().unwrap(),
+                    port: a["port"].as_u64().unwrap() as u16,
+                    last_seen: a["last_seen"].as_u64().unwrap(),
+                })
+                .collect(),
         },
         "txs" => Message::Txs {
             txs: m["txs"]
@@ -106,6 +122,7 @@ fn the_limits_in_the_vector_file_are_the_ones_in_the_code() {
     assert_eq!(l["max_blocks"].as_u64().unwrap() as usize, MAX_BLOCKS);
     assert_eq!(l["max_txs"].as_u64().unwrap() as usize, MAX_TXS);
     assert_eq!(l["max_not_found"].as_u64().unwrap() as usize, MAX_NOT_FOUND);
+    assert_eq!(l["max_addrs"].as_u64().unwrap() as usize, MAX_ADDRS);
     // and the engine's defaults are the same ceilings
     let d = Limits::default();
     assert_eq!(
@@ -311,6 +328,19 @@ fn the_encoder_refuses_what_a_decoder_would_refuse() {
                 ids: vec![id; MAX_TXS + 1],
             },
         ),
+        (
+            "addrs",
+            Message::Addrs {
+                addrs: vec![
+                    PeerAddr {
+                        ip: [0; 16],
+                        port: 1,
+                        last_seen: 1
+                    };
+                    MAX_ADDRS + 1
+                ],
+            },
+        ),
     ] {
         assert!(
             matches!(encode(&msg), Err(WireError::Encode(_))),
@@ -402,11 +432,11 @@ fn random_bytes_never_panic_the_decoders() {
 }
 
 #[test]
-fn every_kind_byte_but_one_to_twelve_is_unknown() {
+fn every_kind_byte_but_one_to_fourteen_is_unknown() {
     for kind in 0u8..=255 {
         let frame = [1u8, 0, 0, 0, kind];
         let r = decode_frame(&frame);
-        if (1..=12).contains(&kind) {
+        if (1..=14).contains(&kind) {
             assert!(!matches!(r, Err(WireError::UnknownKind(_))), "kind {kind}");
         } else {
             assert_eq!(r, Err(WireError::UnknownKind(kind)));

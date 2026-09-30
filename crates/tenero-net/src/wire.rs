@@ -10,7 +10,9 @@
 use tenero_core::v2::codec::{DecodeError, EncodeError, Reader, Writer};
 use tenero_core::v2::{Block, Transaction, Wire};
 
-use crate::message::{Hello, Message, MAX_BLOCKS, MAX_IDS, MAX_LOCATOR, MAX_NOT_FOUND, MAX_TXS};
+use crate::message::{
+    Hello, Message, PeerAddr, MAX_ADDRS, MAX_BLOCKS, MAX_IDS, MAX_LOCATOR, MAX_NOT_FOUND, MAX_TXS,
+};
 
 /// The most a frame's `length` may ever be (blocks and transactions lists).
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
@@ -88,11 +90,13 @@ const NEW_BLOCK: u8 = 9;
 const NEW_TX: u8 = 10;
 const GET_TXS: u8 = 11;
 const TXS: u8 = 12;
+const GET_ADDRS: u8 = 13;
+const ADDRS: u8 = 14;
 
 /// The largest `length` (kind byte and body) each kind may declare; `None` for an unknown kind.
 fn cap_of(kind: u8) -> Option<usize> {
     Some(match kind {
-        HELLO => 1 + 4 + 32 + 8 + 32 + 32 + 8,
+        HELLO => 1 + 4 + 32 + 8 + 32 + 32 + 8 + 8,
         PING | PONG => 1 + 8,
         GET_BLOCK_IDS => 1 + 4 + MAX_LOCATOR * 32,
         BLOCK_IDS => 1 + 8 + 4 + MAX_IDS * 32,
@@ -101,6 +105,8 @@ fn cap_of(kind: u8) -> Option<usize> {
         NOT_FOUND => 1 + 4 + MAX_NOT_FOUND * 32,
         NEW_BLOCK => 1 + 32 + 8 + 32,
         NEW_TX | GET_TXS => 1 + 4 + MAX_TXS * 32,
+        GET_ADDRS => 1,
+        ADDRS => 1 + 4 + MAX_ADDRS * 26,
         _ => return None,
     })
 }
@@ -119,6 +125,8 @@ fn kind_of(msg: &Message) -> u8 {
         Message::NewTx { .. } => NEW_TX,
         Message::GetTxs { .. } => GET_TXS,
         Message::Txs { .. } => TXS,
+        Message::GetAddrs => GET_ADDRS,
+        Message::Addrs { .. } => ADDRS,
     }
 }
 
@@ -151,6 +159,7 @@ pub fn encode(msg: &Message) -> Result<Vec<u8>, WireError> {
             w.raw(&h.cumulative_work);
             w.raw(&h.tip_id);
             w.u64(h.pruned_below);
+            w.u64(h.nonce);
         }
         Message::Ping(n) | Message::Pong(n) => w.u64(*n),
         Message::GetBlockIds { locator } => write_ids(&mut w, locator, MAX_LOCATOR)?,
@@ -171,6 +180,15 @@ pub fn encode(msg: &Message) -> Result<Vec<u8>, WireError> {
             w.count(txs.len(), 0, MAX_TXS)?;
             for t in txs {
                 t.write(&mut w)?;
+            }
+        }
+        Message::GetAddrs => {}
+        Message::Addrs { addrs } => {
+            w.count(addrs.len(), 0, MAX_ADDRS)?;
+            for a in addrs {
+                w.raw(&a.ip);
+                w.u16(a.port);
+                w.u64(a.last_seen);
             }
         }
         Message::NewBlock {
@@ -250,6 +268,7 @@ fn decode_body(kind: u8, body: &[u8]) -> Result<Message, WireError> {
             cumulative_work: r.array()?,
             tip_id: r.array()?,
             pruned_below: r.u64()?,
+            nonce: r.u64()?,
         }),
         PING => Message::Ping(r.u64()?),
         PONG => Message::Pong(r.u64()?),
@@ -292,6 +311,19 @@ fn decode_body(kind: u8, body: &[u8]) -> Result<Message, WireError> {
                 txs.push(Transaction::read(&mut r)?);
             }
             Message::Txs { txs }
+        }
+        GET_ADDRS => Message::GetAddrs,
+        ADDRS => {
+            let n = r.count(0, MAX_ADDRS)?;
+            let mut addrs = Vec::with_capacity(n);
+            for _ in 0..n {
+                addrs.push(PeerAddr {
+                    ip: r.array()?,
+                    port: r.u16()?,
+                    last_seen: r.u64()?,
+                });
+            }
+            Message::Addrs { addrs }
         }
         other => return Err(WireError::UnknownKind(other)),
     };

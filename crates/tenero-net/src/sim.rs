@@ -23,6 +23,23 @@ use crate::message::Message;
 
 pub const LABEL: &str = "tenero simulated network";
 
+/// The public-looking address of simulated node `i` when `per_group` consecutive nodes share a network group
+/// (an IPv4 /16): unique per node.
+pub fn sim_addr_in(i: usize, per_group: usize) -> String {
+    let g = i / per_group;
+    format!(
+        "{}.{}.{}.1:8333",
+        20 + g / 200,
+        1 + g % 200,
+        1 + i % per_group
+    )
+}
+
+/// The address of simulated node `i` when every node is in its own network group.
+pub fn sim_addr(i: usize) -> String {
+    sim_addr_in(i, 1)
+}
+
 /// One node's storage and rules; the simulation's engines borrow from these.
 pub struct SimRig {
     path: PathBuf,
@@ -83,6 +100,10 @@ pub struct SimConfig {
     pub drop_permille: u64,
     pub tick_ms: u64,
     pub seed: u64,
+    /// Every node announces its own address to its peers.
+    pub advertise: bool,
+    /// How many consecutive nodes share one network group (an IPv4 /16).
+    pub nodes_per_group: usize,
 }
 
 impl Default for SimConfig {
@@ -92,14 +113,40 @@ impl Default for SimConfig {
             latency_max_ms: 200,
             drop_permille: 0,
             tick_ms: 1000,
+            advertise: true,
+            nodes_per_group: 1,
             seed: 0x2545_f491_4f6c_dd1d,
         }
     }
 }
 
 enum Ev {
-    Deliver { to: End, peer: PeerId, msg: Message },
-    Disc { to: End, peer: PeerId },
+    Deliver {
+        to: End,
+        peer: PeerId,
+        msg: Message,
+    },
+    Disc {
+        to: End,
+        peer: PeerId,
+    },
+    /// A dial reaches its target.
+    Dial {
+        from: usize,
+        to: usize,
+        addr: String,
+    },
+    /// A dial that never connects.
+    DialFailed {
+        node: usize,
+        addr: String,
+    },
+    /// A dial that reaches a scripted listener.
+    DialHostile {
+        from: usize,
+        h: usize,
+        addr: String,
+    },
     Tick,
 }
 
@@ -180,6 +227,13 @@ pub struct Sim<'a> {
     /// (end, the peer id that end uses for the link) -> the other end
     links: HashMap<(End, PeerId), (End, PeerId)>,
     next_peer: PeerId,
+    /// Each node's listening address, and the reverse map.
+    addrs: Vec<String>,
+    addr_index: HashMap<String, usize>,
+    online: Vec<bool>,
+    /// Scripted peers that accept dials, by the address they listen on.
+    hostile_listen: HashMap<String, usize>,
+    next_ephemeral: u64,
     /// The time of the last message scheduled towards each end of a link (for in-order delivery).
     last_delivery: HashMap<(End, PeerId), u64>,
     /// Which side of a partition each node is on (`None`: no partition).
@@ -195,16 +249,30 @@ pub struct Sim<'a> {
 }
 
 impl<'a> Sim<'a> {
-    /// One engine per rig. `start_secs` is the simulated Unix time at the start.
+    /// One engine per rig, all configured alike. `start_secs` is the simulated Unix time at the start.
     pub fn new(
         rigs: &'a [SimRig],
         start_secs: u64,
         cfg: SimConfig,
         engine: EngineConfig,
     ) -> Sim<'a> {
+        Sim::with_configs(rigs, start_secs, cfg, vec![engine; rigs.len()])
+    }
+
+    /// One engine per rig, each with its own configuration (for example, different seeds).
+    pub fn with_configs(
+        rigs: &'a [SimRig],
+        start_secs: u64,
+        cfg: SimConfig,
+        engines: Vec<EngineConfig>,
+    ) -> Sim<'a> {
+        assert_eq!(rigs.len(), engines.len());
+        let n_nodes = rigs.len();
+        let per_group = cfg.nodes_per_group.max(1);
         let engines = rigs
             .iter()
-            .map(|r| {
+            .enumerate()
+            .map(|(i, r)| {
                 let node = Node::with_proof_check(
                     &r.store,
                     &r.params,
@@ -216,7 +284,17 @@ impl<'a> Sim<'a> {
                     },
                 )
                 .expect("a test node");
-                Engine::new(node, engine.clone())
+                let mut node_cfg = engines[i].clone();
+                // each node chooses among addresses in its own order, and announces itself
+                node_cfg.addrbook.seed ^= (i as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+                if node_cfg.nonce == 0 {
+                    node_cfg.nonce =
+                        0xA5A5_0000_0000_0000 ^ (i as u64 + 1).wrapping_mul(0x2545_f491_4f6c_dd1d);
+                }
+                if cfg.advertise && node_cfg.advertise.is_none() {
+                    node_cfg.advertise = Some(sim_addr_in(i, per_group));
+                }
+                Engine::new(node, node_cfg)
             })
             .collect();
         let mut sim = Sim {
@@ -227,6 +305,13 @@ impl<'a> Sim<'a> {
             queue: BinaryHeap::new(),
             links: HashMap::new(),
             next_peer: 1,
+            addrs: (0..n_nodes).map(|i| sim_addr_in(i, per_group)).collect(),
+            addr_index: (0..n_nodes)
+                .map(|i| (sim_addr_in(i, per_group), i))
+                .collect(),
+            online: vec![true; n_nodes],
+            hostile_listen: HashMap::new(),
+            next_ephemeral: 40_000,
             last_delivery: HashMap::new(),
             groups: None,
             topology: BTreeSet::new(),
@@ -289,11 +374,18 @@ impl<'a> Sim<'a> {
 
     // ---- topology ---------------------------------------------------------------------------------
 
-    /// Connects node `a` (the dialer) to node `b`. Returns false if a partition forbids it.
+    /// Connects node `a` (the dialer) to node `b`. Returns false if a partition or an offline node forbids it.
     pub fn connect(&mut self, a: usize, b: usize) -> bool {
-        if self.separated(End::Node(a), End::Node(b)) {
+        if self.separated(End::Node(a), End::Node(b)) || !self.online[a] || !self.online[b] {
             return false;
         }
+        let dialled = self.addrs[b].clone();
+        self.establish(a, b, dialled);
+        true
+    }
+
+    /// The link itself: `a` dialled `dialled` (which is `b`'s listening address).
+    fn establish(&mut self, a: usize, b: usize, dialled: String) {
         let (pa, pb) = (self.next_peer, self.next_peer + 1);
         self.next_peer += 2;
         self.links.insert((End::Node(a), pa), (End::Node(b), pb));
@@ -304,21 +396,76 @@ impl<'a> Sim<'a> {
             now,
             Event::PeerConnected {
                 peer: pa,
-                addr: format!("node-{b}"),
+                addr: dialled,
                 inbound: false,
             },
         );
         self.process(End::Node(a), out);
+        // the receiving node sees the dialler's IP and an ephemeral port, as on a real socket
+        self.next_ephemeral += 1;
+        let from_ip = self.addrs[a]
+            .rsplit_once(':')
+            .map_or("0.0.0.0", |x| x.0)
+            .to_string();
         let out = self.engines[b].handle(
             now,
             Event::PeerConnected {
                 peer: pb,
-                addr: format!("node-{a}"),
+                addr: format!("{from_ip}:{}", self.next_ephemeral),
                 inbound: true,
             },
         );
         self.process(End::Node(b), out);
-        true
+    }
+
+    pub fn addr_of(&self, node: usize) -> &str {
+        &self.addrs[node]
+    }
+
+    /// Changes the address node `node` listens on (before it connects to anything), e.g. to crowd one network
+    /// group with many nodes.
+    pub fn set_node_addr(&mut self, node: usize, addr: &str) {
+        self.addr_index.remove(&self.addrs[node]);
+        self.addrs[node] = addr.to_string();
+        self.addr_index.insert(addr.to_string(), node);
+    }
+
+    pub fn is_online(&self, node: usize) -> bool {
+        self.online[node]
+    }
+
+    /// Takes a node off the network (its links are cut and dials to it fail) or brings it back. Its state is
+    /// kept; when it returns, its own connection manager finds peers again.
+    pub fn set_online(&mut self, node: usize, online: bool) {
+        self.online[node] = online;
+        if online {
+            return;
+        }
+        let cut: Vec<(End, PeerId)> = self
+            .links
+            .keys()
+            .filter(|(e, _)| *e == End::Node(node))
+            .copied()
+            .collect();
+        for (end, peer) in cut {
+            if let Some((other, other_peer)) = self.links.remove(&(end, peer)) {
+                self.links.remove(&(other, other_peer));
+                self.schedule(1, Ev::Disc { to: end, peer });
+                self.schedule(
+                    1,
+                    Ev::Disc {
+                        to: other,
+                        peer: other_peer,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Ends a partition without reconnecting anything: the nodes' own connection managers do that.
+    pub fn heal_quiet(&mut self) {
+        self.groups = None;
+        self.severed.clear();
     }
 
     /// Connects every pair of nodes (a full mesh).
@@ -391,6 +538,23 @@ impl<'a> Sim<'a> {
         h
     }
 
+    /// A scripted peer that LISTENS on `addr`: a node that dials that address reaches it (the node is then
+    /// `hostiles[h].node`, and this peer sees a dialler, so it can answer `GetAddrs` with anything). Until it
+    /// is dialled it is `disconnected`.
+    pub fn add_hostile_listener(&mut self, addr: &str) -> usize {
+        let h = self.hostiles.len();
+        self.hostiles.push(Hostile {
+            addr: addr.to_string(),
+            node: usize::MAX,
+            inbox: Vec::new(),
+            disconnected: true,
+            peer_at_node: None,
+            peer_here: 0,
+        });
+        self.hostile_listen.insert(addr.to_string(), h);
+        h
+    }
+
     /// (Re)connects a hostile peer; the node may refuse it (a banned address), which shows as `disconnected`.
     pub fn hostile_connect(&mut self, h: usize) {
         let (pn, ph) = (self.next_peer, self.next_peer + 1);
@@ -448,9 +612,14 @@ impl<'a> Sim<'a> {
                 }
                 Action::Disconnect { peer, .. } => {
                     if let Some((to, to_peer)) = self.links.remove(&(from, peer)) {
-                        self.links.remove(&(to, to_peer));
+                        // a close arrives AFTER everything sent before it, as on a real TCP connection: the
+                        // far end's side of the link stays until then
                         let lat = self.latency();
-                        self.schedule(lat, Ev::Disc { to, peer: to_peer });
+                        let earliest = self
+                            .last_delivery
+                            .get(&(to, to_peer))
+                            .map_or(0, |&t| t.saturating_sub(self.now_ms) + 1);
+                        self.schedule(lat.max(earliest), Ev::Disc { to, peer: to_peer });
                     } else if let End::Node(_) = from {
                         // refused before a link record existed on the far side: nothing to tell
                     }
@@ -459,6 +628,38 @@ impl<'a> Sim<'a> {
                         if End::Node(h.node) == from && h.peer_at_node == Some(peer) {
                             h.disconnected = true;
                         }
+                    }
+                }
+                Action::Connect { addr } => {
+                    let End::Node(a) = from else { continue };
+                    let lat = self.latency();
+                    if let Some(&h) = self.hostile_listen.get(&addr) {
+                        if self.online[a] && self.hostiles[h].disconnected {
+                            self.schedule(2 * lat, Ev::DialHostile { from: a, h, addr });
+                        } else {
+                            self.schedule(3000, Ev::DialFailed { node: a, addr });
+                        }
+                        continue;
+                    }
+                    let target = self.addr_index.get(&addr).copied();
+                    match target {
+                        Some(b)
+                            if b != a
+                                && self.online[b]
+                                && self.online[a]
+                                && !self.separated(End::Node(a), End::Node(b)) =>
+                        {
+                            self.schedule(
+                                2 * lat,
+                                Ev::Dial {
+                                    from: a,
+                                    to: b,
+                                    addr,
+                                },
+                            );
+                        }
+                        // nobody there (or unreachable): the dial times out
+                        _ => self.schedule(3000, Ev::DialFailed { node: a, addr }),
                     }
                 }
                 Action::Ban { .. } => {}
@@ -478,6 +679,48 @@ impl<'a> Sim<'a> {
                     self.process(End::Node(i), out);
                 }
                 self.schedule(self.cfg.tick_ms, Ev::Tick);
+            }
+            Ev::Dial { from, to, addr } => {
+                if self.online[from]
+                    && self.online[to]
+                    && !self.separated(End::Node(from), End::Node(to))
+                {
+                    self.establish(from, to, addr);
+                } else {
+                    let out = self.engines[from].handle(self.now_ms, Event::ConnectFailed { addr });
+                    self.process(End::Node(from), out);
+                }
+            }
+            Ev::DialHostile { from, h, addr } => {
+                if self.online[from] && self.hostiles[h].disconnected {
+                    let (pn, ph) = (self.next_peer, self.next_peer + 1);
+                    self.next_peer += 2;
+                    self.links
+                        .insert((End::Node(from), pn), (End::Hostile(h), ph));
+                    self.links
+                        .insert((End::Hostile(h), ph), (End::Node(from), pn));
+                    let hs = &mut self.hostiles[h];
+                    hs.node = from;
+                    hs.disconnected = false;
+                    hs.peer_at_node = Some(pn);
+                    hs.peer_here = ph;
+                    let out = self.engines[from].handle(
+                        self.now_ms,
+                        Event::PeerConnected {
+                            peer: pn,
+                            addr,
+                            inbound: false,
+                        },
+                    );
+                    self.process(End::Node(from), out);
+                } else {
+                    let out = self.engines[from].handle(self.now_ms, Event::ConnectFailed { addr });
+                    self.process(End::Node(from), out);
+                }
+            }
+            Ev::DialFailed { node, addr } => {
+                let out = self.engines[node].handle(self.now_ms, Event::ConnectFailed { addr });
+                self.process(End::Node(node), out);
             }
             Ev::Deliver { to, peer, msg } => {
                 // a message on a link that has since been cut is lost

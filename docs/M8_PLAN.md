@@ -103,7 +103,7 @@ Testing the vectors themselves also exposed that "length over maximum" had no ca
 *Limits:* nothing yet feeds the engine through bytes (M8.4 puts sockets and Noise underneath); the caps and the
 16 MiB ceiling are proposals, not measured against real traffic; the codec is unreviewed (M9).
 
-### M8.3a Peer discovery and connection management (size M; new since the first draft)
+### M8.3a Peer discovery and connection management (size M; new since the first draft) **DONE 2026-09-30** (`crates/tenero-net/src/addrbook.rs`, the engine)
 The owner wants **at least 50 peers** per node (decision 1), so finding and keeping peers is a component, not a
 detail: an address book (persisted, with when each address was last seen and last worked), address exchange
 between peers (`GetAddrs` / `Addrs`, with a cap on how many a peer may send and how fast), a list of seed
@@ -114,6 +114,39 @@ behaviour is tested in the simulated network (M8.1, which can run hundreds of no
 once other people run nodes.
 *Done when:* in simulation a node started with only a seed list reaches its outbound target, replaces dropped
 peers, refuses to be filled by one attacker's addresses, and survives 50+ peers sending at once.
+*Result:* two new messages (`get_addrs`, `addrs`) and a per-run `nonce` in `Hello`, all in the wire format, the
+Python reference and the vectors. The address book keeps only routable `ip:port` addresses, bounds how much one
+source network group may add (64 new entries), drops never-worked and most-failed entries first (never a seed or a
+tried address first), backs off exponentially with a 30 s minimum gap between dials of one address, forgets an
+address that never worked after 10 failures, samples a fresh answer for `get_addrs`, and saves and loads with a
+checksum. Bans are by host (an inbound peer's port is arbitrary). The engine keeps **at least 8 outbound peers of its
+own choosing and 50 peers in all** (both configurable), never dials a host it is connected to, at most 2 outbound per
+/16, never itself, never a banned or backed-off address; answers `get_addrs` once per connection and punishes
+unsolicited or oversized address messages; accepts one self-announcement (its own host) per connection; and **a full
+node still hands out addresses**: up to 16 "visitors" over the limit may say hello, receive addresses and are sent
+away, which is what stops a newcomer being locked out of a busy seed. Two links to one node (simultaneous dials, or
+a connection to ourselves) are resolved by the nonce, keeping the link dialled by the smaller nonce, the same one at
+both ends. The address book and ban list export and import (`Engine::export_state`/`import_state`), refusing any
+damage. **Measured in simulation (not on a real network):** 120 nodes started with five seed addresses each reach 50
+peers or more (minimum 50, maximum 72) within seconds of simulated time, every ordinary node having chosen at least
+22 of them itself, with no honest peer banned and each block body still sent once per node; 30% of a 40-node network
+vanishing is refilled and the returning nodes reconnect; a healed partition reconnects through the nodes' own
+dialling; 300 fake addresses pushed by three attackers fill at most 64 entries each and the victim still reaches the
+honest network; a crowded /16 gets two outbound slots. 93 deliberate faults injected into the address book and the
+new engine logic, all caught (13 survived first, each exposing a missing test or one mutant of my own that was a
+no-op, and all now have tests). Bugs the simulator and the tests found in my own design along the way: a
+seed's 29 inbound peers blocked all its dialling (the host-dedupe rule counted inbound peers), a full seed locked
+out newcomers (the visitor mechanism above), a peer that connected and dropped at once was redialled 3,700 times
+(the minimum redial gap), and the simulator threw away a reply sent just before a close (fixed: a close now arrives
+after what was sent, like TCP).
+*Limits, stated plainly:* the addresses, latencies and failures are simulated; there are no DNS seeds (seeds are
+configured addresses) and the node program does not yet write the book to disk (M8.4 and M8.7 will use
+`export_state`); an eclipse attacker who controls a node's seeds, or many network groups, can still steer it (the
+per-source cap and group diversity are mitigations, not guarantees, and no attack has been tried beyond the ones
+above); `get_addrs` answers reveal the book to anyone who connects, limited only to one answer per connection;
+two links dialled by the same side at once (which the dialling rules avoid creating) are not resolved
+consistently and may both be dropped, after which the nodes redial; the timing and size numbers are untuned
+defaults; and it is unreviewed (M9).
 
 ### M8.3 Sync (size L, the hard part)
 A new node learns the chain: ask a peer for its tip and work, fetch the block ids, then the blocks, validate and

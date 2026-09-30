@@ -25,7 +25,10 @@ use tenero_core::v2::ids::{block_id, tx_id};
 use tenero_core::v2::{Block, Transaction};
 use tenero_node::{AddOutcome, Node, PoolError};
 
-use crate::message::{Hello, Limits, Message, PROTOCOL_VERSION};
+use crate::addrbook::{
+    group_of, host_of, peer_addr_to_string, string_to_peer_addr, AddrBook, AddrBookConfig, BanList,
+};
+use crate::message::{Hello, Limits, Message, PeerAddr, PROTOCOL_VERSION};
 
 /// A handle for one connection, chosen by the transport.
 pub type PeerId = u64;
@@ -44,6 +47,10 @@ pub enum Event {
         peer: PeerId,
         msg: Message,
     },
+    /// A connection we asked for (`Action::Connect`) could not be made.
+    ConnectFailed {
+        addr: String,
+    },
     /// Time passed: timeouts, keepalive, retries.
     Tick,
     /// This node mined a block (or was handed one locally).
@@ -61,6 +68,11 @@ pub enum Action {
     Disconnect {
         peer: PeerId,
         reason: String,
+    },
+    /// Open an outbound connection to this address. The transport answers with `PeerConnected` (with
+    /// `inbound: false` and this address) or `ConnectFailed`.
+    Connect {
+        addr: String,
     },
     /// Informational: the engine has banned this address until the given time and will refuse it itself.
     Ban {
@@ -94,6 +106,28 @@ pub struct EngineConfig {
     pub sync_cooldown_ms: u64,
     /// Blocks held because they are ahead of our clock.
     pub max_held: usize,
+    /// The fewest outbound connections to keep (dialled by us, so a hostile peer cannot have chosen them), even
+    /// when inbound peers are plentiful.
+    pub outbound_target: usize,
+    /// How many peers to keep in all, inbound and outbound: the node dials until it has this many.
+    pub peer_target: usize,
+    /// Random, chosen once per run, sent in `Hello`: it lets a node recognise a connection to itself, or a
+    /// second connection to the same peer. 0 turns that off (do not do that on a real network).
+    pub nonce: u64,
+    /// At most this many new dials are started in one tick.
+    pub max_connect_per_tick: usize,
+    /// A dial unanswered this long counts as failed.
+    pub connect_timeout_ms: u64,
+    /// The most outbound connections to one network group (an IPv4 /16, an IPv6 /32).
+    pub max_outbound_per_group: usize,
+    /// Addresses to start from when the address book is empty (they are never forgotten).
+    pub seeds: Vec<String>,
+    /// Our own public address, if we have one: announced once to each peer, never dialled.
+    pub advertise: Option<String>,
+    pub addrbook: AddrBookConfig,
+    /// When full, this many extra inbound connections are still accepted, only to be told addresses and sent
+    /// away (so a busy seed node still helps newcomers find peers).
+    pub max_addr_only: usize,
 }
 
 impl Default for EngineConfig {
@@ -114,6 +148,16 @@ impl Default for EngineConfig {
             max_timeouts: 5,
             sync_cooldown_ms: 60_000,
             max_held: 64,
+            outbound_target: 8,
+            peer_target: 50,
+            nonce: 0,
+            max_connect_per_tick: 8,
+            connect_timeout_ms: 10_000,
+            max_outbound_per_group: 2,
+            seeds: Vec::new(),
+            advertise: None,
+            addrbook: AddrBookConfig::default(),
+            max_addr_only: 16,
         }
     }
 }
@@ -144,6 +188,17 @@ struct Peer {
     last_refill: u64,
     known_blocks: HashSet<[u8; 32]>,
     known_txs: HashSet<[u8; 32]>,
+    /// We sent `GetAddrs` and have not had the answer.
+    asked_addrs: bool,
+    /// We have answered its `GetAddrs` (once per connection).
+    answered_addrs: bool,
+    /// It has announced its own address (once per connection).
+    self_announced: bool,
+    /// Accepted over our limit, only to be given addresses: it may say hello and ask for addresses, and is then
+    /// sent away. It never becomes a real peer.
+    addr_only: bool,
+    /// Its handshake was accepted (an address-only peer never gets `hello`).
+    greeted: bool,
 }
 
 enum Phase {
@@ -184,7 +239,10 @@ pub struct Engine<'a> {
     cfg: EngineConfig,
     now: u64,
     peers: BTreeMap<PeerId, Peer>,
-    bans: HashMap<String, u64>,
+    bans: BanList,
+    book: AddrBook,
+    /// Addresses we have asked the transport to dial, and when.
+    connecting: BTreeMap<String, u64>,
     syncing: Option<Sync>,
     cooldown: HashMap<PeerId, u64>,
     req_blocks: BTreeMap<[u8; 32], Req>,
@@ -201,12 +259,18 @@ pub struct Engine<'a> {
 
 impl<'a> Engine<'a> {
     pub fn new(node: Node<'a>, cfg: EngineConfig) -> Engine<'a> {
+        let mut book = AddrBook::new(cfg.addrbook.clone());
+        for seed in &cfg.seeds {
+            book.add(seed, 0, "seed", 0);
+        }
         Engine {
             node,
             cfg,
             now: 0,
             peers: BTreeMap::new(),
-            bans: HashMap::new(),
+            bans: BanList::new(),
+            book,
+            connecting: BTreeMap::new(),
             syncing: None,
             cooldown: HashMap::new(),
             req_blocks: BTreeMap::new(),
@@ -224,8 +288,14 @@ impl<'a> Engine<'a> {
         &self.node
     }
 
+    /// Real peers (address-only visitors are not counted).
     pub fn peer_count(&self) -> usize {
-        self.peers.len()
+        self.peers.values().filter(|p| !p.addr_only).count()
+    }
+
+    /// Strangers accepted over our limit only to be given addresses.
+    pub fn addr_only_count(&self) -> usize {
+        self.peers.values().filter(|p| p.addr_only).count()
     }
 
     pub fn ready_peer_count(&self) -> usize {
@@ -233,7 +303,7 @@ impl<'a> Engine<'a> {
     }
 
     pub fn is_banned(&self, addr: &str, now_ms: u64) -> bool {
-        self.bans.get(addr).is_some_and(|&until| until > now_ms)
+        self.bans.is_banned(addr, now_ms)
     }
 
     pub fn is_syncing(&self) -> bool {
@@ -286,8 +356,18 @@ impl<'a> Engine<'a> {
                 inbound,
             } => self.on_connected(peer, addr, inbound, &mut out),
             Event::PeerDisconnected { peer } => {
-                self.peers.remove(&peer);
+                if let Some(p) = self.peers.remove(&peer) {
+                    // an outbound connection that never got as far as a handshake counts against its address
+                    if !p.inbound && p.hello.is_none() {
+                        self.book.mark_failure(&p.addr, now_ms);
+                    }
+                }
                 self.cleanup_peer(peer, &mut out);
+            }
+            Event::ConnectFailed { addr } => {
+                if self.connecting.remove(&addr).is_some() {
+                    self.book.mark_failure(&addr, now_ms);
+                }
             }
             Event::Message { peer, msg } => self.on_message(peer, msg, &mut out),
             Event::Tick => self.on_tick(&mut out),
@@ -336,6 +416,7 @@ impl<'a> Engine<'a> {
             cumulative_work: i.cumulative_work,
             tip_id: i.block_id,
             pruned_below: self.node.store().pruned_below().unwrap_or(0),
+            nonce: self.cfg.nonce,
         }
     }
 
@@ -359,9 +440,15 @@ impl<'a> Engine<'a> {
 
     fn drop_peer(&mut self, peer: PeerId, why: &str, ban: bool, out: &mut Vec<Action>) {
         if let Some(p) = self.peers.remove(&peer) {
+            if !p.inbound && !ban && p.hello.is_none() {
+                self.book.mark_failure(&p.addr, self.now);
+            }
             if ban {
                 let until = self.now + self.cfg.ban_ms;
-                self.bans.insert(p.addr.clone(), until);
+                self.bans.ban(&p.addr, until);
+                if !p.inbound {
+                    self.book.remove(&p.addr);
+                }
                 self.stats.bans += 1;
                 out.push(Action::Ban {
                     addr: p.addr,
@@ -419,6 +506,9 @@ impl<'a> Engine<'a> {
     // connections
 
     fn on_connected(&mut self, peer: PeerId, addr: String, inbound: bool, out: &mut Vec<Action>) {
+        if !inbound {
+            self.connecting.remove(&addr);
+        }
         if self.is_banned(&addr, self.now) {
             out.push(Action::Disconnect {
                 peer,
@@ -426,15 +516,21 @@ impl<'a> Engine<'a> {
             });
             return;
         }
-        let inbound_now = self.peers.values().filter(|p| p.inbound).count();
-        if self.peers.len() >= self.cfg.max_peers
-            || (inbound && inbound_now >= self.cfg.max_inbound)
+        let regular = self.peers.values().filter(|p| !p.addr_only);
+        let inbound_now = regular.clone().filter(|p| p.inbound).count();
+        let mut addr_only = false;
+        if regular.count() >= self.cfg.max_peers || (inbound && inbound_now >= self.cfg.max_inbound)
         {
-            out.push(Action::Disconnect {
-                peer,
-                reason: "full".into(),
-            });
-            return;
+            let extra = self.peers.values().filter(|p| p.addr_only).count();
+            if inbound && extra < self.cfg.max_addr_only {
+                addr_only = true;
+            } else {
+                out.push(Action::Disconnect {
+                    peer,
+                    reason: "full".into(),
+                });
+                return;
+            }
         }
         self.peers.insert(
             peer,
@@ -453,6 +549,11 @@ impl<'a> Engine<'a> {
                 last_refill: self.now,
                 known_blocks: HashSet::new(),
                 known_txs: HashSet::new(),
+                asked_addrs: false,
+                answered_addrs: false,
+                self_announced: false,
+                addr_only,
+                greeted: false,
             },
         );
         let hello = self.our_hello();
@@ -473,13 +574,71 @@ impl<'a> Engine<'a> {
             self.drop_peer(peer, "different chain", true, out);
             return;
         }
+        if !self.resolve_duplicate(peer, h.nonce, out) {
+            return;
+        }
         if let Some(p) = self.peers.get_mut(&peer) {
             p.tip_height = h.tip_height;
             p.work = U256::from_be_bytes(&h.cumulative_work);
             p.known_blocks.insert(h.tip_id);
             p.hello = Some(h);
         }
+        self.on_ready(peer, out);
         self.maybe_start_sync(out);
+    }
+
+    /// The peer at `peer` says its nonce is `nonce`. If that is our own, this is a connection to ourselves; if
+    /// another connection shows the same nonce, it is a second link to the same node. Either way exactly one
+    /// link survives, and BOTH ends choose the same one: the link dialled by the node with the smaller nonce
+    /// (the first one, if both were dialled by the same side). Returns whether `peer` is still connected.
+    fn resolve_duplicate(&mut self, peer: PeerId, nonce: u64, out: &mut Vec<Action>) -> bool {
+        let ours = self.cfg.nonce;
+        if ours == 0 || nonce == 0 {
+            return true;
+        }
+        if nonce == ours {
+            self.drop_peer(peer, "connected to ourselves", false, out);
+            return false;
+        }
+        let other = self
+            .peers
+            .iter()
+            .find(|(id, p)| **id != peer && p.hello.as_ref().is_some_and(|h| h.nonce == nonce))
+            .map(|(id, p)| (*id, p.inbound));
+        let Some((other_id, other_inbound)) = other else {
+            return true;
+        };
+        let new_inbound = self.peers.get(&peer).is_some_and(|p| p.inbound);
+        // the nonce of whoever dialled each link
+        let dialler = |inbound: bool| if inbound { nonce } else { ours };
+        let keep_new = dialler(new_inbound) < dialler(other_inbound);
+        if keep_new {
+            self.drop_peer(other_id, "duplicate connection", false, out);
+            true
+        } else {
+            self.drop_peer(peer, "duplicate connection", false, out);
+            false
+        }
+    }
+
+    /// The handshake is done: an outbound address has proved itself, and addresses are exchanged.
+    fn on_ready(&mut self, peer: PeerId, out: &mut Vec<Action>) {
+        let (addr, inbound) = match self.peers.get(&peer) {
+            Some(p) => (p.addr.clone(), p.inbound),
+            None => return,
+        };
+        if !inbound {
+            self.book.mark_success(&addr, self.secs());
+            if let Some(p) = self.peers.get_mut(&peer) {
+                p.asked_addrs = true;
+            }
+            self.send(peer, Message::GetAddrs, out);
+        }
+        if let Some(own) = self.cfg.advertise.clone() {
+            if let Some(a) = string_to_peer_addr(&own, self.secs()) {
+                self.send(peer, Message::Addrs { addrs: vec![a] }, out);
+            }
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -517,6 +676,10 @@ impl<'a> Engine<'a> {
             self.penalize(peer, 20, "too many messages", out);
             return;
         };
+        if self.peers.get(&peer).is_some_and(|p| p.addr_only) {
+            self.on_addr_only_message(peer, msg, out);
+            return;
+        }
         *self.stats.received.entry(msg.kind()).or_default() += 1;
         let lim = self.cfg.limits.clone();
         match msg {
@@ -578,6 +741,14 @@ impl<'a> Engine<'a> {
                     self.penalize(peer, 50, "bad transaction request", out);
                 } else {
                     self.on_get_txs(peer, ids, out);
+                }
+            }
+            Message::GetAddrs => self.on_get_addrs(peer, out),
+            Message::Addrs { addrs } => {
+                if addrs.len() > lim.max_addrs {
+                    self.penalize(peer, 50, "too many addresses", out);
+                } else {
+                    self.on_addrs(peer, addrs, out);
                 }
             }
             Message::Txs { txs } => {
@@ -695,6 +866,228 @@ impl<'a> Engine<'a> {
         if !missing.is_empty() {
             self.send(peer, Message::NotFound { ids: missing }, out);
         }
+    }
+
+    // ---- addresses and connections -----------------------------------------------------------------
+
+    /// The whole protocol an address-only peer gets: say hello, ask for addresses, be answered and sent away.
+    /// Anything else, or asking before saying hello, and it is sent away at once (not scored: it is a stranger we
+    /// had no room for, not necessarily hostile).
+    fn on_addr_only_message(&mut self, peer: PeerId, msg: Message, out: &mut Vec<Action>) {
+        *self.stats.received.entry(msg.kind()).or_default() += 1;
+        match msg {
+            Message::Hello(h) => {
+                if h.version != PROTOCOL_VERSION {
+                    self.drop_peer(peer, "protocol version mismatch", false, out);
+                } else if h.chain_id != self.node.store().chain_id() {
+                    self.drop_peer(peer, "different chain", true, out);
+                } else if let Some(p) = self.peers.get_mut(&peer) {
+                    p.greeted = true;
+                }
+            }
+            Message::GetAddrs => {
+                if !self.peers.get(&peer).is_some_and(|p| p.greeted) {
+                    self.drop_peer(peer, "busy", false, out);
+                    return;
+                }
+                let n = self.cfg.limits.max_addrs;
+                let addrs = self.book.sample(n, self.secs());
+                self.send(peer, Message::Addrs { addrs }, out);
+                self.drop_peer(peer, "busy: addresses sent", false, out);
+            }
+            Message::Ping(n) => self.send(peer, Message::Pong(n), out),
+            Message::Pong(_) => {}
+            _ => self.drop_peer(peer, "busy", false, out),
+        }
+    }
+
+    fn on_get_addrs(&mut self, peer: PeerId, out: &mut Vec<Action>) {
+        let again = match self.peers.get_mut(&peer) {
+            Some(p) => std::mem::replace(&mut p.answered_addrs, true),
+            None => return,
+        };
+        if again {
+            self.penalize(peer, 10, "asked for addresses twice", out);
+            return;
+        }
+        let n = self.cfg.limits.max_addrs;
+        let addrs = self.book.sample(n, self.secs());
+        self.send(peer, Message::Addrs { addrs }, out);
+    }
+
+    fn on_addrs(&mut self, peer: PeerId, addrs: Vec<PeerAddr>, out: &mut Vec<Action>) {
+        let secs = self.secs();
+        let (peer_addr, asked, may_announce) = match self.peers.get(&peer) {
+            Some(p) => (p.addr.clone(), p.asked_addrs, !p.self_announced),
+            None => return,
+        };
+        let source = group_of(&peer_addr);
+        // a peer telling us its own address (once): one entry, at the host it connected from
+        if addrs.len() == 1 && may_announce {
+            let own = peer_addr_to_string(&addrs[0]);
+            if own.as_deref().map(host_of) == Some(host_of(&peer_addr)) {
+                if let Some(p) = self.peers.get_mut(&peer) {
+                    p.self_announced = true;
+                }
+                if let Some(a) = own {
+                    self.book.add(&a, secs, &source, secs);
+                }
+                return;
+            }
+        }
+        if asked {
+            if let Some(p) = self.peers.get_mut(&peer) {
+                p.asked_addrs = false; // one answer to each request
+            }
+            for a in &addrs {
+                if let Some(text) = peer_addr_to_string(a) {
+                    self.book.add(&text, a.last_seen, &source, secs);
+                }
+            }
+        } else {
+            self.penalize(peer, 20, "addresses nobody asked for", out);
+        }
+    }
+
+    /// Keeps the outbound connections at their target: dials known addresses, never two in one network group
+    /// beyond the limit, never a host we are already connected to, never a banned or backed-off address.
+    fn maintain_connections(&mut self, out: &mut Vec<Action>) {
+        let now = self.now;
+        let late: Vec<String> = self
+            .connecting
+            .iter()
+            .filter(|(_, at)| now.saturating_sub(**at) > self.cfg.connect_timeout_ms)
+            .map(|(a, _)| a.clone())
+            .collect();
+        for a in late {
+            self.connecting.remove(&a);
+            self.book.mark_failure(&a, now);
+        }
+        self.bans.expire(now);
+        self.book.expire(self.secs());
+
+        let regular = self.peers.values().filter(|p| !p.addr_only);
+        let total = regular.clone().count() + self.connecting.len();
+        let outbound = regular.filter(|p| !p.inbound).count() + self.connecting.len();
+        let want = self
+            .cfg
+            .outbound_target
+            .saturating_sub(outbound)
+            .max(self.cfg.peer_target.saturating_sub(total))
+            .min(self.cfg.max_connect_per_tick);
+        if want == 0 {
+            return;
+        }
+        // a host we are already connected to (in either direction) is not dialled again
+        let hosts: HashSet<String> = self.peers.values().map(|p| host_of(&p.addr)).collect();
+        let mut groups: HashMap<String, usize> = HashMap::new();
+        for p in self.peers.values().filter(|p| !p.inbound) {
+            *groups.entry(group_of(&p.addr)).or_default() += 1;
+        }
+        for a in self.connecting.keys() {
+            *groups.entry(group_of(a)).or_default() += 1;
+        }
+        let per_group = self.cfg.max_outbound_per_group;
+        let own = self.cfg.advertise.clone();
+        let bans = &self.bans;
+        let connecting = &self.connecting;
+        let skip = |a: &str| {
+            hosts.contains(&host_of(a))
+                || connecting.contains_key(a)
+                || bans.is_banned(a, now)
+                || own.as_deref() == Some(a)
+        };
+        let full = |g: &str| groups.get(g).copied().unwrap_or(0) >= per_group;
+        let candidates = self.book.candidates(now, want * 4, &skip, &full);
+        let mut chosen_hosts: HashSet<String> = HashSet::new();
+        let mut dialled = 0;
+        for a in candidates {
+            if dialled >= want {
+                break;
+            }
+            let g = group_of(&a);
+            let count = groups.entry(g).or_default();
+            if *count >= per_group || !chosen_hosts.insert(host_of(&a)) {
+                continue;
+            }
+            *count += 1;
+            self.book.mark_attempt(&a, now);
+            self.connecting.insert(a.clone(), now);
+            out.push(Action::Connect { addr: a });
+            dialled += 1;
+        }
+    }
+
+    /// The address book and the ban list, for saving. `import_state` restores them.
+    pub fn export_state(&self) -> Vec<u8> {
+        let book = self.book.to_bytes();
+        let bans = self.bans.to_bytes();
+        let mut out = b"TNS1".to_vec();
+        out.extend_from_slice(&(book.len() as u32).to_le_bytes());
+        out.extend_from_slice(&book);
+        out.extend_from_slice(&(bans.len() as u32).to_le_bytes());
+        out.extend_from_slice(&bans);
+        out
+    }
+
+    /// Loads what `export_state` saved. On any damage nothing is changed and the caller carries on with the
+    /// seeds alone.
+    pub fn import_state(&mut self, data: &[u8]) -> Result<(), String> {
+        if data.len() < 12 || &data[..4] != b"TNS1" {
+            return Err("not a saved state".into());
+        }
+        let mut pos = 4;
+        let part = |pos: &mut usize| -> Result<&[u8], String> {
+            if data.len() < *pos + 4 {
+                return Err("truncated".into());
+            }
+            let n = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap()) as usize;
+            *pos += 4;
+            if data.len() < *pos + n {
+                return Err("truncated".into());
+            }
+            let s = &data[*pos..*pos + n];
+            *pos += n;
+            Ok(s)
+        };
+        let book_bytes = part(&mut pos)?;
+        let ban_bytes = part(&mut pos)?;
+        if pos != data.len() {
+            return Err("trailing bytes".into());
+        }
+        let mut book = AddrBook::from_bytes(self.cfg.addrbook.clone(), book_bytes)?;
+        let bans = BanList::from_bytes(ban_bytes)?;
+        for seed in &self.cfg.seeds {
+            book.add(seed, 0, "seed", 0);
+        }
+        self.book = book;
+        self.bans = bans;
+        Ok(())
+    }
+
+    pub fn addr_book(&self) -> &AddrBook {
+        &self.book
+    }
+
+    /// The addresses we dialled that are connected now.
+    pub fn outbound_addrs(&self) -> Vec<String> {
+        self.peers
+            .values()
+            .filter(|p| !p.inbound)
+            .map(|p| p.addr.clone())
+            .collect()
+    }
+
+    pub fn outbound_count(&self) -> usize {
+        self.peers.values().filter(|p| !p.inbound).count()
+    }
+
+    pub fn inbound_count(&self) -> usize {
+        self.peers.values().filter(|p| p.inbound).count()
+    }
+
+    pub fn connecting_count(&self) -> usize {
+        self.connecting.len()
     }
 
     // ---- sync -------------------------------------------------------------------------------------
@@ -1207,6 +1600,7 @@ impl<'a> Engine<'a> {
                 );
             }
         }
+        self.maintain_connections(out);
         self.maybe_start_sync(out);
     }
 }

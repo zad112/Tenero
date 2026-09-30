@@ -30,14 +30,16 @@ MAX_IDS = 500
 MAX_BLOCKS = 32
 MAX_TXS = 64
 MAX_NOT_FOUND = 64
+MAX_ADDRS = 100
 
 KINDS = {1: "hello", 2: "ping", 3: "pong", 4: "get_block_ids", 5: "block_ids", 6: "get_blocks",
-         7: "blocks", 8: "not_found", 9: "new_block", 10: "new_tx", 11: "get_txs", 12: "txs"}
+         7: "blocks", 8: "not_found", 9: "new_block", 10: "new_tx", 11: "get_txs", 12: "txs",
+         13: "get_addrs", 14: "addrs"}
 BY_NAME = {v: k for k, v in KINDS.items()}
 
 # the largest allowed value of `length` (kind byte + body), per kind
 CAPS = {
-    "hello": 1 + 4 + 32 + 8 + 32 + 32 + 8,
+    "hello": 1 + 4 + 32 + 8 + 32 + 32 + 8 + 8,
     "ping": 1 + 8, "pong": 1 + 8,
     "get_block_ids": 1 + 4 + MAX_LOCATOR * 32,
     "block_ids": 1 + 8 + 4 + MAX_IDS * 32,
@@ -48,10 +50,13 @@ CAPS = {
     "new_tx": 1 + 4 + MAX_TXS * 32,
     "get_txs": 1 + 4 + MAX_TXS * 32,
     "txs": MAX_FRAME,
+    "get_addrs": 1,
+    "addrs": 1 + 4 + MAX_ADDRS * 26,
 }
 # the largest allowed count in a list, per kind
 MAX_COUNT = {"get_block_ids": MAX_LOCATOR, "block_ids": MAX_IDS, "get_blocks": MAX_BLOCKS, "blocks": MAX_BLOCKS,
-             "not_found": MAX_NOT_FOUND, "new_tx": MAX_TXS, "get_txs": MAX_TXS, "txs": MAX_TXS}
+             "not_found": MAX_NOT_FOUND, "new_tx": MAX_TXS, "get_txs": MAX_TXS, "txs": MAX_TXS,
+             "addrs": MAX_ADDRS}
 
 ERRORS = ("short frame", "empty frame", "unknown kind", "frame too large", "trailing bytes",
           "count out of range", "short read", "length over maximum")
@@ -79,7 +84,7 @@ def enc_body(m):
     k = m["kind"]
     if k == "hello":
         return (struct.pack("<I", m["version"]) + ids_hex([m["chain_id"]]) + struct.pack("<Q", m["tip_height"])
-                + ids_hex([m["cumulative_work"]]) + ids_hex([m["tip_id"]]) + struct.pack("<Q", m["pruned_below"]))
+                + ids_hex([m["cumulative_work"]]) + ids_hex([m["tip_id"]]) + struct.pack("<QQ", m["pruned_below"], m["nonce"]))
     if k in ("ping", "pong"):
         return struct.pack("<Q", m["nonce"])
     if k == "get_block_ids":
@@ -91,6 +96,11 @@ def enc_body(m):
     if k in ("blocks", "txs"):
         items = m[k]
         return struct.pack("<I", len(items)) + b"".join(bytes.fromhex(x) for x in items)
+    if k == "get_addrs":
+        return b""
+    if k == "addrs":
+        return struct.pack("<I", len(m["addrs"])) + b"".join(
+            ids_hex([a["ip"]], 16) + struct.pack("<HQ", a["port"], a["last_seen"]) for a in m["addrs"])
     if k == "new_block":
         return ids_hex([m["id"]]) + struct.pack("<Q", m["height"]) + ids_hex([m["cumulative_work"]])
     raise AssertionError(k)
@@ -202,7 +212,7 @@ def decode_body(kind, body):
     m = {"kind": kind}
     if kind == "hello":
         m.update(version=r.u32(), chain_id=r.h32(), tip_height=r.u64(), cumulative_work=r.h32(),
-                 tip_id=r.h32(), pruned_below=r.u64())
+                 tip_id=r.h32(), pruned_below=r.u64(), nonce=r.u64())
     elif kind in ("ping", "pong"):
         m["nonce"] = r.u64()
     elif kind == "get_block_ids":
@@ -216,6 +226,14 @@ def decode_body(kind, body):
         m["blocks"] = [inner(v2.dec_block, r)[0] for _ in range(r.count(kind))]
     elif kind == "txs":
         m["txs"] = [inner(v2.dec_tx, r)[0] for _ in range(r.count(kind))]
+    elif kind == "get_addrs":
+        pass
+    elif kind == "addrs":
+        m["addrs"] = []
+        for _ in range(r.count(kind)):
+            ip = r.take(16).hex()
+            port = struct.unpack("<H", r.take(2))[0]
+            m["addrs"].append({"ip": ip, "port": port, "last_seen": r.u64()})
     elif kind == "new_block":
         m.update(id=r.h32(), height=r.u64(), cumulative_work=r.h32())
     r.finish()
@@ -249,11 +267,13 @@ def tx_hex(tag, **kw):
 
 def valid_messages():
     hello = {"kind": "hello", "version": 1, "chain_id": h("chain"), "tip_height": 123456,
-             "cumulative_work": work(2 ** 70 + 5), "tip_id": h("tip"), "pruned_below": 1000}
+             "cumulative_work": work(2 ** 70 + 5), "tip_id": h("tip"), "pruned_below": 1000,
+             "nonce": 0x1122334455667788}
     out = [
         ("a handshake", hello),
         ("a handshake with every number at its extreme", {**hello, "version": 0xFFFFFFFF, "tip_height": 2 ** 64 - 1,
-                                                          "cumulative_work": "ff" * 32, "pruned_below": 2 ** 64 - 1}),
+                                                          "cumulative_work": "ff" * 32, "pruned_below": 2 ** 64 - 1,
+                                                          "nonce": 2 ** 64 - 1}),
         ("a ping", {"kind": "ping", "nonce": 0x0102030405060708}),
         ("a pong", {"kind": "pong", "nonce": 0}),
         ("a locator of one id (the genesis block)", {"kind": "get_block_ids", "locator": [h("genesis")]}),
@@ -275,6 +295,14 @@ def valid_messages():
         ("a request for 64 transactions", {"kind": "get_txs", "ids": [h(f"q{i}") for i in range(64)]}),
         ("two transactions", {"kind": "txs", "txs": [tx_hex("x", n_in=1), tx_hex("y", n_in=2, n_out=3)]}),
         ("no transactions", {"kind": "txs", "txs": []}),
+        ("a request for addresses", {"kind": "get_addrs"}),
+        ("two addresses", {"kind": "addrs", "addrs": [
+            {"ip": "00" * 10 + "ffff" + "0a000102", "port": 8333, "last_seen": 1_700_000_000},
+            {"ip": "20010db8" + "00" * 8 + "00000001", "port": 65535, "last_seen": 2 ** 64 - 1}]}),
+        ("no addresses", {"kind": "addrs", "addrs": []}),
+        ("addresses at the cap of 100", {"kind": "addrs", "addrs": [
+            {"ip": "00" * 10 + "ffff" + f"0a00{i // 256:02x}{i % 256:02x}", "port": 8000 + i, "last_seen": 1_700_000_000 + i}
+            for i in range(100)]}),
     ]
     return out
 
@@ -314,12 +342,12 @@ def invalid_cases():
         bad("a length of zero", u32(0) + b"\x02", "empty frame"),
         bad("a length of zero and nothing else", u32(0), "empty frame"),
         bad("kind 0", u32(9) + b"\x00" + b"\x00" * 8, "unknown kind"),
-        bad("kind 13", u32(9) + b"\x0d" + b"\x00" * 8, "unknown kind"),
+        bad("kind 15", u32(9) + b"\x0f" + b"\x00" * 8, "unknown kind"),
         bad("kind 255", u32(1) + b"\xff", "unknown kind"),
         bad("an unknown kind is reported before a too-large length", u32(0xFFFFFFFF) + b"\x00", "unknown kind"),
         bad("a ping declaring one byte too many", u32(10) + b"\x02" + b"\x00" * 9, "frame too large"),
         bad("a ping declaring 4 GiB, header only", u32(0xFFFFFFFF) + b"\x02", "frame too large"),
-        bad("a handshake one byte over its cap", u32(118) + b"\x01", "frame too large"),
+        bad("a handshake one byte over its cap", u32(126) + b"\x01", "frame too large"),
         bad("block ids one byte over the cap, header only", u32(16014) + b"\x05", "frame too large"),
         bad("a block list over 16 MiB, header only", u32(MAX_FRAME + 1) + b"\x07", "frame too large"),
         bad("a transaction list over 16 MiB, header only", u32(MAX_FRAME + 1) + b"\x0c", "frame too large"),
@@ -327,7 +355,7 @@ def invalid_cases():
         bad("a valid handshake cut in the middle", hello[:60], "short frame"),
         bad("a valid ping and one more byte", ping + b"\x00", "trailing bytes"),
         bad("a valid ping and a whole second ping", ping + ping, "trailing bytes"),
-        bad("a handshake whose body is one byte short", u32(1 + 115) + b"\x01" + hello[5:5 + 115], "short read"),
+        bad("a handshake whose body is one byte short", u32(1 + 123) + b"\x01" + hello[5:5 + 123], "short read"),
         bad("a ping whose body is 4 bytes", u32(1 + 4) + b"\x02" + b"\x00" * 4, "short read"),
         bad("a locator claiming 33 ids", u32(1 + 4) + b"\x04" + u32(33), "count out of range"),
         bad("a locator claiming 4 billion ids", u32(1 + 4) + b"\x04" + u32(0xFFFFFFFF), "count out of range"),
@@ -359,6 +387,11 @@ def invalid_cases():
             "short read"),
         bad("a valid block followed by a stray byte inside the frame",
             (lambda body: u32(1 + len(body)) + b"\x07" + body)(u32(1) + bytes.fromhex(block_hex("stray")) + b"\x00"),
+            "trailing bytes"),
+        bad("a request for addresses with a body", u32(2) + b"\x0d" + b"\x00", "frame too large"),
+        bad("addresses claiming 101", u32(1 + 4) + b"\x0e" + u32(101), "count out of range"),
+        bad("addresses claiming 2 and holding one", u32(1 + 4 + 26) + b"\x0e" + u32(2) + b"\x00" * 26, "short read"),
+        bad("addresses claiming 1 and holding 27 bytes", u32(1 + 4 + 27) + b"\x0e" + u32(1) + b"\x00" * 27,
             "trailing bytes"),
         bad("a message announcing a block with a body one byte long", u32(2) + b"\x09" + b"\x00", "short read"),
     ]
@@ -396,7 +429,7 @@ def build():
                        "decoder must already fail. Made by tools/make_vectors_wire.py. `blocks` and `txs` hold "
                        "the wire form (CONSENSUS_V2.md) of each block and transaction as hex.",
         "limits": {"max_frame": MAX_FRAME, "max_locator": MAX_LOCATOR, "max_ids": MAX_IDS, "max_blocks": MAX_BLOCKS,
-                   "max_txs": MAX_TXS, "max_not_found": MAX_NOT_FOUND},
+                   "max_txs": MAX_TXS, "max_not_found": MAX_NOT_FOUND, "max_addrs": MAX_ADDRS},
         "kinds": {str(k): v for k, v in KINDS.items()},
         "caps": CAPS,
         "valid": valid_cases(),
