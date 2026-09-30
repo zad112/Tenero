@@ -11,8 +11,9 @@
 //!   using the branch's ancestors, and is kept in a bounded in-memory pool. Its transactions' fees, key
 //!   images, rings and proofs need the state at its parent and are checked only if the branch is about to
 //!   become the chain;
-//! * its parent is unknown: [`Submitted::Orphan`], and it is not kept (the network layer asks for the
-//!   missing ancestors again);
+//! * its parent is unknown: [`Submitted::Orphan`]. It cannot be checked yet (its target needs its ancestors),
+//!   so it is held, **unvalidated**, in a small bounded pool (oldest dropped first) and handed back by
+//!   [`Chain::take_orphans_of`] when its parent arrives; the network layer also asks for the missing ancestors;
 //! * when a side branch's work exceeds the chain's, the chain is rolled back to the fork point and the
 //!   branch is validated and appended block by block. If any block fails, the chain is restored exactly as
 //!   it was, and that block and its descendants are remembered as invalid.
@@ -21,7 +22,10 @@
 //! * A reorganisation is a series of store commits, not one transaction. A crash in the middle leaves the
 //!   chain at a valid earlier state (the fork point plus a prefix of one branch or the other), never a
 //!   broken one; it might then have less work than before and would be corrected by the next blocks.
-//! * The side-branch pool is in memory and is lost on restart.
+//! * The side-branch and orphan pools are in memory, but can be saved and loaded ([`Chain::export_pool`],
+//!   `Node::save_pool`, `Node::load_pool`): a loaded block goes through `submit_block` again, so nothing in the
+//!   file is trusted. A node that crashes loses whatever it had not saved. An orphan costs its sender nothing to
+//!   make (it cannot be checked), so a flood of them can push out the honest ones; that costs only a re-download.
 //! * A reorganisation deeper than the pruned part is refused ([`BlockError::ReorgTooDeep`]): the blocks to
 //!   undo must be restorable, and a pruned block has lost its proofs. There is no other depth limit.
 //! * The pool is bounded (oldest block dropped first), so a very long side branch can lose its early
@@ -34,13 +38,20 @@ use crate::params::ChainParams;
 use crate::pow::PowCheck;
 use crate::proofs::ProofCheck;
 use crate::validate::{BlockError, Outcome, ValidatedBlock, Validator};
+use tenero_core::hash::sha256;
 use tenero_core::u256::U256;
 use tenero_core::v2::ids;
-use tenero_core::v2::Block;
+use tenero_core::v2::{Block, Wire};
 use tenero_store::{BlockIndex, BlockMeta, Store};
 
 /// How many side-branch blocks are kept unless told otherwise.
 pub const DEFAULT_MAX_SIDE_BLOCKS: usize = 512;
+/// How many orphan blocks are held, and how many bytes of them, unless told otherwise.
+pub const DEFAULT_MAX_ORPHANS: usize = 128;
+pub const DEFAULT_MAX_ORPHAN_BYTES: usize = 32 * 1024 * 1024;
+/// The most blocks a pool file may hold, and its largest size: a file is untrusted input.
+const MAX_POOL_FILE_BLOCKS: usize = 4096;
+const MAX_POOL_FILE_BYTES: usize = 512 * 1024 * 1024;
 /// How many block ids remembered as invalid before the list is cleared.
 const MAX_INVALID: usize = 8192;
 
@@ -94,6 +105,12 @@ pub struct Chain<'a> {
     max_side_blocks: usize,
     last_reorg: Option<ReorgReport>,
     assumed: Option<Arc<HashSet<[u8; 32]>>>,
+    /// Blocks whose parent is unknown, in the order they came, each with its size in bytes.
+    orphans: HashMap<[u8; 32], (Block, usize)>,
+    orphan_order: VecDeque<[u8; 32]>,
+    orphan_bytes: usize,
+    max_orphans: usize,
+    max_orphan_bytes: usize,
 }
 
 enum Failure {
@@ -119,7 +136,151 @@ impl<'a> Chain<'a> {
             max_side_blocks: DEFAULT_MAX_SIDE_BLOCKS,
             last_reorg: None,
             assumed: None,
+            orphans: HashMap::new(),
+            orphan_order: VecDeque::new(),
+            orphan_bytes: 0,
+            max_orphans: DEFAULT_MAX_ORPHANS,
+            max_orphan_bytes: DEFAULT_MAX_ORPHAN_BYTES,
         }
+    }
+
+    /// How many orphan blocks, and how many bytes of them, to hold.
+    pub fn with_max_orphans(mut self, count: usize, bytes: usize) -> Chain<'a> {
+        self.max_orphans = count;
+        self.max_orphan_bytes = bytes;
+        self
+    }
+
+    /// How many orphan blocks are waiting for their parent.
+    pub fn orphan_count(&self) -> usize {
+        self.orphans.len()
+    }
+
+    pub fn is_orphan(&self, block_id: &[u8; 32]) -> bool {
+        self.orphans.contains_key(block_id)
+    }
+
+    /// Held in the side pool or as an orphan: there is no need to fetch it again.
+    pub fn holds_block(&self, block_id: &[u8; 32]) -> bool {
+        self.side.contains_key(block_id) || self.orphans.contains_key(block_id)
+    }
+
+    /// Removes and returns the orphans whose parent is `parent`, oldest first. The caller submits them (through
+    /// the node, so the mempool follows) once `parent` is known.
+    pub fn take_orphans_of(&mut self, parent: &[u8; 32]) -> Vec<Block> {
+        let ids: Vec<[u8; 32]> = self
+            .orphan_order
+            .iter()
+            .filter(|id| {
+                self.orphans
+                    .get(*id)
+                    .is_some_and(|(b, _)| b.header.prev_id == *parent)
+            })
+            .copied()
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| self.remove_orphan(&id))
+            .collect()
+    }
+
+    fn remove_orphan(&mut self, id: &[u8; 32]) -> Option<Block> {
+        let (block, size) = self.orphans.remove(id)?;
+        self.orphan_order.retain(|x| x != id);
+        self.orphan_bytes -= size;
+        Some(block)
+    }
+
+    fn insert_orphan(&mut self, id: [u8; 32], block: &Block) {
+        let Ok(bytes) = block.to_bytes() else {
+            return;
+        };
+        let size = bytes.len();
+        // (a block bigger than the whole allowance is not held, rather than held and then flushing the others out)
+        if size > self.max_orphan_bytes {
+            return;
+        }
+        self.orphans.insert(id, (block.clone(), size));
+        self.orphan_order.push_back(id);
+        self.orphan_bytes += size;
+        while self.orphans.len() > self.max_orphans || self.orphan_bytes > self.max_orphan_bytes {
+            match self.orphan_order.front().copied() {
+                Some(oldest) => {
+                    self.remove_orphan(&oldest);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// The blocks held in the pools, for saving: the side pool, then the orphans, each oldest first. The file is
+    /// `"TPL1" | count u32 | (length u32 | block) ... | checksum 4`, the checksum being the first 4 bytes of the
+    /// SHA-256 of everything before it: it detects a damaged file, it is not a defence against a forged one (a
+    /// loaded block is validated like any other).
+    pub fn export_pool(&self) -> Vec<u8> {
+        let mut blocks: Vec<&Block> = Vec::new();
+        for id in &self.order {
+            if let Some(e) = self.side.get(id) {
+                blocks.push(&e.block);
+            }
+        }
+        for id in &self.orphan_order {
+            if let Some((b, _)) = self.orphans.get(id) {
+                blocks.push(b);
+            }
+        }
+        let mut out = b"TPL1".to_vec();
+        out.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
+        for b in blocks {
+            let bytes = b.to_bytes().expect("a block held in a pool encodes");
+            out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            out.extend_from_slice(&bytes);
+        }
+        let sum = sha256(&[&out]);
+        out.extend_from_slice(&sum[..4]);
+        out
+    }
+
+    /// The blocks of a pool file, or why it is refused (damaged, or not a pool file). Nothing is trusted: the
+    /// blocks are only decoded; submitting them is the caller's job.
+    pub fn decode_pool(bytes: &[u8]) -> Result<Vec<Block>, String> {
+        if bytes.len() > MAX_POOL_FILE_BYTES {
+            return Err("the pool file is too large".into());
+        }
+        if bytes.len() < 12 {
+            return Err("the pool file is too short".into());
+        }
+        let (body, sum) = bytes.split_at(bytes.len() - 4);
+        if sha256(&[body])[..4] != *sum {
+            return Err("the pool file is damaged (checksum)".into());
+        }
+        if &body[..4] != b"TPL1" {
+            return Err("not a pool file".into());
+        }
+        let count = u32::from_le_bytes([body[4], body[5], body[6], body[7]]) as usize;
+        if count > MAX_POOL_FILE_BLOCKS {
+            return Err("the pool file claims too many blocks".into());
+        }
+        let mut at = 8;
+        let mut blocks = Vec::new();
+        for _ in 0..count {
+            let Some(len_bytes) = body.get(at..at + 4) else {
+                return Err("the pool file is cut short".into());
+            };
+            let len = u32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]])
+                as usize;
+            at += 4;
+            let Some(data) = body.get(at..at.saturating_add(len)) else {
+                return Err("the pool file is cut short".into());
+            };
+            at += len;
+            blocks.push(
+                Block::from_bytes(data).map_err(|e| format!("a block in the pool file: {e}"))?,
+            );
+        }
+        if at != body.len() {
+            return Err("bytes after the last block of the pool file".into());
+        }
+        Ok(blocks)
     }
 
     /// Assume-valid: blocks with these ids skip the full proof of work and the transaction proofs (see
@@ -186,12 +347,22 @@ impl<'a> Chain<'a> {
                 .filter(|(_, e)| self.invalid.contains(&e.block.header.prev_id))
                 .map(|(k, _)| *k)
                 .collect();
-            if children.is_empty() {
+            let orphan_children: Vec<[u8; 32]> = self
+                .orphans
+                .iter()
+                .filter(|(_, (b, _))| self.invalid.contains(&b.header.prev_id))
+                .map(|(k, _)| *k)
+                .collect();
+            if children.is_empty() && orphan_children.is_empty() {
                 break;
             }
             for c in children {
                 self.invalid.insert(c);
                 self.remove_side(&c);
+            }
+            for c in orphan_children {
+                self.invalid.insert(c);
+                self.remove_orphan(&c);
             }
         }
     }
@@ -221,7 +392,7 @@ impl<'a> Chain<'a> {
         if self.invalid.contains(&id) {
             return Err(BlockError::KnownInvalid);
         }
-        if self.store.height_of(&id)?.is_some() || self.side.contains_key(&id) {
+        if self.store.height_of(&id)?.is_some() || self.holds_block(&id) {
             return Ok(Submitted::AlreadyKnown);
         }
         let prev = block.header.prev_id;
@@ -240,6 +411,7 @@ impl<'a> Chain<'a> {
 
         // a side branch, or an orphan
         let Some((parent_height, recent)) = self.branch_context(&prev)? else {
+            self.insert_orphan(id, block);
             return Ok(Submitted::Orphan);
         };
         let height = parent_height + 1;

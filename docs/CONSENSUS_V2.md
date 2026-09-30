@@ -357,12 +357,14 @@ for it:
   block. If any block fails, the chain is restored exactly as it was (same state digest and tip), and that
   block and everything built on it are remembered as invalid. The old chain's blocks go into the side pool, so
   it can win back.
-- A block whose parent is unknown is an **orphan**: it is not kept; whoever sent it is asked for the missing
-  ancestors (M8). A block more than the future limit ahead of the clock is **not yet**, and is never marked
-  invalid.
+- A block whose parent is unknown is an **orphan**: it cannot be checked (its target needs its ancestors), so it
+  is held **unvalidated** in a small bounded pool (default 128 blocks and 32 MiB, oldest dropped first) and
+  handed back when its parent arrives; whoever sent it is also asked for the missing ancestors (M8). A block more
+  than the future limit ahead of the clock is **not yet**, and is never marked invalid.
 - **Limits of this implementation, not of the rules:** a reorganisation is several store commits, not one (a
-  crash leaves a valid chain at the fork point plus a prefix of one branch); the side pool is in memory, bounded
-  (default 512 blocks, oldest dropped first) and lost on restart; a reorganisation that would undo pruned
+  crash leaves a valid chain at the fork point plus a prefix of one branch); the side and orphan pools are in
+  memory, bounded (512 side blocks, oldest dropped first), and can be saved to a checksummed file and loaded
+  again (every loaded block is validated afresh; what a crash loses is what was not yet saved); a reorganisation that would undo pruned
   blocks is refused (`ReorgTooDeep`), because they could not be put back on failure. There is no other depth
   limit.
 

@@ -22,7 +22,7 @@ Gaps found by reading the code, all needed before M8 is honest:
 1. **No transaction-level validation.** The per-transaction checks (fee, key images, rings, maturity, proofs) are
    private inside the block validator. A mempool needs them alone, against the chain's current state.
 2. **`Chain::submit_block` does not say which transactions a reorganisation undid.** A mempool must re-add them.
-3. **The side-branch pool is in memory only** and orphans are dropped: fine for tests, poor for a network where
+3. **(Closed in M8.3.)** **The side-branch pool is in memory only** and orphans are dropped: fine for tests, poor for a network where
    blocks arrive out of order.
 4. **`RingCtProofs` is not the default** (the plan says M8). The node must refuse to start without it.
 5. **No block template.** Nothing yet builds a block from the mempool with the right coinbase and Merkle root.
@@ -189,9 +189,32 @@ peer can make a node fetch up to `checkpoint height - our height` headers (146 b
 lead nowhere before it is caught at the checkpoint height. Nothing here measures what it saves with the real
 proof of work: the saving is the attempt cost in `docs/BENCHMARKS.md` per block plus a dataset per epoch, unmeasured
 end to end. It is unreviewed (M9).
-**Not done:** real-proof-of-work sync time (needs a real-PoW test chain; the per-block cost is the measured attempt
-cost in `docs/BENCHMARKS.md` plus a dataset per epoch, but no end-to-end figure yet), the persisted pool of
-out-of-order blocks, and the `get_addrs` leak fix (stable answers per peer, a capped share of the book).
+**Out-of-order blocks and the pool file (done, fourth slice; closes gap 3):** a block whose parent is unknown is
+held, **unvalidated** (it cannot be checked without its ancestors), in a bounded orphan pool (128 blocks, 32 MiB,
+oldest dropped first); when its parent arrives it is applied, and so on down a run of them, and if that makes a
+side branch heavier the reorganisation is announced at once. The engine no longer asks for a block it already
+holds. The side and orphan pools can be saved (`Node::save_pool`: written aside, then renamed) and loaded
+(`Node::load_pool`): the file is checksummed, refuses any malformation, and **every block in it is submitted again
+like a block from a peer**, so the file is not trusted and the mempool follows what it causes. Fault injection
+over this code: 40 faults, all caught in the end (a hang counts as caught: one mutant, which removes the purge of orphans
+built on an invalid block, loops forever; the real code cannot). The injection found real holes in my tests that
+are now filled (the pool file's checksum and size limits, an oversized orphan flushing the pool, loading not
+reaching the mempool, a missing announcement). *Limits:* an orphan costs its sender nothing to make, so a flood
+of them can push honest ones out (costing only a re-download); nothing writes the file yet, so a node program
+must call `save_pool` (M8.7); orphans that were invalid are only found out when their parent arrives, and then
+nobody is blamed for them (the sender is no longer known).
+**The `get_addrs` answer (done):** an answer is at most 23 percent of the address book (and never over 100), but a
+book of 20 addresses or fewer may be given out whole, because a young network needs newcomers to learn enough
+addresses to start; and a network group (an IPv4 /16) that asks again within 24 hours gets the **same** answer, so
+reconnecting does not draw a fresh sample each time. Up to 1,024 groups' answers are remembered. 14 injected
+faults, all caught (one redundant guard found that way was removed). This stops one
+host reading the whole book by reconnecting; it does **not** stop an attacker with many addresses in many groups
+(each gets its own sample), nor one who connects for a long time, and the remembered answers are lost on restart.
+What Monero adds beyond this, as far as I know it (separate white and gray lists, transport encryption,
+Dandelion++ for transactions, Tor and I2P): white and gray are the tried and new entries of the address book here;
+encryption is M8.4; Dandelion++ and Tor/I2P are later work, not started.
+**Not done:** real-proof-of-work sync time (needs a real-PoW test chain and the 4 GiB dataset; the per-block cost
+is the measured attempt cost in `docs/BENCHMARKS.md` plus a dataset per epoch, but no end-to-end figure yet).
 
 ### M8.4 Real sockets (size M)
 TCP transport, the Noise channel (decision 3), inbound and outbound limits, per-peer rate limits and a ban score,

@@ -13,7 +13,7 @@ use tenero_core::hash::sha256;
 use tenero_core::u256::U256;
 use tenero_core::v2::ids::{self, tx_id, PowKind};
 use tenero_core::v2::*;
-use tenero_node::{AddOutcome, MempoolConfig, Node, NodeConfig, NodeError, PoolError};
+use tenero_node::{AddOutcome, MempoolConfig, Node, NodeConfig, NodeError, PoolError, PoolLoad};
 use tenero_store::Store;
 
 const LABEL: &str = "tenero node test network";
@@ -761,4 +761,232 @@ fn a_rising_minimum_fee_drops_what_no_longer_pays_it() {
         dropped,
         "the transaction should have been dropped when the minimum fee rose"
     );
+}
+
+// ---- saving and loading the block pools --------------------------------------------------------------
+
+fn pool_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "tenero-node-pool-{}-{name}.bin",
+        std::process::id()
+    ))
+}
+
+fn remove_pool_files(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let _ = std::fs::remove_file(PathBuf::from(tmp));
+}
+
+/// A node on a four-block chain with two side blocks of a branch that has less work, and an orphan of that branch:
+/// `(rig, the side and orphan blocks)`. The node is dropped; the store stays in the rig, as after a restart.
+fn rig_with_pools(name: &str) -> (Rig, Vec<Block>) {
+    let rig = Rig::new(name, None);
+    let mut main = Net::new(&format!("{name}-main"), 5, None);
+    let mut node = rig.node(BIG);
+    let common = grow(&mut main, &mut node, 3);
+    let mut side = Net::new(&format!("{name}-side"), 6, None);
+    for b in &common {
+        side.follow(b);
+    }
+    grow(&mut main, &mut node, 3);
+    let side_blocks: Vec<Block> = (0..4).map(|_| side.extend(vec![])).collect();
+    for b in [&side_blocks[0], &side_blocks[1]] {
+        assert!(matches!(
+            node.submit_block(b, NOW).unwrap(),
+            Submitted::SideChain { .. }
+        ));
+    }
+    assert!(matches!(
+        node.submit_block(&side_blocks[3], NOW).unwrap(),
+        Submitted::Orphan
+    ));
+    let path = pool_path(name);
+    remove_pool_files(&path);
+    node.save_pool(&path).unwrap();
+    (rig, side_blocks)
+}
+
+#[test]
+fn a_restarted_node_gets_its_side_blocks_and_orphans_back_and_they_still_work() {
+    let (rig, side) = rig_with_pools("pool-restart");
+    let path = pool_path("pool-restart");
+    let mut node = rig.node(BIG);
+    assert_eq!(
+        node.chain().side_block_count(),
+        0,
+        "a restart empties the pools"
+    );
+    let report = node.load_pool(&path, NOW).unwrap();
+    assert_eq!(
+        report,
+        PoolLoad {
+            side: 2,
+            orphans: 1,
+            ..PoolLoad::default()
+        }
+    );
+    assert!(node
+        .chain()
+        .in_side_pool(&ids::block_id(&side[0].header, PowKind::Sha256)));
+    assert!(node
+        .chain()
+        .is_orphan(&ids::block_id(&side[3].header, PowKind::Sha256)));
+    // the missing block arrives: the restored orphan can be connected to it
+    assert!(matches!(
+        node.submit_block(&side[2], NOW).unwrap(),
+        Submitted::SideChain { .. } | Submitted::Reorganised { .. }
+    ));
+    let waiting = node.take_orphans_of(&ids::block_id(&side[2].header, PowKind::Sha256));
+    assert_eq!(waiting, vec![side[3].clone()]);
+    // loading the same file again finds it all known
+    let mut again = rig.node(BIG);
+    again.load_pool(&path, NOW).unwrap();
+    let report = again.load_pool(&path, NOW).unwrap();
+    assert_eq!(
+        report,
+        PoolLoad {
+            known: 3,
+            ..PoolLoad::default()
+        }
+    );
+    remove_pool_files(&path);
+}
+
+#[test]
+fn saving_replaces_the_file_whole_and_leaves_nothing_else_behind() {
+    let (rig, _side) = rig_with_pools("pool-atomic");
+    let path = pool_path("pool-atomic");
+    let first = std::fs::read(&path).unwrap();
+    // a second save of an empty pool replaces it
+    let node = rig.node(BIG);
+    node.save_pool(&path).unwrap();
+    let second = std::fs::read(&path).unwrap();
+    assert_ne!(first, second);
+    assert_eq!(second.len(), 12, "an empty pool: magic, count, checksum");
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    assert!(
+        !PathBuf::from(tmp).exists(),
+        "the temporary file was renamed away"
+    );
+    remove_pool_files(&path);
+}
+
+#[test]
+fn a_missing_pool_file_is_an_empty_pool_and_a_damaged_one_changes_nothing() {
+    let rig = Rig::new("pool-missing", None);
+    let mut node = rig.node(BIG);
+    let path = pool_path("pool-missing");
+    remove_pool_files(&path);
+    assert_eq!(node.load_pool(&path, NOW).unwrap(), PoolLoad::default());
+    std::fs::write(&path, b"this is not a pool file").unwrap();
+    assert!(node.load_pool(&path, NOW).is_err());
+    assert_eq!(node.chain().side_block_count(), 0);
+    assert_eq!(node.chain().orphan_count(), 0);
+    remove_pool_files(&path);
+}
+
+#[test]
+fn a_block_in_a_pool_file_that_is_no_longer_acceptable_is_dropped_not_trusted() {
+    let rig = Rig::new("pool-forged", None);
+    let mut main = Net::new("pool-forged-main", 5, None);
+    let mut node = rig.node(BIG);
+    let common = grow(&mut main, &mut node, 3);
+    let mut side = Net::new("pool-forged-side", 6, None);
+    for b in &common {
+        side.follow(b);
+    }
+    // the chain is one block ahead, so the honest side block below ties it and is kept aside
+    grow(&mut main, &mut node, 1);
+    let good = side.extend(vec![]);
+    // a forged side block: the right parent, but a proof of work that does not meet the target
+    let target = node.next_block().unwrap().target;
+    let mut forged = good.clone();
+    forged.header.timestamp += 1;
+    while U256::from_be_bytes(&ids::block_id(&forged.header, PowKind::Sha256)) < target {
+        forged.header.nonce += 1;
+    }
+    // written by hand, with a correct checksum: the checksum proves nothing about the blocks
+    let mut body = b"TPL1".to_vec();
+    body.extend_from_slice(&2u32.to_le_bytes());
+    for b in [&forged, &good] {
+        let bytes = b.to_bytes().unwrap();
+        body.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        body.extend_from_slice(&bytes);
+    }
+    let sum = sha256(&[&body]);
+    body.extend_from_slice(&sum[..4]);
+    let path = pool_path("pool-forged");
+    std::fs::write(&path, body).unwrap();
+    let mut fresh = rig.node(BIG);
+    let report = fresh.load_pool(&path, NOW).unwrap();
+    assert_eq!(
+        report,
+        PoolLoad {
+            side: 1,
+            dropped: 1,
+            ..PoolLoad::default()
+        }
+    );
+    assert_eq!(fresh.chain().side_block_count(), 1);
+    remove_pool_files(&path);
+}
+
+#[test]
+fn a_saved_branch_that_now_has_more_work_is_adopted_on_load_and_the_mempool_follows() {
+    // the pool file holds a side branch; by the time it is loaded the node has not moved, but the branch is longer
+    // than the chain (it was saved mid-way through being received): loading it reorganises
+    let rig = Rig::new("pool-adopt", None);
+    let mut main = Net::new("pool-adopt-main", 5, None);
+    let mut node = rig.node(BIG);
+    let common = grow(&mut main, &mut node, 3);
+    let mut side = Net::new("pool-adopt-side", 6, None);
+    for b in &common {
+        side.follow(b);
+    }
+    grow(&mut main, &mut node, 1);
+    // a transaction that the old chain's block 4 does not contain, pooled
+    let t = main.std_tx(1, 0);
+    assert!(node.submit_tx(t.clone()).is_ok());
+    assert_eq!(node.pool().len(), 1);
+    // the branch confirms a transaction that spends the same key image as the pooled one, so once the chain moves
+    // to the branch the pooled transaction can no longer be valid
+    let conflicting = side.std_tx(1, 0);
+    let branch: Vec<Block> = vec![
+        side.extend(vec![conflicting]),
+        side.extend(vec![]),
+        side.extend(vec![]),
+    ];
+    // a file written by hand from the branch
+    let mut body = b"TPL1".to_vec();
+    body.extend_from_slice(&3u32.to_le_bytes());
+    for b in &branch {
+        let bytes = b.to_bytes().unwrap();
+        body.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        body.extend_from_slice(&bytes);
+    }
+    let sum = sha256(&[&body]);
+    body.extend_from_slice(&sum[..4]);
+    let path = pool_path("pool-adopt");
+    std::fs::write(&path, body).unwrap();
+    let report = node.load_pool(&path, NOW).unwrap();
+    // the first block ties the chain (kept aside); the second makes the branch heavier, so the chain moves to it;
+    // the third then simply extends it
+    assert_eq!(
+        report,
+        PoolLoad {
+            side: 1,
+            adopted: 2,
+            ..PoolLoad::default()
+        }
+    );
+    assert_eq!(node.tip().unwrap().0, 6);
+    assert_eq!(
+        node.pool().len(),
+        0,
+        "the pooled transaction conflicts with one the new chain confirms: loading must update the mempool too"
+    );
+    remove_pool_files(&path);
 }

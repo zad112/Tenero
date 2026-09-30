@@ -509,7 +509,7 @@ fn a_reorganisation_below_the_pruned_part_is_refused() {
 }
 
 #[test]
-fn a_block_with_an_unknown_parent_is_an_orphan_and_is_not_kept() {
+fn a_block_with_an_unknown_parent_is_an_orphan_held_apart_from_the_side_pool() {
     let (_a, _b, shared, _main, side) = two_branches("orphan", 4, 0, 3, 60);
     let node = Node::new("orphan-node");
     let mut chain = Chain::new(&node.store, &node.params, &Sha256Pow, &ProofsNotChecked);
@@ -520,6 +520,7 @@ fn a_block_with_an_unknown_parent_is_an_orphan_and_is_not_kept() {
         Submitted::Orphan
     );
     assert_eq!(chain.side_block_count(), 0);
+    assert_eq!(chain.orphan_count(), 1);
     assert_eq!(node.tip().0, 4);
 }
 
@@ -711,5 +712,351 @@ fn everything_built_on_a_block_found_invalid_is_dropped_and_remembered() {
     }
     for blk in &side[..3] {
         assert!(chain.in_side_pool(&ids::block_id(&blk.header, PowKind::Sha256)));
+    }
+}
+
+// ---- orphans and the pool file ------------------------------------------------------------------------
+
+fn id_of(b: &Block) -> [u8; 32] {
+    ids::block_id(&b.header, PowKind::Sha256)
+}
+
+fn block_len(b: &Block) -> usize {
+    b.to_bytes().unwrap().len()
+}
+
+/// A pool file body with a correct checksum, for testing what the format itself refuses.
+fn seal(mut body: Vec<u8>) -> Vec<u8> {
+    let sum = sha256(&[&body]);
+    body.extend_from_slice(&sum[..4]);
+    body
+}
+
+#[test]
+fn orphans_wait_for_their_parent_and_are_handed_back_in_order() {
+    let (a, _b, shared, main, _side) = two_branches("orphans-wait", 4, 3, 0, 60);
+    let node = Node::new("orphans-wait-node");
+    let mut chain = Chain::new(&node.store, &node.params, &Sha256Pow, &ProofsNotChecked);
+    submit_all(&mut chain, &shared);
+    // the last two blocks arrive first, newest first
+    assert_eq!(
+        chain.submit_block(&main[2], NOW).unwrap(),
+        Submitted::Orphan
+    );
+    assert_eq!(
+        chain.submit_block(&main[1], NOW).unwrap(),
+        Submitted::Orphan
+    );
+    assert_eq!(chain.orphan_count(), 2);
+    assert!(chain.is_orphan(&id_of(&main[2])) && chain.is_orphan(&id_of(&main[1])));
+    assert!(chain.holds_block(&id_of(&main[2])));
+    assert!(!chain.holds_block(&id_of(&main[0])), "not held yet");
+    assert!(!chain.is_orphan(&[9; 32]));
+    // seen again: known, and not held twice
+    assert_eq!(
+        chain.submit_block(&main[2], NOW).unwrap(),
+        Submitted::AlreadyKnown
+    );
+    assert_eq!(chain.orphan_count(), 2);
+    assert_eq!(node.tip().0, 4);
+    // the parent arrives: what waited for it is handed back (and only that)
+    assert!(matches!(
+        chain.submit_block(&main[0], NOW).unwrap(),
+        Submitted::Extended(_)
+    ));
+    assert!(
+        chain.take_orphans_of(&[7; 32]).is_empty(),
+        "nothing waits for an unknown id"
+    );
+    let kids = chain.take_orphans_of(&id_of(&main[0]));
+    assert_eq!(kids, vec![main[1].clone()]);
+    assert_eq!(
+        chain.orphan_count(),
+        1,
+        "the other still waits for its own parent"
+    );
+    assert!(
+        chain.take_orphans_of(&id_of(&main[0])).is_empty(),
+        "handed back once"
+    );
+    assert!(matches!(
+        chain.submit_block(&kids[0], NOW).unwrap(),
+        Submitted::Extended(_)
+    ));
+    let kids = chain.take_orphans_of(&id_of(&main[1]));
+    assert_eq!(kids, vec![main[2].clone()]);
+    assert!(matches!(
+        chain.submit_block(&kids[0], NOW).unwrap(),
+        Submitted::Extended(_)
+    ));
+    assert_eq!(chain.orphan_count(), 0);
+    assert_eq!(
+        (node.digest(), node.tip()),
+        (a.digest(), (a.height(), a.tip_id()))
+    );
+}
+
+#[test]
+fn the_orphan_pool_is_bounded_in_blocks_and_in_bytes_and_drops_the_oldest() {
+    let (_a, _b, shared, main, _side) = two_branches("orphans-bound", 4, 5, 0, 60);
+    let node = Node::new("orphans-bound-node");
+    // by count: two held, the oldest goes
+    let mut chain = Chain::new(&node.store, &node.params, &Sha256Pow, &ProofsNotChecked)
+        .with_max_orphans(2, 1 << 30);
+    submit_all(&mut chain, &shared);
+    for b in [&main[4], &main[3], &main[2]] {
+        assert_eq!(chain.submit_block(b, NOW).unwrap(), Submitted::Orphan);
+    }
+    assert_eq!(chain.orphan_count(), 2);
+    assert!(!chain.is_orphan(&id_of(&main[4])), "the oldest was dropped");
+    assert!(chain.is_orphan(&id_of(&main[3])) && chain.is_orphan(&id_of(&main[2])));
+    // by bytes: room for two blocks and a little over, so a third pushes the oldest out
+    let two = block_len(&main[3]) + block_len(&main[2]) + 1;
+    let mut chain = Chain::new(&node.store, &node.params, &Sha256Pow, &ProofsNotChecked)
+        .with_max_orphans(100, two);
+    for b in [&main[4], &main[3], &main[2]] {
+        chain.submit_block(b, NOW).unwrap();
+    }
+    assert_eq!(chain.orphan_count(), 2);
+    assert!(!chain.is_orphan(&id_of(&main[4])));
+    // a block bigger than the whole allowance is not held at all, nor is anything when the count is zero
+    let mut chain = Chain::new(&node.store, &node.params, &Sha256Pow, &ProofsNotChecked)
+        .with_max_orphans(100, block_len(&main[3]) - 1);
+    assert_eq!(
+        chain.submit_block(&main[3], NOW).unwrap(),
+        Submitted::Orphan
+    );
+    assert_eq!(chain.orphan_count(), 0);
+    let mut chain = Chain::new(&node.store, &node.params, &Sha256Pow, &ProofsNotChecked)
+        .with_max_orphans(0, 1 << 30);
+    assert_eq!(
+        chain.submit_block(&main[3], NOW).unwrap(),
+        Submitted::Orphan
+    );
+    assert_eq!(chain.orphan_count(), 0);
+    // and exactly at the allowance is held
+    let mut chain = Chain::new(&node.store, &node.params, &Sha256Pow, &ProofsNotChecked)
+        .with_max_orphans(1, block_len(&main[3]));
+    chain.submit_block(&main[3], NOW).unwrap();
+    assert_eq!(chain.orphan_count(), 1);
+}
+
+#[test]
+fn an_orphan_built_on_a_block_that_turns_out_invalid_is_dropped_with_it() {
+    let (_a, _b, shared, main, _side) = two_branches("orphans-invalid", 4, 2, 0, 60);
+    let node = Node::new("orphans-invalid-node");
+    let mut chain = Chain::new(&node.store, &node.params, &Sha256Pow, &ProofsNotChecked);
+    submit_all(&mut chain, &shared);
+    // a block that does not meet its target, and a block (and a grandchild) built on it
+    let target = {
+        let v = Validator::new(&node.store, &node.params, &Sha256Pow, &ProofsNotChecked);
+        v.next_block().unwrap().target
+    };
+    let mut bad = main[0].clone();
+    while U256::from_be_bytes(&id_of(&bad)) < target {
+        bad.header.nonce += 1;
+    }
+    let mut child = main[1].clone();
+    child.header.prev_id = id_of(&bad);
+    let mut grandchild = main[1].clone();
+    grandchild.header.prev_id = id_of(&child);
+    grandchild.header.nonce += 1;
+    assert_eq!(
+        chain.submit_block(&grandchild, NOW).unwrap(),
+        Submitted::Orphan
+    );
+    assert_eq!(chain.submit_block(&child, NOW).unwrap(), Submitted::Orphan);
+    assert_eq!(chain.orphan_count(), 2);
+    assert_eq!(
+        chain.submit_block(&bad, NOW).unwrap_err(),
+        BlockError::PowTargetNotMet
+    );
+    assert_eq!(chain.orphan_count(), 0, "both went with it");
+    assert!(chain.is_known_invalid(&id_of(&child)));
+    assert!(chain.is_known_invalid(&id_of(&grandchild)));
+    assert_eq!(
+        chain.submit_block(&child, NOW).unwrap_err(),
+        BlockError::KnownInvalid
+    );
+}
+
+/// A node holding two side blocks and one orphan, and those blocks.
+fn node_with_pools<'a>(node: &'a Node, tag: &str) -> (Chain<'a>, Block, Block, Block) {
+    let (_a, _b, shared, main, side) = two_branches(tag, 4, 3, 4, 60);
+    let mut chain = Chain::new(&node.store, &node.params, &Sha256Pow, &ProofsNotChecked);
+    submit_all(&mut chain, &shared);
+    submit_all(&mut chain, &main);
+    // the side branch has less work than the main one at first: kept on the side; its fourth block, without its
+    // third, is an orphan
+    assert!(matches!(
+        chain.submit_block(&side[0], NOW).unwrap(),
+        Submitted::SideChain { .. }
+    ));
+    assert!(matches!(
+        chain.submit_block(&side[1], NOW).unwrap(),
+        Submitted::SideChain { .. }
+    ));
+    assert_eq!(
+        chain.submit_block(&side[3], NOW).unwrap(),
+        Submitted::Orphan
+    );
+    (chain, side[0].clone(), side[1].clone(), side[3].clone())
+}
+
+#[test]
+fn the_pools_export_to_a_file_the_same_blocks_come_back_from() {
+    let node = Node::new("pool-export");
+    let (chain, s0, s1, s3) = node_with_pools(&node, "pool-export");
+    let bytes = chain.export_pool();
+    assert_eq!(&bytes[..4], b"TPL1");
+    assert_eq!(
+        Chain::decode_pool(&bytes).unwrap(),
+        vec![s0, s1, s3],
+        "side blocks first, then orphans, each oldest first"
+    );
+    // an empty pool is a valid file
+    let empty = Node::new("pool-empty");
+    let chain = Chain::new(&empty.store, &empty.params, &Sha256Pow, &ProofsNotChecked);
+    assert_eq!(Chain::decode_pool(&chain.export_pool()).unwrap(), vec![]);
+}
+
+#[test]
+fn a_damaged_or_malformed_pool_file_is_refused() {
+    let node = Node::new("pool-damage");
+    let (chain, ..) = node_with_pools(&node, "pool-damage");
+    let good = chain.export_pool();
+    assert!(Chain::decode_pool(&good).is_ok());
+    // any one bit flipped anywhere
+    for i in (0..good.len()).step_by(997) {
+        let mut bad = good.clone();
+        bad[i] ^= 1;
+        assert!(Chain::decode_pool(&bad).is_err(), "a flip at byte {i}");
+    }
+    // cut short, padded, empty, tiny
+    assert!(Chain::decode_pool(&good[..good.len() - 1]).is_err());
+    assert!(Chain::decode_pool(&good[..good.len() / 2]).is_err());
+    let mut padded = good.clone();
+    padded.push(0);
+    assert!(Chain::decode_pool(&padded).is_err());
+    assert!(Chain::decode_pool(&[]).is_err());
+    assert!(Chain::decode_pool(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]).is_err());
+    // the checksum only detects damage: a file with a correct checksum must fail on its own faults
+    let body = &good[..good.len() - 4];
+    let mut other_magic = body.to_vec();
+    other_magic[3] = b'2';
+    assert!(
+        Chain::decode_pool(&seal(other_magic)).is_err(),
+        "another format"
+    );
+    let mut too_many = body.to_vec();
+    too_many[4..8].copy_from_slice(&5000u32.to_le_bytes());
+    assert!(
+        Chain::decode_pool(&seal(too_many)).is_err(),
+        "more blocks than a file may hold"
+    );
+    let mut count_short = body.to_vec();
+    count_short[4..8].copy_from_slice(&2u32.to_le_bytes());
+    assert!(
+        Chain::decode_pool(&seal(count_short)).is_err(),
+        "bytes after the last block"
+    );
+    let mut count_long = body.to_vec();
+    count_long[4..8].copy_from_slice(&4u32.to_le_bytes());
+    assert!(
+        Chain::decode_pool(&seal(count_long)).is_err(),
+        "a block that is not there"
+    );
+    let mut long_len = b"TPL1".to_vec();
+    long_len.extend_from_slice(&1u32.to_le_bytes());
+    long_len.extend_from_slice(&u32::MAX.to_le_bytes());
+    long_len.extend_from_slice(&[0; 10]);
+    assert!(
+        Chain::decode_pool(&seal(long_len)).is_err(),
+        "a length beyond the file"
+    );
+    let mut junk = b"TPL1".to_vec();
+    junk.extend_from_slice(&1u32.to_le_bytes());
+    junk.extend_from_slice(&3u32.to_le_bytes());
+    junk.extend_from_slice(&[1, 2, 3]);
+    assert!(
+        Chain::decode_pool(&seal(junk)).is_err(),
+        "a block that does not decode"
+    );
+}
+
+#[test]
+fn an_orphan_bigger_than_the_whole_allowance_is_refused_without_flushing_the_ones_held() {
+    let (mut a, _b, shared, main, _side) = two_branches("orphans-huge", 4, 5, 0, 60);
+    let node = Node::new("orphans-huge-node");
+    let two = block_len(&main[3]) + block_len(&main[2]);
+    let mut chain = Chain::new(&node.store, &node.params, &Sha256Pow, &ProofsNotChecked)
+        .with_max_orphans(100, two);
+    submit_all(&mut chain, &shared);
+    chain.submit_block(&main[3], NOW).unwrap();
+    chain.submit_block(&main[2], NOW).unwrap();
+    assert_eq!(chain.orphan_count(), 2, "exactly the allowance");
+    // an orphan (its parent is not known) far bigger than that
+    let mut huge = main[4].clone();
+    huge.transactions = vec![a.spend_tx(false), a.spend_tx(false), a.spend_tx(false)];
+    assert!(block_len(&huge) > two);
+    assert_eq!(chain.submit_block(&huge, NOW).unwrap(), Submitted::Orphan);
+    assert_eq!(
+        chain.orphan_count(),
+        2,
+        "the two that were held are still held"
+    );
+    assert!(chain.is_orphan(&id_of(&main[3])) && chain.is_orphan(&id_of(&main[2])));
+}
+
+#[test]
+fn an_orphan_that_was_handed_back_and_held_again_is_exported_once() {
+    let (_a, _b, shared, main, _side) = two_branches("orphans-again", 4, 3, 0, 60);
+    let node = Node::new("orphans-again-node");
+    let mut chain = Chain::new(&node.store, &node.params, &Sha256Pow, &ProofsNotChecked);
+    submit_all(&mut chain, &shared);
+    chain.submit_block(&main[2], NOW).unwrap();
+    // something claims to be its parent's child list and takes it away; it arrives again
+    assert_eq!(
+        chain.take_orphans_of(&main[2].header.prev_id),
+        vec![main[2].clone()]
+    );
+    assert_eq!(chain.orphan_count(), 0);
+    assert_eq!(
+        chain.submit_block(&main[2], NOW).unwrap(),
+        Submitted::Orphan
+    );
+    assert_eq!(chain.orphan_count(), 1);
+    assert_eq!(
+        Chain::decode_pool(&chain.export_pool()).unwrap(),
+        vec![main[2].clone()],
+        "once, not once for each time it was held"
+    );
+}
+
+#[test]
+fn a_pool_file_is_refused_for_a_damaged_checksum_for_too_many_blocks_and_for_being_too_short() {
+    let node = Node::new("pool-format");
+    let (chain, s0, ..) = node_with_pools(&node, "pool-format");
+    let good = chain.export_pool();
+    // only the checksum is damaged: every block in the file is fine, so nothing but the checksum can refuse it
+    let mut bad_sum = good.clone();
+    *bad_sum.last_mut().unwrap() ^= 1;
+    assert!(Chain::decode_pool(&bad_sum).is_err());
+    // the most blocks a file may hold is accepted, one more is not (both well-formed, with correct checksums)
+    let file_of = |n: usize| {
+        let bytes = s0.to_bytes().unwrap();
+        let mut body = b"TPL1".to_vec();
+        body.extend_from_slice(&(n as u32).to_le_bytes());
+        for _ in 0..n {
+            body.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            body.extend_from_slice(&bytes);
+        }
+        seal(body)
+    };
+    assert_eq!(Chain::decode_pool(&file_of(4096)).unwrap().len(), 4096);
+    assert!(Chain::decode_pool(&file_of(4097)).is_err());
+    // shorter than the smallest possible file (magic, count, checksum), with a correct checksum
+    for short in [&b"TPL1"[..], &b"TPL1\0\0"[..], &b"TPL1\0\0\0"[..]] {
+        assert!(Chain::decode_pool(&seal(short.to_vec())).is_err());
     }
 }

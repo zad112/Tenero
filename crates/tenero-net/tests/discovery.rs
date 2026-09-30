@@ -1489,3 +1489,182 @@ fn a_connection_we_dialled_is_refused_when_we_are_full_and_never_treated_as_a_vi
     );
     assert_eq!(e.addr_only_count(), 1);
 }
+
+// ---- what a GetAddrs answer reveals --------------------------------------------------------------------
+
+/// An engine whose address book holds exactly `n` fresh routable addresses, learned the way a node learns them: from
+/// answers (60 at a time, each source within its per-source limit). The sources are disconnected afterwards.
+fn engine_with_book(rig: &SimRig, n: usize, mut c: EngineConfig) -> Engine<'_> {
+    c.seeds = vec![];
+    let mut e = engine_on(rig, c);
+    let t = T0 * 1000;
+    let mut made = 0usize;
+    let mut source = 0u8;
+    while made < n {
+        let peer = 1000 + u64::from(source);
+        open(&mut e, peer, &v4(150 + source, 1, 1, 1, 8333), false, t);
+        say_hello(&mut e, rig, peer, 5000 + u64::from(source), t);
+        let take = (n - made).min(60);
+        let addrs: Vec<PeerAddr> = (0..take)
+            .map(|k| string_to_peer_addr(&v4(30 + source, 1 + k as u8, 1, 1, 8333), T0).unwrap())
+            .collect();
+        e.handle(
+            t,
+            Event::Message {
+                peer,
+                msg: Message::Addrs { addrs },
+            },
+        );
+        e.handle(t, Event::PeerDisconnected { peer });
+        made += take;
+        source += 1;
+    }
+    assert_eq!(
+        e.addr_book().len(),
+        n,
+        "the book is what the test says it is"
+    );
+    e
+}
+
+/// What a peer connecting from `addr` is told when it asks for addresses, `t` milliseconds after the start.
+fn ask_for_addrs(e: &mut Engine<'_>, rig: &SimRig, peer: u64, addr: &str, t: u64) -> Vec<PeerAddr> {
+    let t = T0 * 1000 + t;
+    open(e, peer, addr, true, t);
+    say_hello(e, rig, peer, 9000 + peer, t);
+    let actions = e.handle(
+        t,
+        Event::Message {
+            peer,
+            msg: Message::GetAddrs,
+        },
+    );
+    let mut answers = actions.into_iter().filter_map(|a| match a {
+        Action::Send {
+            msg: Message::Addrs { addrs },
+            ..
+        } => Some(addrs),
+        _ => None,
+    });
+    let first = answers.next().expect("an answer");
+    assert!(answers.next().is_none(), "exactly one");
+    first
+}
+
+#[test]
+fn an_answer_is_a_share_of_the_book_with_a_floor_and_a_ceiling() {
+    let rigs = SimRig::rigs("share", 1);
+    // (book size, expected answer): 23 percent, but at least 20 (or the whole book if smaller), and at most 100
+    for (book, want) in [
+        (10usize, 10usize),
+        (50, 20),
+        (87, 20),
+        (100, 23),
+        (400, 92),
+        (600, 100),
+        (1000, 100),
+    ] {
+        let mut e = engine_with_book(&rigs[0], book, cfg(1, &[]));
+        let answer = ask_for_addrs(&mut e, &rigs[0], 1, "70.1.1.1:5000", 10);
+        assert_eq!(answer.len(), want, "a book of {book}");
+    }
+}
+
+#[test]
+fn a_network_group_that_asks_again_gets_the_same_answer_until_it_expires() {
+    let rigs = SimRig::rigs("stable", 1);
+    let ttl = 3_600_000;
+    let c = EngineConfig {
+        addr_answer_ttl_ms: ttl,
+        ..cfg(1, &[])
+    };
+    let mut e = engine_with_book(&rigs[0], 400, c);
+    let first = ask_for_addrs(&mut e, &rigs[0], 1, "70.1.1.1:5000", 10);
+    e.handle(T0 * 1000 + 20, Event::PeerDisconnected { peer: 1 });
+    // the same /16 from another host and port: the same answer
+    let same = ask_for_addrs(&mut e, &rigs[0], 2, "70.1.9.9:6000", 1000);
+    assert_eq!(same, first);
+    // another group: its own answer
+    let other = ask_for_addrs(&mut e, &rigs[0], 3, "71.1.1.1:5000", 1000);
+    assert_ne!(other, first);
+    // the last moment before it expires, and the first after
+    let still = ask_for_addrs(&mut e, &rigs[0], 4, "70.1.2.2:7000", 10 + ttl - 1);
+    assert_eq!(still, first);
+    let fresh = ask_for_addrs(&mut e, &rigs[0], 5, "70.1.3.3:7000", 10 + ttl);
+    assert_ne!(fresh, first, "a new sample once the old one has expired");
+}
+
+#[test]
+fn a_visitor_over_the_limit_is_given_the_same_answer_as_a_peer_of_its_group() {
+    let rigs = SimRig::rigs("stable-visitor", 1);
+    let c = EngineConfig {
+        max_peers: 1,
+        max_addr_only: 4,
+        ..cfg(1, &[])
+    };
+    let mut e = engine_with_book(&rigs[0], 400, c);
+    let first = ask_for_addrs(&mut e, &rigs[0], 1, "70.1.1.1:5000", 10);
+    // the one slot is taken: these are visitors
+    let t = T0 * 1000 + 50;
+    open(&mut e, 2, "70.1.2.2:6000", true, t);
+    assert_eq!(e.addr_only_count(), 1);
+    say_hello(&mut e, &rigs[0], 2, 9002, t);
+    let actions = e.handle(
+        t,
+        Event::Message {
+            peer: 2,
+            msg: Message::GetAddrs,
+        },
+    );
+    let visitor: Vec<PeerAddr> = actions
+        .iter()
+        .find_map(|a| match a {
+            Action::Send {
+                msg: Message::Addrs { addrs },
+                ..
+            } => Some(addrs.clone()),
+            _ => None,
+        })
+        .expect("the visitor is answered");
+    assert_eq!(visitor, first);
+    assert_eq!(disconnected(&actions).len(), 1, "and sent away");
+    // a visitor from a group not seen before gets a sample of its own, which is then the group's
+    open(&mut e, 3, "71.1.1.1:6000", true, t);
+    say_hello(&mut e, &rigs[0], 3, 9003, t);
+    let a = e.handle(
+        t,
+        Event::Message {
+            peer: 3,
+            msg: Message::GetAddrs,
+        },
+    );
+    let other: Vec<PeerAddr> = a
+        .iter()
+        .find_map(|x| match x {
+            Action::Send {
+                msg: Message::Addrs { addrs },
+                ..
+            } => Some(addrs.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_ne!(other, first);
+}
+
+#[test]
+fn only_so_many_answers_are_remembered_and_the_oldest_goes_first() {
+    let rigs = SimRig::rigs("stable-bound", 1);
+    let c = EngineConfig {
+        addr_answer_cache: 2,
+        ..cfg(1, &[])
+    };
+    let mut e = engine_with_book(&rigs[0], 400, c);
+    let a70 = ask_for_addrs(&mut e, &rigs[0], 1, "70.1.1.1:5000", 10);
+    let _a71 = ask_for_addrs(&mut e, &rigs[0], 2, "71.1.1.1:5000", 20);
+    let a72 = ask_for_addrs(&mut e, &rigs[0], 3, "72.1.1.1:5000", 30);
+    // two are kept: the newest two (71 and 72); 70, the oldest, was forgotten
+    let again72 = ask_for_addrs(&mut e, &rigs[0], 4, "72.1.2.2:5000", 40);
+    assert_eq!(again72, a72);
+    let again70 = ask_for_addrs(&mut e, &rigs[0], 5, "70.1.2.2:5000", 50);
+    assert_ne!(again70, a70, "forgotten, so a fresh sample");
+}

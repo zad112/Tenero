@@ -141,6 +141,18 @@ pub struct EngineConfig {
     pub max_addr_only: usize,
     /// Off (`None`) unless the operator turns it on.
     pub assume_valid: Option<AssumeValid>,
+    /// An answer to `GetAddrs` holds at most this percentage of the address book (and never more than
+    /// `limits.max_addrs`), so one request cannot read the whole book...
+    pub addr_share_percent: u64,
+    /// ...except that a small book may be given out in this many addresses or fewer, whatever the percentage
+    /// says: a young network must let a newcomer learn enough addresses to get started, and a book this small
+    /// reveals little.
+    pub addr_answer_floor: usize,
+    /// A network group that asks again within this time gets the SAME answer, so reconnecting does not draw a
+    /// fresh sample each time (which would let one host read the whole book a slice at a time).
+    pub addr_answer_ttl_ms: u64,
+    /// How many groups' answers are remembered.
+    pub addr_answer_cache: usize,
 }
 
 impl Default for EngineConfig {
@@ -172,6 +184,10 @@ impl Default for EngineConfig {
             addrbook: AddrBookConfig::default(),
             max_addr_only: 16,
             assume_valid: None,
+            addr_share_percent: 23,
+            addr_answer_floor: 20,
+            addr_answer_ttl_ms: 24 * 3600 * 1000,
+            addr_answer_cache: 1024,
         }
     }
 }
@@ -268,6 +284,8 @@ pub struct Engine<'a> {
     /// Addresses we have asked the transport to dial, and when.
     connecting: BTreeMap<String, u64>,
     syncing: Option<Sync>,
+    /// The answer last given to each requesting network group, and when it stops being reused.
+    addr_answers: HashMap<String, (u64, Vec<PeerAddr>)>,
     cooldown: HashMap<PeerId, u64>,
     req_blocks: BTreeMap<[u8; 32], Req>,
     /// Every (peer, block id) we have asked for and not yet had an answer to: a block that arrives from a
@@ -296,6 +314,7 @@ impl<'a> Engine<'a> {
             book,
             connecting: BTreeMap::new(),
             syncing: None,
+            addr_answers: HashMap::new(),
             cooldown: HashMap::new(),
             req_blocks: BTreeMap::new(),
             asked: BTreeMap::new(),
@@ -442,6 +461,11 @@ impl<'a> Engine<'a> {
             pruned_below: self.node.store().pruned_below().unwrap_or(0),
             nonce: self.cfg.nonce,
         }
+    }
+
+    /// Neither in our chain nor waiting in a pool: a block worth asking a peer for.
+    fn not_held(&self, id: &[u8; 32]) -> bool {
+        !self.on_chain(id) && !self.node.chain().holds_block(id)
     }
 
     fn on_chain(&self, id: &[u8; 32]) -> bool {
@@ -966,8 +990,7 @@ impl<'a> Engine<'a> {
                     self.drop_peer(peer, "busy", false, out);
                     return;
                 }
-                let n = self.cfg.limits.max_addrs;
-                let addrs = self.book.sample(n, self.secs());
+                let addrs = self.addrs_for(peer);
                 self.send(peer, Message::Addrs { addrs }, out);
                 self.drop_peer(peer, "busy: addresses sent", false, out);
             }
@@ -986,9 +1009,44 @@ impl<'a> Engine<'a> {
             self.penalize(peer, 10, "asked for addresses twice", out);
             return;
         }
-        let n = self.cfg.limits.max_addrs;
-        let addrs = self.book.sample(n, self.secs());
+        let addrs = self.addrs_for(peer);
         self.send(peer, Message::Addrs { addrs }, out);
+    }
+
+    /// The answer to `peer`'s `GetAddrs`: a capped share of the book, and the same one for a network group that
+    /// asks again before `addr_answer_ttl_ms` has passed.
+    fn addrs_for(&mut self, peer: PeerId) -> Vec<PeerAddr> {
+        let Some(addr) = self.peers.get(&peer).map(|p| p.addr.clone()) else {
+            return Vec::new();
+        };
+        let group = group_of(&addr);
+        let now = self.now;
+        if let Some((until, answer)) = self.addr_answers.get(&group) {
+            if *until > now {
+                return answer.clone();
+            }
+        }
+        let known = self.book.len() as u64;
+        let share =
+            (known * self.cfg.addr_share_percent / 100).max(self.cfg.addr_answer_floor as u64);
+        let n = share.min(self.cfg.limits.max_addrs as u64) as usize;
+        let answer = self.book.sample(n, self.secs());
+        // (a group that is already here and unexpired was answered above; an expired one is simply replaced, and
+        // when the cache is full the answer that would expire soonest goes, which for such a group is its own)
+        if self.addr_answers.len() >= self.cfg.addr_answer_cache {
+            // make room: the answer that would expire soonest goes
+            if let Some(oldest) = self
+                .addr_answers
+                .iter()
+                .min_by_key(|(_, (until, _))| *until)
+                .map(|(k, _)| k.clone())
+            {
+                self.addr_answers.remove(&oldest);
+            }
+        }
+        self.addr_answers
+            .insert(group, (now + self.cfg.addr_answer_ttl_ms, answer.clone()));
+        answer
     }
 
     fn on_addrs(&mut self, peer: PeerId, addrs: Vec<PeerAddr>, out: &mut Vec<Action>) {
@@ -1350,10 +1408,8 @@ impl<'a> Engine<'a> {
             // the path from our chain to the checkpoint is proved: those blocks need not be checked in full
             let set: HashSet<[u8; 32]> = ids.iter().copied().collect();
             self.node.set_assumed(set);
-            let wanted: VecDeque<[u8; 32]> = ids
-                .into_iter()
-                .filter(|id| !self.on_chain(id) && !self.node.chain().in_side_pool(id))
-                .collect();
+            let wanted: VecDeque<[u8; 32]> =
+                ids.into_iter().filter(|id| self.not_held(id)).collect();
             self.request_next_chunk(peer, wanted, out);
         } else if count < self.cfg.limits.max_headers {
             // it ran out before the checkpoint: its chain is shorter than the checkpoint, so nothing is assumed
@@ -1412,7 +1468,7 @@ impl<'a> Engine<'a> {
                 self.penalize(peer, 50, "offered a block known to be invalid", out);
                 return;
             }
-            if !self.on_chain(&id) && !self.node.chain().in_side_pool(&id) {
+            if self.not_held(&id) {
                 wanted.push_back(id);
             }
         }
@@ -1545,6 +1601,29 @@ impl<'a> Engine<'a> {
 
     /// Feeds a block to the node and reports what became of it. An invalid block from a peer bans it.
     fn apply_block(&mut self, from: Option<PeerId>, b: &Block, out: &mut Vec<Action>) -> Applied {
+        let id = self.block_id_of(b);
+        let mut result = self.apply_one(from, b, out);
+        // blocks that arrived before this one and were waiting for it are now applied too (and so on down)
+        if matches!(result, Applied::NewTip | Applied::Kept) {
+            let mut waiting: VecDeque<[u8; 32]> = VecDeque::from([id]);
+            while let Some(parent) = waiting.pop_front() {
+                for kid in self.node.take_orphans_of(&parent) {
+                    let kid_id = self.block_id_of(&kid);
+                    match self.apply_one(None, &kid, out) {
+                        Applied::NewTip => {
+                            result = Applied::NewTip;
+                            waiting.push_back(kid_id);
+                        }
+                        Applied::Kept => waiting.push_back(kid_id),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    fn apply_one(&mut self, from: Option<PeerId>, b: &Block, out: &mut Vec<Action>) -> Applied {
         let was_assumed = self.node.chain().is_assumed(&self.block_id_of(b));
         match self.node.submit_block(b, self.secs()) {
             Ok(Submitted::Extended(_)) | Ok(Submitted::Reorganised { .. }) => {
@@ -1597,7 +1676,7 @@ impl<'a> Engine<'a> {
             self.penalize(peer, 50, "announced a block known to be invalid", out);
             return;
         }
-        if self.on_chain(&id) || self.node.chain().in_side_pool(&id) {
+        if self.on_chain(&id) || self.node.chain().holds_block(&id) {
             return;
         }
         if self.announcers.len() > 1024 {

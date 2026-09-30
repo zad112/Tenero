@@ -48,6 +48,21 @@ pub struct Payout {
     pub anchor_enc: [u8; 16],
 }
 
+/// What became of the blocks of a pool file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PoolLoad {
+    /// Kept on a side branch.
+    pub side: usize,
+    /// Held as orphans.
+    pub orphans: usize,
+    /// Extended the chain or made it reorganise (the chain had moved since the file was written).
+    pub adopted: usize,
+    /// Already in the chain or the pool.
+    pub known: usize,
+    /// Refused (invalid now) or not yet acceptable.
+    pub dropped: usize,
+}
+
 pub struct Node<'a> {
     store: &'a Store,
     params: &'a ChainParams,
@@ -106,6 +121,47 @@ impl<'a> Node<'a> {
     /// Back to checking every block in full.
     pub fn clear_assumed(&mut self) {
         self.chain.clear_assumed();
+    }
+
+    /// The orphan blocks that were waiting for `parent` (see `Chain::take_orphans_of`). Submit them with
+    /// [`Node::submit_block`] once `parent` is known, so the mempool follows.
+    pub fn take_orphans_of(&mut self, parent: &[u8; 32]) -> Vec<Block> {
+        self.chain.take_orphans_of(parent)
+    }
+
+    /// Writes the side-branch and orphan pools to `path`: to a temporary file next to it first, then renamed over
+    /// it, so a crash never leaves a half-written file where a good one was.
+    pub fn save_pool(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = std::path::PathBuf::from(tmp);
+        std::fs::write(&tmp, self.chain.export_pool())?;
+        std::fs::rename(&tmp, path)
+    }
+
+    /// Reads a pool file and submits each block through [`Node::submit_block`], so nothing in the file is
+    /// trusted and the mempool follows. A missing file is an empty pool; a damaged one is an error and changes
+    /// nothing.
+    pub fn load_pool(&mut self, path: &std::path::Path, now: u64) -> Result<PoolLoad, String> {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(PoolLoad::default()),
+            Err(e) => return Err(e.to_string()),
+        };
+        let blocks = Chain::decode_pool(&bytes)?;
+        let mut report = PoolLoad::default();
+        for b in &blocks {
+            match self.submit_block(b, now) {
+                Ok(Submitted::SideChain { .. }) => report.side += 1,
+                Ok(Submitted::Orphan) => report.orphans += 1,
+                Ok(Submitted::Extended(_)) | Ok(Submitted::Reorganised { .. }) => {
+                    report.adopted += 1
+                }
+                Ok(Submitted::AlreadyKnown) => report.known += 1,
+                Ok(Submitted::NotYet) | Err(_) => report.dropped += 1,
+            }
+        }
+        Ok(report)
     }
 
     pub fn pool(&self) -> &Mempool {
