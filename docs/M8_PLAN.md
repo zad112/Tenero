@@ -158,6 +158,17 @@ skip the signature and full-PoW checks and verify only the cheap ones. That is a
 opt-in and visible.
 *Done when:* a fresh node syncs a 10,000-block test chain from another, on the SHA-256 chain quickly and on the
 real proof of work with the measured time reported, both an archive and a pruned node.
+*Progress (M8.3, first slice):* the sync loop itself came with M8.1. **Done:** (1) a fresh node syncs a 10,000-block
+SHA-256 test chain from an archive node in the simulator (**measured: about 23 s of real time** on the owner's machine,
+release build, coinbase-only blocks, simulated network, so it says nothing about a real network or real proof of
+work); (2) **pruned peers**: a peer whose `pruned_below` is past the next block we need is never chosen as a sync
+peer, on any path (before this, an orphan block started a sync with it, which got `NotFound` and punished an
+honest pruned node; found by the test, which needed real transactions in the old blocks because pruning a
+coinbase-only block deletes nothing); a node that is only a few blocks behind still syncs from a pruned peer.
+**Not done:** real-proof-of-work sync time (needs a real-PoW test chain; the per-block cost is the measured attempt
+cost in `docs/BENCHMARKS.md` plus a dataset per epoch, but no end-to-end figure yet), the persisted pool of
+out-of-order blocks, and assume-valid (needs block headers to be fetched before bodies so the chain to the
+checkpoint can be proved linked before anything is applied without full checks; a wire change, to be decided).
 
 ### M8.4 Real sockets (size M)
 TCP transport, the Noise channel (decision 3), inbound and outbound limits, per-peer rate limits and a ban score,

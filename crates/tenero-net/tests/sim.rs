@@ -439,6 +439,39 @@ fn a_peer_offering_blocks_it_cannot_serve_is_left_alone_for_a_while() {
 }
 
 #[test]
+fn a_peer_that_has_pruned_the_blocks_we_need_is_not_asked_to_serve_them() {
+    let rigs = SimRig::rigs("prunedpeer", 1);
+    let mut sim = new_sim(&rigs);
+    let asks = |sim: &Sim<'_>, h: usize| {
+        sim.hostiles[h]
+            .inbox
+            .iter()
+            .filter(|m| matches!(m, Message::GetBlockIds { .. }))
+            .count()
+    };
+    let with_pruned = |rig: &SimRig, pruned_below: u64| {
+        let Message::Hello(mut h) = hello_for(rig, 500, huge_work()) else {
+            unreachable!()
+        };
+        h.pruned_below = pruned_below;
+        Message::Hello(h)
+    };
+    // we are at height 0 and need block 1; a peer whose blocks start at 2 cannot give it to us
+    let far = sim.add_hostile(0, "pruned-far");
+    sim.hostile_send(far, with_pruned(&rigs[0], 2));
+    sim.run_for(2 * SEC);
+    assert_eq!(asks(&sim, far), 0);
+    assert!(!sim.engines[0].is_syncing());
+    // one whose blocks start at 1 can: the boundary is inclusive
+    let edge = sim.add_hostile(0, "pruned-edge");
+    sim.hostile_send(edge, with_pruned(&rigs[0], 1));
+    sim.run_for(2 * SEC);
+    assert_eq!(asks(&sim, edge), 1);
+    // and it is not punished for having pruned
+    assert_eq!(score(&sim, far), Some(0));
+}
+
+#[test]
 fn an_invalid_transaction_is_punished_and_not_fetched_again() {
     let rigs = SimRig::rigs("badtx", 1);
     let mut sim = new_sim(&rigs);
@@ -555,6 +588,97 @@ fn a_new_node_syncs_a_long_chain_in_batches() {
         !sim.engines[1].stats.sent.contains_key("new_block"),
         "a node that synced from a peer does not announce those blocks back to it"
     );
+}
+
+/// Mines `blocks` blocks on `node`, a minute apart; from the eleventh on each carries one transaction, so that
+/// pruning has something to delete (a block with only a coinbase has no proofs to prune).
+fn mine_with_txs(sim: &mut Sim<'_>, node: usize, blocks: u64) {
+    for _ in 0..blocks {
+        let h = sim.tip(node).0;
+        if h >= 10 {
+            let t = make_tx(sim, node, h, 0);
+            sim.submit_tx(node, t);
+        }
+        sim.mine(node, None);
+        sim.run_for(70 * SEC);
+    }
+}
+
+/// The plan's "done when" for sync: a fresh node takes a 10,000-block chain from an archive node.
+#[test]
+fn a_fresh_node_syncs_ten_thousand_blocks_from_an_archive_node() {
+    let rigs = SimRig::rigs("sync10k", 2);
+    let mut sim = new_sim(&rigs);
+    sim.mine_chain(0, 10_000);
+    assert_eq!(sim.tip(0).0, 10_000);
+    assert!(sim.connect(1, 0));
+    let started = std::time::Instant::now();
+    assert!(
+        sim.run_until(3_600 * SEC, |s| s.tip(1).0 == 10_000),
+        "node 1 reached only height {}",
+        sim.tip(1).0
+    );
+    eprintln!(
+        "10,000 blocks synced in {:?} of real time",
+        started.elapsed()
+    );
+    assert_eq!(sim.tip(1).1, sim.tip(0).1);
+    assert_eq!(sim.engines[1].stats.blocks_applied, 10_000);
+}
+
+#[test]
+fn a_fresh_node_cannot_sync_from_a_pruned_peer_and_does_not_blame_it() {
+    let rigs = SimRig::rigs("syncpruned-fresh", 3);
+    let mut sim = new_sim(&rigs);
+    // node 2 stays away until later, or it would find the archive node on its own
+    sim.set_online(2, false);
+    mine_with_txs(&mut sim, 0, 40);
+    assert_eq!(sim.tip(0).0, 40);
+    assert!(sim.connect(1, 0));
+    assert!(sim.run_until(600 * SEC, |s| s.tip(1).0 == 40));
+    // node 1 keeps only its last 10 blocks
+    sim.engines[1].node().store().prune_keeping(10).unwrap();
+    assert_eq!(sim.engines[1].node().store().pruned_below().unwrap(), 31);
+
+    sim.partition(&[vec![0], vec![1, 2]]);
+    sim.set_online(2, true);
+    assert!(sim.connect(2, 1));
+    sim.run_for(120 * SEC);
+    assert_eq!(
+        sim.tip(2).0,
+        0,
+        "a pruned peer has nothing a fresh node can use"
+    );
+    assert_eq!(sim.engines[2].stats.blocks_applied, 0);
+    assert!(!sim.engines[2].is_syncing());
+    assert_eq!(
+        sim.engines[2].peer_count(),
+        1,
+        "the pruned peer was neither banned nor dropped"
+    );
+    // once the archive node is reachable, the same fresh node completes from it
+    sim.heal();
+    assert!(sim.connect(2, 0));
+    assert!(sim.run_until(600 * SEC, |s| s.tip(2).0 == 40));
+    assert_eq!(sim.tip(2).1, sim.tip(0).1);
+}
+
+#[test]
+fn a_node_that_is_nearly_up_to_date_can_sync_from_a_pruned_peer() {
+    let rigs = SimRig::rigs("syncpruned", 2);
+    let mut sim = new_sim(&rigs);
+    mine_with_txs(&mut sim, 0, 40);
+    assert!(sim.connect(1, 0));
+    assert!(sim.run_until(600 * SEC, |s| s.tip(1).0 == 40));
+    // node 0 prunes all but its last 10 blocks, then goes on alone for 3 more while node 1 is cut off
+    sim.engines[0].node().store().prune_keeping(10).unwrap();
+    assert_eq!(sim.engines[0].node().store().pruned_below().unwrap(), 31);
+    sim.partition(&[vec![0], vec![1]]);
+    mine_with_txs(&mut sim, 0, 3);
+    // node 1 is behind by 3 blocks, all inside node 0's kept tail
+    sim.heal();
+    assert!(sim.run_until(300 * SEC, |s| s.tip(1).0 == 43));
+    assert_eq!(sim.tip(1).1, sim.tip(0).1);
 }
 
 #[test]

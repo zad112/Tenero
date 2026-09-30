@@ -1138,7 +1138,7 @@ impl<'a> Engine<'a> {
             .peers
             .iter()
             .filter(|(id, p)| {
-                p.hello.is_some()
+                self.can_serve_us(p)
                     && p.work > ours
                     && self.cooldown.get(id).is_none_or(|&until| until <= now)
             })
@@ -1149,7 +1149,19 @@ impl<'a> Engine<'a> {
         }
     }
 
+    /// Has said hello, and has not pruned past the next block we need: a peer that has would only answer
+    /// `NotFound` (and be punished for it), so it is never a sync peer.
+    fn can_serve_us(&self, p: &Peer) -> bool {
+        let (our_height, _, _) = self.tip();
+        p.hello
+            .as_ref()
+            .is_some_and(|h| h.pruned_below <= our_height + 1)
+    }
+
     fn start_sync(&mut self, peer: PeerId, out: &mut Vec<Action>) {
+        if !self.peers.get(&peer).is_some_and(|p| self.can_serve_us(p)) {
+            return;
+        }
         self.syncing = Some(Sync {
             peer,
             started: self.now,
