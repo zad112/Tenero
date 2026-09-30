@@ -140,6 +140,18 @@ pub struct NextBlock {
     pub cumulative_work: U256,
 }
 
+/// What [`Validator::check_pool_tx`] learned about a transaction that passed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PoolTx {
+    /// Its size on the wire, the number the fee rules use.
+    pub size: u64,
+    pub fee: u64,
+    /// The height of the block it was checked for (the tip's height plus one).
+    pub next_height: u64,
+    /// The block-size median at that height: a block may hold at most twice this many transaction bytes.
+    pub median: u64,
+}
+
 /// A block that passed every check the validator makes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatedBlock {
@@ -413,6 +425,24 @@ impl<'a> Validator<'a> {
             },
             proofs_checked: self.proofs.checks_proofs(),
         }))
+    }
+
+    /// Checks one loose transaction against the tip's state, as if it were in the next block: version, the
+    /// dynamic minimum fee, key-image order, ring shape, membership and maturity, key images not yet spent,
+    /// and the proofs. This is what a mempool needs; the block validator runs the same checks per transaction.
+    pub fn check_pool_tx(&self, t: &Transaction) -> Result<PoolTx, BlockError> {
+        let next = self.next_block()?;
+        let size = t
+            .to_bytes()
+            .map_err(|e| BlockError::Malformed(e.to_string()))?
+            .len() as u64;
+        self.check_transaction(0, t, size, &next, &mut HashSet::new())?;
+        Ok(PoolTx {
+            size,
+            fee: t.prefix.fee,
+            next_height: next.height,
+            median: next.median,
+        })
     }
 
     fn check_transaction(

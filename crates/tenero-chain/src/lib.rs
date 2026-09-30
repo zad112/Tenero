@@ -10,8 +10,8 @@ pub mod pow;
 pub mod proofs;
 pub mod validate;
 
-pub use chain::{Chain, Submitted};
+pub use chain::{Chain, ReorgReport, Submitted};
 pub use params::{ChainParams, COINBASE_MATURITY, FUTURE_LIMIT_SECONDS, RING_SIZE, SPEND_MATURITY};
 pub use pow::{MatmulPow, PowCheck, Sha256Pow};
 pub use proofs::{ProofCheck, ProofsNotChecked, TxContext};
-pub use validate::{Accepted, BlockError, NextBlock, Outcome, ValidatedBlock, Validator};
+pub use validate::{Accepted, BlockError, NextBlock, Outcome, PoolTx, ValidatedBlock, Validator};

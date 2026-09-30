@@ -260,6 +260,10 @@ pub fn verify_tx(
 /// The block validator's proof check: real CLSAG, Bulletproofs+ and balance verification.
 pub struct RingCtProofs;
 
+/// The one to use: a node built with anything else says so (`ValidatedBlock::proofs_checked`) and
+/// `tenero-node` refuses it unless told, for tests, that it is not a real chain.
+pub static RINGCT: RingCtProofs = RingCtProofs;
+
 impl ProofCheck for RingCtProofs {
     fn check_tx(&self, ctx: &TxContext<'_>) -> Result<(), String> {
         verify_tx(&ctx.chain_id, ctx.tx, &ctx.ring_members).map_err(|e| e.to_string())

@@ -36,13 +36,21 @@ Gaps found by reading the code, all needed before M8 is honest:
 Each step ends in something checkable. Order matters: a node that runs alone comes before a network, and a
 network of simulated peers comes before a real socket.
 
-### M8.0 The node core, on one machine (size M)
+### M8.0 The node core, on one machine (size M) **DONE 2026-09-30** (`crates/tenero-node`)
 `tenero-node`: opens the store, builds `Chain` with `RingCtProofs`, and adds a **mempool**: a transaction is
 accepted if it passes the transaction-level checks against the tip's state; conflicts (same key image) are
 refused; ordered by fee per byte; bounded in size; evicted when a block confirms or a conflicting one arrives;
 re-added after a reorganisation. Gaps 1, 2 and 4 are closed here.
 *Done when:* a test feeds transactions and blocks (including a reorganisation) to a node in one process and the
 mempool always equals "valid, unconfirmed, non-conflicting", checked by a model.
+*Result:* 14 tests, including a randomised run of 400 operations (offers, blocks on two competing branches,
+reorganisations) that checks after every step that the pool is sound (everything in it valid at the tip, no shared
+key image, nothing confirmed, size bounded, key-image index consistent) and complete (anything valid, offered and
+missing conflicts with something in it). 20 deliberate faults injected into the mempool and node: 20 caught (one
+first survived, a stale key-image index, and the checks were tightened). Gaps 1, 2 and 4 are closed:
+`Validator::check_pool_tx`, `Chain::take_reorg_report`, `RINGCT` as the default, and `Node::new` refuses a proof
+check that verifies nothing. Limits: the pool is in memory, has no replace-by-fee, and holds no chains of
+unconfirmed spends (an output cannot be spent before it is mature).
 
 ### M8.1 Simulated network first (size M)
 A `Transport` trait with two implementations: an in-memory deterministic one for tests, and TCP later. The
@@ -108,9 +116,10 @@ the one-time secret), so Carrot slots in later by replacing one implementation. 
 123-byte output format and the same proofs; only how keys are derived and how a wallet recognises its outputs
 differs, and it is **not Carrot and not private in the Monero sense** (for example, it will not have Carrot's
 Janus protection). It lives in its own module marked interim, and the docs and the program's own banner say so.
-**A consequence to accept now:** outputs made under the interim scheme cannot be scanned by a Carrot wallet, so
-when Carrot is added the private test network gets a new genesis (a new chain id). That is fine for a test
-network and not something to hide.
+**What this means for a live network** (decision 6): outputs made under the interim scheme stay valid and
+spendable when Carrot arrives, and new wallets support both schemes. What users lose is not funds but privacy
+properties the interim scheme lacks (Carrot's Janus protection among them) until they move coins to
+Carrot-derived addresses.
 *Done when:* two wallets pay each other through a running node, with real CLSAG and range proofs, and the docs
 say exactly what is interim.
 
@@ -146,8 +155,17 @@ graceful shutdown, and the node kinds of `CONSENSUS_V2.md` 14 (archive, pruned) 
 5. **Assume-valid: opt-in, a checkpoint shipped in the release, default off** until a real chain exists; the
    docs say what it trusts.
 6. **No waiting for Carrot.** Everything is built and run on the interim output scheme behind a swappable
-   interface (M8.6). When Carrot arrives, its implementation replaces the interim one and the private test network
-   restarts from a new genesis.
+   interface (M8.6). **Correction, 2026-09-30, after the owner said the network is meant to be a real one, not
+   only a test network:** a live chain does not restart at Carrot's arrival. Carrot is mostly wallet-side (how
+   one-time keys are derived, view tags, how amounts are encrypted); what consensus sees is only the 123-byte
+   enote and the commitment of a public amount, and the Carrot specification's own text matches both of what we
+   built (`C_a = G + a*H` for a coinbase output; the field sizes). So, if the interim scheme keeps every
+   consensus-visible thing Carrot-shaped, adding Carrot is a **wallet update, not a hard fork**: new wallets
+   derive and scan both ways, outputs made under the interim scheme stay spendable (spending needs only the
+   output's secret key and mask), and no genesis change is needed. Two caveats: this rests on my reading of a
+   specification that has changed before, and is checked only when Carrot's own test vectors are imported; and
+   any consensus-visible difference found then would need an activation-height rules change
+   (`CONSENSUS_V2.md` section 10).
 7. **Order as listed in section 2** (with M8.3a added before sync).
 
 ## 4. Testing, and what "done" means for the milestone
@@ -183,3 +201,24 @@ attack on a node with few peers is easy, and an unreviewed protocol has bugs nob
   of what to cut last: the node and the simulated network are the core; the wallet is the part most likely to
   wait.
 - **GPU work can only be tested on the owner's machine** (CLAUDE.md rule 5).
+
+## 7. Before this holds real value (the owner intends a real network, 2026-09-30)
+
+CLAUDE.md still says: unaudited, one node, not for real value. **That stays true of everything built so far and I
+will keep the labels until the gates below are met; changing the project's wording is the owner's decision.**
+The reasons are concrete, not ceremonial:
+
+- **A consensus bug on a live chain cannot be quietly fixed.** Two nodes that disagree about one rule split the
+  chain, and the repair is a coordinated hard fork. Every rule so far has tests and independent vectors, but
+  no one else has reviewed them.
+- **The cryptography around the libraries is ours** and unaudited: the signed message, the proof layout, the
+  checks on points and the balance equation. The libraries under them were audited in an earlier state.
+- **Privacy is not delivered yet** (no Carrot, an interim scheme, a small anonymity set), and stating otherwise to
+  users would be a false claim.
+- **A young chain with little hash power can be rewritten by anyone with modest hardware.** Reorganisations are
+  handled correctly, but they can be deep.
+
+Proposed gates, in this order: M9 (fuzzing, a written threat model, a review plan); an independent review of the
+validator, the store and `tenero-crypto` by someone other than me; a long public test network with real failures
+observed and fixed; an emergency-fork plan written down before launch; and only then a network that could carry
+value, with the risks stated to its users. None of this stops M8 or Carrot.

@@ -254,8 +254,9 @@ Also required: every output's one-time address and commitment, and every pseudo-
 prime-order points (an address or commitment is also not the identity); the balance
 `sum(pseudo) - sum(outputs) - fee*H = 0` is checked as a point equation.
 
-A coinbase output used as a ring member has the commitment `1*G + amount*H`. **Provisional: Carrot will
-define the commitment for a public amount, and this must be made to match it.**
+A coinbase output used as a ring member has the commitment `1*G + amount*H`. The Carrot specification (read
+2026-09-30) says a coinbase enote's commitment "is implied to be `C_a = G + a H`", which is this; it stays
+**provisional until Carrot's own test vectors are imported** (M7, Carrot).
 
 Measured sizes (real proofs, `tests/ringct.rs`): a 2-input, 2-output transaction has **1,858 bytes** of
 `proof_data`; the largest allowed transaction (32 inputs, 16 outputs, rings of 16) has **20,290 bytes**, inside

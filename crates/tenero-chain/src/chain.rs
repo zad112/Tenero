@@ -67,6 +67,14 @@ pub enum Submitted {
     NotYet,
 }
 
+/// The blocks a reorganisation removed from the chain and the blocks it put in their place, oldest first: what
+/// a mempool needs to put back the transactions that are no longer confirmed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReorgReport {
+    pub disconnected: Vec<Block>,
+    pub connected: Vec<Block>,
+}
+
 struct SideBlock {
     block: Block,
     /// The record the branch's later blocks are judged by (only the fields the rules read are filled).
@@ -83,6 +91,7 @@ pub struct Chain<'a> {
     order: VecDeque<[u8; 32]>,
     invalid: HashSet<[u8; 32]>,
     max_side_blocks: usize,
+    last_reorg: Option<ReorgReport>,
 }
 
 enum Failure {
@@ -106,6 +115,7 @@ impl<'a> Chain<'a> {
             order: VecDeque::new(),
             invalid: HashSet::new(),
             max_side_blocks: DEFAULT_MAX_SIDE_BLOCKS,
+            last_reorg: None,
         }
     }
 
@@ -116,6 +126,12 @@ impl<'a> Chain<'a> {
 
     fn validator(&self) -> Validator<'a> {
         Validator::new(self.store, self.params, self.pow, self.proofs)
+    }
+
+    /// The report of the last reorganisation, once: a caller that keeps a mempool takes it after every
+    /// `submit_block` that returned [`Submitted::Reorganised`].
+    pub fn take_reorg_report(&mut self) -> Option<ReorgReport> {
+        self.last_reorg.take()
     }
 
     /// How many blocks are waiting in the side pool.
@@ -369,9 +385,15 @@ impl<'a> Chain<'a> {
         }
 
         // 3b. success: the branch left the pool, the old chain went into it (so it can win back)
+        let connected_blocks: Vec<Block> =
+            path.iter().map(|b| self.side[b].block.clone()).collect();
         for bid in &path {
             self.remove_side(bid);
         }
+        self.last_reorg = Some(ReorgReport {
+            disconnected: old.iter().map(|(b, _)| b.clone()).collect(),
+            connected: connected_blocks,
+        });
         for (blk, meta) in &old {
             let id = ids::block_id(&blk.header, self.pow.kind());
             let index = BlockIndex {

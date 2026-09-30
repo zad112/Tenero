@@ -1,0 +1,16 @@
+[package]
+name = "tenero-node"
+description = "Tenero node core: the chain, the mempool and the rules for using them together (experimental, unaudited)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tenero-core = { path = "../tenero-core" }
+tenero-store = { path = "../tenero-store" }
+tenero-chain = { path = "../tenero-chain" }
+tenero-crypto = { path = "../tenero-crypto" }
+
+[lints]
+workspace = true
