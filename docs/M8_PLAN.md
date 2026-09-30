@@ -1,7 +1,7 @@
 # M8 plan: the node, the network, the miner and the wallet (a PROPOSAL, for the owner to approve)
 
-Status: **proposal, 2026-09-30. Nothing here is built.** Decisions marked **DECIDE** are open, each with a
-recommendation that is only a recommendation. Sizes are relative guesses (S/M/L), **not measured**.
+Status: **owner's decisions recorded 2026-09-30 (section 3); nothing here is built.** One item still needs the
+owner's explicit confirmation: the `snow` exception (section 3, decision 3). Sizes are relative guesses (S/M/L), **not measured**.
 
 M8 turns the libraries of M0 to M7 (rules, storage, validation, fork choice, proofs, the GPU engine) into
 programs you can run. It is the first milestone where a second computer could join, so it is also where the
@@ -29,7 +29,7 @@ Gaps found by reading the code, all needed before M8 is honest:
 6. **The GPU engine mines one dataset.** No epoch switching, no prefetch of the next epoch, no overlap of CPU and
    GPU work (`docs/REWRITE_PLAN.md`, M4).
 7. **Assume-valid and state snapshots** (the pruning layers of `CONSENSUS_V2.md` 14) are designed, not built.
-8. **Carrot is not in.** Without it a wallet cannot create or scan real outputs (see 4).
+8. **Carrot is not in.** The wallet runs on an interim, labelled output scheme meanwhile (M8.6, decision 6).
 
 ## 2. The pieces, in the order I propose to build them
 
@@ -60,6 +60,18 @@ is dropped at once). Proposed messages: `Hello` (protocol version, chain id, tip
 *Done when:* every message has a golden vector (made by our Python reference, like the other v2 vectors) and
 strict-decoding tests for each malformed case.
 
+### M8.3a Peer discovery and connection management (size M; new since the first draft)
+The owner wants **at least 50 peers** per node (decision 1), so finding and keeping peers is a component, not a
+detail: an address book (persisted, with when each address was last seen and last worked), address exchange
+between peers (`GetAddrs` / `Addrs`, with a cap on how many a peer may send and how fast), a list of seed
+addresses shipped in the release, diversity rules (no more than a few peers from one network range), a target of
+outbound connections and a cap on inbound ones, reconnecting when peers drop, and a persisted ban list.
+**An honest limit:** a private test network of the owner's machines has three nodes, not 50. The 50-peer
+behaviour is tested in the simulated network (M8.1, which can run hundreds of nodes) and only exercised for real
+once other people run nodes.
+*Done when:* in simulation a node started with only a seed list reaches its outbound target, replaces dropped
+peers, refuses to be filled by one attacker's addresses, and survives 50+ peers sending at once.
+
 ### M8.3 Sync (size L, the hard part)
 A new node learns the chain: ask a peer for its tip and work, fetch the block ids, then the blocks, validate and
 add them in order through `Chain`. Out-of-order blocks and orphans are held (gap 3 closed by a bounded persisted
@@ -72,10 +84,12 @@ opt-in and visible.
 real proof of work with the measured time reported, both an archive and a pruned node.
 
 ### M8.4 Real sockets (size M)
-TCP transport, peer address book, inbound and outbound limits, per-peer rate limits and a ban score, message
-timeouts, an encrypted and authenticated channel if approved (DECIDE 3).
+TCP transport, the Noise channel (decision 3), inbound and outbound limits, per-peer rate limits and a ban score,
+message timeouts. With 50+ connections the relay rules matter for bandwidth: a new block or transaction is
+announced by its id and fetched from ONE peer, never pushed in full to all of them.
 *Done when:* three nodes on the owner's machine (three data directories, three ports) run a private test network
-for a day without diverging, and the logs show refusals of deliberately bad input.
+for a day without diverging, the logs show refusals of deliberately bad input, and a stress test holds 50+
+real loopback connections on one node while it keeps syncing.
 
 ### M8.5 The miner (size M to L)
 A block template from the node (mempool, correct coinbase, Merkle root, `Validator::next_block` for the target),
@@ -85,45 +99,56 @@ the GPU engine feeding attempts, epoch switching with the next dataset prefetche
 end-to-end test of "bit for bit"), **and the owner measures the attempts per second** (CLAUDE.md rule 5: no GPU
 number is claimed without one).
 
-### M8.6 The wallet (size L, and partly BLOCKED)
-Keys, scanning the chain for one's outputs, building transactions (the prover exists; decoy selection is wallet
-policy, `CONSENSUS_V2.md` 6.3), fee choice from `dynamic_min_fee`, and a way to talk to the node.
-**Blocked by Carrot** for real outputs: the wallet cannot recognise its own outputs or derive one-time addresses
-without it, and waiting for Monero's `carrot_core` was the decision. Until then I can build only what does not
-need it: key storage (encrypted at rest), transaction building, decoy selection, fee logic, and an **interim,
-clearly labelled test-only scheme** where a wallet knows the secrets of outputs it created. That scheme is not
-private and must never be described as if it were.
-*Done when:* two wallets pay each other through a running node, in the interim scheme, with real CLSAG and
-range proofs, and the docs say what is missing.
+### M8.6 The wallet, without waiting for Carrot (size L)
+Keys (encrypted at rest), scanning the chain for one's outputs, building transactions (the prover exists), decoy
+selection (wallet policy, `CONSENSUS_V2.md` 6.3), fee choice from `dynamic_min_fee`, and the connection to the
+node. **The project does not stop for Carrot** (decision 6): everything runs on an **interim output scheme**
+behind a small interface (create an output for a recipient, recognise one's own outputs, recover the amount and
+the one-time secret), so Carrot slots in later by replacing one implementation. The interim scheme uses the same
+123-byte output format and the same proofs; only how keys are derived and how a wallet recognises its outputs
+differs, and it is **not Carrot and not private in the Monero sense** (for example, it will not have Carrot's
+Janus protection). It lives in its own module marked interim, and the docs and the program's own banner say so.
+**A consequence to accept now:** outputs made under the interim scheme cannot be scanned by a Carrot wallet, so
+when Carrot is added the private test network gets a new genesis (a new chain id). That is fine for a test
+network and not something to hide.
+*Done when:* two wallets pay each other through a running node, with real CLSAG and range proofs, and the docs
+say exactly what is interim.
 
 ### M8.7 Interfaces and operation (size S to M)
 A local control interface for the wallet and miner to reach the node (DECIDE 4), a config file, logging,
 graceful shutdown, and the node kinds of `CONSENSUS_V2.md` 14 (archive, pruned) selectable by flag.
 
-## 3. Decisions for the owner
+## 3. Decisions (owner, 2026-09-30)
 
-1. **Concurrency model. Recommendation: plain threads and channels, no async runtime.** A handful of peers does
-   not need an async runtime, and it avoids a large dependency tree (rule 3). Revisit if a node must handle
-   hundreds of peers. *Alternative:* `tokio` (MIT, widely used), which would be needed for many peers.
-2. **Protocol. Recommendation: our own small framed protocol** on the v2 codec, as in M8.2. *Alternatives:*
-   libp2p (large, many dependencies, a big surface to trust), or Monero's own "levin" protocol (complex, built
-   around Monero's assumptions). Ours is small enough to read and to fuzz (M9), but it is ours, so it is
-   unreviewed.
-3. **Transport security. Recommendation: the Noise protocol (the `snow` crate)** for an encrypted, authenticated
-   channel, **if you approve that dependency** (I have not checked its current licence, version or audit status;
-   I would before asking). *Alternative:* plaintext in v1 and add it before any non-local use. This is not the
-   same as network privacy (Dandelion++, Tor, I2P), which stays out of M8 (P4 in the plan).
-4. **How the wallet and miner reach the node. Recommendation: the same framed protocol over `127.0.0.1` with a
-   few extra request messages**, one codec to test. *Alternatives:* HTTP and JSON-RPC (needs a server crate and
-   is more code to trust), or the wallet embeds the node (simple, but one process holds everything).
-5. **Sync trust. Recommendation: opt-in assume-valid with a checkpoint shipped in the release**, default off
-   until a real chain exists. Say in the docs what it trusts.
-6. **The wallet before Carrot. Recommendation: build the parts that do not need it, and the labelled test-only
-   interim scheme,** so the node, network and miner can be tested end to end. *Alternative:* build the wallet
-   last, after Carrot. The risk of the first is that "interim" code tends to stay; I would put it in its own
-   crate that the release does not include.
-7. **Order.** Recommendation: as in section 2. *Alternative:* the miner first (you can see hashes sooner), but
-   it needs the node and the template anyway.
+1. **Peers: at least 50 per node.** Recorded as a requirement. It changes three things from the first draft:
+   peer discovery becomes its own step (M8.3a); relay announces ids and fetches from one peer; and the design must
+   hold 50 to about 128 connections. **Threads still work at that scale**: two threads per peer (a reader and a
+   writer) is about 100 to 250 threads, which an operating system handles easily, and it keeps the code simple
+   and free of an async runtime. The design puts the connection behind a small trait, so if the count grows to
+   many hundreds, switching to `tokio` (MIT) is contained. Proposed defaults, all configurable: outbound target
+   50, inbound cap 64, hard cap 128, of which at least 16 outbound so that inbound peers alone cannot fill a node
+   (a home connection behind a router usually gets few inbound peers, so reaching 50 relies on outbound). Bandwidth
+   and memory per connection are **not yet measured**; M8.4 measures them.
+2. **Protocol: our own framed protocol**, tested with golden vectors, strict decoding and a simulated network.
+   It is unreviewed until M9, and the plan says so.
+3. **Transport security: the Noise protocol via `snow`. NEEDS THE OWNER'S CONFIRMATION of an exception.**
+   `snow` 0.10.0 (released 2025-07-19), licence Apache-2.0 OR MIT, about 27 million downloads, pure Rust by
+   default. **Its own README says it "has not received any formal audit."** CLAUDE.md rule 3 says to use audited
+   libraries, so using it is an exception to a rule the owner wrote. What softens it (from my recollection, not
+   re-checked today): its underlying primitives come from widely used crates such as `curve25519-dalek`,
+   ChaCha20-Poly1305 and BLAKE2, which have had reviews; what is unaudited is `snow`'s handshake state machine.
+   The alternative that avoids the exception, plaintext and unauthenticated in v1, is worse for a node that talks
+   to 50 strangers; writing our own Noise implementation would be worse still (home-made cryptography). I
+   recommend the exception, recorded in `Cargo.toml` next to the dependency, and a mention in the threat model
+   (M9). Noise here gives an encrypted, authenticated channel; it is not anonymity.
+4. **Wallet and miner reach the node over the same protocol on `127.0.0.1`,** with a few extra request messages,
+   refused from any other address.
+5. **Assume-valid: opt-in, a checkpoint shipped in the release, default off** until a real chain exists; the
+   docs say what it trusts.
+6. **No waiting for Carrot.** Everything is built and run on the interim output scheme behind a swappable
+   interface (M8.6). When Carrot arrives, its implementation replaces the interim one and the private test network
+   restarts from a new genesis.
+7. **Order as listed in section 2** (with M8.3a added before sync).
 
 ## 4. Testing, and what "done" means for the milestone
 
@@ -151,8 +176,9 @@ attack on a node with few peers is easy, and an unreviewed protocol has bugs nob
 - **Sync cost with the real proof of work** may be the practical limit for a new node. It is measured in M8.3
   rather than assumed; assume-valid trades trust for speed.
 - **Assume-valid and pruning are trust decisions** and must be visible to the user, not silent defaults.
-- **The Carrot dependency** blocks a real wallet; the interim scheme is a hazard if it is mistaken for the real
-  one.
+- **The interim output scheme** (decision 6) is a hazard if it is mistaken for Carrot, or if it outlives it. It is
+  labelled everywhere, sits behind one interface, and the test network restarts from a new genesis when Carrot
+  replaces it.
 - **Scope.** This is the largest milestone so far. If it must shrink, the order in section 2 is also the order
   of what to cut last: the node and the simulated network are the core; the wallet is the part most likely to
   wait.

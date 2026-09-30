@@ -126,7 +126,7 @@ chain must be able to run pruned (`CONSENSUS_V2.md` section 14). The original op
 - **M7. Privacy in stages.** (P1) one-time addresses, Pedersen commitments, range proofs, key images, and the
   stand-in membership proof; (P2) FCMP++ when a stable, audited implementation exists; (P3) subaddresses,
   view keys, integrated addresses, multisig; (P4) network privacy.
-- **M8. Networking, the node and the wallet.** *Proposal written 2026-09-30: `docs/M8_PLAN.md` (not approved or built).*
+- **M8. Networking, the node and the wallet.** *Plan with the owner's decisions recorded 2026-09-30: `docs/M8_PLAN.md` (nothing built yet; the `snow` exception awaits confirmation).*
 - **M9. Hardening.** Fuzzing, a written threat model, a review plan.
 
 **Do not port the account-model validation** (`chains.json` and the legacy vectors): it is thrown away in M5.
