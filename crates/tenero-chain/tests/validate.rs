@@ -1226,3 +1226,154 @@ fn a_rejected_block_can_be_followed_by_the_valid_one() {
     ));
     assert_eq!(net.height(), 11);
 }
+
+// ------------------------------------------------------------------ assume-valid
+
+/// The SHA-256 rules, but the full proof of work always says "wrong": what a block with a forged mix meets.
+struct FullCheckAlwaysFails;
+
+impl PowCheck for FullCheckAlwaysFails {
+    fn kind(&self) -> PowKind {
+        PowKind::Sha256
+    }
+
+    fn check_full(&self, _header: &BlockHeader, _height: u64) -> Result<bool, String> {
+        Ok(false)
+    }
+}
+
+fn assumed(ids: &[[u8; 32]]) -> Option<std::sync::Arc<std::collections::HashSet<[u8; 32]>>> {
+    Some(std::sync::Arc::new(ids.iter().copied().collect()))
+}
+
+fn id_of(b: &Block) -> [u8; 32] {
+    ids::block_id(&b.header, PowKind::Sha256)
+}
+
+fn failing_proofs() -> Recorder {
+    Recorder {
+        real: true,
+        fail_on_call: Some(0),
+        seen: Mutex::new(vec![]),
+    }
+}
+
+#[test]
+fn an_assumed_block_skips_the_transaction_proofs_and_says_so_and_another_block_does_not() {
+    let mut net = Net::prepared("assume-proofs", FIRST_SPEND_HEIGHT as usize - 1);
+    let t = net.spend();
+    let b = net.block(vec![t]);
+    let failing = failing_proofs();
+    // the control: the same block, not assumed, is refused for its proof
+    let v = Validator::new(&net.store, &net.params, &net.pow, &failing);
+    assert!(matches!(
+        v.validate_block(&b, NOW),
+        Err(BlockError::ProofRejected { tx: 0, .. })
+    ));
+    // assumed: accepted, the checker was never asked, and the result records that no proof was checked
+    let failing = failing_proofs();
+    let v = Validator::new(&net.store, &net.params, &net.pow, &failing)
+        .with_assumed(assumed(&[id_of(&b)]));
+    let Outcome::Valid(valid) = v.validate_block(&b, NOW).unwrap() else {
+        panic!("not valid")
+    };
+    assert!(!valid.proofs_checked);
+    assert!(failing.seen.lock().unwrap().is_empty());
+    // a set that holds some OTHER id changes nothing for this block
+    let failing = failing_proofs();
+    let v = Validator::new(&net.store, &net.params, &net.pow, &failing)
+        .with_assumed(assumed(&[[9; 32]]));
+    assert!(matches!(
+        v.validate_block(&b, NOW),
+        Err(BlockError::ProofRejected { .. })
+    ));
+}
+
+#[test]
+fn an_assumed_block_skips_the_full_proof_of_work_but_not_the_cheap_one() {
+    let mut net = Net::prepared("assume-pow", 5);
+    let b = net.block(vec![]);
+    let bad_full = FullCheckAlwaysFails;
+    let v = Validator::new(&net.store, &net.params, &bad_full, &net.proofs);
+    assert!(matches!(
+        v.validate_block(&b, NOW),
+        Err(BlockError::PowInvalid(_))
+    ));
+    let v = Validator::new(&net.store, &net.params, &bad_full, &net.proofs)
+        .with_assumed(assumed(&[id_of(&b)]));
+    assert!(matches!(v.validate_block(&b, NOW), Ok(Outcome::Valid(_))));
+
+    // a block whose id misses the target is refused even when assumed: the cheap check stays
+    let target = net.validator().next_block().unwrap().target;
+    let mut worse = b.clone();
+    while U256::from_be_bytes(&id_of(&worse)) < target {
+        worse.header.nonce += 1;
+    }
+    let v = Validator::new(&net.store, &net.params, &bad_full, &net.proofs)
+        .with_assumed(assumed(&[id_of(&worse)]));
+    assert_eq!(
+        v.validate_block(&worse, NOW).unwrap_err(),
+        BlockError::PowTargetNotMet
+    );
+}
+
+#[test]
+fn an_assumed_block_is_held_to_every_other_rule() {
+    let mut net = Net::prepared("assume-rules", FIRST_SPEND_HEIGHT as usize - 1);
+    let t = net.spend();
+    let good = net.block(vec![t]);
+
+    // a wrong coinbase amount, correctly mined
+    let mut b = good.clone();
+    b.coinbase.outputs[0].amount += 1;
+    net.finish(&mut b);
+    let v = net.validator().with_assumed(assumed(&[id_of(&b)]));
+    assert!(matches!(
+        v.validate_block(&b, NOW),
+        Err(BlockError::CoinbaseAmount { .. })
+    ));
+
+    // a ring that is not in ascending order (a state rule that is not the proof)
+    let mut b = good.clone();
+    b.transactions[0].prunable.rings[0].swap(0, 1);
+    net.finish(&mut b);
+    let v = net.validator().with_assumed(assumed(&[id_of(&b)]));
+    assert!(matches!(
+        v.validate_block(&b, NOW),
+        Err(BlockError::RingNotAscending { .. })
+    ));
+
+    // a key image that is already spent
+    let t = net.spend();
+    let first = net.block(vec![t]);
+    net.accept(&first);
+    let again = net.block(vec![first.transactions[0].clone()]);
+    let v = net.validator().with_assumed(assumed(&[id_of(&again)]));
+    assert!(matches!(
+        v.validate_block(&again, NOW),
+        Err(BlockError::KeyImageSpent { .. })
+    ));
+
+    // a wrong Merkle root (on a fresh block: the tip has moved on since `good` was built)
+    let mut b = net.block(vec![]);
+    b.header.tx_root = [1; 32];
+    net.mine(&mut b);
+    let v = net.validator().with_assumed(assumed(&[id_of(&b)]));
+    assert_eq!(
+        v.validate_block(&b, NOW).unwrap_err(),
+        BlockError::BadTxRoot
+    );
+}
+
+#[test]
+fn a_pool_transaction_is_always_proof_checked_whatever_is_assumed() {
+    let mut net = Net::prepared("assume-pool", FIRST_SPEND_HEIGHT as usize - 1);
+    let t = net.spend();
+    let failing = failing_proofs();
+    let v = Validator::new(&net.store, &net.params, &net.pow, &failing)
+        .with_assumed(assumed(&[[1; 32]]));
+    assert!(matches!(
+        v.check_pool_tx(&t),
+        Err(BlockError::ProofRejected { .. })
+    ));
+}

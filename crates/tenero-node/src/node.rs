@@ -98,6 +98,16 @@ impl<'a> Node<'a> {
         &self.chain
     }
 
+    /// Assume-valid (see `Chain::set_assumed`): these block ids skip the full proof of work and the proofs.
+    pub fn set_assumed(&mut self, ids: std::collections::HashSet<[u8; 32]>) {
+        self.chain.set_assumed(ids);
+    }
+
+    /// Back to checking every block in full.
+    pub fn clear_assumed(&mut self) {
+        self.chain.clear_assumed();
+    }
+
     pub fn pool(&self) -> &Mempool {
         &self.pool
     }

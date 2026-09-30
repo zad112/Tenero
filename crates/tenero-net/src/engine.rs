@@ -81,6 +81,17 @@ pub enum Action {
     },
 }
 
+/// A block the software ships and trusts (**not consensus**): a block id at a height. With it set, a node that is
+/// behind it first fetches the headers up to that height, and, only if they link from its own chain and the one at
+/// that height is this block, skips the full proof of work and the transaction proofs for the blocks on that path.
+/// Everything else (linkage, Merkle roots, the cheap proof-of-work check, emission, key images, ring membership, fees)
+/// is still checked. It is a trust decision: see `docs/M8_PLAN.md`, M8.3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AssumeValid {
+    pub height: u64,
+    pub id: [u8; 32],
+}
+
 #[derive(Clone, Debug)]
 pub struct EngineConfig {
     pub limits: Limits,
@@ -128,6 +139,8 @@ pub struct EngineConfig {
     /// When full, this many extra inbound connections are still accepted, only to be told addresses and sent
     /// away (so a busy seed node still helps newcomers find peers).
     pub max_addr_only: usize,
+    /// Off (`None`) unless the operator turns it on.
+    pub assume_valid: Option<AssumeValid>,
 }
 
 impl Default for EngineConfig {
@@ -158,6 +171,7 @@ impl Default for EngineConfig {
             advertise: None,
             addrbook: AddrBookConfig::default(),
             max_addr_only: 16,
+            assume_valid: None,
         }
     }
 }
@@ -170,6 +184,8 @@ pub struct Stats {
     pub bans: u64,
     pub disconnects: u64,
     pub blocks_applied: u64,
+    /// Blocks applied without their full proof of work and proofs, because assume-valid vouched for them.
+    pub assumed_blocks: u64,
 }
 
 struct Peer {
@@ -202,6 +218,14 @@ struct Peer {
 }
 
 enum Phase {
+    /// Waiting for `Headers` (assume-valid): `ids` are the ids of the headers verified so far, each linked to the
+    /// one before, the first to a block of ours; `next_height` is the height the next header must have, and
+    /// `last_id` the id it must link to. `next_height` is 0 until the first reply.
+    Headers {
+        ids: Vec<[u8; 32]>,
+        next_height: u64,
+        last_id: [u8; 32],
+    },
     /// Waiting for `BlockIds`.
     Ids,
     /// Waiting for these blocks; `remaining` are the ids still to ask for.
@@ -710,12 +734,14 @@ impl<'a> Engine<'a> {
                     self.on_get_headers(peer, locator, out);
                 }
             }
-            Message::Headers { headers, .. } => {
+            Message::Headers {
+                first_height,
+                headers,
+            } => {
                 if headers.len() > lim.max_headers {
                     self.penalize(peer, 50, "too many headers", out);
                 } else {
-                    // nothing asks for headers yet (the header-first sync comes next): so none are welcome
-                    self.penalize(peer, 20, "unsolicited headers", out);
+                    self.on_headers(peer, first_height, headers, out);
                 }
             }
             Message::BlockIds { first_height, ids } => {
@@ -1212,6 +1238,26 @@ impl<'a> Engine<'a> {
         if !self.peers.get(&peer).is_some_and(|p| self.can_serve_us(p)) {
             return;
         }
+        let (our_height, _, _) = self.tip();
+        if self.cfg.assume_valid.is_some_and(|a| our_height < a.height) {
+            // assume-valid: the headers first, so that the path to the checkpoint is proved before it is trusted
+            self.syncing = Some(Sync {
+                peer,
+                started: self.now,
+                phase: Phase::Headers {
+                    ids: Vec::new(),
+                    next_height: 0,
+                    last_id: [0; 32],
+                },
+            });
+            let locator = self.locator();
+            self.send(peer, Message::GetHeaders { locator }, out);
+            return;
+        }
+        self.start_id_sync(peer, out);
+    }
+
+    fn start_id_sync(&mut self, peer: PeerId, out: &mut Vec<Action>) {
         self.syncing = Some(Sync {
             peer,
             started: self.now,
@@ -1219,6 +1265,117 @@ impl<'a> Engine<'a> {
         });
         let locator = self.locator();
         self.send(peer, Message::GetBlockIds { locator }, out);
+    }
+
+    /// A reply to our `GetHeaders`. Every header must link to the one before (the first to a block of ours), and
+    /// the one at the checkpoint's height must be the checkpoint. Only then are the ids on that path assumed valid.
+    fn on_headers(
+        &mut self,
+        peer: PeerId,
+        first_height: u64,
+        headers: Vec<BlockHeader>,
+        out: &mut Vec<Action>,
+    ) {
+        let Some(assume) = self.cfg.assume_valid else {
+            self.penalize(peer, 20, "unsolicited headers", out);
+            return;
+        };
+        let state = match self.syncing.as_ref() {
+            Some(Sync {
+                peer: p,
+                phase:
+                    Phase::Headers {
+                        ids,
+                        next_height,
+                        last_id,
+                    },
+                ..
+            }) if *p == peer => Some((ids.clone(), *next_height, *last_id)),
+            _ => None,
+        };
+        let Some((mut ids, next_height, last_id)) = state else {
+            self.penalize(peer, 20, "unsolicited headers", out);
+            return;
+        };
+        if headers.is_empty() {
+            // it has nothing more on the way to the checkpoint: fall back to the ordinary sync, full checks and all
+            self.start_id_sync(peer, out);
+            return;
+        }
+        // where the first header must link to
+        let (mut height, mut prev) = if ids.is_empty() {
+            // (the store has no block above our tip, so a first height beyond it finds no parent either)
+            let parent = first_height
+                .checked_sub(1)
+                .and_then(|h| self.node.store().block_index(h).ok().flatten());
+            match parent {
+                Some(i) => (first_height, i.block_id),
+                None => {
+                    self.penalize(peer, 50, "headers that do not start at our chain", out);
+                    self.abort_sync(peer, out);
+                    return;
+                }
+            }
+        } else {
+            if first_height != next_height {
+                self.penalize(peer, 50, "headers that do not continue", out);
+                self.abort_sync(peer, out);
+                return;
+            }
+            (next_height, last_id)
+        };
+        let count = headers.len();
+        let mut reached = false;
+        for h in &headers {
+            if h.prev_id != prev {
+                self.penalize(peer, 50, "headers that do not link", out);
+                self.abort_sync(peer, out);
+                return;
+            }
+            let id = block_id(h, self.node.store().pow());
+            ids.push(id);
+            if height == assume.height {
+                if id != assume.id {
+                    self.penalize(peer, 50, "not the checkpoint at the checkpoint height", out);
+                    self.abort_sync(peer, out);
+                    return;
+                }
+                reached = true;
+                break;
+            }
+            prev = id;
+            height += 1;
+        }
+        if reached {
+            // the path from our chain to the checkpoint is proved: those blocks need not be checked in full
+            let set: HashSet<[u8; 32]> = ids.iter().copied().collect();
+            self.node.set_assumed(set);
+            let wanted: VecDeque<[u8; 32]> = ids
+                .into_iter()
+                .filter(|id| !self.on_chain(id) && !self.node.chain().in_side_pool(id))
+                .collect();
+            self.request_next_chunk(peer, wanted, out);
+        } else if count < self.cfg.limits.max_headers {
+            // it ran out before the checkpoint: its chain is shorter than the checkpoint, so nothing is assumed
+            self.start_id_sync(peer, out);
+        } else {
+            let next = height;
+            if let Some(Sync { phase, started, .. }) = self.syncing.as_mut() {
+                *started = self.now;
+                *phase = Phase::Headers {
+                    ids,
+                    next_height: next,
+                    last_id: prev,
+                };
+            }
+            self.send(
+                peer,
+                Message::GetHeaders {
+                    locator: vec![prev],
+                },
+                out,
+            );
+        }
     }
 
     fn abort_sync(&mut self, peer: PeerId, out: &mut Vec<Action>) {
@@ -1388,9 +1545,19 @@ impl<'a> Engine<'a> {
 
     /// Feeds a block to the node and reports what became of it. An invalid block from a peer bans it.
     fn apply_block(&mut self, from: Option<PeerId>, b: &Block, out: &mut Vec<Action>) -> Applied {
+        let was_assumed = self.node.chain().is_assumed(&self.block_id_of(b));
         match self.node.submit_block(b, self.secs()) {
             Ok(Submitted::Extended(_)) | Ok(Submitted::Reorganised { .. }) => {
                 self.stats.blocks_applied += 1;
+                if was_assumed {
+                    self.stats.assumed_blocks += 1;
+                }
+                // past the checkpoint: everything from here on is checked in full, and nothing stays assumed
+                if let Some(a) = self.cfg.assume_valid {
+                    if self.tip().0 >= a.height {
+                        self.node.clear_assumed();
+                    }
+                }
                 Applied::NewTip
             }
             Ok(Submitted::SideChain { .. }) | Ok(Submitted::AlreadyKnown) => Applied::Kept,

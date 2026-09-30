@@ -28,6 +28,7 @@
 //!   blocks and become impossible to adopt until those are sent again.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use crate::params::ChainParams;
 use crate::pow::PowCheck;
@@ -92,6 +93,7 @@ pub struct Chain<'a> {
     invalid: HashSet<[u8; 32]>,
     max_side_blocks: usize,
     last_reorg: Option<ReorgReport>,
+    assumed: Option<Arc<HashSet<[u8; 32]>>>,
 }
 
 enum Failure {
@@ -116,7 +118,29 @@ impl<'a> Chain<'a> {
             invalid: HashSet::new(),
             max_side_blocks: DEFAULT_MAX_SIDE_BLOCKS,
             last_reorg: None,
+            assumed: None,
         }
+    }
+
+    /// Assume-valid: blocks with these ids skip the full proof of work and the transaction proofs (see
+    /// [`Validator::with_assumed`]). The caller vouches that they are ancestors of a trusted checkpoint.
+    pub fn set_assumed(&mut self, ids: HashSet<[u8; 32]>) {
+        self.assumed = Some(Arc::new(ids));
+    }
+
+    /// Back to checking everything.
+    pub fn clear_assumed(&mut self) {
+        self.assumed = None;
+    }
+
+    /// How many block ids are currently assumed valid.
+    pub fn assumed_count(&self) -> usize {
+        self.assumed.as_ref().map_or(0, |s| s.len())
+    }
+
+    /// Whether `id` is assumed valid.
+    pub fn is_assumed(&self, id: &[u8; 32]) -> bool {
+        self.assumed.as_ref().is_some_and(|s| s.contains(id))
     }
 
     pub fn with_max_side_blocks(mut self, n: usize) -> Chain<'a> {
@@ -126,6 +150,7 @@ impl<'a> Chain<'a> {
 
     fn validator(&self) -> Validator<'a> {
         Validator::new(self.store, self.params, self.pow, self.proofs)
+            .with_assumed(self.assumed.clone())
     }
 
     /// The report of the last reorganisation, once: a caller that keeps a mempool takes it after every

@@ -13,6 +13,6 @@ pub mod message;
 pub mod sim;
 pub mod wire;
 
-pub use engine::{Action, Engine, EngineConfig, Event, PeerId, Stats};
+pub use engine::{Action, AssumeValid, Engine, EngineConfig, Event, PeerId, Stats};
 pub use message::{Hello, Limits, Message, PROTOCOL_VERSION};
 pub use wire::{decode_frame, encode, FrameDecoder, WireError, MAX_FRAME};

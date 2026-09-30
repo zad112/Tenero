@@ -9,6 +9,7 @@ use crate::params::ChainParams;
 use crate::pow::PowCheck;
 use crate::proofs::{ProofCheck, TxContext};
 use std::collections::HashSet;
+use std::sync::Arc;
 use tenero_core::difficulty;
 use tenero_core::fees;
 use tenero_core::u256::U256;
@@ -185,6 +186,9 @@ pub struct Validator<'a> {
     params: &'a ChainParams,
     pow: &'a dyn PowCheck,
     proofs: &'a dyn ProofCheck,
+    /// Ids of blocks known, by other means, to lie on the chain up to a trusted checkpoint (**assume-valid**).
+    /// For such a block the full proof of work and the transaction proofs are not checked; everything else is.
+    assumed: Option<Arc<HashSet<[u8; 32]>>>,
 }
 
 impl<'a> Validator<'a> {
@@ -199,7 +203,17 @@ impl<'a> Validator<'a> {
             params,
             pow,
             proofs,
+            assumed: None,
         }
+    }
+
+    /// Skips the full proof of work and the transaction proofs for the blocks whose ids are in `set`. The caller
+    /// must have shown that they are ancestors of a checkpoint it trusts (`docs/M8_PLAN.md`, M8.3): this is a
+    /// **trust decision**, and a block in the set is still held to every other rule (the cheap proof-of-work
+    /// check, the Merkle root, the coinbase, key images, fees, ring membership).
+    pub fn with_assumed(mut self, set: Option<Arc<HashSet<[u8; 32]>>>) -> Validator<'a> {
+        self.assumed = set;
+        self
     }
 
     /// What the rules require of the next block: its height, parent, target, earliest timestamp, reward and
@@ -343,15 +357,19 @@ impl<'a> Validator<'a> {
         if !self.pow.check_cheap(header, &next.target) {
             return Err(BlockError::PowTargetNotMet);
         }
-        // 3. the full proof of work
-        match self.pow.check_full(header, next.height) {
-            Ok(true) => {}
-            Ok(false) => {
-                return Err(BlockError::PowInvalid(
-                    "the mix is not what the proof of work gives".into(),
-                ))
+        // 3. the full proof of work (not for a block assumed valid)
+        let block_id = ids::block_id(header, self.pow.kind());
+        let assumed = self.assumed.as_ref().is_some_and(|s| s.contains(&block_id));
+        if !assumed {
+            match self.pow.check_full(header, next.height) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(BlockError::PowInvalid(
+                        "the mix is not what the proof of work gives".into(),
+                    ))
+                }
+                Err(e) => return Err(BlockError::PowInvalid(e)),
             }
-            Err(e) => return Err(BlockError::PowInvalid(e)),
         }
 
         // 4. the body: it encodes (so every count and length is within its limit), the Merkle root, the size
@@ -411,19 +429,19 @@ impl<'a> Validator<'a> {
         if check_state {
             let mut spent_in_block: HashSet<[u8; 32]> = HashSet::new();
             for (i, t) in block.transactions.iter().enumerate() {
-                self.check_transaction(i, t, sizes[i], next, &mut spent_in_block)?;
+                self.check_transaction(i, t, sizes[i], next, &mut spent_in_block, !assumed)?;
             }
         }
 
         Ok(Outcome::Valid(ValidatedBlock {
             height: next.height,
-            block_id: ids::block_id(header, self.pow.kind()),
+            block_id,
             meta: BlockMeta {
                 cumulative_work: cumulative_work.to_be_bytes(),
                 target: next.target.to_be_bytes(),
                 body_size,
             },
-            proofs_checked: self.proofs.checks_proofs(),
+            proofs_checked: self.proofs.checks_proofs() && !assumed,
         }))
     }
 
@@ -436,7 +454,7 @@ impl<'a> Validator<'a> {
             .to_bytes()
             .map_err(|e| BlockError::Malformed(e.to_string()))?
             .len() as u64;
-        self.check_transaction(0, t, size, &next, &mut HashSet::new())?;
+        self.check_transaction(0, t, size, &next, &mut HashSet::new(), true)?;
         Ok(PoolTx {
             size,
             fee: t.prefix.fee,
@@ -452,6 +470,7 @@ impl<'a> Validator<'a> {
         size: u64,
         next: &NextBlock,
         spent_in_block: &mut HashSet<[u8; 32]>,
+        check_proofs: bool,
     ) -> Result<(), BlockError> {
         if t.prefix.version != VERSION {
             return Err(BlockError::TxVersion {
@@ -530,6 +549,9 @@ impl<'a> Validator<'a> {
                     key_image: input.key_image,
                 });
             }
+        }
+        if !check_proofs {
+            return Ok(());
         }
         let ctx = TxContext {
             chain_id: self.store.chain_id(),

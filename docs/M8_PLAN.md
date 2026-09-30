@@ -166,11 +166,32 @@ peer, on any path (before this, an orphan block started a sync with it, which go
 honest pruned node; found by the test, which needed real transactions in the old blocks because pruning a
 coinbase-only block deletes nothing); a node that is only a few blocks behind still syncs from a pruned peer.
 **Headers on the wire (done, second slice):** `get_headers` (kind 15) and `headers` (kind 16, 146 bytes per header, 500 at most) are in the wire format, the independent Python reference, the regenerated vectors (now about 510 KiB) and `docs/WIRE_PROTOCOL.md`; the engine serves them (a pruned node too, since it keeps every header) and punishes headers nobody asked for. 8 of 9 injected faults in that code are caught; the survivor (a `headers` reply should reset the unanswered-request count) only matters once the engine asks for headers, so its test comes with that slice. Protocol version stays 1: nothing is deployed and the format is a draft.
+**Assume-valid (done, third slice; off by default, no checkpoint is shipped because there is no real chain yet):**
+`EngineConfig::assume_valid = Some(AssumeValid { height, id })`. A node behind that height asks the peer it syncs
+from for **headers** first (500 a reply). Every header must link to the one before, the first to a block of ours, and
+the header at the checkpoint height must hash to the checkpoint id; only then are the ids on that path handed to the
+validator, and **only for those blocks** the full proof of work and the transaction proofs are skipped. Everything
+else still runs on them: the cheap proof-of-work check, the Merkle root, the coinbase amount, fees, ring shape and
+membership, key-image uniqueness and the state update. Blocks past the checkpoint are checked in full, and the set is
+dropped as soon as the tip reaches it. A peer whose chain has another block at that height, or whose headers do not
+link or continue, gets 50 points (two such replies ban it); a peer that simply has a shorter chain, or no headers,
+is not blamed and is synced from in full. Why headers first: the ids in `block_ids` cannot be shown to link, so a
+dishonest peer could have had us apply blocks without proof-of-work checks that do not lead to the checkpoint, each
+counting toward our cumulative work; the linked headers make every assumed block a real ancestor of the checkpoint.
+Injected faults: 27 in the engine and validator, all caught (2 of my own mutants did not compile or were redundant,
+and a guard that turned out to be redundant was removed). Tests: 4 chain-level (an assumed block skips exactly the
+proofs and the full proof of work, and nothing else; a pool transaction is always proof-checked) and 17 sync-level
+(real nodes at 120 and 1,100 blocks; scripted peers for every refusal).
+*Limits, stated plainly:* **it is a trust decision**: if the shipped checkpoint is wrong, or a chain is built to
+reach it, a node that turns this on believes it. The checkpoint's cumulative work is not checked. The headers are
+not proof-of-work checked while they are fetched (they cannot be: the target needs the blocks before them), so a
+peer can make a node fetch up to `checkpoint height - our height` headers (146 bytes each, 32 bytes each held) that
+lead nowhere before it is caught at the checkpoint height. Nothing here measures what it saves with the real
+proof of work: the saving is the attempt cost in `docs/BENCHMARKS.md` per block plus a dataset per epoch, unmeasured
+end to end. It is unreviewed (M9).
 **Not done:** real-proof-of-work sync time (needs a real-PoW test chain; the per-block cost is the measured attempt
 cost in `docs/BENCHMARKS.md` plus a dataset per epoch, but no end-to-end figure yet), the persisted pool of
-out-of-order blocks, and assume-valid (needs block headers to be fetched before bodies so the chain to the
-checkpoint can be proved linked before anything is applied without full checks; the wire messages exist now, the
-client side does not).
+out-of-order blocks, and the `get_addrs` leak fix (stable answers per peer, a capped share of the book).
 
 ### M8.4 Real sockets (size M)
 TCP transport, the Noise channel (decision 3), inbound and outbound limits, per-peer rate limits and a ban score,
