@@ -542,6 +542,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenero-net"
+version = "0.0.0"
+dependencies = [
+ "tenero-chain",
+ "tenero-core",
+ "tenero-node",
+ "tenero-store",
+]
+
+[[package]]
 name = "tenero-node"
 version = "0.0.0"
 dependencies = [

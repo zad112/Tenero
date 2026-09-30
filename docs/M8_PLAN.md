@@ -52,12 +52,32 @@ first survived, a stale key-image index, and the checks were tightened). Gaps 1,
 check that verifies nothing. Limits: the pool is in memory, has no replace-by-fee, and holds no chains of
 unconfirmed spends (an output cannot be spent before it is mature).
 
-### M8.1 Simulated network first (size M)
+### M8.1 Simulated network first (size M) **DONE 2026-09-30** (`crates/tenero-net`)
 A `Transport` trait with two implementations: an in-memory deterministic one for tests, and TCP later. The
 protocol logic (handshake, sync, relay, banning) is written against the trait, so it can be tested with many
 nodes, delays, drops, partitions and hostile peers **without sockets or timing luck**.
 *Done when:* N simulated nodes mining on the SHA-256 test chain converge to one chain after partitions heal, a
 peer that sends an invalid block is banned, and one that sends junk is disconnected.
+*Result:* `Engine` (the protocol as a state machine: events in, actions out, no I/O, no clock of its own) and `Sim`
+(a deterministic simulator: real engines, real stores, really mined and validated blocks, latency, message loss,
+partitions, in-order links, scripted hostile peers). 38 tests, including: handshake (wrong chain: dropped and
+banned; wrong version: dropped only); every limit and every scoring rule, each broken on its own; a flood is rate
+limited and an ordinary burst is not; silent and slow peers are pinged, then dropped after five unanswered pings
+in a row, and never banned for it; an invalid block bans its sender at once and the ban holds until it expires;
+a new node syncs a 1,100-block chain in batches (ids 500 at a time, blocks 32 at a time) from the peer with the
+most work; a partition of 10 nodes heals onto the heavier chain; a 12-node network losing 10% of all messages
+still converges and keeps its peers; and **60 nodes each connected to 59 peers converge, and every block body is
+sent exactly once per node (`blocks` messages = blocks x 59), whatever the peer count**, with no honest peer
+banned. 49 deliberate faults injected into the engine, all caught; seven survived at first and led to five new
+tests and the removal of one redundant guard. Bugs the simulator found in my own first draft: a request answered
+by a second peer looked like an unsolicited block (false bans), a full sync raced a single-block fetch (blocks
+downloaded twice), a lost ping dropped a healthy connection, and a node kept re-announcing its tip to a peer that
+had already fetched it.
+*Limits, stated plainly:* messages are typed values, not bytes (M8.2); there is no peer discovery, so nothing
+reconnects a lost link (M8.3a); the simulator delivers in order and loses whole messages, which is not how TCP
+fails; the timing and score numbers (ban at 100, ping after 60 s, five unanswered requests, 50 messages a second)
+are proposals that nothing has yet tuned against real traffic; bandwidth and memory per connection are not
+measured; and the engine has not been reviewed (M9).
 
 ### M8.2 The wire protocol (size M)
 One canonical framed format, reusing the version 2 codec (`CONSENSUS_V2.md` section 4): length-prefixed messages

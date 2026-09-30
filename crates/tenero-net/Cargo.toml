@@ -1,0 +1,16 @@
+[package]
+name = "tenero-net"
+description = "Tenero peer-to-peer protocol logic as a state machine, and a deterministic network simulator (experimental, unaudited)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tenero-core = { path = "../tenero-core" }
+tenero-store = { path = "../tenero-store" }
+tenero-chain = { path = "../tenero-chain" }
+tenero-node = { path = "../tenero-node" }
+
+[lints]
+workspace = true
