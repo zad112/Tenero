@@ -12,5 +12,9 @@ tenero-store = { path = "../tenero-store" }
 tenero-chain = { path = "../tenero-chain" }
 tenero-node = { path = "../tenero-node" }
 
+[dev-dependencies]
+# to read the golden vector files (already in the tree through tenero-core; MIT OR Apache-2.0)
+serde_json = "1"
+
 [lints]
 workspace = true

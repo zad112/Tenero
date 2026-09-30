@@ -79,7 +79,7 @@ fails; the timing and score numbers (ban at 100, ping after 60 s, five unanswere
 are proposals that nothing has yet tuned against real traffic; bandwidth and memory per connection are not
 measured; and the engine has not been reviewed (M9).
 
-### M8.2 The wire protocol (size M)
+### M8.2 The wire protocol (size M) **DONE 2026-09-30** (`docs/WIRE_PROTOCOL.md`, `crates/tenero-net/src/wire.rs`)
 One canonical framed format, reusing the version 2 codec (`CONSENSUS_V2.md` section 4): length-prefixed messages
 with a hard maximum size, strict decoding, and a version and chain id in the handshake (a peer on another chain
 is dropped at once). Proposed messages: `Hello` (protocol version, chain id, tip height and cumulative work),
@@ -87,6 +87,21 @@ is dropped at once). Proposed messages: `Hello` (protocol version, chain id, tip
 `GetTx` / `Tx`, `Ping`. Pruned nodes serve only what they have and say so.
 *Done when:* every message has a golden vector (made by our Python reference, like the other v2 vectors) and
 strict-decoding tests for each malformed case.
+*Result:* a frame is `length u32 | kind u8 | body`, fixed-width little-endian on the version 2 codec, with a cap on
+every kind's length (16 MiB only for block and transaction lists), counts checked before any element is read, and
+the checks in a documented order. An independent Python reference (`tools/make_vectors_wire.py`, standard library
+only) makes `v2_wire.json`: 22 valid messages (every kind, empty lists, lists exactly at their caps, extreme
+numbers), 40 malformed frames each with the error a decoder must give, and 8 stream prefixes that must fail (or
+wait) without more bytes. The Rust codec reproduces all of it byte for byte on the first run. It also has a
+streaming `FrameDecoder` (any chunking gives the same messages; an oversized or unknown header is refused after 5
+bytes, before any body is buffered; after an error it stays failed), and the encoder refuses what a decoder would
+refuse (including a frame of exactly 16 MiB accepted and one byte more refused). Properties over random input:
+40,000 randomly damaged real frames never panic and never decode to a message that encodes differently (one
+message, one encoding), in both languages. 35 deliberate faults injected into the codec, all caught (eight
+survived first: missing one-byte-over-the-cap vectors for six kinds, and two that needed an exact 16 MiB test).
+Testing the vectors themselves also exposed that "length over maximum" had no case; it does now.
+*Limits:* nothing yet feeds the engine through bytes (M8.4 puts sockets and Noise underneath); the caps and the
+16 MiB ceiling are proposals, not measured against real traffic; the codec is unreviewed (M9).
 
 ### M8.3a Peer discovery and connection management (size M; new since the first draft)
 The owner wants **at least 50 peers** per node (decision 1), so finding and keeping peers is a component, not a

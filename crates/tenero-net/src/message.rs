@@ -5,6 +5,14 @@ use tenero_core::v2::{Block, Transaction};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// The ceilings the wire format enforces (`docs/WIRE_PROTOCOL.md` section 2). The engine's own [`Limits`] may be
+/// lower, never higher.
+pub const MAX_LOCATOR: usize = 32;
+pub const MAX_IDS: usize = 500;
+pub const MAX_BLOCKS: usize = 32;
+pub const MAX_TXS: usize = 64;
+pub const MAX_NOT_FOUND: usize = 64;
+
 /// Hard limits on what one message may contain. A message over a limit is a protocol violation.
 #[derive(Clone, Debug)]
 pub struct Limits {
@@ -21,10 +29,10 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Limits {
         Limits {
-            max_locator: 32,
-            max_ids: 500,
-            max_blocks: 32,
-            max_txs: 64,
+            max_locator: MAX_LOCATOR,
+            max_ids: MAX_IDS,
+            max_blocks: MAX_BLOCKS,
+            max_txs: MAX_TXS,
         }
     }
 }

@@ -22,6 +22,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 $env:TENERO_SLOW_VECTORS = "1"; cargo test --test pow_vectors      # the deep and full (4.3 GiB) vectors
 cargo test --release -p tenero-gpu -- --ignored --test-threads=1  # the GPU checks: owner's machine, CUDA 13.4 bin\x64 on PATH
 python tools/make_vectors_v2.py --check      # the version 2 data-model vectors (a DRAFT design)
+python tools/make_vectors_wire.py --check    # the peer-to-peer wire protocol vectors (a DRAFT)
 ```
 
 ## Where things are
@@ -30,7 +31,8 @@ python tools/make_vectors_v2.py --check      # the version 2 data-model vectors 
 - `docs/KNOWN_ISSUES.md` verified flaws not to carry over; `docs/ARCHITECTURE.md` the parts;
   `docs/REWRITE_PLAN.md` the proposed plan and the open decisions; `docs/M8_PLAN.md` the proposed plan for
   the node, network, miner and wallet
-- `docs/CONSENSUS_V2.md` the DRAFT design of the rewrite's data model (outputs, serialization, genesis,
+- `docs/WIRE_PROTOCOL.md` the DRAFT byte encoding of the peer-to-peer messages;
+  `docs/CONSENSUS_V2.md` the DRAFT design of the rewrite's data model (outputs, serialization, genesis,
   privacy staging); `docs/BENCHMARKS.md` measured CPU and GPU numbers; `crates/` the Rust code
   (`tenero-core` rules and data model, `tenero-store` storage, `tenero-chain` block validation and fork choice, `tenero-node` the node core (mempool), `tenero-net` the protocol engine and network simulator,
   `tenero-gpu` the GPU engine). `tenero-crypto` holds the CLSAG and Bulletproofs+ verification (`RingCtProofs`, opt-in; the default validator still accepts every proof) and the prover; Carrot is not built. Nothing cryptographic is audited as used.
