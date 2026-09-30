@@ -36,7 +36,7 @@ on the day it is added (the plan's rule), because these libraries move.
 | Ristretto / hashing to points | `curve25519-dalek` | BSD-3-Clause | only if a scheme needs it |
 | BLAKE2b, SHA-256 | RustCrypto `blake2`, `sha2` | MIT OR Apache-2.0 | `sha2` is already in use |
 | X25519 (Carrot's view key exchange) | `x25519-dalek` or Monero's `mx25519` | BSD-3-Clause / check | must match Carrot's encoding rules |
-| CLSAG ring signatures, Bulletproofs+ | the `monero-oxide` crates (`monero-clsag`, `monero-bulletproofs`) **DECIDED** | MIT | both 0.1.0, published 2026-07-31 (an earlier 0.0.1 from December 2024), few downloads. A Cypher Stack audit of the code they came from (Serai's `/networks/monero`) was finished in May 2025 and published in August 2025 in the `monero-oxide` repository. **Its scope and findings have not been read by us, and 0.1.0 may include later changes: reading it, pinning an exact version and running the upstream tests come before the crate is added (M7).** |
+| CLSAG ring signatures, Bulletproofs+ | the `monero-oxide` crates (`monero-clsag`, `monero-bulletproofs`) **DECIDED** | MIT | both 0.1.0, published 2026-07-31 (an earlier 0.0.1 from December 2024), few downloads. A Cypher Stack audit of the code they came from (Serai's `/networks/monero`) was finished in May 2025 and published in August 2025 in the `monero-oxide` repository. **Read on 2026-09-30 (summary only, not line by line): 7 findings, none called critical; it names the integrator's duty to bind transaction fields into the transcripts (our message, 7.1). The crates are git dependencies pinned to commit `9e11f5c` (tag 0.1.0, 2026-07-31); the audited code was an earlier state (Serai's `networks/monero`) and has not been diffed against that tag. Upstream test vectors are not yet imported.** |
 | FCMP++ (later) | Monero's own Rust implementation | check | **not final**: see section 12 |
 
 Monero's own C++ code is no longer an option for the reason that we chose Rust only (`REWRITE_PLAN.md` decision 1).
@@ -238,6 +238,28 @@ document does not restate them, and **must not invent them**. What consensus add
    transaction share one; **inputs are sorted by key image ascending**, with no duplicates (one canonical
    order).
 5. **Chain binding**: the message every signature covers includes `chain_id`.
+
+### 7.1 The proofs as built (M7, `crates/tenero-crypto`): a description of the code, subject to review
+
+`proof_data` is exactly: `pseudo_outs` (one 32-byte commitment per input), then one Bulletproofs+ proof in
+Monero's standard encoding, then one CLSAG per input (`s` for each ring member, `c1`, `D`, all 32 bytes), and
+nothing after. It is parsed strictly. The Bulletproofs+ proof covers the outputs' `amount_commitment` fields
+as they stand in the prefix. The signatures cover
+`SHA-256("tenero ringct message v2" || chain_id || prefix || rings || range proof bytes)`, so they bind the
+chain, every output, the fee, `extra`, the key images, the ring indexes and the range proof; CLSAG itself
+hashes the ring, key image and pseudo-output. **This message is our own construction and is not covered by
+the library's audit**, which says that what the message binds is the integrator's responsibility.
+
+Also required: every output's one-time address and commitment, and every pseudo-output, must be canonical
+prime-order points (an address or commitment is also not the identity); the balance
+`sum(pseudo) - sum(outputs) - fee*H = 0` is checked as a point equation.
+
+A coinbase output used as a ring member has the commitment `1*G + amount*H`. **Provisional: Carrot will
+define the commitment for a public amount, and this must be made to match it.**
+
+Measured sizes (real proofs, `tests/ringct.rs`): a 2-input, 2-output transaction has **1,858 bytes** of
+`proof_data`; the largest allowed transaction (32 inputs, 16 outputs, rings of 16) has **20,290 bytes**, inside
+`MAX_PROOF` (32,768). So `MAX_PROOF` has room, and the typical figure matches the estimate in 14.4.
 
 ## 8. Validating a block (the order of the checks)
 

@@ -470,8 +470,16 @@ dependencies = [
 name = "tenero-crypto"
 version = "0.0.0"
 dependencies = [
+ "curve25519-dalek",
  "monero-bulletproofs",
  "monero-clsag",
+ "monero-ed25519",
+ "rand_chacha",
+ "rand_core",
+ "tenero-chain",
+ "tenero-core",
+ "tenero-store",
+ "zeroize",
 ]
 
 [[package]]

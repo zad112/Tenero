@@ -107,6 +107,16 @@ chain must be able to run pruned (`CONSENSUS_V2.md` section 14). The original op
   hook and are NOT done** (`ProofsNotChecked`, and `ValidatedBlock::proofs_checked` says so), and blocks that
   do not extend the tip are not handled yet. Next: fork choice and reorganisation (cumulative work is ready:
   `U256::work_of_target`), then M7.
+- **M7 status (2026-09-30): started.** `crates/tenero-crypto` adds `monero-oxide` (`monero-clsag`,
+  `monero-bulletproofs`, git dependency pinned to commit `9e11f5c`, MIT; not on crates.io) and implements the
+  transaction proofs of `CONSENSUS_V2.md` 7.1: a strict `proof_data` layout, the signed message, the balance
+  check, Bulletproofs+ and one CLSAG per input, as `RingCtProofs`, a `ProofCheck` for the validator, plus the
+  prover a wallet will use. 30 tests on real proofs; 19 deliberate faults injected into the verifier, 18
+  caught (the survivor is a redundant canonical-encoding guard, kept on purpose). **Not done:** Carrot
+  (output creation and scanning; waiting for Monero's `carrot_core` to merge so its test vectors can be
+  imported), a chain-level test of a real spend through the block validator, importing upstream proof test
+  vectors, and reading the audit's CLSAG and Bulletproofs+ chapters against the pinned code. Nothing here is
+  audited as used.
 - **M7. Privacy in stages.** (P1) one-time addresses, Pedersen commitments, range proofs, key images, and the
   stand-in membership proof; (P2) FCMP++ when a stable, audited implementation exists; (P3) subaddresses,
   view keys, integrated addresses, multisig; (P4) network privacy.

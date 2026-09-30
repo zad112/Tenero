@@ -11,7 +11,21 @@ publish.workspace = true
 # The Cypher Stack audit (May 2025) reviewed an earlier state of this code (Serai's networks/monero).
 [dependencies]
 monero-bulletproofs = { git = "https://github.com/monero-oxide/monero-oxide", rev = "9e11f5c0f2b18ab821192efa427c863086b51379" }
+monero-ed25519 = { git = "https://github.com/monero-oxide/monero-oxide", rev = "9e11f5c0f2b18ab821192efa427c863086b51379" }
 monero-clsag = { git = "https://github.com/monero-oxide/monero-oxide", rev = "9e11f5c0f2b18ab821192efa427c863086b51379" }
+
+# Already in the tree through monero-oxide; named here because we use their types and rely on them
+# directly: curve25519-dalek (BSD-3-Clause), zeroize and rand_core (MIT OR Apache-2.0).
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = "1"
+rand_core = { version = "0.6", features = ["getrandom"] }
+tenero-core = { path = "../tenero-core" }
+tenero-store = { path = "../tenero-store" }
+tenero-chain = { path = "../tenero-chain" }
+
+[dev-dependencies]
+# a seeded generator, so the proof tests are reproducible (MIT OR Apache-2.0, in the tree already)
+rand_chacha = "0.3"
 
 [lints]
 workspace = true
