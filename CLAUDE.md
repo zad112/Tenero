@@ -21,6 +21,7 @@ cargo test --workspace                       # the Rust code against the golden 
 cargo clippy --workspace --all-targets -- -D warnings
 $env:TENERO_SLOW_VECTORS = "1"; cargo test --test pow_vectors      # the deep and full (4.3 GiB) vectors
 cargo test --release -p tenero-gpu -- --ignored --test-threads=1  # the GPU checks: owner's machine, CUDA 13.4 bin\x64 on PATH
+cargo test --release -p tenero-chain --test real_pow_sync -- --ignored --nocapture   # real-PoW sync cost (owner's machine, ~4.3 GiB RAM)
 python tools/make_vectors_v2.py --check      # the version 2 data-model vectors (a DRAFT design)
 python tools/make_vectors_wire.py --check    # the peer-to-peer wire protocol vectors (a DRAFT)
 ```

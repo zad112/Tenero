@@ -213,8 +213,13 @@ host reading the whole book by reconnecting; it does **not** stop an attacker wi
 What Monero adds beyond this, as far as I know it (separate white and gray lists, transport encryption,
 Dandelion++ for transactions, Tor and I2P): white and gray are the tried and new entries of the address book here;
 encryption is M8.4; Dandelion++ and Tor/I2P are later work, not started.
-**Not done:** real-proof-of-work sync time (needs a real-PoW test chain and the 4 GiB dataset; the per-block cost
-is the measured attempt cost in `docs/BENCHMARKS.md` plus a dataset per epoch, but no end-to-end figure yet).
+**Real-proof-of-work sync time (harness written, NOT YET RUN on the real parameters):**
+`crates/tenero-chain/tests/real_pow_sync.rs`, an `#[ignore]`d test that mines a short chain with the real matmulhash
+on the CPU at an easy target, then feeds it to fresh nodes, once checked in full and once with assume-valid (all
+but the last few blocks), timing every `submit_block`. It was checked with tiny parameters only (a harness check,
+not a measurement); the real run needs about 4.3 GiB of RAM and is the owner's to do. It measures the
+proof-of-work cost only: no network, no transaction proofs.
+**Not done:** the real-parameter measurement itself.
 
 ### M8.4 Real sockets (size M)
 TCP transport, the Noise channel (decision 3), inbound and outbound limits, per-peer rate limits and a ban score,
