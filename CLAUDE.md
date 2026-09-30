@@ -28,7 +28,8 @@ python tools/make_vectors_v2.py --check      # the version 2 data-model vectors 
 
 - `docs/CONSENSUS.md` the rules, in enough detail to build another implementation from
 - `docs/KNOWN_ISSUES.md` verified flaws not to carry over; `docs/ARCHITECTURE.md` the parts;
-  `docs/REWRITE_PLAN.md` the proposed plan and the open decisions
+  `docs/REWRITE_PLAN.md` the proposed plan and the open decisions; `docs/M8_PLAN.md` the proposed plan for
+  the node, network, miner and wallet
 - `docs/CONSENSUS_V2.md` the DRAFT design of the rewrite's data model (outputs, serialization, genesis,
   privacy staging); `docs/BENCHMARKS.md` measured CPU and GPU numbers; `crates/` the Rust code
   (`tenero-core` rules and data model, `tenero-store` storage, `tenero-chain` block validation and fork choice,
