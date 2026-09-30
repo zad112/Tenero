@@ -21,7 +21,7 @@ Read `docs/CONSENSUS.md` for what each rule means. Every file is JSON with `sche
 | `fees_and_size.json` | minimum fee, oversize penalty, the block-size median and its window | small |
 | `units.json` | parsing and formatting coin amounts | small |
 | `chains.json` | 36 whole chains and whether they are valid; each `rule:` case breaks exactly one rule | small |
-| `v2_serialization.json`, `v2_ids.json`, `v2_merkle.json`, `v2_genesis.json` | the DATA MODEL of the version 2 rewrite (`docs/CONSENSUS_V2.md`, a draft): canonical serialization with its invalid cases, header hash and block id, transaction ids, the Merkle root, the genesis block and chain id. Made by `tools/make_vectors_v2.py` (`--check` / `--write`), which has its own reference and is separate from `make_vectors.py` | small |
+| `v2_serialization.json`, `v2_ids.json`, `v2_merkle.json`, `v2_genesis.json`, `v2_fees.json`, `v2_emission.json`, `v2_work.json` | the DATA MODEL and ARITHMETIC of the version 2 rewrite (`docs/CONSENSUS_V2.md`, a draft): canonical serialization with its invalid cases, header hash and block id, transaction ids, the Merkle root, the genesis block and chain id, the dynamic minimum fee and the 150 kB median floor, the 8-decimal emission, and the work of a target. Made by `tools/make_vectors_v2.py` (`--check` / `--write`), which has its own reference and is separate from `make_vectors.py` | small |
 | `legacy_account_model.json` | the CURRENT account-model formats (Python-JSON serialization, ECDSA over SHA-1). **Legacy: documents what the reference does, not what to copy** | small |
 
 ## Using them

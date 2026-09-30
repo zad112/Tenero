@@ -19,8 +19,8 @@
 
 use crate::error::{Result, StoreError};
 use crate::records::{
-    from_bytes, to_bytes, AppendInfo, BlockIndex, PruneStats, StoredBlock, StoredOutput, StoredTx,
-    TxRow,
+    from_bytes, to_bytes, AppendInfo, BlockIndex, BlockMeta, PruneStats, StoredBlock, StoredOutput,
+    StoredTx, TxRow,
 };
 use crate::segments::Segments;
 use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
@@ -40,8 +40,9 @@ const OUTPUTS: TableDefinition<u64, &[u8]> = TableDefinition::new("outputs");
 const KEY_IMAGES: TableDefinition<&[u8], u64> = TableDefinition::new("key_images");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
-/// The on-disk layout version, in `meta`. Version 2: the prunable data is in segment files.
-pub const FORMAT_VERSION: u32 = 2;
+/// The on-disk layout version, in `meta`. Version 2: the prunable data is in segment files. Version 3: the
+/// block record also holds the block's target and body size.
+pub const FORMAT_VERSION: u32 = 3;
 
 /// How many block heights one segment file covers, by default (about 17 hours of 60-second blocks; at the
 /// worst case of full 150 kB blocks about 130 MB of prunable data).
@@ -184,6 +185,8 @@ impl Store {
                         block_id: chain_id,
                         header: ids::genesis_header(label),
                         cumulative_work: [0; 32],
+                        target: [0; 32],
+                        body_size: 0,
                         first_output_index: 0,
                         output_count: 0,
                         tx_count: 0,
@@ -481,7 +484,7 @@ impl Store {
     /// proofs, fees, rewards, difficulty and maturity are the validator's job. `cumulative_work` is
     /// supplied by the caller. Global output indexes are assigned in the order of `CONSENSUS_V2.md`
     /// 14.6: the coinbase's outputs, then each transaction's, continuing from the last block.
-    pub fn append_block(&self, block: &Block, cumulative_work: [u8; 32]) -> Result<AppendInfo> {
+    pub fn append_block(&self, block: &Block, meta_in: BlockMeta) -> Result<AppendInfo> {
         let txn = self.db.begin_write()?;
         let info;
         {
@@ -596,7 +599,9 @@ impl Store {
             let record = BlockIndex {
                 block_id,
                 header: block.header.clone(),
-                cumulative_work,
+                cumulative_work: meta_in.cumulative_work,
+                target: meta_in.target,
+                body_size: meta_in.body_size,
                 first_output_index,
                 output_count,
                 tx_count: u32::try_from(block.transactions.len()).expect("at most MAX_BLOCK_TXS"),

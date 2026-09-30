@@ -185,6 +185,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenero-chain"
+version = "0.0.0"
+dependencies = [
+ "tenero-core",
+ "tenero-store",
+]
+
+[[package]]
 name = "tenero-core"
 version = "0.0.0"
 dependencies = [

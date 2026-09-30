@@ -32,16 +32,37 @@ pub fn retarget(
     targets: &[U256],
     pos: usize,
 ) -> Result<U256, String> {
+    if ts.len() < pos || targets.len() < pos {
+        return Err("not enough history".into());
+    }
+    retarget_recent(p, &ts[..pos], &targets[..pos], pos)
+}
+
+/// The same as [`retarget`], from only the most recent history: `ts` and `targets` hold the timestamps and
+/// required targets of the last `ts.len()` positions before `pos` (positions `pos - len .. pos`, oldest
+/// first). The adjustment looks back at most `window + 1` positions, so `window + 1` entries are always
+/// enough (fewer are enough near the start of the chain, where `pos` itself is smaller). This is what lets
+/// a node check a block without reading the whole chain.
+pub fn retarget_recent(
+    p: &DifficultyParams,
+    ts: &[i64],
+    targets: &[U256],
+    pos: usize,
+) -> Result<U256, String> {
     if p.window == 0 {
         return Ok(p.start_target);
     }
     if block_time_is_bad(p) {
         return Err("block_time must be at least 1".into());
     }
-    if ts.len() < pos || targets.len() < pos {
-        return Err("not enough history".into());
+    if ts.len() != targets.len() || ts.len() > pos {
+        return Err(
+            "the history must be one timestamp and one target per position, ending before pos"
+                .into(),
+        );
     }
-    // blocks 2 .. pos-1 have a measurable solve time (block 1 follows the genesis block)
+    let offset = pos - ts.len(); // the absolute position of ts[0]
+                                 // blocks 2 .. pos-1 have a measurable solve time (block 1 follows the genesis block)
     let n = match u64::try_from(pos as i64 - 2) {
         Ok(avail) => avail.min(p.window),
         Err(_) => return Ok(p.start_target),
@@ -50,10 +71,13 @@ pub fn retarget(
         return Ok(p.start_target);
     }
     let n = usize::try_from(n).map_err(|_| "window too large")?;
+    if pos - n - 1 < offset {
+        return Err("not enough history".into());
+    }
     let t = i128::from(p.block_time);
     let mut weighted: u128 = 0;
     for k in 1..=n {
-        let i = pos - n - 1 + k; // k = 1 is the oldest block in the window
+        let i = pos - n - 1 + k - offset; // k = 1 is the oldest block in the window (a local index)
         let solve = (i128::from(ts[i]) - i128::from(ts[i - 1]))
             .min(6 * t)
             .max(1);
@@ -65,7 +89,7 @@ pub fn retarget(
     let divisor = u64::try_from(divisor).map_err(|_| "block_time and window are too large")?;
 
     let mut sum = U320::ZERO;
-    for target in &targets[pos - n..pos] {
+    for target in &targets[pos - n - offset..pos - offset] {
         sum = sum
             .checked_add(&U320::from_u256(target))
             .ok_or("the target sum overflows")?;
@@ -76,7 +100,7 @@ pub fn retarget(
         .ok_or("the new target overflows")?
         .div_u64(divisor);
 
-    let prev = U320::from_u256(&targets[pos - 1]);
+    let prev = U320::from_u256(&targets[pos - 1 - offset]);
     let upper = prev
         .checked_mul_u64(MAX_TARGET_STEP)
         .expect("4 * a 256-bit value fits in 320 bits");
@@ -115,6 +139,19 @@ pub fn median_time(ts: &[i64], pos: usize) -> i64 {
         return 0;
     }
     let mut window = ts[lo..hi].to_vec();
+    window.sort_unstable();
+    window[window.len() / 2]
+}
+
+/// The same as [`median_time`], from only the timestamps of the last `recent.len()` positions before `pos`
+/// (positions `pos - len .. pos`, oldest first, none of them the genesis block): `MEDIAN_TIME_WINDOW`
+/// entries are always enough. 0 when there are none.
+pub fn median_time_recent(recent: &[i64]) -> i64 {
+    let take = recent.len().min(MEDIAN_TIME_WINDOW);
+    if take == 0 {
+        return 0;
+    }
+    let mut window = recent[recent.len() - take..].to_vec();
     window.sort_unstable();
     window[window.len() / 2]
 }

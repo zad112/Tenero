@@ -31,6 +31,8 @@ python tools/make_vectors_v2.py --check      # the version 2 data-model vectors 
   `docs/REWRITE_PLAN.md` the proposed plan and the open decisions
 - `docs/CONSENSUS_V2.md` the DRAFT design of the rewrite's data model (outputs, serialization, genesis,
   privacy staging); `docs/BENCHMARKS.md` measured CPU and GPU numbers; `crates/` the Rust code
+  (`tenero-core` rules and data model, `tenero-store` storage, `tenero-chain` block validation,
+  `tenero-gpu` the GPU engine). The cryptographic proofs are NOT checked anywhere yet.
 - `tests/vectors/` golden vectors (see its README); `tools/make_vectors.py` generates them, and
   `tools/make_vectors_v2.py` the version 2 data-model ones
 

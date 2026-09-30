@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tenero_core::hash::{sha256, Sha256Stream};
 use tenero_core::v2::ids::{self, PowKind};
 use tenero_core::v2::*;
-use tenero_store::{Store, StoreError, StoredOutput};
+use tenero_store::{BlockMeta, Store, StoreError, StoredOutput};
 
 const LABEL: &str = "tenero store test network";
 const POW: PowKind = PowKind::Sha256;
@@ -79,6 +79,14 @@ impl Rng {
             *c = self.next() as u8;
         }
         b
+    }
+}
+
+fn meta_for(height: u64) -> BlockMeta {
+    BlockMeta {
+        cumulative_work: work_for(height),
+        target: [0xff; 32],
+        body_size: 0,
     }
 }
 
@@ -211,7 +219,7 @@ impl Chain {
     fn push(&mut self) {
         let height = self.blocks.len() as u64 + 1;
         let block = self.maker.next_block(self.tip_id(), height);
-        self.store.append_block(&block, work_for(height)).unwrap();
+        self.store.append_block(&block, meta_for(height)).unwrap();
         self.blocks.push(block);
     }
 
@@ -388,14 +396,14 @@ fn a_refused_block_leaves_no_trace() {
     let mut wrong_parent = good.clone();
     wrong_parent.header.prev_id = [7; 32];
     assert_eq!(
-        c.store.append_block(&wrong_parent, work_for(6)),
+        c.store.append_block(&wrong_parent, meta_for(6)),
         Err(StoreError::BadParent)
     );
 
     let one_tx = m.tx();
     let wrong_height = m.block(tip, 9, vec![one_tx]);
     assert_eq!(
-        c.store.append_block(&wrong_height, work_for(6)),
+        c.store.append_block(&wrong_height, meta_for(6)),
         Err(StoreError::BadHeight {
             expected: 6,
             got: 9
@@ -405,14 +413,14 @@ fn a_refused_block_leaves_no_trace() {
     let mut wrong_version = good.clone();
     wrong_version.header.version = 3;
     assert_eq!(
-        c.store.append_block(&wrong_version, work_for(6)),
+        c.store.append_block(&wrong_version, meta_for(6)),
         Err(StoreError::BadVersion(3))
     );
 
     let mut wrong_root = good.clone();
     wrong_root.header.tx_root = [1; 32];
     assert_eq!(
-        c.store.append_block(&wrong_root, work_for(6)),
+        c.store.append_block(&wrong_root, meta_for(6)),
         Err(StoreError::BadTxRoot)
     );
 
@@ -422,7 +430,7 @@ fn a_refused_block_leaves_no_trace() {
         c.blocks[2].transactions[0].prefix.inputs[1].key_image;
     respend.header.tx_root = ids::block_tx_root(&respend.coinbase, &respend.transactions).unwrap();
     assert_eq!(
-        c.store.append_block(&respend, work_for(6)),
+        c.store.append_block(&respend, meta_for(6)),
         Err(StoreError::DoubleSpend(
             c.blocks[2].transactions[0].prefix.inputs[1].key_image
         ))
@@ -435,7 +443,7 @@ fn a_refused_block_leaves_no_trace() {
     twice.transactions[1].prefix.inputs[1].key_image = dup;
     twice.header.tx_root = ids::block_tx_root(&twice.coinbase, &twice.transactions).unwrap();
     assert_eq!(
-        c.store.append_block(&twice, work_for(6)),
+        c.store.append_block(&twice, meta_for(6)),
         Err(StoreError::DoubleSpend(dup))
     );
 
@@ -467,7 +475,7 @@ fn a_refused_block_leaves_no_trace() {
         .unwrap()
         .is_none());
     // the good block still goes in afterwards
-    c.store.append_block(&good, work_for(6)).unwrap();
+    c.store.append_block(&good, meta_for(6)).unwrap();
     assert_eq!(c.store.tip().unwrap().0, 6);
 }
 
@@ -512,7 +520,7 @@ fn rolling_blocks_back_restores_the_exact_previous_state() {
     assert_eq!(c.store.pop_block(), Err(StoreError::CannotPopGenesis));
     // putting the same blocks back gives the same states, so global indexes are reused
     for (i, b) in all.iter().enumerate() {
-        c.store.append_block(b, work_for(i as u64 + 1)).unwrap();
+        c.store.append_block(b, meta_for(i as u64 + 1)).unwrap();
         assert_eq!(c.store.state_digest().unwrap(), digests[i + 1]);
     }
 }

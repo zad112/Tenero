@@ -6,13 +6,29 @@ use tenero_core::v2::{
     Reader, Transaction, Wire, Writer,
 };
 
-/// What is kept about a block besides its transactions: 226 bytes.
+/// What the caller (the validator) tells the store about a block, which the store keeps but does not
+/// check: the store has no idea what a target or a median is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockMeta {
+    /// The chain's total work up to and including this block (big-endian).
+    pub cumulative_work: [u8; 32],
+    /// The target this block had to meet (big-endian): later blocks' difficulty is computed from these.
+    pub target: [u8; 32],
+    /// The block's size for the fee and penalty rules: the bytes of its transactions, without the coinbase.
+    pub body_size: u64,
+}
+
+/// What is kept about a block besides its transactions: 266 bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockIndex {
     pub block_id: [u8; 32],
     pub header: BlockHeader,
     /// The chain's total work up to and including this block (big-endian, supplied by the caller).
     pub cumulative_work: [u8; 32],
+    /// The target the block had to meet (big-endian, supplied by the caller). All zeros for the genesis block.
+    pub target: [u8; 32],
+    /// The size of the block's transactions in bytes (supplied by the caller). 0 for the genesis block.
+    pub body_size: u64,
     /// The global index of the block's first output (its coinbase's first output).
     pub first_output_index: u64,
     /// How many outputs the block created: the coinbase's and every transaction's.
@@ -26,6 +42,8 @@ impl Wire for BlockIndex {
         w.raw(&self.block_id);
         self.header.write(w)?;
         w.raw(&self.cumulative_work);
+        w.raw(&self.target);
+        w.u64(self.body_size);
         w.u64(self.first_output_index);
         w.u32(self.output_count);
         w.u32(self.tx_count);
@@ -37,6 +55,8 @@ impl Wire for BlockIndex {
             block_id: r.array()?,
             header: BlockHeader::read(r)?,
             cumulative_work: r.array()?,
+            target: r.array()?,
+            body_size: r.u64()?,
             first_output_index: r.u64()?,
             output_count: r.u32()?,
             tx_count: r.u32()?,

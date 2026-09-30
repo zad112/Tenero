@@ -251,6 +251,72 @@ fn difficulty_scenarios() {
     }
 }
 
+/// A node checks a block from the last few blocks only. On every position of every scenario, the windowed
+/// forms must give exactly what the vectors (made with the whole history) say.
+#[test]
+fn the_windowed_forms_agree_with_the_full_history_on_every_scenario() {
+    let v = load("difficulty").unwrap();
+    let mut checked = 0;
+    for s in v["scenarios"].as_array().unwrap() {
+        let name = s["name"].as_str().unwrap();
+        let p = DifficultyParams {
+            block_time: u(&s["params"]["block_time"]),
+            window: u(&s["params"]["window"]),
+            start_target: target(&s["params"]["start_target"]),
+        };
+        let mut ts = vec![0i64];
+        ts.extend(i64s(&s["timestamps"]));
+        let mut targets = vec![p.start_target];
+        targets.extend(s["required_targets"].as_array().unwrap().iter().map(target));
+        let medians = i64s(&s["median_times"]);
+        for pos in 1..=ts.len() {
+            // position `pos` needs the last `window + 1` positions before it, at most
+            let k = pos.min(p.window as usize + 1);
+            let got =
+                difficulty::retarget_recent(&p, &ts[pos - k..pos], &targets[pos - k..pos], pos)
+                    .unwrap();
+            assert_eq!(
+                got, targets[pos],
+                "{name}: required target at position {pos}"
+            );
+            checked += 1;
+            if p.window > 0 {
+                let lo = pos.saturating_sub(difficulty::MEDIAN_TIME_WINDOW).max(1);
+                let recent = &ts[lo..pos];
+                assert_eq!(
+                    difficulty::median_time_recent(recent),
+                    medians[pos - 1],
+                    "{name}: median time at {pos}"
+                );
+                // extra history changes nothing: only the last 11 count
+                assert_eq!(
+                    difficulty::median_time_recent(&ts[1..pos]),
+                    medians[pos - 1],
+                    "{name}: median at {pos}, all history"
+                );
+            }
+        }
+    }
+    assert!(checked > 800, "only {checked} positions were checked");
+    // too little history for the window is an error, not a wrong answer
+    let p = DifficultyParams {
+        block_time: 60,
+        window: 30,
+        start_target: U256::pow2(240).unwrap(),
+    };
+    let ts: Vec<i64> = (0..40).map(|i| i * 60).collect();
+    let targets = vec![p.start_target; 40];
+    assert!(difficulty::retarget_recent(&p, &ts[38..], &targets[38..], 40).is_err());
+    assert!(
+        difficulty::retarget_recent(&p, &ts[..], &targets[..39], 40).is_err(),
+        "unequal lengths"
+    );
+    assert!(
+        difficulty::retarget_recent(&p, &ts, &targets, 39).is_err(),
+        "history longer than the position"
+    );
+}
+
 #[test]
 fn difficulty_edges() {
     let p = DifficultyParams {
@@ -309,6 +375,42 @@ fn median_time_window() {
 }
 
 // ------------------------------------------------------------------ fees_and_size.json
+
+// ------------------------------------------------------------------ v2_work.json
+
+#[test]
+fn the_work_of_a_target() {
+    let v = load("v2_work").unwrap();
+    let cases = v["cases"].as_array().unwrap();
+    assert!(cases.len() >= 28);
+    let mut nulls = 0;
+    for c in cases {
+        let target = target(&c["target"]);
+        let got = U256::work_of_target(&target);
+        match c["work"].as_str() {
+            Some(w) => assert_eq!(
+                got,
+                Some(U256::from_dec_str(w).unwrap()),
+                "target {}",
+                target.to_dec_string()
+            ),
+            None => {
+                nulls += 1;
+                assert_eq!(got, None, "target {}", target.to_dec_string());
+            }
+        }
+    }
+    assert_eq!(nulls, 1, "only target 1 has no representable work");
+    // the running sum that decides which of two chains wins
+    let mut sum = U256::ZERO;
+    let sums = v["cumulative"].as_array().unwrap();
+    for (t, want) in v["chain_targets"].as_array().unwrap().iter().zip(sums) {
+        sum = sum
+            .checked_add(&U256::work_of_target(&target(t)).unwrap())
+            .unwrap();
+        assert_eq!(sum, target(want));
+    }
+}
 
 // ------------------------------------------------------------------ v2_fees.json
 

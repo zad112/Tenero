@@ -27,7 +27,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VECTOR_DIR = os.path.join(ROOT, "tests", "vectors")
 SCHEMA = 1
-FILES = ("v2_serialization", "v2_ids", "v2_merkle", "v2_genesis", "v2_fees", "v2_emission")
+FILES = ("v2_serialization", "v2_ids", "v2_merkle", "v2_genesis", "v2_fees", "v2_emission", "v2_work")
 
 # ---------------------------------------------------------------- consensus limits (PROVISIONAL)
 MAX_INPUTS, MIN_INPUTS = 32, 1
@@ -750,9 +750,39 @@ def emission_vectors():
                 {"sets": sets})
 
 
+def work_of_target(target):
+    """The work a block at this target represents: floor(2^256 / target). None for target 1, whose work is
+    2^256 and does not fit in 256 bits (a chain with such a target is not accepted); targets are at least 1."""
+    assert target >= 1
+    w = 2 ** 256 // target
+    return w if w < 2 ** 256 else None
+
+
+def work_vectors():
+    starts = [1766847064778384329583297500742918515827483896875618958121606201292619776,
+              82708635169511568159693560720491362752335703332600402885326845719937949]
+    targets = [1, 2, 3, 4, 5, 7, 10, 255, 256, 257, 2 ** 64 - 1, 2 ** 64, 2 ** 64 + 1, 2 ** 128 - 1, 2 ** 128,
+               2 ** 128 + 12345, 2 ** 192 + 1, 2 ** 200, 2 ** 240, 2 ** 250 + 7, 2 ** 254, 2 ** 255 - 1,
+               2 ** 255, 2 ** 255 + 1, 2 ** 256 - 2, 2 ** 256 - 1] + starts
+    cases = [{"target": str(t), "work": (None if work_of_target(t) is None else str(work_of_target(t)))}
+             for t in targets]
+    # cumulative work is a plain sum; two chains compare by it (docs/CONSENSUS_V2.md section 8)
+    chain = [2 ** 240, 2 ** 240, 2 ** 239, 2 ** 250, 3]
+    running, sums = 0, []
+    for t in chain:
+        running += work_of_target(t)
+        sums.append(str(running))
+    return wrap("v2_work",
+                "The work of a block, floor(2^256 / target), for targets from 1 to 2^256 - 1 (decimal strings). Target 1 "
+                "has work 2^256, which does not fit in 256 bits: `work` is null and a chain that requires it is refused. "
+                "`cumulative` is the running sum of the work of the targets in `chain_targets`; the fork rule is that the "
+                "valid chain with the largest sum wins (docs/CONSENSUS_V2.md section 8).",
+                {"cases": cases, "chain_targets": [str(t) for t in chain], "cumulative": sums})
+
+
 BUILDERS = {"v2_serialization": serialization_vectors, "v2_ids": ids_vectors,
             "v2_merkle": merkle_vectors, "v2_genesis": genesis_vectors,
-            "v2_fees": fees_vectors, "v2_emission": emission_vectors}
+            "v2_fees": fees_vectors, "v2_emission": emission_vectors, "v2_work": work_vectors}
 
 
 def path_of(name):

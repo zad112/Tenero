@@ -99,8 +99,14 @@ chain must be able to run pruned (`CONSENSUS_V2.md` section 14). The original op
   storage laid out for pruning (`CONSENSUS_V2.md` 14.3): the index and state in `redb`, the prunable data in
   flat segment files (pruning deletes rows and whole files), with append, reorganisation (also through pruned
   blocks), crash-safe writes, stepped pruning, compaction and a state digest, tested against an in-memory
-  model and against simulated crashes and damaged files. Next: block validation without the cryptographic
-  proofs, then fork choice (which needs cumulative-work arithmetic).
+  model and against simulated crashes and damaged files. Also done: `crates/tenero-chain`, the block
+  validator (`CONSENSUS_V2.md` section 8) with every rule that needs no cryptographic proof: version, parent,
+  median time and the future limit, the required target and both proof-of-work checks, the Merkle root, the
+  size limit and penalty, the coinbase, the dynamic fee, key-image order and uniqueness, ring shape and
+  maturity. Each rule is tested by breaking exactly it. **The signature and range-proof checks are behind a
+  hook and are NOT done** (`ProofsNotChecked`, and `ValidatedBlock::proofs_checked` says so), and blocks that
+  do not extend the tip are not handled yet. Next: fork choice and reorganisation (cumulative work is ready:
+  `U256::work_of_target`), then M7.
 - **M7. Privacy in stages.** (P1) one-time addresses, Pedersen commitments, range proofs, key images, and the
   stand-in membership proof; (P2) FCMP++ when a stable, audited implementation exists; (P3) subaddresses,
   view keys, integrated addresses, multisig; (P4) network privacy.

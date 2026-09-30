@@ -60,6 +60,112 @@ impl U256 {
     pub const MAX: U256 = U256([u64::MAX; 4]);
     pub const ONE: U256 = U256([1, 0, 0, 0]);
 
+    pub fn from_u64(v: u64) -> U256 {
+        U256([v, 0, 0, 0])
+    }
+
+    /// The value as 32 big-endian bytes (the way a hash is compared with a target).
+    pub fn to_be_bytes(&self) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        for i in 0..4 {
+            let at = 24 - 8 * i;
+            out[at..at + 8].copy_from_slice(&self.0[i].to_be_bytes());
+        }
+        out
+    }
+
+    fn bit(&self, i: usize) -> bool {
+        (self.0[i / 64] >> (i % 64)) & 1 == 1
+    }
+
+    /// Shifted left by one bit, and whether a bit fell off the top.
+    fn shl1(&self) -> (U256, bool) {
+        let mut out = [0u64; 4];
+        let mut carry = 0u64;
+        for (o, limb) in out.iter_mut().zip(&self.0) {
+            *o = (limb << 1) | carry;
+            carry = limb >> 63;
+        }
+        (U256(out), carry == 1)
+    }
+
+    /// `self - other` modulo 2^256.
+    fn wrapping_sub(&self, other: &U256) -> U256 {
+        let mut out = [0u64; 4];
+        let mut borrow = false;
+        for ((o, a), b) in out.iter_mut().zip(&self.0).zip(&other.0) {
+            let (d1, b1) = a.overflowing_sub(*b);
+            let (d2, b2) = d1.overflowing_sub(u64::from(borrow));
+            *o = d2;
+            borrow = b1 || b2;
+        }
+        U256(out)
+    }
+
+    /// `self + other`, or `None` if the sum needs more than 256 bits.
+    pub fn checked_add(&self, other: &U256) -> Option<U256> {
+        U320::from_u256(self)
+            .checked_add(&U320::from_u256(other))?
+            .to_u256()
+    }
+
+    /// `self - other`, or `None` if `other` is larger.
+    pub fn checked_sub(&self, other: &U256) -> Option<U256> {
+        (self >= other).then(|| self.wrapping_sub(other))
+    }
+
+    /// Quotient and remainder, by long division (256 steps: plain and slow, and exact). `None` if `d` is zero.
+    pub fn div_rem(&self, d: &U256) -> Option<(U256, U256)> {
+        if *d == U256::ZERO {
+            return None;
+        }
+        let mut q = [0u64; 4];
+        let mut r = U256::ZERO;
+        for i in (0..256).rev() {
+            let (mut shifted, carry) = r.shl1();
+            if self.bit(i) {
+                shifted.0[0] |= 1;
+            }
+            // if a bit fell off the top the true value is at least 2^256, so certainly not below `d`, and the
+            // subtraction modulo 2^256 is still the exact difference (the value is below 2 * d)
+            if carry || shifted >= *d {
+                shifted = shifted.wrapping_sub(d);
+                q[i / 64] |= 1 << (i % 64);
+            }
+            r = shifted;
+        }
+        Some((U256(q), r))
+    }
+
+    /// The work of a block at this target: `floor(2^256 / target)`. `None` for target 0 (not a target) and
+    /// for target 1, whose work is 2^256 and does not fit in 256 bits.
+    pub fn work_of_target(target: &U256) -> Option<U256> {
+        if *target <= U256::ONE {
+            return None;
+        }
+        // floor(2^256 / t) = floor((2^256 - t) / t) + 1, and 2^256 - t = (MAX - t) + 1 fits for t >= 1
+        let n = U256::MAX.wrapping_sub(target).checked_add(&U256::ONE)?;
+        let (q, _) = n.div_rem(target)?;
+        q.checked_add(&U256::ONE)
+    }
+
+    /// The value in decimal digits.
+    pub fn to_dec_string(&self) -> String {
+        if *self == U256::ZERO {
+            return "0".into();
+        }
+        let ten = U256::from_u64(10);
+        let mut digits = Vec::new();
+        let mut v = *self;
+        while v != U256::ZERO {
+            let (q, r) = v.div_rem(&ten).expect("ten is not zero");
+            digits.push(b'0' + r.0[0] as u8);
+            v = q;
+        }
+        digits.reverse();
+        String::from_utf8(digits).expect("ascii digits")
+    }
+
     /// The value divided by a small number, rounding down. `d` must not be zero.
     pub fn div_u64(&self, d: u64) -> U256 {
         U320::from_u256(self)
@@ -194,6 +300,83 @@ mod tests {
         for bad in ["", "-1", "+1", " 1", "1 ", "0x10", "1e2", "1.0", "٣"] {
             assert_eq!(U256::from_dec_str(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn division_agrees_with_u128_arithmetic() {
+        let mut x = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let from = |v: u128| U256([v as u64, (v >> 64) as u64, 0, 0]);
+        for _ in 0..300 {
+            let a = (u128::from(next()) << 64) | u128::from(next());
+            let bits = 1 + next() % 127;
+            let d = ((u128::from(next()) << 64) | u128::from(next())) >> (128 - bits);
+            let d = d.max(1);
+            let (q, r) = from(a).div_rem(&from(d)).unwrap();
+            assert_eq!((q, r), (from(a / d), from(a % d)), "{a} / {d}");
+        }
+        // the edges
+        let max = U256::MAX;
+        assert_eq!(max.div_rem(&U256::ONE), Some((max, U256::ZERO)));
+        assert_eq!(max.div_rem(&max), Some((U256::ONE, U256::ZERO)));
+        assert_eq!(U256::ONE.div_rem(&max), Some((U256::ZERO, U256::ONE)));
+        assert_eq!(U256::ZERO.div_rem(&max), Some((U256::ZERO, U256::ZERO)));
+        assert_eq!(max.div_rem(&U256::ZERO), None);
+        // a dividend with the top bit set and a divisor above 2^255: the shifted remainder overflows 256 bits
+        let big = U256::pow2(255).unwrap();
+        assert_eq!(
+            max.div_rem(&big),
+            Some((U256::ONE, big.checked_sub(&U256::ONE).unwrap()))
+        );
+        assert_eq!(
+            max.div_rem(&U256::MAX.checked_sub(&U256::ONE).unwrap())
+                .unwrap()
+                .0,
+            U256::ONE
+        );
+    }
+
+    #[test]
+    fn decimal_round_trip_and_arithmetic() {
+        for s in ["0", "1", "10", "18446744073709551616", MAX_DEC] {
+            assert_eq!(U256::from_dec_str(s).unwrap().to_dec_string(), s);
+        }
+        let a = U256::from_dec_str("340282366920938463463374607431768211456").unwrap(); // 2^128
+        assert_eq!(a.checked_add(&a), U256::pow2(129));
+        assert_eq!(
+            a.checked_sub(&U256::ONE).unwrap().checked_add(&U256::ONE),
+            Some(a)
+        );
+        assert_eq!(U256::ONE.checked_sub(&a), None);
+        assert_eq!(U256::MAX.checked_add(&U256::ONE), None);
+        assert_eq!(U256::from_be_bytes(&a.to_be_bytes()), a);
+    }
+
+    #[test]
+    fn work_of_a_target() {
+        let p = |b: u32| U256::pow2(b).unwrap();
+        assert_eq!(U256::work_of_target(&U256::ZERO), None);
+        assert_eq!(U256::work_of_target(&U256::ONE), None); // 2^256 does not fit
+        assert_eq!(U256::work_of_target(&U256::from_u64(2)), Some(p(255)));
+        assert_eq!(
+            U256::work_of_target(&U256::from_u64(3))
+                .unwrap()
+                .to_dec_string(),
+            "38597363079105398474523661669562635951089994888546854679819194669304376546645"
+        );
+        assert_eq!(U256::work_of_target(&p(240)), Some(p(16)));
+        assert_eq!(U256::work_of_target(&p(255)), Some(U256::from_u64(2)));
+        assert_eq!(U256::work_of_target(&U256::MAX), Some(U256::ONE));
+        // a target of 2^255 + 1 is above half of the range: work 1
+        assert_eq!(
+            U256::work_of_target(&p(255).checked_add(&U256::ONE).unwrap()),
+            Some(U256::ONE)
+        );
     }
 
     #[test]

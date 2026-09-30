@@ -258,6 +258,11 @@ For a block at height `h` on top of a known parent:
    indexes are assigned in order: the coinbase outputs first, then each transaction's outputs in transaction
    order and output order, continuing from the previous block's last index (section 14.6).
 
+The checks above are implemented in `crates/tenero-chain` (`Validator`), each with a test that breaks exactly
+that rule, **except the cryptographic proofs of section 7, which are behind a hook and not checked yet**
+(M7); a block accepted meanwhile is reported with `proofs_checked = false`. The work of a block,
+`floor(2^256 / target)`, is `v2_work.json`; a target of 1 has work 2^256 and is refused.
+
 **Fork choice** (M6): the valid chain with the largest **cumulative work**, `sum(2^256 // target)` over its
 blocks. A reorganisation removes the outputs and key images of the blocks it undoes.
 
