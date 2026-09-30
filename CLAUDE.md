@@ -36,7 +36,9 @@ python tools/make_vectors_wire.py --check    # the peer-to-peer wire protocol ve
   `docs/CONSENSUS_V2.md` the DRAFT design of the rewrite's data model (outputs, serialization, genesis,
   privacy staging); `docs/BENCHMARKS.md` measured CPU and GPU numbers; `crates/` the Rust code
   (`tenero-core` rules and data model, `tenero-store` storage, `tenero-chain` block validation and fork choice, `tenero-node` the node core (mempool), `tenero-net` the protocol engine and network simulator,
-  `tenero-gpu` the GPU engine). `tenero-crypto` holds the CLSAG and Bulletproofs+ verification (`RingCtProofs`, opt-in; the default validator still accepts every proof) and the prover; Carrot is not built. Nothing cryptographic is audited as used.
+  `tenero-gpu` the GPU engine). `tenero-net` also has the encrypted channel (`noise.rs`, via `snow`, which has had
+  no formal audit: an owner-approved exception to rule 3) and the real-socket transport (`transport.rs`);
+  `docs/TESTNET.md` runs a private test network on one machine. `tenero-crypto` holds the CLSAG and Bulletproofs+ verification (`RingCtProofs`, opt-in; the default validator still accepts every proof) and the prover; Carrot is not built. Nothing cryptographic is audited as used.
 - `tests/vectors/` golden vectors (see its README); `tools/make_vectors.py` generates them, and
   `tools/make_vectors_v2.py` the version 2 data-model ones
 

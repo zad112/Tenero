@@ -51,6 +51,13 @@ pub enum Event {
     ConnectFailed {
         addr: String,
     },
+    /// A peer sent bytes, through the encrypted channel, that are not a message (a malformed or oversized
+    /// frame): it is broken or hostile, and is banned. (Bytes that fail to DECRYPT are not this: a third party on
+    /// the wire could cause those, so the transport only closes the connection.)
+    BadBytes {
+        peer: PeerId,
+        why: String,
+    },
     /// Time passed: timeouts, keepalive, retries.
     Tick,
     /// This node mined a block (or was handed one locally).
@@ -413,6 +420,15 @@ impl<'a> Engine<'a> {
                 }
             }
             Event::Message { peer, msg } => self.on_message(peer, msg, &mut out),
+            Event::BadBytes { peer, why } => {
+                let threshold = self.cfg.ban_threshold;
+                self.penalize(
+                    peer,
+                    threshold,
+                    &format!("undecodable bytes: {why}"),
+                    &mut out,
+                );
+            }
             Event::Tick => self.on_tick(&mut out),
             Event::LocalBlock(b) => {
                 if let Applied::NewTip = self.apply_block(None, &b, &mut out) {

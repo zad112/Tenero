@@ -224,13 +224,51 @@ dataset build being most of what is left). Full tables and the straight-line est
 cost only: no network, no transaction proofs, coinbase-only blocks, no `target-cpu=native`.
 **M8.3 is done** apart from what its notes list as limits; the next step is M8.4 (real sockets and Noise).
 
-### M8.4 Real sockets (size M)
+### M8.4 Real sockets (size M) **BUILT AND MEASURED 2026-10; the day-long run is the owner's and not done yet** (`crates/tenero-net/src/{noise,transport}.rs`, `docs/TESTNET.md`)
 TCP transport, the Noise channel (decision 3), inbound and outbound limits, per-peer rate limits and a ban score,
 message timeouts. With 50+ connections the relay rules matter for bandwidth: a new block or transaction is
 announced by its id and fetched from ONE peer, never pushed in full to all of them.
 *Done when:* three nodes on the owner's machine (three data directories, three ports) run a private test network
 for a day without diverging, the logs show refusals of deliberately bad input, and a stress test holds 50+
 real loopback connections on one node while it keeps syncing.
+*Built:* **the Noise channel** (`noise.rs`; `snow` 0.10 with only the features the pattern needs, so no `ring`, no
+AES-GCM, no SHA-2; the owner confirmed the exception to rule 3 twice, and it is recorded in `Cargo.toml`):
+`Noise_XX_25519_ChaChaPoly_BLAKE2s`, the handshake bound to a prologue of the protocol version and the chain id (so
+a node on another chain fails at the handshake), the byte stream cut into chunks of at most 65,519 bytes, separate
+reader and writer halves with their own counters, a replayed, dropped, reordered, reflected or damaged chunk
+refused, the counter never reused, and a saved node key that never prints its private half. **The transport**
+(`transport.rs`): one thread owns the engine and runs an event loop; two threads per connection (reader and
+writer); bounded channels for back-pressure; a handshake deadline that is **total**, not per read (a peer that
+dribbles a byte at a time is cut off); at most 64 handshakes at once and 4 from one address; banned hosts refused
+before any cryptography; bytes that decrypt but are not a message ban the peer, bytes that do not decrypt only close
+the connection (a third party could cause them); a per-peer cap on queued bytes, so a peer that does not read is
+disconnected instead of making us hold 16 MiB frames; the address book and bans saved atomically every five minutes
+and at shutdown, loaded at start (a damaged file is logged and ignored); log lines for every refusal. Two example
+programs: `p2p_testnode` (a node of a test network on the SHA-256 test chain) and `p2p_clients` (many connections).
+*Tested:* 10 Noise tests and 23 real-socket tests (two nodes syncing 60 blocks; three nodes relaying mined blocks;
+hostile clients that send garbage, stay silent, dribble, use another chain, send undecodable frames, tamper with a
+chunk, flood handshakes from one address and from several, ask for a great deal and read none of it, hang up,
+fail to be dialled; state that survives a restart; 60 clients plus a syncing peer). **Fault injection:** 19 faults
+in the Noise layer (17 caught, 2 redundant guards simplified) and 33 in the transport, all caught but two that are
+equivalent or not testable (a zero-length timeout is an error anyway; the exact boundary of the queue cap). It
+found real holes in my tests, now filled: a helper that counted a read timeout as "the node closed it", a wait on a
+stale published state, a check of the state file that the shutdown save alone satisfied, and a total-handshake limit
+that was never tested apart from the per-address one.
+*Measured (the node process alone, release build, this machine, loopback, idle connections):* **about 165 KiB of
+private memory per connection** (1.0 MiB with none, 11.0 MiB with 60, 20.8 MiB with 120), **exactly 2 threads per
+connection**, about 150 bytes each way to set one up. Under load nothing is measured beyond the syncing tests: no
+bandwidth figure with real traffic, no memory figure under attack. The 40 ms spacing of the test clients is
+deliberate: 60 clients opening at the same instant from one address got 48 in and 12 refused, which is the
+per-address handshake limit working, and is a behaviour to know about for peers behind one shared address.
+A three-process smoke run (three `p2p_testnode` programs, each seeded with the other two, all mining for 50 s) ended with
+all three on the same tip and no ban or failure in any log.
+*Limits, stated plainly:* **no identity is pinned**, so the channel gives confidentiality and integrity against
+someone on the wire, not proof of who the peer is, and a man in the middle who handshakes with both ends is not
+detected (bans are by address); memory under attack scales with connections times two frames of up to 16 MiB; there
+is no per-peer byte rate limit, only the engine's message rate limit; seeds and dialled addresses are `ip:port`
+only (no DNS seeds); the test-network node is a test tool (no wallet, SHA-256 chain, nothing real); nothing calls
+`Node::save_pool` yet (M8.7); Windows was the only system tried; and it is unreviewed (M9).
+*Not done:* the day-long three-node run (`docs/TESTNET.md`).
 
 ### M8.5 The miner (size M to L)
 A block template from the node (mempool, correct coinbase, Merkle root, `Validator::next_block` for the target),

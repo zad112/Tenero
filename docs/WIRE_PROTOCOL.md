@@ -6,8 +6,11 @@ varints, strict decoding, and `u32` counts checked **before** any element is rea
 independent Python reference is `tools/make_vectors_wire.py`, which makes `tests/vectors/v2_wire.json`; the Rust
 code (`crates/tenero-net/src/wire.rs`) must reproduce every vector.
 
-This layer carries no cryptography. Encryption and authentication of the channel (Noise, M8.4) wrap these frames;
-they are not part of them.
+This layer carries no cryptography. The encrypted channel (Noise, M8.4, `crates/tenero-net/src/noise.rs`) carries
+these frames as a byte stream: after a handshake bound to the protocol version and the chain id, the stream is cut
+into chunks of at most 65,519 plaintext bytes, each sent as `length u16 (big-endian) | ciphertext` (ciphertext =
+plaintext + a 16-byte tag, never empty), with the Noise message counter as the nonce. The frames below are what
+comes out of that stream, in order, however the chunks fall.
 
 ## 1. Frames
 

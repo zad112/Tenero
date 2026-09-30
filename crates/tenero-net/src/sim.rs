@@ -40,6 +40,43 @@ pub fn sim_addr(i: usize) -> String {
     sim_addr_in(i, 1)
 }
 
+/// A block on `node`'s tip, mined on the SHA-256 test chain (a nonce search that takes a few hashes), with
+/// `payout` in its coinbase and the pool's best transactions in its body. **Not for a real chain.**
+pub fn mine_test_block(node: &tenero_node::Node<'_>, timestamp: u64, payout: Payout) -> Block {
+    let mut b = node
+        .block_template(timestamp, 1_000_000, payout)
+        .expect("a template");
+    let target = node.next_block().expect("next block").target;
+    for nonce in 0.. {
+        b.header.nonce = nonce;
+        if U256::from_be_bytes(&block_id(&b.header, PowKind::Sha256)) < target {
+            break;
+        }
+    }
+    b
+}
+
+/// The rules of the SHA-256 test chain (a target one hash in four meets, small rings, short maturity): what the
+/// simulator, the socket tests and the test-node program all run. **Not a real chain.**
+pub fn test_chain_params() -> ChainParams {
+    let mut params = ChainParams::version_2(LABEL, PowKind::Sha256, U256::pow2(254).unwrap());
+    params.ring_size = 2;
+    params.coinbase_maturity = 1;
+    params.spend_maturity = 1;
+    params
+}
+
+/// The id of the test chain (what a handshake is bound to), worked out from a scratch store.
+pub fn test_chain_id() -> [u8; 32] {
+    let path = std::env::temp_dir().join(format!("tenero-chainid-{}.redb", std::process::id()));
+    remove_db(&path);
+    let id = Store::open(&path, LABEL, PowKind::Sha256)
+        .expect("open a scratch store")
+        .chain_id();
+    remove_db(&path);
+    id
+}
+
 /// One node's storage and rules; the simulation's engines borrow from these.
 pub struct SimRig {
     path: PathBuf,
@@ -57,14 +94,10 @@ impl SimRig {
         ));
         remove_db(&path);
         let store = Store::open(&path, LABEL, PowKind::Sha256).expect("open a store");
-        let mut params = ChainParams::version_2(LABEL, PowKind::Sha256, U256::pow2(254).unwrap());
-        params.ring_size = 2;
-        params.coinbase_maturity = 1;
-        params.spend_maturity = 1;
         SimRig {
             path,
             store,
-            params,
+            params: test_chain_params(),
         }
     }
 
@@ -785,18 +818,7 @@ impl<'a> Sim<'a> {
             ephemeral_pubkey: self.rng.bytes(),
             anchor_enc: self.rng.bytes(),
         };
-        let eng = &self.engines[node];
-        let mut b = eng
-            .node()
-            .block_template(ts, 1_000_000, payout)
-            .expect("a template");
-        let target = eng.node().next_block().expect("next block").target;
-        for nonce in 0.. {
-            b.header.nonce = nonce;
-            if U256::from_be_bytes(&block_id(&b.header, PowKind::Sha256)) < target {
-                break;
-            }
-        }
+        let b = mine_test_block(self.engines[node].node(), ts, payout);
         let out = self.engines[node].handle(self.now_ms, Event::LocalBlock(b.clone()));
         self.process(End::Node(node), out);
         b
