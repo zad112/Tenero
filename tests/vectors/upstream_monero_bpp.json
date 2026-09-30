@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "name": "upstream_monero_bpp",
+  "description": "Real Monero mainnet Bulletproofs+ range proofs (RCT type 6), verbatim from monero-oxide's test vectors. Every proof is valid for its out_pk commitments. Used to check that the pinned monero-bulletproofs verifies real Monero proofs, not only proofs it made itself.",
+  "source": {
+    "repo": "https://github.com/monero-oxide/monero-oxide",
+    "commit": "9e11f5c0f2b18ab821192efa427c863086b51379",
+    "path": "monero-oxide/src/tests/vectors/",
+    "licence": "MIT"
+  },
+  "proofs": [
+    {
+      "tx": "2f650db5bafd37ce8982f37ee443f2ecf0a8f08f639591583aecb6cd74d5a80c",
+      "source_file": "transactions.json",
+      "out_pk": [
+        "9c4bc6ac562b6859a40ad8f3bc85ca35c98badb4b4c5d43832f330d6fedb08e8",
+        "f9e2acd339c648bf03957cb02aa69b8ab15326e3bbe1ce35df677306edabd89e",
+        "5635f226a743068500e25028fbdbf1ea19d0921a27c8baec842b753080f407ee",
+        "4b9a87f2c525e9bfb61fb4d14187c0577e799bf20e53a86359cb75f40ee4d291"
+      ],
+      "A": "7c2b59e7278c94b6296dee9ac65ed5ccf61a77ba4f1b3edfb13c5d02748763b2",
+      "A1": "3a6bac2f6a891b474d55b625030b35f9b7b564e747afd4cb8e1ce830a9bc59fd",
+      "B": "6e146443965494f94a8433de054080fcb71f8d48803598cc91db3c7b3fd190ea",
+      "r1": "8ff5f67980a63de4cb9cd06568a9b27aa994992bc33d70990225acb09faf6806",
+      "s1": "6aa27c1118c685cb8f3516c3b664450fabdced384de01650d6455287bc0f210a",
+      "d1": "aa5c173c491844155736a64d7cbdda79f0c8a5ccc07d187ca112664a0e6eb500",
+      "L": [
+        "7178983179f1ba2ffb030d577638001b58f5e621b4723e5b0bd0853fb430113d",
+        "03efd026660a18a23c7582e9788f770212b604759aa242b35b3ca4a835bb1888",
+        "1c8593ac4247ba51ea95946cf079721588bac494f563a687fe1010818caa9458",
+        "3969b0f4a4a40eeee395cbb7881a53d98cad51b1e5d12c7071a7424b4c534e32",
+        "c53a31b11e6151edd0a13ef9695021bff9bd4c62df9a62d9e0fbd01e750d0b6a",
+        "bc56cc96d55ef06f6428b42fc63f6610633ecf023211e64a1ff89dcabfeeb4b9",
+        "38e64312dcc849929e8d4a290eff601e06dc65141665d7b312ac1f0f859a00fd",
+        "6d6ccf7dc695e7ae3cf44bed1d9c8659ee3451dd3498f462912ba881a473c9bc"
+      ],
+      "R": [
+        "66e4fb33114b2ef7c25869f9cc3c40a06fc2407e2c678126ff1c38a35c5c949b",
+        "c219fb33ba15730510c41554c727d5adfce33a518148234e0aa5411cb20c115e",
+        "749792ad47ee19e9f1544dba61593d95cb98d4720a8ae6e60146416d673e5707",
+        "c3de31d91043422ab848d4676a6845ced6e7075c5a09bc8b4e0ad706c8c07bda",
+        "527a7325771438e04f37517f3ca5262ef2ddfc9e13db988a90c50be5422a83ad",
+        "75b93f4faae980d6e6a3abfd0e96387121101afaf55f425dc876d9a8735c1e29",
+        "d823e19fee5e502c18d16ec9225f232cfbc3dcd143aaa1904f42e880b612beee",
+        "a3e5a745a7f32e6b2135a75f71117e2947c99647f14702417a9a76f6130b5d62"
+      ]
+    },
+    {
+      "tx": "clsag_tx",
+      "source_file": "clsag_tx.json",
+      "out_pk": [
+        "88a96ac5cff1623fd2e4aaf56ed395a325393fbd950428a3ff7e6dc6c559669c",
+        "8d5e8fb80d5e979c8a81c89754201d4bd094c37c143759260e282555dfed3100"
+      ],
+      "A": "3256ca0156c1c34dc569565039c27f784b45ec50ba816f69b54ae3df98d84107",
+      "A1": "0f51aec2a8afd4991d5bbf50b785d0bdc2a6491c5ab45795d7ce3b08d6328290",
+      "B": "7c52f9951e711cb6a2cba1aba1f7849a669345711263cc736e2d4e1c7308c5e7",
+      "r1": "cb97e948ed647f89fc9869fb9c9a5a742e5e7be419cce7a5e99a5b21cb491f00",
+      "s1": "003ec1da7e8cec39b709d46fab65f59f5f6147c1e4429d18d8bf6e3e62639102",
+      "d1": "a300ce6006a20403ef021a197b6c632ac280e674c7aad08290424271dec4de01",
+      "L": [
+        "10ee7895389150dd15017cfd5f47ea9dddd11e218251433906f62aff6b8cb2b5",
+        "f8cca25add297da40d7cddbea718703ff9ad3795fcdc172a34c73179326c16f5",
+        "274de69073281f3276d800fe7fbd01a07d14a42ce367c32727a9f0bc8c8d6ab4",
+        "b3b17dd981bdc522595fc1bfe83ad3976876fb3bb2e4bd4392ac1a94ac22cbcc",
+        "326ede82d1af2f1ec9d4ac596b22d035c7f1ac11d8ace7c5a70b30e39596ded7",
+        "94077ae55144e3f4b0c17cbc4f5a960129eb5321077bb7e2b9e4621e17fbcf29",
+        "60abae1e1a9f89af21cc2fcce410a839186b8da92966415d6dd3ad772d652cbe"
+      ],
+      "R": [
+        "5af46b97ae7062ccbaa328e371a351492f6860832c5bfdd7b77e8611b7441ecf",
+        "a0967e66c13cb9ab348bf78a15bbd2d9bec6b8ec5cdd5f84a91580758247da84",
+        "afed22ec2cf89d632e406fdc927e48ebfaacd0a0b715a968c9cfc74fff611f4c",
+        "da4b6cb9eb1e044a71c58a832c5ae7551833c0ba2ab6f9d1e466e5757c230157",
+        "cd3099686bf89e8f9eb822ea702e13e38f669603dd3c7c8be90daf192de689ab",
+        "2078d16cf489f3782e70469fbe01f918297e0db6cef3bf48e0293b6856d348fd",
+        "a3a2d76bf899432acef74aa42961be28635d1899509b9d368bc42a18e08d2b94"
+      ]
+    }
+  ]
+}

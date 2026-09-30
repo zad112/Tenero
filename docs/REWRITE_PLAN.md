@@ -114,11 +114,13 @@ chain must be able to run pruned (`CONSENSUS_V2.md` section 14). The original op
   transaction proofs of `CONSENSUS_V2.md` 7.1: a strict `proof_data` layout, the signed message, the balance
   check, Bulletproofs+ and one CLSAG per input, as `RingCtProofs`, a `ProofCheck` for the validator, plus the
   prover a wallet will use. 30 tests on real proofs plus 6 chain-level tests (real mined blocks, a real spend accepted under `RingCtProofs` with `proofs_checked = true`; a broken proof, a spend for another chain, a raised fee and a repeated key image all refused; the same broken block accepted under `ProofsNotChecked`); 19 deliberate faults injected into the verifier, 18
-  caught (the survivor is a redundant canonical-encoding guard, kept on purpose). **Not done:** Carrot
-  (output creation and scanning; waiting for Monero's `carrot_core` to merge so its test vectors can be
-  imported), importing upstream proof test
-  vectors, and reading the audit's CLSAG and Bulletproofs+ chapters against the pinned code. Nothing here is
-  audited as used.
+  caught (the survivor is a redundant canonical-encoding guard, kept on purpose). The audit's CLSAG and Bulletproofs+ chapters were read (2026-09-30): no critical
+  finding; its one medium CLSAG finding (the transcript omits output indexes and transaction identifiers) is what
+  our signed message covers; the multisig findings do not apply (we do not use that code). Two real Monero
+  mainnet Bulletproofs+ proofs verify under the pin (`upstream_monero_bpp.json`). **Not done:** Carrot (output
+  creation and scanning; waiting for Monero's `carrot_core` to merge so its test vectors can be imported), a real
+  Monero CLSAG vector (needs a dev-dependency to compute Monero's signature hash), and making `RingCtProofs` the
+  default in the node program (M8). Nothing here is audited as used.
 - **M7. Privacy in stages.** (P1) one-time addresses, Pedersen commitments, range proofs, key images, and the
   stand-in membership proof; (P2) FCMP++ when a stable, audited implementation exists; (P3) subaddresses,
   view keys, integrated addresses, multisig; (P4) network privacy.
