@@ -1,0 +1,17 @@
+[package]
+name = "tenero-crypto"
+description = "Tenero's use of audited proof libraries (experimental; nothing here is audited as used)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# monero-oxide is not on crates.io (only placeholder 0.0.1 releases), so it is a git dependency
+# pinned to an exact commit: the `0.1.0` tag, 2026-07-31, MIT. Approved by the owner 2026-09-30.
+# The Cypher Stack audit (May 2025) reviewed an earlier state of this code (Serai's networks/monero).
+[dependencies]
+monero-bulletproofs = { git = "https://github.com/monero-oxide/monero-oxide", rev = "9e11f5c0f2b18ab821192efa427c863086b51379" }
+monero-clsag = { git = "https://github.com/monero-oxide/monero-oxide", rev = "9e11f5c0f2b18ab821192efa427c863086b51379" }
+
+[lints]
+workspace = true
