@@ -24,6 +24,9 @@ tenero-store = { path = "../tenero-store" }
 tenero-chain = { path = "../tenero-chain" }
 
 [dev-dependencies]
+# Test-only: Monero's own transaction parser and signature hash, to check the real CLSAG vector. Same repo,
+# same pin, MIT; adds only hex-literal (MIT OR Apache-2.0) to the tree. Approved by the owner 2026-09-30.
+monero-oxide = { git = "https://github.com/monero-oxide/monero-oxide", rev = "9e11f5c0f2b18ab821192efa427c863086b51379" }
 # a seeded generator, so the proof tests are reproducible (MIT OR Apache-2.0, in the tree already)
 rand_chacha = "0.3"
 

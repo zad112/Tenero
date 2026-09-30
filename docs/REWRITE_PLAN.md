@@ -117,10 +117,12 @@ chain must be able to run pruned (`CONSENSUS_V2.md` section 14). The original op
   caught (the survivor is a redundant canonical-encoding guard, kept on purpose). The audit's CLSAG and Bulletproofs+ chapters were read (2026-09-30): no critical
   finding; its one medium CLSAG finding (the transcript omits output indexes and transaction identifiers) is what
   our signed message covers; the multisig findings do not apply (we do not use that code). Two real Monero
-  mainnet Bulletproofs+ proofs verify under the pin (`upstream_monero_bpp.json`). **Not done:** Carrot (output
-  creation and scanning; waiting for Monero's `carrot_core` to merge so its test vectors can be imported), a real
-  Monero CLSAG vector (needs a dev-dependency to compute Monero's signature hash), and making `RingCtProofs` the
-  default in the node program (M8). Nothing here is audited as used.
+  mainnet Bulletproofs+ proofs (`upstream_monero_bpp.json`) and one real mainnet transaction's two CLSAG
+  signatures (`upstream_monero_clsag.json`, checked against Monero's own signature hash) verify under the pin.
+  **M7 is complete except Carrot**, which is tracked as its own open item: output creation and scanning wait for
+  Monero's `carrot_core` to merge so its test vectors can be imported, and the coinbase commitment convention
+  (`CONSENSUS_V2.md` 7.1) stays provisional until then. Making `RingCtProofs` the default is an M8 item.
+  Nothing here is audited as used.
 - **M7. Privacy in stages.** (P1) one-time addresses, Pedersen commitments, range proofs, key images, and the
   stand-in membership proof; (P2) FCMP++ when a stable, audited implementation exists; (P3) subaddresses,
   view keys, integrated addresses, multisig; (P4) network privacy.

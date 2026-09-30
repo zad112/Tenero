@@ -154,6 +154,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-literal"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -189,6 +195,18 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "monero-borromean"
+version = "0.1.0"
+source = "git+https://github.com/monero-oxide/monero-oxide?rev=9e11f5c0f2b18ab821192efa427c863086b51379#9e11f5c0f2b18ab821192efa427c863086b51379"
+dependencies = [
+ "curve25519-dalek",
+ "monero-ed25519",
+ "monero-io",
+ "std-shims",
+ "zeroize",
+]
 
 [[package]]
 name = "monero-bulletproofs"
@@ -256,6 +274,37 @@ version = "0.1.0"
 source = "git+https://github.com/monero-oxide/monero-oxide?rev=9e11f5c0f2b18ab821192efa427c863086b51379#9e11f5c0f2b18ab821192efa427c863086b51379"
 dependencies = [
  "std-shims",
+]
+
+[[package]]
+name = "monero-mlsag"
+version = "0.1.0"
+source = "git+https://github.com/monero-oxide/monero-oxide?rev=9e11f5c0f2b18ab821192efa427c863086b51379#9e11f5c0f2b18ab821192efa427c863086b51379"
+dependencies = [
+ "curve25519-dalek",
+ "monero-ed25519",
+ "monero-io",
+ "std-shims",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
+name = "monero-oxide"
+version = "0.1.0"
+source = "git+https://github.com/monero-oxide/monero-oxide?rev=9e11f5c0f2b18ab821192efa427c863086b51379#9e11f5c0f2b18ab821192efa427c863086b51379"
+dependencies = [
+ "curve25519-dalek",
+ "hex-literal",
+ "monero-borromean",
+ "monero-bulletproofs",
+ "monero-clsag",
+ "monero-ed25519",
+ "monero-io",
+ "monero-mlsag",
+ "monero-primitives",
+ "std-shims",
+ "zeroize",
 ]
 
 [[package]]
@@ -474,6 +523,7 @@ dependencies = [
  "monero-bulletproofs",
  "monero-clsag",
  "monero-ed25519",
+ "monero-oxide",
  "rand_chacha",
  "rand_core",
  "tenero-chain",

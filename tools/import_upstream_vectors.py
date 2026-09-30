@@ -1,5 +1,6 @@
-"""Imports real Monero mainnet Bulletproofs+ proofs from a checkout of monero-oxide into
-tests/vectors/upstream_monero_bpp.json.
+"""Imports real Monero mainnet data from a checkout of monero-oxide: Bulletproofs+ range proofs into
+tests/vectors/upstream_monero_bpp.json and a CLSAG transaction (with its rings) into
+tests/vectors/upstream_monero_clsag.json.
 
 NOT a reference implementation and not part of `make_vectors.py --check`: these are third-party data, copied
 verbatim, so that our pinned copy of the proof libraries can be shown to accept real Monero proofs. Provenance
@@ -53,3 +54,31 @@ out = {
 dest = Path(__file__).resolve().parent.parent / "tests" / "vectors" / "upstream_monero_bpp.json"
 dest.write_text(json.dumps(out, indent=2) + "\n", newline="\n")
 print(f"wrote {dest} with {len(proofs)} proofs from {commit[:12]}")
+
+# --- a real CLSAG transaction: the raw transaction, and what a verifier needs beside it ---
+ring_data = json.loads((vec / "ring_data.json").read_text())
+ctx = c["tx"]
+assert ctx["rct_signatures"]["type"] == 6
+inputs = ctx["vin"]
+assert len(ring_data) == len(inputs)
+clsag_out = {
+    "schema": 1,
+    "name": "upstream_monero_clsag",
+    "description": "A real Monero mainnet transaction with CLSAG ring signatures (RCT type 6), with the rings "
+                   "its inputs were signed against: for each input the ring as [key, commitment] pairs, the "
+                   "key image and the pseudo-output commitment. Verbatim from monero-oxide's tests. The "
+                   "signatures verify against Monero's own signature hash of the transaction.",
+    "source": out["source"],
+    "tx_hex": c["hex"],
+    "inputs": [
+        {
+            "key_image": inp["key"]["k_image"],
+            "pseudo_out": ctx["rctsig_prunable"]["pseudoOuts"][i],
+            "ring": [[m["key"], m["mask"]] for m in ring_data[i]],
+        }
+        for i, inp in enumerate(inputs)
+    ],
+}
+dest = Path(__file__).resolve().parent.parent / "tests" / "vectors" / "upstream_monero_clsag.json"
+dest.write_text(json.dumps(clsag_out, indent=2) + "\n", newline="\n")
+print(f"wrote {dest} with {len(inputs)} inputs")
