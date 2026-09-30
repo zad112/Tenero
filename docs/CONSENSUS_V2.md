@@ -448,9 +448,10 @@ parts that make it possible are data-model decisions that are very costly to add
   them from an archive peer; a pruned-only network cannot reorganise that deep. **The network needs archive
   nodes**, and a small chain with few of them is weaker.
 
-### 14.3 Storage layout (`redb`)
+### 14.3 Storage layout (`redb` and segment files)
 
-Separate tables, so the prunable one can be emptied without touching the others:
+The index and the state are in `redb` tables; the prunable data is in flat segment files, and only its location
+is in the database, so pruning never rewrites anything large:
 
 | table | key -> value |
 |---|---|
@@ -459,53 +460,69 @@ Separate tables, so the prunable one can be emptied without touching the others:
 | `coinbase` | height -> coinbase bytes |
 | `block_txs` | height -> the transaction ids in order |
 | `tx_prefix` | transaction id -> prefix bytes, `prunable_hash`, height and position |
-| `tx_prunable` | transaction id -> the prunable part (the rings and the proof bytes): **the deletable table**, with a `pruned_below` height in `meta` |
+| `tx_loc` | transaction id -> where its prunable part (the rings and the proof bytes) is: segment, offset, length (16 bytes): **the only table pruning touches**, with a `pruned_below` height in `meta` |
+| `seg_len` | segment id -> the committed length of that segment file |
 | `outputs` | global index -> one-time address, commitment, height, kind (coinbase or not) |
 | `key_images` | key image -> height (the spent set) |
 | `meta` | chain id, tip, cumulative work, `pruned_below`, the assume-valid checkpoint |
+
+The prunable data itself is **not in the database**: it is in flat **segment files**, `<database>.segments/seg-<id>.dat`,
+one per `segment_blocks` heights (`id = height / segment_blocks`, recorded when the database is created;
+default 1,000 blocks, about 17 hours). The rings and proofs are large, written once, never changed and deleted
+in whole ranges of blocks, which is what a flat file is good at and a B-tree is not (see the measurements
+below). `redb` keeps the index, the state and the 16-byte location of each transaction's bytes.
 
 This layout is implemented in `crates/tenero-store` (`Store::append_block`, `pop_block` for reorganisations,
 `prune_below`, `prune_below_in_steps`, `prune_keeping`, `compact`, and a `state_digest` that pruning must never
 change). It is tested against an in-memory model through a random history of appends, reorganisations (also
 through pruned blocks) and prunings, and every stored block's Merkle root is recomputed from the pruned data.
 
-**Measured** (`crates/tenero-store/tests/store.rs`, the compaction test; `redb` 4.3.0 on Windows; 150 blocks of
-40 transactions, fields of the real sizes with 16-member rings in the prunable part, and **random stand-in
-proofs of 1,900 bytes**, not real ones; a transaction is 356 bytes of prefix and 2,172 bytes of prunable data):
+How the two parts stay consistent, and what pruning does:
 
-| | file size |
-|---|---|
-| as written, one commit per block | 33.7 MB |
-| the same, compacted (the honest baseline: about 5.2 kB per transaction) | 30.9 MB |
-| the prunable parts alone (rings and proofs) | 12.9 MB (42% of the compacted file) |
-| after pruning, **before** compaction | **61.8 MB** (it doubled) |
-| after pruning **and** compaction | **6.2 MB, 20% of the compacted full chain** (about 1.04 kB per transaction) |
+- **Writing.** A block's prunable bytes are written to its segment **and synced to disk before** the database
+  transaction that refers to them commits, and **at the segment's last committed length**. After a crash the
+  file may hold bytes nothing refers to; the next write simply overwrites them and cuts the file to the right
+  length. A segment file the database has no committed length for (left by a crash, or by a block that
+  never committed) is an orphan, and `open` deletes it. Every check that can refuse a block runs before any
+  byte is written, so a refused block writes nothing.
+- **Reading.** A transaction's location gives segment, offset and length. A missing or short file is reported
+  as corruption, never a panic, and a failed operation changes nothing.
+- **Rolling a block back** returns its bytes (they are the tail of its segment) and gives the space back: the
+  segment's committed length moves back, and an emptied segment's file is deleted.
+- **Pruning** below a height deletes the 16-byte locations of those blocks **exactly**, in one transaction, so
+  `pruned_below` keeps its exact meaning. A segment file is deleted as soon as **every** block in it is below
+  `pruned_below`; a segment that still holds some unpruned blocks keeps its dead bytes until the rest are
+  pruned, so at most one segment (`segment_blocks` blocks of prunable data) is wasted.
 
-The same measurement with the rings still in the prefix (the layout before this change) left **8.1 MB**, so
-moving the rings into the prunable part made a pruned chain **23% smaller**, as predicted (about a fifth).
+**Measured** (`crates/tenero-store/tests/store.rs`, `pruning_gives_back_the_disk_and_never_grows_the_database`;
+`redb` 4.3.0 on Windows; 150 blocks of 40 transactions, 8-block segments, fields of the real sizes with
+16-member rings, and **random stand-in proofs of 1,900 bytes**, not real ones; a transaction is 356 bytes of
+prefix and 2,172 bytes of prunable data):
 
-What this shows:
+| | database | segment files | total |
+|---|---|---|---|
+| the full chain | 6.5 MB (compacted) | 13.03 MB, **exactly the prunable bytes** | **21.5 MB** (about 3.6 kB per transaction) |
+| after pruning 149 blocks, and compacting | 6.05 MB | 0.61 MB (18 files deleted, 12.4 MB) | **6.66 MB, 31% of the full chain** (about 1.1 kB per transaction) |
 
-- **Pruning plus compaction leaves a fifth of the file** here. The pruned node's cost per transaction is about
-  1 kB: the prefix (about 400 bytes with its row overhead), the outputs and the key images.
-- **Pruning alone does not shrink the file**, and one big prune transaction roughly **doubled** it, because a
-  copy-on-write database needs room for the pages it is replacing. So pruning is done in bounded steps
-  (`prune_below_in_steps`) followed by `compact`, and a node needs spare disk while it does so.
-- **On disk an archive transaction costs about 5.2 kB, twice the 2.5 kB of its raw bytes.** Some of that is the
-  output and key-image tables repeating fields, and the B-trees' overhead; **a large part is page packing**:
-  redb keeps rows in 4 KiB pages, and once the prunable row grew to 2.2 kB (with the rings in it) two of them no
-  longer fit in one page, so each takes a page and wastes about 1.9 kB. The archive file grew by 25% (24.7 to
-  30.9 MB) when its raw bytes grew by 6%. It depends on how rows happen to pack, and real proofs will land
-  somewhere else. **A pruned node is unaffected** (the wasted pages are the ones pruning frees).
+The design **before** segment files kept the same data in the database and measured 30.9 MB for the full chain
+(about 5.2 kB per transaction) and 6.2 MB after pruning and compacting. So:
+
+- **An archive node is about 31% smaller** (21.5 MB against 30.9 MB), because the segment files hold exactly the
+  prunable bytes and the database no longer wastes space packing 2 kB rows into its 4 KiB pages (the likely
+  cause of the earlier growth; not separately verified).
+- **A pruned node is about the same size** (6.66 MB against 6.2 MB): it is dominated by the prefixes, the state and
+  the database's own overhead, which did not change. The gain there is not size but **how pruning works**: it
+  deletes rows and whole files, with nothing to rewrite and no dependence on the database's file growth.
+- **Correction of an earlier explanation.** I had said that one big prune transaction doubled the database file
+  "because a copy-on-write database needs room for the pages it is replacing". That was wrong. The test now
+  shows that **any** write after a compaction, even one that rewrites a single small row, grows the file by
+  exactly 2.00x (6.52 MB to 13.05 MB): it is `redb`'s file-growth policy after compaction leaves no free pages,
+  not a cost of pruning, and the next compaction returns it. The database file is therefore not a good measure
+  of what a node uses between compactions; the honest figure is the compacted one.
 - **Extrapolated to the worst-case 31 million transactions a year** (a small test with fake proofs, so an
-  indication, not a measurement): **about 160 GB a year for an archive node and about 32 GB for a pruned
-  one**, against raw-byte estimates of 79 and 19 GB (14.4).
-- **A design consequence, not yet acted on:** the prunable data is large, written once, never modified and
-  deleted in whole ranges of blocks. A B-tree in a copy-on-write database is the wrong home for it: it
-  causes the page waste above, the temporary doubling and the need to compact. **Flat segment files**, one per
-  range of blocks, with an offset kept in the database, would make pruning "delete a file": no doubling, no
-  compaction and no packing waste, and a node's disk use would follow the raw bytes. `redb` would keep the
-  index and the state. This is the recommended next storage decision.
+  indication, not a measurement): **about 110 GB a year for an archive node and about 34 GB for a pruned one**,
+  against raw-byte estimates of 79 and 19 GB (14.4). The difference is the database's overhead and the
+  state repeating some of what the prefix rows hold, which is the next thing to look at if the size matters.
 
 ### 14.4 How big, roughly (my arithmetic, **not measured**; M6 measures)
 

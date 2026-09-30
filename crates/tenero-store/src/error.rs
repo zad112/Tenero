@@ -6,8 +6,12 @@ use tenero_core::v2::{DecodeError, EncodeError};
 pub enum StoreError {
     /// The database itself failed (I/O, corruption, a full disk).
     Db(String),
+    /// A segment file could not be read or written (I/O).
+    Io(String),
     /// The file belongs to another network or another proof of work than the one asked for.
     WrongChain,
+    /// The database was written with another layout version, or with another segment size than asked.
+    WrongFormat,
     /// The block's `prev_id` is not the current tip.
     BadParent,
     /// The coinbase names a height other than the next one.
@@ -40,6 +44,11 @@ impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StoreError::Db(e) => write!(f, "database error: {e}"),
+            StoreError::Io(e) => write!(f, "segment file error: {e}"),
+            StoreError::WrongFormat => write!(
+                f,
+                "this database has another layout version or segment size"
+            ),
             StoreError::WrongChain => write!(
                 f,
                 "this database belongs to another network or proof of work"
@@ -86,6 +95,12 @@ from_db!(
     redb::CommitError,
     redb::CompactionError
 );
+
+impl From<std::io::Error> for StoreError {
+    fn from(e: std::io::Error) -> StoreError {
+        StoreError::Io(e.to_string())
+    }
+}
 
 impl From<EncodeError> for StoreError {
     fn from(e: EncodeError) -> StoreError {

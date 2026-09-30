@@ -182,8 +182,11 @@ pub struct AppendInfo {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PruneStats {
     pub transactions_pruned: u64,
-    /// Bytes of prunable parts deleted (the rings and the proofs), not counting database overhead.
+    /// Bytes of prunable parts forgotten (the rings and the proofs): logically freed at once.
     pub prunable_bytes_freed: u64,
+    /// Segment files deleted because every block in them is now pruned, and their size on disk.
+    pub segments_deleted: u64,
+    pub segment_bytes_freed: u64,
     pub pruned_below: u64,
 }
 

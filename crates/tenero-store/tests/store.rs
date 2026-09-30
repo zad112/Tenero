@@ -10,7 +10,10 @@ use tenero_store::{Store, StoreError, StoredOutput};
 const LABEL: &str = "tenero store test network";
 const POW: PowKind = PowKind::Sha256;
 
-/// A database file in the temp directory, deleted when the test ends.
+/// The segment size the tests use: 8 blocks per segment file, so even a short chain spans many files.
+const SEGMENT_BLOCKS: u64 = 8;
+
+/// A database file (and its segment directory) in the temp directory, deleted when the test ends.
 struct TempDb(PathBuf);
 
 impl TempDb {
@@ -19,19 +22,41 @@ impl TempDb {
             "tenero-store-test-{}-{name}.redb",
             std::process::id()
         ));
-        let _ = std::fs::remove_file(&p);
-        TempDb(p)
+        let db = TempDb(p);
+        db.remove_all();
+        db
+    }
+
+    fn segments_dir(&self) -> PathBuf {
+        let mut s = self.0.clone().into_os_string();
+        s.push(".segments");
+        PathBuf::from(s)
+    }
+
+    fn segment_file(&self, id: u64) -> PathBuf {
+        self.segments_dir().join(format!("seg-{id:010}.dat"))
+    }
+
+    fn remove_all(&self) {
+        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_dir_all(self.segments_dir());
     }
 
     fn open(&self) -> Store {
-        Store::open(&self.0, LABEL, POW).unwrap()
+        Store::open_with(&self.0, LABEL, POW, Some(SEGMENT_BLOCKS)).unwrap()
     }
 }
 
 impl Drop for TempDb {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        self.remove_all();
     }
+}
+
+/// The bytes of one transaction's prunable part as the tests build them: a ring count, two rings of 16,
+/// the proof length and the proof (`proof_len` bytes).
+fn prunable_size(proof_len: usize) -> u64 {
+    (4 + 2 * (4 + 16 * 8) + 4 + proof_len) as u64
 }
 
 // ------------------------------------------------------------------ making blocks
@@ -350,6 +375,10 @@ fn a_refused_block_leaves_no_trace() {
     );
     let height = 6;
     let tip = c.tip_id();
+    let files_before = (
+        c.store.segments_size().unwrap(),
+        c.store.segment_ids().unwrap(),
+    );
 
     let mut m = Maker::new(99);
     m.next_key = 1_000_000;
@@ -417,6 +446,14 @@ fn a_refused_block_leaves_no_trace() {
         c.store.output_count().unwrap(),
     );
     assert_eq!(before, after);
+    // and not a byte was written to a segment file: the bytes go to disk only once every check has passed
+    assert_eq!(
+        files_before,
+        (
+            c.store.segments_size().unwrap(),
+            c.store.segment_ids().unwrap()
+        )
+    );
     assert!(c.store.block_index(6).unwrap().is_none());
     assert!(c
         .store
@@ -663,50 +700,308 @@ fn the_database_survives_being_closed_and_is_bound_to_its_network() {
     assert_eq!(db.open().state_digest().unwrap(), digest);
 }
 
+/// Measurement: what pruning gives back on disk, compared with the design before segment files (where the
+/// same 150 blocks were 30.9 MB in all, and 6.2 MB after pruning AND compacting).
 #[test]
-fn compaction_returns_the_space_of_pruned_proofs() {
-    let db = TempDb::new("compact");
+fn pruning_gives_back_the_disk_and_never_grows_the_database() {
+    let db = TempDb::new("measure");
     let mut c = Chain::new(&db, 7);
     c.maker.proof_len = 1900;
     c.maker.txs_per_block = 40;
     c.push_n(150);
-    let raw = c.store.file_size().unwrap();
-    // One commit per block leaves copy-on-write slack, so the honest baseline is the FULL chain compacted.
     let mut store = c.store;
+    let db_as_written = store.file_size().unwrap();
+    let segments_full = store.segments_size().unwrap();
+    let total_full = store.total_size().unwrap();
     store.compact().unwrap();
-    let full = store.file_size().unwrap();
-    let stats = store.prune_below(150).unwrap();
-    let proofs = stats.prunable_bytes_freed;
-    let after_prune = store.file_size().unwrap();
-    store.compact().unwrap();
-    let after_compact = store.file_size().unwrap();
+    let db_compacted = store.file_size().unwrap();
+    // A write that changes almost nothing (it rewrites one small row): if the file still doubles, the
+    // doubling is redb's growth policy for a compacted file with no free pages, not the cost of pruning.
+    store.prune_below(0).unwrap();
+    let db_after_noop_write = store.file_size().unwrap();
     println!(
-        "150 blocks of 40 transactions ({} transactions): file as written {raw} bytes; compacted {full} bytes; \
-         proofs {proofs} bytes ({:.0}% of that); after pruning, before compaction {after_prune}; after pruning and \
-         compaction {after_compact} bytes = {:.0}% of the compacted full chain",
+        "a no-op write after compaction: database {db_compacted} -> {db_after_noop_write} ({:.2}x)",
+        db_after_noop_write as f64 / db_compacted as f64
+    );
+    store.compact().unwrap();
+    let db_compacted = store.file_size().unwrap();
+
+    let stats = store.prune_below(150).unwrap();
+    let db_after_prune = store.file_size().unwrap();
+    let segments_after = store.segments_size().unwrap();
+    store.compact().unwrap();
+    let db_after_compact = store.file_size().unwrap();
+    let total_after = store.total_size().unwrap();
+    println!(
+        "150 blocks of 40 transactions ({} pruned): database as written {db_as_written}, compacted {db_compacted}; \
+         segment files {segments_full}; total {total_full}. After pruning: database {db_after_prune} (before \
+         compaction; redb doubles a compacted file on its next write, whatever the write), {db_after_compact} compacted; segment \
+         files {segments_after} ({} deleted, {} bytes); total {total_after} bytes = {:.0}% of the full chain",
         stats.transactions_pruned,
-        100.0 * proofs as f64 / full as f64,
-        100.0 * after_compact as f64 / full as f64
+        stats.segments_deleted,
+        stats.segment_bytes_freed,
+        100.0 * total_after as f64 / total_full as f64
     );
-    // redb reuses freed pages but keeps the file the same size; compaction is what gives the space back
+    // the segment files hold exactly the prunable bytes, nothing more (no page-packing waste)
+    assert_eq!(segments_full, 150 * 40 * prunable_size(1900));
+    // pruning deletes only 16-byte locations from the database, and a compaction afterwards leaves the
+    // database no larger than it was (whatever redb's file growth did in between)
     assert!(
-        after_prune >= after_compact,
-        "compaction must not grow the file"
+        db_after_compact <= db_compacted,
+        "the database went from {db_compacted} to {db_after_compact}"
     );
-    assert!(
-        after_compact < full * 45 / 100,
-        "pruning and compaction took the file from {full} to only {after_compact}"
-    );
-    assert!(
-        after_compact > full / 10,
-        "implausibly small: {after_compact}"
-    );
-    // and nothing that matters was lost
+    // blocks 1..=149 are pruned; segments 0..=17 (heights 0..=143) are deleted; segment 18 (heights 144..=151)
+    // stays, holding blocks 144..=150: blocks 144..=149 are dead bytes in it until block 150 is pruned too
+    assert_eq!(stats.pruned_below, 150);
+    assert_eq!(stats.segments_deleted, 150 / SEGMENT_BLOCKS);
+    assert_eq!(segments_after, 7 * 40 * prunable_size(1900));
+    assert_eq!(segments_full - segments_after, stats.segment_bytes_freed);
+    // what matters was not lost
     assert_eq!(store.state_digest().unwrap(), model_digest(&c.blocks));
     assert_eq!(
         store.recompute_tx_root(75).unwrap(),
         Some(c.blocks[74].header.tx_root)
     );
+    // the pruned chain is a small fraction of the full one (the prefixes, the outputs and the key images)
+    assert!(
+        total_after < total_full * 4 / 10,
+        "{total_after} of {total_full}"
+    );
+    assert!(total_after > total_full / 10, "implausibly small");
+}
+
+#[test]
+fn prunable_data_lives_in_segment_files_and_pruning_deletes_whole_files() {
+    let db = TempDb::new("segments");
+    let mut c = Chain::new(&db, 10);
+    c.maker.proof_len = 1900;
+    c.push_n(40); // heights 1..=40: segments 0..=5 of 8 heights each
+    let s = &c.store;
+    assert_eq!(s.segment_blocks(), 8);
+    assert_eq!(s.segment_ids().unwrap(), vec![0, 1, 2, 3, 4, 5]);
+    let per_block = 2 * prunable_size(1900);
+    assert_eq!(s.segments_size().unwrap(), 40 * per_block);
+    for id in 0..=5 {
+        assert!(db.segment_file(id).exists(), "segment {id}");
+    }
+    // blocks 1..=7 are in segment 0 (heights 0..=7), 8..=15 in segment 1
+    let seg0 = std::fs::metadata(db.segment_file(0)).unwrap().len();
+    let seg1 = std::fs::metadata(db.segment_file(1)).unwrap().len();
+    assert_eq!((seg0, seg1), (7 * per_block, 8 * per_block));
+
+    // pruning below 20 forgets blocks 1..=19 at once, but deletes only the files wholly below 20: 0 and 1
+    let stats = s.prune_below(20).unwrap();
+    assert_eq!(stats.transactions_pruned, 19 * 2);
+    assert_eq!(stats.prunable_bytes_freed, 19 * per_block);
+    assert_eq!(stats.segments_deleted, 2);
+    assert_eq!(stats.segment_bytes_freed, seg0 + seg1);
+    assert_eq!(s.segment_ids().unwrap(), vec![2, 3, 4, 5]);
+    assert!(!db.segment_file(0).exists() && !db.segment_file(1).exists());
+    // blocks 16..=19 are pruned (logically, exactly) though their bytes sit in a file that stays for now
+    assert!(s.get_block(19).unwrap().unwrap().is_pruned());
+    assert!(!s.get_block(20).unwrap().unwrap().is_pruned());
+    assert_eq!(s.segments_size().unwrap(), 25 * per_block);
+    // the next boundary deletes the next file
+    let stats = s.prune_below(24).unwrap();
+    assert_eq!(stats.segments_deleted, 1);
+    assert_eq!(s.segment_ids().unwrap(), vec![3, 4, 5]);
+    // everything, including the tip: all files but the one holding the tip's segment are gone
+    s.prune_below(41).unwrap();
+    assert_eq!(s.segment_ids().unwrap(), vec![5]);
+    // the state and every root are untouched
+    assert_eq!(s.state_digest().unwrap(), model_digest(&c.blocks));
+    for h in 1..=40 {
+        assert_eq!(
+            s.recompute_tx_root(h).unwrap(),
+            Some(c.blocks[h as usize - 1].header.tx_root)
+        );
+    }
+}
+
+#[test]
+fn a_crash_between_writing_the_segment_and_committing_is_harmless() {
+    let db = TempDb::new("crash");
+    let mut c = Chain::new(&db, 11);
+    c.push_n(5);
+    let expected_len = 5 * 2 * prunable_size(200);
+    assert_eq!(c.store.segments_size().unwrap(), expected_len);
+    let store_path = db.0.clone();
+    drop(c.store);
+    // what a crash leaves: bytes appended to a segment that the database never committed...
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(db.segment_file(0))
+            .unwrap();
+        // more than the next block's bytes, so only truncating to the committed end can remove all of it
+        f.write_all(&[0xAB; 5000]).unwrap();
+    }
+    // ...and segment files the database knows nothing about (a new one that was never committed, one
+    // whose blocks were pruned before a crash could delete it)
+    std::fs::write(db.segment_file(3), [1u8; 100]).unwrap();
+    std::fs::write(db.segment_file(99), [2u8; 100]).unwrap();
+    assert_eq!(
+        std::fs::metadata(db.segment_file(0)).unwrap().len(),
+        expected_len + 5000
+    );
+
+    // opening deletes the orphan files, and keeps the real one
+    c.store = Store::open_with(&store_path, LABEL, POW, Some(SEGMENT_BLOCKS)).unwrap();
+    assert_eq!(c.store.segment_ids().unwrap(), vec![0]);
+    // every stored block reads back exactly; the leftover bytes are not seen
+    for (i, b) in c.blocks.iter().enumerate() {
+        assert_eq!(
+            &c.store
+                .get_block(i as u64 + 1)
+                .unwrap()
+                .unwrap()
+                .into_full()
+                .unwrap(),
+            b
+        );
+    }
+    // the next block is written at the COMMITTED length, over the leftover bytes, and the file ends exactly there
+    c.push_n(2);
+    assert_eq!(c.store.segments_size().unwrap(), 7 * 2 * prunable_size(200));
+    for (i, b) in c.blocks.iter().enumerate() {
+        assert_eq!(
+            &c.store
+                .get_block(i as u64 + 1)
+                .unwrap()
+                .unwrap()
+                .into_full()
+                .unwrap(),
+            b
+        );
+    }
+    assert_eq!(c.store.state_digest().unwrap(), model_digest(&c.blocks));
+}
+
+#[test]
+fn a_missing_or_short_segment_file_is_corruption_not_a_panic() {
+    let db = TempDb::new("corrupt");
+    let mut c = Chain::new(&db, 12);
+    c.push_n(3);
+    let id = ids::tx_id(&c.blocks[0].transactions[0]).unwrap();
+    let store_path = db.0.clone();
+    drop(c.store);
+
+    // a segment cut short
+    let len = std::fs::metadata(db.segment_file(0)).unwrap().len();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(db.segment_file(0))
+        .unwrap()
+        .set_len(len / 2)
+        .unwrap();
+    let s = Store::open_with(&store_path, LABEL, POW, Some(SEGMENT_BLOCKS)).unwrap();
+    assert!(
+        matches!(s.get_block(3), Err(StoreError::Corrupt(_))),
+        "the last block is in the missing half"
+    );
+    assert!(matches!(
+        s.tx(&ids::tx_id(&c.blocks[2].transactions[1]).unwrap()),
+        Err(StoreError::Corrupt(_))
+    ));
+    // a failed rollback changes nothing
+    let before = (
+        s.state_digest().unwrap(),
+        s.tip().unwrap().0,
+        s.output_count().unwrap(),
+    );
+    assert!(matches!(s.pop_block(), Err(StoreError::Corrupt(_))));
+    assert_eq!(
+        (
+            s.state_digest().unwrap(),
+            s.tip().unwrap().0,
+            s.output_count().unwrap()
+        ),
+        before
+    );
+    // the parts that do not need the file still work
+    assert!(s.tx(&id).unwrap().is_some() || matches!(s.tx(&id), Err(StoreError::Corrupt(_))));
+    assert_eq!(
+        s.recompute_tx_root(1).unwrap().is_some(),
+        s.get_block(1).is_ok()
+    );
+    drop(s);
+
+    // a segment file that has vanished altogether
+    std::fs::remove_file(db.segment_file(0)).unwrap();
+    let s = Store::open_with(&store_path, LABEL, POW, Some(SEGMENT_BLOCKS)).unwrap();
+    assert!(matches!(s.get_block(1), Err(StoreError::Corrupt(_))));
+    assert_eq!(
+        s.state_digest().unwrap(),
+        model_digest(&c.blocks),
+        "the state does not depend on the files"
+    );
+    // pruning is still possible: it needs no file
+    s.prune_below(4).unwrap();
+    assert!(s.get_block(1).unwrap().unwrap().is_pruned());
+}
+
+#[test]
+fn rolling_back_gives_the_segment_space_back() {
+    let db = TempDb::new("pop-space");
+    let mut c = Chain::new(&db, 13);
+    c.push_n(10); // heights 1..=10: segment 0 holds 1..=7, segment 1 holds 8..=10
+    let per_block = 2 * prunable_size(200);
+    assert_eq!(c.store.segment_ids().unwrap(), vec![0, 1]);
+    for _ in 0..3 {
+        c.pop(); // blocks 10, 9, 8: segment 1 becomes empty and its file goes
+    }
+    assert_eq!(c.store.segment_ids().unwrap(), vec![0]);
+    assert_eq!(c.store.segments_size().unwrap(), 7 * per_block);
+    c.pop(); // block 7: segment 0 now ends after block 6 (the file keeps the dead tail until it is overwritten)
+    assert!(c.store.segments_size().unwrap() >= 6 * per_block);
+    // the same and different blocks go in again at the committed length, and the file ends exactly there
+    c.push_n(5);
+    let blocks_in_seg0 = 7;
+    let blocks_in_seg1 = 4;
+    assert_eq!(c.blocks.len(), 11);
+    assert_eq!(
+        c.store.segments_size().unwrap(),
+        (blocks_in_seg0 + blocks_in_seg1) as u64 * per_block
+    );
+    for (i, b) in c.blocks.iter().enumerate() {
+        assert_eq!(
+            &c.store
+                .get_block(i as u64 + 1)
+                .unwrap()
+                .unwrap()
+                .into_full()
+                .unwrap(),
+            b,
+            "block {}",
+            i + 1
+        );
+    }
+    assert_eq!(c.store.state_digest().unwrap(), model_digest(&c.blocks));
+}
+
+#[test]
+fn the_segment_size_is_fixed_when_the_database_is_created() {
+    let db = TempDb::new("segsize");
+    drop(db.open()); // created with 8
+    assert!(matches!(
+        Store::open_with(&db.0, LABEL, POW, Some(16)),
+        Err(StoreError::WrongFormat)
+    ));
+    assert!(matches!(
+        Store::open_with(&db.0, LABEL, POW, Some(0)),
+        Err(StoreError::WrongFormat)
+    ));
+    // no size asked: the recorded one is used
+    assert_eq!(
+        Store::open(&db.0, LABEL, POW).unwrap().segment_blocks(),
+        SEGMENT_BLOCKS
+    );
+    // a new database with no size asked gets the default
+    let fresh = TempDb::new("segsize-default");
+    let s = Store::open(&fresh.0, LABEL, POW).unwrap();
+    assert_eq!(s.segment_blocks(), tenero_store::DEFAULT_SEGMENT_BLOCKS);
+    assert_eq!(s.segment_blocks(), 1_000);
 }
 
 /// A long random sequence of appends, reorganisations and prunings, checked against a plain in-memory model
