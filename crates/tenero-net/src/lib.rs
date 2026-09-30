@@ -10,6 +10,7 @@
 pub mod addrbook;
 pub mod engine;
 pub mod message;
+pub mod noise;
 pub mod sim;
 pub mod wire;
 

@@ -12,6 +12,17 @@ tenero-store = { path = "../tenero-store" }
 tenero-chain = { path = "../tenero-chain" }
 tenero-node = { path = "../tenero-node" }
 
+# The Noise protocol for the encrypted channel between nodes (M8.4): `snow` 0.10, licence Apache-2.0 OR MIT.
+# AN EXCEPTION TO CLAUDE.md RULE 3 ("use audited libraries"), made by the owner on 2026-09-30 and again on 2026-10:
+# snow's own README says it "has not received any formal audit". What it uses underneath (curve25519-dalek,
+# ChaCha20-Poly1305, BLAKE2) are widely used crates; what is unaudited is snow's handshake state machine. Home-made
+# Noise would be worse, and no encryption worse still. It gives a confidential, integrity-protected channel; it does
+# not hide who is talking (no anonymity) and, with no pinned identities yet, does not prove WHO the peer is.
+# Listed for the M9 review.
+# Only what the pattern Noise_XX_25519_ChaChaPoly_BLAKE2s needs: the default features also pull in `ring` (C and
+# assembly) and AES-GCM and SHA-2, which nothing here uses.
+snow = { version = "0.10", default-features = false, features = ["default-resolver", "use-chacha20poly1305", "use-blake2", "use-curve25519", "use-getrandom"] }
+
 [dev-dependencies]
 # to read the golden vector files (already in the tree through tenero-core; MIT OR Apache-2.0)
 serde_json = "1"
