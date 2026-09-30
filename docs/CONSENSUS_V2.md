@@ -342,6 +342,29 @@ for it:
 - It is a consensus constant of rules version 2; changing it later is a new version (section 10). `v2_fees.json`
   pins the floor and the median rule.
 
+### 8.3 Fork choice and reorganisation (as built in `tenero-chain`, `chain.rs`)
+
+- **The chain is the branch with the most cumulative work**, the sum over its blocks of
+  `floor(2^256 / target)`. A branch replaces the chain only if its work is **strictly greater**: on a tie the
+  branch seen first stays. (A shorter branch can win if its blocks were harder; a test builds one.)
+- A block on a side branch is judged by **its own branch**: the target, median time and block-size median come
+  from that branch's last blocks, never from the chain's tip. On arrival it gets every check of section 8
+  except step 6 (per-transaction fee, key images, rings, proofs), which need the state at its parent and are
+  checked only when the branch is about to become the chain. A side branch may therefore spend an output the
+  chain also spent; each branch is judged against its own state.
+- **To switch**, the chain is rolled back to the fork point and the branch is validated and applied block by
+  block. If any block fails, the chain is restored exactly as it was (same state digest and tip), and that
+  block and everything built on it are remembered as invalid. The old chain's blocks go into the side pool, so
+  it can win back.
+- A block whose parent is unknown is an **orphan**: it is not kept; whoever sent it is asked for the missing
+  ancestors (M8). A block more than the future limit ahead of the clock is **not yet**, and is never marked
+  invalid.
+- **Limits of this implementation, not of the rules:** a reorganisation is several store commits, not one (a
+  crash leaves a valid chain at the fork point plus a prefix of one branch); the side pool is in memory, bounded
+  (default 512 blocks, oldest dropped first) and lost on restart; a reorganisation that would undo pruned
+  blocks is refused (`ReorgTooDeep`), because they could not be put back on failure. There is no other depth
+  limit.
+
 ## 9. Addresses and keys  (decision 5, **DECIDED: Carrot**)
 
 **Follow Monero's Carrot specification**, read at implementation time, not invent one. Carrot is

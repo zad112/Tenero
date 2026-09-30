@@ -2,8 +2,8 @@
 //! document lists the checks. Every rule has its own error, so a test can break exactly one rule and see
 //! exactly that error.
 //!
-//! **What this does not check, yet:** the cryptographic proofs (see [`crate::proofs`]) and blocks that
-//! do not extend the tip (side chains and reorganisations: fork choice comes next).
+//! **What this does not check unless told to:** the cryptographic proofs (see [`crate::proofs`]).
+//! Blocks that do not extend the tip are handled by [`crate::chain`], which uses this validator.
 
 use crate::params::ChainParams;
 use crate::pow::PowCheck;
@@ -93,6 +93,20 @@ pub enum BlockError {
         tx: usize,
         reason: String,
     },
+    /// This block, or an ancestor of it, was found invalid before (see [`crate::chain`]).
+    KnownInvalid,
+    /// Switching to this branch would have to undo blocks whose proofs a pruned node no longer has, so
+    /// they could not be put back if the branch turned out to be invalid.
+    ReorgTooDeep {
+        fork_height: u64,
+        pruned_below: u64,
+    },
+    /// A block on a side branch turned out invalid when the branch was about to become the chain. The
+    /// chain is unchanged; the block and its descendants are remembered as invalid.
+    BranchInvalid {
+        block_id: [u8; 32],
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for BlockError {
@@ -178,17 +192,21 @@ impl<'a> Validator<'a> {
 
     /// What the rules require of the next block: its height, parent, target, earliest timestamp, reward and
     /// the block-size median. A miner builds a block from this; the validator checks a block against it.
-    pub fn next_block(&self) -> Result<NextBlock, BlockError> {
-        let (tip_height, tip) = self.store.tip()?;
-        let height = tip_height + 1;
-        let pos = usize::try_from(height).map_err(|_| BlockError::Malformed("height".into()))?;
-        // the difficulty looks back `window + 1` positions, the median time 11, the median size 10
+    pub fn lookback(&self) -> usize {
         let window = usize::try_from(self.params.difficulty.window).unwrap_or(usize::MAX - 1);
-        let need = window
+        window
             .saturating_add(1)
             .max(difficulty::MEDIAN_TIME_WINDOW)
-            .max(fees::MEDIAN_WINDOW);
-        let take = pos.min(need);
+            .max(fees::MEDIAN_WINDOW)
+    }
+
+    /// The next block on top of the current tip.
+    pub fn next_block(&self) -> Result<NextBlock, BlockError> {
+        let (tip_height, _) = self.store.tip()?;
+        let height = tip_height + 1;
+        let take = usize::try_from(height)
+            .map_err(|_| BlockError::Malformed("height".into()))?
+            .min(self.lookback());
         let mut recent: Vec<BlockIndex> = Vec::with_capacity(take);
         for h in (height - take as u64)..height {
             recent.push(
@@ -197,7 +215,22 @@ impl<'a> Validator<'a> {
                     .ok_or_else(|| BlockError::Store(format!("block {h} is missing")))?,
             );
         }
-        let first = height - take as u64;
+        self.next_block_from(height, &recent)
+    }
+
+    /// The next block at `height` on ANY branch: `recent` are that branch's last `min(height, lookback())`
+    /// blocks, oldest first, the last one being the parent. This is what a side branch is judged by: the
+    /// rules look only at these blocks, never at the store's tip.
+    pub fn next_block_from(
+        &self,
+        height: u64,
+        recent: &[BlockIndex],
+    ) -> Result<NextBlock, BlockError> {
+        let tip = recent
+            .last()
+            .ok_or_else(|| BlockError::Malformed("a block needs a parent".into()))?;
+        let pos = usize::try_from(height).map_err(|_| BlockError::Malformed("height".into()))?;
+        let first = height - recent.len() as u64;
         let ts_of = |r: &BlockIndex| i64::try_from(r.header.timestamp).unwrap_or(i64::MAX);
         let ts: Vec<i64> = recent.iter().map(ts_of).collect();
         let targets: Vec<U256> = recent
@@ -255,6 +288,19 @@ impl<'a> Validator<'a> {
     /// seconds.
     pub fn validate_block(&self, block: &Block, now: u64) -> Result<Outcome, BlockError> {
         let next = self.next_block()?;
+        self.validate_block_on(block, &next, now, true)
+    }
+
+    /// The same checks against an explicit [`NextBlock`] (any branch). With `check_state` false, step 6 is
+    /// skipped: the transactions' fee, key images, rings and proofs, which need the state at the parent and
+    /// so can be checked only when the branch becomes the chain. Everything else is checked.
+    pub fn validate_block_on(
+        &self,
+        block: &Block,
+        next: &NextBlock,
+        now: u64,
+        check_state: bool,
+    ) -> Result<Outcome, BlockError> {
         let header = &block.header;
 
         // 1. the header: version, parent, time
@@ -335,7 +381,7 @@ impl<'a> Validator<'a> {
             .iter()
             .try_fold(0u64, |a, t| a.checked_add(t.prefix.fee))
             .ok_or_else(|| BlockError::Malformed("the fees overflow".into()))?;
-        let expected = self.coinbase_amount(&next, body_size, fees_total)?;
+        let expected = self.coinbase_amount(next, body_size, fees_total)?;
         let paid = block
             .coinbase
             .outputs
@@ -350,9 +396,11 @@ impl<'a> Validator<'a> {
         }
 
         // 6. every other transaction, in order
-        let mut spent_in_block: HashSet<[u8; 32]> = HashSet::new();
-        for (i, t) in block.transactions.iter().enumerate() {
-            self.check_transaction(i, t, sizes[i], &next, &mut spent_in_block)?;
+        if check_state {
+            let mut spent_in_block: HashSet<[u8; 32]> = HashSet::new();
+            for (i, t) in block.transactions.iter().enumerate() {
+                self.check_transaction(i, t, sizes[i], next, &mut spent_in_block)?;
+            }
         }
 
         Ok(Outcome::Valid(ValidatedBlock {

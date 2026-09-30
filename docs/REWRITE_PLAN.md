@@ -105,8 +105,10 @@ chain must be able to run pruned (`CONSENSUS_V2.md` section 14). The original op
   size limit and penalty, the coinbase, the dynamic fee, key-image order and uniqueness, ring shape and
   maturity. Each rule is tested by breaking exactly it. **The signature and range-proof checks are behind a
   hook and are NOT done** (`ProofsNotChecked`, and `ValidatedBlock::proofs_checked` says so), and blocks that
-  do not extend the tip are not handled yet. Next: fork choice and reorganisation (cumulative work is ready:
-  `U256::work_of_target`), then M7.
+  do not extend the tip are handled by `chain.rs`: fork choice by cumulative work, a side-branch pool,
+  reorganisation with an exact restore on failure (`CONSENSUS_V2.md` 8.3), 16 tests with 18 injected faults all
+  caught. **M6 is done, apart from the limits listed in 8.3** (in-memory side pool, several commits per
+  reorganisation, no reorganising below the pruned part). Next: the rest of M7.
 - **M7 status (2026-09-30): started.** `crates/tenero-crypto` adds `monero-oxide` (`monero-clsag`,
   `monero-bulletproofs`, git dependency pinned to commit `9e11f5c`, MIT; not on crates.io) and implements the
   transaction proofs of `CONSENSUS_V2.md` 7.1: a strict `proof_data` layout, the signed message, the balance
