@@ -214,6 +214,8 @@ pub struct Stats {
     pub blocks_applied: u64,
     /// Blocks applied without their full proof of work and proofs, because assume-valid vouched for them.
     pub assumed_blocks: u64,
+    /// Replies that came after the request they answered had timed out, and were forgiven ("slow is not hostile").
+    pub late_replies_forgiven: u64,
 }
 
 struct Peer {
@@ -274,6 +276,21 @@ struct Req {
     at: u64,
 }
 
+/// A reply we have given up waiting for. If it does arrive after all, it is late, not unsolicited: "slow is not
+/// hostile". Each timed-out request forgives exactly one reply, from the peer that was slow, for a while.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Late {
+    BlockIds,
+    Headers,
+    Tx([u8; 32]),
+    /// The nonce of a ping that went unanswered and was asked again.
+    Pong(u64),
+}
+
+/// The most forgivable replies remembered at once (they are made only by our own timeouts, so this is a bound, not a
+/// limit anyone can reach from outside).
+const MAX_FORGIVABLE: usize = 4096;
+
 enum Applied {
     /// It is (or became) part of the chain and moved the tip.
     NewTip,
@@ -296,6 +313,8 @@ pub struct Engine<'a> {
     /// Addresses we have asked the transport to dial, and when.
     connecting: BTreeMap<String, u64>,
     syncing: Option<Sync>,
+    /// Replies that would be forgiven if they came now, and until when (see [`Late`]).
+    forgivable: Vec<(PeerId, Late, u64)>,
     /// The answer last given to each requesting network group, and when it stops being reused.
     addr_answers: HashMap<String, (u64, Vec<PeerAddr>)>,
     cooldown: HashMap<PeerId, u64>,
@@ -326,6 +345,7 @@ impl<'a> Engine<'a> {
             book,
             connecting: BTreeMap::new(),
             syncing: None,
+            forgivable: Vec::new(),
             addr_answers: HashMap::new(),
             cooldown: HashMap::new(),
             req_blocks: BTreeMap::new(),
@@ -761,7 +781,7 @@ impl<'a> Engine<'a> {
                     .peers
                     .get_mut(&peer)
                     .is_some_and(|p| p.ping_sent.take() == Some(n));
-                if !matched {
+                if !matched && !self.forgave(peer, &Late::Pong(n)) {
                     self.penalize(peer, 10, "unsolicited pong", out);
                 }
             }
@@ -1269,6 +1289,36 @@ impl<'a> Engine<'a> {
 
     /// A request went unanswered. Slow is not hostile: the peer is not scored, but a peer that lets
     /// `max_timeouts` requests in a row go unanswered is dropped (any answer resets the count).
+    /// Remembers that a reply of this kind from `peer` would now be late, not unsolicited. It is forgiven for four
+    /// request timeouts (as long as a late block delivery is welcome).
+    fn forgive_later(&mut self, peer: PeerId, what: Late) {
+        if self.forgivable.len() >= MAX_FORGIVABLE {
+            self.forgivable.remove(0);
+        }
+        let until = self
+            .now
+            .saturating_add(self.cfg.request_timeout_ms.saturating_mul(4));
+        self.forgivable.push((peer, what, until));
+    }
+
+    /// Is this reply the late answer to a request that timed out? If so it is used up and counted, and the caller
+    /// must not punish it.
+    fn forgave(&mut self, peer: PeerId, what: &Late) -> bool {
+        let now = self.now;
+        let found = self
+            .forgivable
+            .iter()
+            .position(|(p, w, until)| *p == peer && w == what && *until > now);
+        match found {
+            Some(i) => {
+                self.forgivable.remove(i);
+                self.stats.late_replies_forgiven += 1;
+                true
+            }
+            None => false,
+        }
+    }
+
     fn note_timeout(&mut self, peer: PeerId, out: &mut Vec<Action>) {
         let over = match self.peers.get_mut(&peer) {
             Some(p) => {
@@ -1355,6 +1405,7 @@ impl<'a> Engine<'a> {
         headers: Vec<BlockHeader>,
         out: &mut Vec<Action>,
     ) {
+        // without a checkpoint we never ask for headers, so any that arrive were not asked for (and cannot be late)
         let Some(assume) = self.cfg.assume_valid else {
             self.penalize(peer, 20, "unsolicited headers", out);
             return;
@@ -1373,7 +1424,9 @@ impl<'a> Engine<'a> {
             _ => None,
         };
         let Some((mut ids, next_height, last_id)) = state else {
-            self.penalize(peer, 20, "unsolicited headers", out);
+            if !self.forgave(peer, &Late::Headers) {
+                self.penalize(peer, 20, "unsolicited headers", out);
+            }
             return;
         };
         if headers.is_empty() {
@@ -1476,7 +1529,9 @@ impl<'a> Engine<'a> {
             .as_ref()
             .is_some_and(|s| s.peer == peer && matches!(s.phase, Phase::Ids));
         if !expecting {
-            self.penalize(peer, 20, "unsolicited block ids", out);
+            if !self.forgave(peer, &Late::BlockIds) {
+                self.penalize(peer, 20, "unsolicited block ids", out);
+            }
             return;
         }
         if first_height == 0 {
@@ -1777,6 +1832,9 @@ impl<'a> Engine<'a> {
                 continue;
             };
             if self.req_txs.remove(&id).map(|r| r.peer) != Some(peer) {
+                if self.forgave(peer, &Late::Tx(id)) {
+                    continue;
+                }
                 self.penalize(peer, 20, "a transaction nobody asked for", out);
                 if !self.peers.contains_key(&peer) {
                     return;
@@ -1828,7 +1886,7 @@ impl<'a> Engine<'a> {
         // handshake, keepalive
         let mut drop: Vec<(PeerId, &'static str)> = Vec::new();
         let mut ping: Vec<PeerId> = Vec::new();
-        let mut late_pings: Vec<PeerId> = Vec::new();
+        let mut late_pings: Vec<(PeerId, u64)> = Vec::new();
         for (id, p) in &self.peers {
             if p.hello.is_none() {
                 if now.saturating_sub(p.connected_at) > self.cfg.handshake_timeout_ms {
@@ -1837,7 +1895,7 @@ impl<'a> Engine<'a> {
             } else if let Some(t) = p.ping_sent {
                 // an unanswered ping is asked again; only several in a row cost the connection
                 if now.saturating_sub(t) > self.cfg.pong_timeout_ms {
-                    late_pings.push(*id);
+                    late_pings.push((*id, t));
                 }
             } else if now.saturating_sub(p.last_recv) > self.cfg.ping_after_ms {
                 ping.push(*id);
@@ -1846,7 +1904,9 @@ impl<'a> Engine<'a> {
         for (id, why) in drop {
             self.drop_peer(id, why, false, out);
         }
-        for id in late_pings {
+        for (id, nonce) in late_pings {
+            // the ping we asked again may still be answered: that answer is late, not unsolicited
+            self.forgive_later(id, Late::Pong(nonce));
             self.note_timeout(id, out);
             if self.peers.contains_key(&id) {
                 ping.push(id);
@@ -1867,6 +1927,15 @@ impl<'a> Engine<'a> {
             .is_some_and(|s| now.saturating_sub(s.started) > timeout)
         {
             let peer = self.syncing.as_ref().map(|s| s.peer).unwrap();
+            // what the peer owes us now: ids or headers (blocks are covered by `asked`)
+            let owed = match self.syncing.as_ref().map(|s| &s.phase) {
+                Some(Phase::Ids) => Some(Late::BlockIds),
+                Some(Phase::Headers { .. }) => Some(Late::Headers),
+                _ => None,
+            };
+            if let Some(what) = owed {
+                self.forgive_later(peer, what);
+            }
             self.abort_sync(peer, out);
             self.note_timeout(peer, out);
         }
@@ -1887,15 +1956,18 @@ impl<'a> Engine<'a> {
         // asks that will never be answered no longer make a delivery welcome
         self.asked
             .retain(|_, at| now.saturating_sub(*at) <= timeout.saturating_mul(4));
-        let late_txs: Vec<[u8; 32]> = self
+        let late_txs: Vec<([u8; 32], PeerId)> = self
             .req_txs
             .iter()
             .filter(|(_, r)| now.saturating_sub(r.at) > timeout)
-            .map(|(id, _)| *id)
+            .map(|(id, r)| (*id, r.peer))
             .collect();
-        for id in late_txs {
+        for (id, peer) in late_txs {
             self.req_txs.remove(&id);
+            self.forgive_later(peer, Late::Tx(id));
         }
+        // a late reply that has waited too long to be forgiven is forgotten
+        self.forgivable.retain(|(_, _, until)| *until > now);
 
         // blocks that were ahead of the clock
         let held = std::mem::take(&mut self.held);

@@ -272,8 +272,8 @@ only (no DNS seeds); the test-network node is a test tool (no wallet, SHA-256 ch
 in sync for about six hours (379 blocks) and then split into three separate chains that never rejoined, with 24-hour bans
 in their saved state. The likely cause is the test node mining inside its network loop (the real miner does not), which
 stalls it for tens of seconds once the difficulty has adapted; peers then score its late replies as hostile. **The engine
-should not score a reply that arrives after its request timed out** ("slow is not hostile"): not fixed, a KNOWN ISSUE to
-fix before any launch. Details and the evidence are in `docs/TESTNET.md`. A repeat run should use `tenerod`.
+should not score a reply that arrives after its request timed out** ("slow is not hostile"): **fixed afterwards** (a late
+reply is forgiven once, and the loop reads its queue before it looks at the clock; `docs/TESTNET.md`). Details and the evidence are in `docs/TESTNET.md`. A repeat run should use `tenerod`.
 
 ### M8.5 The miner (size M to L) **BUILT AND MEASURED 2026-10** (`crates/tenero-miner`, `MatmulPow` in `tenero-chain`)
 A block template from the node (mempool, correct coinbase, Merkle root, `Validator::next_block` for the target),

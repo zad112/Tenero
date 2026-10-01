@@ -107,9 +107,28 @@ similar are scored, and 100 points is a 24-hour ban. Two such bans on one host a
 * **But the engine has a real weakness this exposed:** a reply that arrives *after* its request timed out is scored as if
   it were unsolicited, so a node that merely stalls (for example while a real node builds a 4.3 GiB proof-of-work dataset
   at an epoch change, which takes seconds inside the loop) can be banned by honest peers. The engine's own principle is
-  "slow is not hostile" (a timed-out request is not scored); it should extend to the late answer. **Not fixed; recorded
-  as a known issue to fix before any launch** (`docs/M8_PLAN.md`).
+  "slow is not hostile" (a timed-out request is not scored); it should extend to the late answer. **Fixed afterwards (see below).**
 * The first 379 blocks, about six hours, did stay in sync across three nodes, with forks settled as designed.
+
+### The fix (made after that run)
+
+Two changes, each with tests that fail without it (`crates/tenero-net/tests/late_replies.rs`, and two tests in
+`tests/transport.rs`):
+
+1. **A late reply is forgiven once** (`engine.rs`). When our own timeout gives up on a request for block ids, headers or
+   transactions, or on a ping, the engine remembers that a reply of that kind from that peer would now be *late*, not
+   unsolicited, for four request timeouts. The first such reply is ignored without a penalty and counted
+   (`Stats::late_replies_forgiven`); a second reply to the same request, a reply from another peer, a reply of another kind,
+   and a reply after the grace has passed are punished exactly as before. (Late *blocks* were already welcome: the engine
+   remembers what it asked for for four timeouts.)
+2. **The loop reads what is already queued before it looks at the clock** (`transport.rs`). After a stall the answers
+   to our own requests are waiting in the queue; ticking first would declare those requests timed out and then find their
+   answers unwelcome. It reads up to 4,096 events first.
+
+Fault injection: 20 faults in the fix, one by one; all caught (two of the expiry checks are redundant with each other,
+so removing either alone changes nothing; the third survivor of the first pass was dead code and was removed). **Not
+tested:** a stall on a real network with real proof-of-work blocks, and what a hostile peer can do with the grace (it can
+cost us at most one ignored reply per request that timed out, which is no more than being slow costs it).
 
 ## Many connections
 

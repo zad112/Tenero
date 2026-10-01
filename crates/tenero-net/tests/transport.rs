@@ -1337,3 +1337,151 @@ fn the_hooks_are_polled_on_their_own_clock_not_the_engines() {
     assert!(fast >= 40, "{fast} polls in a second at 10 ms");
     assert!(fast <= 130, "{fast} polls in a second at 10 ms is too many");
 }
+
+// ---- a node that stalls ------------------------------------------------------------------------------------------
+
+/// A hook that blocks the whole loop once, the first time the node is syncing: what the day-long run's test node did
+/// whenever it searched for a block.
+struct StallOnce {
+    done: bool,
+    stall: Duration,
+}
+
+impl Hooks for StallOnce {
+    fn poll(&mut self, engine: &mut Engine<'_>, _now_ms: u64) -> Vec<Event> {
+        if !self.done && engine.is_syncing() {
+            self.done = true;
+            thread::sleep(self.stall);
+        }
+        Vec::new()
+    }
+}
+
+#[test]
+fn a_node_that_stalls_in_the_middle_of_a_sync_still_finishes_it_and_bans_nobody() {
+    let rigs = SimRig::rigs("tr-stall", 2);
+    mined(&rigs, 60);
+    let (log_a, log_b) = (Log::new(), Log::new());
+    let net_a = Net::bind(net_cfg(Some("127.0.0.1:0"), &log_a)).unwrap();
+    let addr_a = net_a.local_addr().unwrap();
+    let mut cfg_b = net_cfg(None, &log_b);
+    cfg_b.hook_tick = Duration::from_millis(5); // so the hook sees the sync before it is over
+    let net_b = Net::bind(cfg_b).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (bans_a, bans_b, tip_b) = thread::scope(|s| {
+        let ha = s.spawn(|| {
+            let mut e = engine_on(&rigs[0], local_cfg(&[]));
+            net_a.run(&mut e, Arc::clone(&stop), &mut NoHooks).unwrap();
+            e.stats.bans
+        });
+        let hb = s.spawn(|| {
+            // requests are given up on after 200 ms; the stall is four times that, with the answers waiting in
+            // the queue behind other messages
+            let cfg = EngineConfig {
+                request_timeout_ms: 200,
+                ..local_cfg(&[addr_a])
+            };
+            let mut e = engine_on(&rigs[1], cfg);
+            let mut hooks = Both(
+                StallOnce {
+                    done: false,
+                    stall: Duration::from_millis(800),
+                },
+                StopWhen {
+                    done: |e: &Engine<'_>| tip_height(e) == 60,
+                    stop: vec![Arc::clone(&stop)],
+                    deadline: Instant::now() + Duration::from_secs(15),
+                },
+            );
+            net_b.run(&mut e, Arc::clone(&stop), &mut hooks).unwrap();
+            (e.stats.bans, tip_height(&e))
+        });
+        let (bans_b, tip_b) = hb.join().unwrap();
+        (ha.join().unwrap(), bans_b, tip_b)
+    });
+    assert_eq!(
+        tip_b,
+        60,
+        "the stalled node did not finish its sync in time (its queued answers were not read before it gave up)\nB:\n{}",
+        log_b.dump()
+    );
+    assert_eq!((bans_a, bans_b), (0, 0), "nobody was banned for a stall");
+}
+
+#[test]
+fn answers_that_arrived_during_a_stall_are_read_before_the_node_decides_it_timed_out() {
+    // A scripted peer sends a ping and then the answer to the node's request, back to back, while the node's loop is
+    // blocked. When the node wakes it must read BOTH before it looks at its clock: if it ticked after the ping, it
+    // would give up on the request (it was sent long ago) and then find the answer already forgotten.
+    let rigs = SimRig::rigs("tr-queued", 1);
+    let log = Log::new();
+    let mut ncfg = net_cfg(Some("127.0.0.1:0"), &log);
+    ncfg.hook_tick = Duration::from_millis(5);
+    let net = Net::bind(ncfg).unwrap();
+    let addr = net.local_addr().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let got = thread::scope(|s| {
+        let stop2 = Arc::clone(&stop);
+        let node = s.spawn(|| {
+            let cfg = EngineConfig {
+                request_timeout_ms: 200,
+                ..local_cfg(&[])
+            };
+            let mut e = engine_on(&rigs[0], cfg);
+            let mut hooks = StallOnce {
+                done: false,
+                stall: Duration::from_millis(800),
+            };
+            net.run(&mut e, stop2, &mut hooks).unwrap();
+        });
+        struct StopOnDrop(Arc<AtomicBool>);
+        impl Drop for StopOnDrop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let _stop = StopOnDrop(Arc::clone(&stop));
+        let mut c = Client::connect(addr).unwrap();
+        // claim a lot of work, so that the node asks for the chain
+        c.send(&Message::Hello(Hello {
+            version: PROTOCOL_VERSION,
+            chain_id: chain_id(),
+            tip_height: 500,
+            cumulative_work: U256::pow2(200).unwrap().to_be_bytes(),
+            tip_id: [9; 32],
+            pruned_below: 0,
+            nonce: 0,
+        }));
+        let mut asked = false;
+        while let Some(m) = c.recv(Duration::from_secs(3)) {
+            if matches!(m, Message::GetBlockIds { .. }) {
+                asked = true;
+                break;
+            }
+        }
+        assert!(asked, "the node did not ask for block ids");
+        // wait until the node's hook has seen the sync and blocked the loop (it looks every 5 ms)
+        thread::sleep(Duration::from_millis(150));
+        // both at once, while the node is stalled
+        c.send(&Message::Ping(7));
+        c.send(&Message::BlockIds {
+            first_height: 1,
+            ids: vec![[7; 32]],
+        });
+        let mut next_request = false;
+        while let Some(m) = c.recv(Duration::from_secs(4)) {
+            if matches!(m, Message::GetBlocks { .. }) {
+                next_request = true;
+                break;
+            }
+        }
+        drop(_stop);
+        node.join().unwrap();
+        next_request
+    });
+    assert!(
+        got,
+        "the node gave up on its request before reading the answer that was already waiting\n{}",
+        log.dump()
+    );
+}

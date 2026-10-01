@@ -127,6 +127,9 @@ pub struct Counters {
     pub threads: AtomicUsize,
 }
 
+/// The most events the loop reads in a row before it looks at the clock again.
+const MAX_DRAIN: usize = 4096;
+
 /// Called from the loop about every tick with the engine itself: a miner's or a test's way to act. The events it
 /// returns are fed to the engine in order, and the resulting actions carried out.
 pub trait Hooks {
@@ -494,7 +497,19 @@ impl Loop<'_> {
                 .min(next_hook)
                 .saturating_duration_since(Instant::now());
             match rx.recv_timeout(wait) {
-                Ok(ev) => self.on_event(engine, ev),
+                Ok(ev) => {
+                    self.on_event(engine, ev);
+                    // Everything already waiting is read BEFORE the clock is looked at. After a stall (this loop was
+                    // busy, or the machine was) the answers to our requests are sitting in the queue; ticking first
+                    // would declare those requests timed out and then find their answers unwelcome. (Bounded, so a
+                    // flood cannot keep the clock from being looked at.)
+                    for _ in 0..MAX_DRAIN {
+                        match rx.try_recv() {
+                            Ok(ev) => self.on_event(engine, ev),
+                            Err(_) => break,
+                        }
+                    }
+                }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
