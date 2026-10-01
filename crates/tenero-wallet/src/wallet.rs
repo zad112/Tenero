@@ -19,6 +19,9 @@ use crate::interim::{
 /// this makes the wallet rescan from its birth height.
 pub const RECENT_BLOCKS: usize = 100;
 
+/// How many blocks the wallet asks a node for at a time while scanning.
+pub const SCAN_BATCH: u64 = 64;
+
 /// A transaction the wallet has sent keeps its inputs reserved for this many blocks (so that a second payment
 /// does not pick the same coins while the first is still waiting); after that, if the coins are unspent, they
 /// are free again (the transaction was probably dropped).
@@ -274,17 +277,28 @@ impl Wallet {
         }
         // 2. new blocks
         let (tip, _) = chain.tip().map_err(chain_err)?;
-        let from = self.scanned.map_or(self.birth_height, |h| h + 1);
-        for height in from..=tip {
-            let Some(block) = chain.block(height).map_err(chain_err)? else {
+        let mut from = self.scanned.map_or(self.birth_height, |h| h + 1);
+        while from <= tip {
+            let batch = chain.blocks(from, SCAN_BATCH).map_err(chain_err)?;
+            if batch.is_empty() {
                 break;
-            };
-            report.outputs_found += self.scan_block(&block);
-            report.blocks_scanned += 1;
-            self.scanned = Some(height);
-            self.recent.push((height, block.id));
-            if self.recent.len() > RECENT_BLOCKS {
-                self.recent.remove(0);
+            }
+            for block in batch {
+                // blocks must arrive in order, one after another; anything else is the node's bug, not a chain
+                if block.height != from {
+                    return Err(WalletError::Chain(format!(
+                        "asked for block {from}, got block {}",
+                        block.height
+                    )));
+                }
+                report.outputs_found += self.scan_block(&block);
+                report.blocks_scanned += 1;
+                self.scanned = Some(block.height);
+                self.recent.push((block.height, block.id));
+                if self.recent.len() > RECENT_BLOCKS {
+                    self.recent.remove(0);
+                }
+                from += 1;
             }
         }
         Ok(report)

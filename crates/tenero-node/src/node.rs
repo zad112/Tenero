@@ -210,6 +210,19 @@ impl<'a> Node<'a> {
         self.pool.add(&v, tx)
     }
 
+    /// Whether a loose transaction would be taken now, and if not why not (nothing changes). A wallet's node link
+    /// uses it to say no with a reason before the transaction is handed over.
+    pub fn check_tx(&self, tx: &Transaction) -> Result<(), String> {
+        let id = tenero_core::v2::ids::tx_id(tx).map_err(|e| e.to_string())?;
+        if self.pool.contains(&id) {
+            return Err("the node already has this transaction".into());
+        }
+        self.validator()
+            .check_pool_tx(tx)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     /// The transactions a miner should put in the next block: best fee rate first, within `max_body_bytes`.
     pub fn block_template_txs(&self, max_body_bytes: u64) -> Vec<Transaction> {
         self.pool.select(max_body_bytes)

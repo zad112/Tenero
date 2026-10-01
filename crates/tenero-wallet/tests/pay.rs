@@ -845,3 +845,48 @@ fn change_is_spendable_wherever_it_sits_in_the_transaction() {
         "the change was seen in both places: {positions:?}"
     );
 }
+
+/// A node that answers a request for blocks with the wrong ones (a bug or a lie).
+struct Shifted<'a, 'n>(&'a Node<'n>);
+
+impl ChainView for Shifted<'_, '_> {
+    fn tip(&self) -> Result<(u64, [u8; 32]), String> {
+        ChainView::tip(self.0)
+    }
+    fn block(&self, h: u64) -> Result<Option<tenero_wallet::ScanBlock>, String> {
+        self.0.block(h)
+    }
+    fn blocks(&self, from: u64, max: u64) -> Result<Vec<tenero_wallet::ScanBlock>, String> {
+        self.0.blocks(from + 1, max)
+    }
+    fn output(&self, i: u64) -> Result<Option<tenero_store::StoredOutput>, String> {
+        ChainView::output(self.0, i)
+    }
+    fn output_count(&self) -> Result<u64, String> {
+        ChainView::output_count(self.0)
+    }
+    fn key_image_spent(&self, k: &[u8; 32]) -> Result<bool, String> {
+        self.0.key_image_spent(k)
+    }
+    fn rules(&self) -> Result<tenero_wallet::Rules, String> {
+        ChainView::rules(self.0)
+    }
+}
+
+#[test]
+fn a_node_that_sends_the_wrong_blocks_is_not_believed() {
+    let rig = Rig::new("shifted", 2, 1);
+    let mut node = rig.node();
+    let mut alice = wallet(1);
+    mine_n(&mut node, &alice.address(), 4);
+    let r = alice.sync(&Shifted(&node));
+    let e = r.unwrap_err();
+    assert!(
+        matches!(&e, WalletError::Chain(m) if m.contains("asked for block")),
+        "{e:?}"
+    );
+    assert!(
+        alice.owned().is_empty(),
+        "nothing was taken from the wrong blocks"
+    );
+}

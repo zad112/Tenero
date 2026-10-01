@@ -442,3 +442,68 @@ fn an_address_survives_its_text_form() {
         assert!(a.to_text().starts_with("tni1"));
     }
 }
+
+// ---- amounts -----------------------------------------------------------------------------------------------------
+
+#[test]
+fn amounts_parse_strictly_and_round_trip() {
+    use tenero_wallet::amount::{format_coins, parse_coins};
+    let good = [
+        ("0", 0u64),
+        ("1", 100_000_000),
+        ("1.5", 150_000_000),
+        ("0.00000001", 1),
+        ("0.1", 10_000_000),
+        (".5", 50_000_000),
+        ("20", 2_000_000_000),
+        ("184467440737.09551615", u64::MAX),
+        ("00012.50", 1_250_000_000),
+    ];
+    for (text, units) in good {
+        assert_eq!(parse_coins(text), Some(units), "{text}");
+    }
+    for bad in [
+        "",
+        ".",
+        "1.",
+        "-1",
+        "+1",
+        "1e3",
+        "1,5",
+        " 1",
+        "1 ",
+        "1.123456789",
+        "0x10",
+        "1..2",
+        "1.2.3",
+        "184467440737.09551616",
+        "184467440738",
+        "99999999999999999999",
+        "١",
+        "1_0",
+    ] {
+        assert_eq!(parse_coins(bad), None, "{bad:?}");
+    }
+    for (text, units) in [
+        ("0", 0u64),
+        ("1", 100_000_000),
+        ("1.5", 150_000_000),
+        ("0.00000001", 1),
+        ("0.1", 10_000_000),
+    ] {
+        assert_eq!(format_coins(units), text);
+    }
+    assert_eq!(format_coins(u64::MAX), "184467440737.09551615");
+    for units in [
+        0u64,
+        1,
+        9,
+        10,
+        99_999_999,
+        100_000_000,
+        123_456_789,
+        u64::MAX / 3,
+    ] {
+        assert_eq!(parse_coins(&format_coins(units)), Some(units));
+    }
+}

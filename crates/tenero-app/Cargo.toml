@@ -1,0 +1,37 @@
+[package]
+name = "tenero-app"
+description = "Tenero's programs (M8.7): the node daemon and the wallet command line, the local control interface between them, the config file and logging. Experimental and unaudited."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "tenerod"
+path = "src/bin/tenerod.rs"
+
+[[bin]]
+name = "tenero-wallet"
+path = "src/bin/tenero_wallet.rs"
+
+[dependencies]
+tenero-core = { path = "../tenero-core" }
+tenero-store = { path = "../tenero-store" }
+tenero-chain = { path = "../tenero-chain" }
+tenero-node = { path = "../tenero-node" }
+tenero-net = { path = "../tenero-net" }
+tenero-miner = { path = "../tenero-miner" }
+tenero-wallet = { path = "../tenero-wallet" }
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = "1"
+
+# Approved by the owner 2026-10-01. ctrlc (MIT OR Apache-2.0): Ctrl-C and window-close become a clean shutdown,
+# without our own unsafe code. rpassword (Apache-2.0): reads a passphrase without echoing it.
+ctrlc = "3"
+rpassword = "7"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

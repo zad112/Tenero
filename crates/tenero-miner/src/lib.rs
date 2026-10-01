@@ -422,6 +422,9 @@ pub struct MinerConfig {
     pub refresh_every: Duration,
     /// Mine while the node is catching up? No: a block on a tip that is about to be replaced is wasted work.
     pub mine_while_syncing: bool,
+    /// The least time between one block found and the start of the next job. Zero (the default) mines as fast as
+    /// the backend can; a test chain mined by a CPU needs a pace, or its difficulty runs away.
+    pub min_block_interval: Duration,
     pub log: Logger,
 }
 
@@ -431,6 +434,7 @@ impl Default for MinerConfig {
             max_body_bytes: 1_000_000,
             refresh_every: Duration::from_secs(60),
             mine_while_syncing: false,
+            min_block_interval: Duration::ZERO,
             log: Arc::new(|_| {}),
         }
     }
@@ -467,6 +471,7 @@ pub struct MinerHook<P: PayoutSource> {
     current: Option<Current>,
     next_id: u64,
     awaiting: Option<([u8; 32], u64)>,
+    last_found: Option<Instant>,
     failed: bool,
     pub stats: MinerStats,
 }
@@ -481,6 +486,7 @@ impl<P: PayoutSource> MinerHook<P> {
             current: None,
             next_id: 1,
             awaiting: None,
+            last_found: None,
             failed: false,
             stats: MinerStats::default(),
         }
@@ -535,6 +541,7 @@ impl<P: PayoutSource> MinerHook<P> {
             cur.started.elapsed().as_secs_f64()
         ));
         self.awaiting = Some((id, block.coinbase.height));
+        self.last_found = Some(Instant::now());
         events.push(Event::LocalBlock(block));
     }
 }
@@ -588,6 +595,12 @@ impl<P: PayoutSource> Hooks for MinerHook<P> {
         }
         if !events.is_empty() {
             return events; // the block just found moves the tip: the next poll starts on the new one
+        }
+        if self
+            .last_found
+            .is_some_and(|t| t.elapsed() < self.cfg.min_block_interval)
+        {
+            return events; // pacing: not yet
         }
         let Ok((_, tip_id)) = engine.node().tip() else {
             return events;

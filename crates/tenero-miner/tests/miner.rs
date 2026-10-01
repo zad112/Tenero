@@ -1022,3 +1022,34 @@ fn the_miner_pays_a_wallet_that_finds_every_reward() {
     })
     .is_none());
 }
+
+#[test]
+fn a_paced_miner_waits_between_blocks() {
+    let rig = SimRig::rigs("mn-pace", 1);
+    let mut engine = sha_engine(&rig[0]);
+    let lines = Lines::new();
+    let cfg = MinerConfig {
+        min_block_interval: Duration::from_millis(400),
+        ..lines.cfg()
+    };
+    let mut hook = hook_with(|| Ok(Sha256Backend), cfg);
+    let mut clock = START_MS;
+    let started = Instant::now();
+    assert!(
+        drive(
+            &mut engine,
+            &mut hook,
+            &mut clock,
+            |e| height(e) >= 4,
+            Duration::from_secs(30)
+        ),
+        "{}",
+        lines.dump()
+    );
+    // four blocks, three gaps of at least 400 ms
+    assert!(
+        started.elapsed() >= Duration::from_millis(1100),
+        "four blocks in {:?}",
+        started.elapsed()
+    );
+}

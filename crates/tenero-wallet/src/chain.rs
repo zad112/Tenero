@@ -40,6 +40,19 @@ pub trait ChainView {
     fn tip(&self) -> Result<(u64, [u8; 32]), String>;
     /// The block at `height` on the node's chain, `None` above the tip.
     fn block(&self, height: u64) -> Result<Option<ScanBlock>, String>;
+    /// Up to `max` blocks from height `from` on, in order, as far as the node has them (fewer than `max` only at
+    /// the tip, and possibly fewer for size). A node behind a socket answers this in one round trip; the default asks
+    /// for them one by one.
+    fn blocks(&self, from: u64, max: u64) -> Result<Vec<ScanBlock>, String> {
+        let mut out = Vec::new();
+        for h in from..from.saturating_add(max) {
+            match self.block(h)? {
+                Some(b) => out.push(b),
+                None => break,
+            }
+        }
+        Ok(out)
+    }
     /// The output with this global index.
     fn output(&self, global_index: u64) -> Result<Option<StoredOutput>, String>;
     /// How many outputs the chain has (their indexes are `0..count`).

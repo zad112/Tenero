@@ -1,11 +1,13 @@
 //! Tenero's wallet (milestone M8.6). **Experimental and unaudited. The output scheme is an INTERIM stand-in
 //! for Carrot** ([`interim`]; read its module documentation for what it lacks).
 //!
+//! * [`amount`]: coins as people write them (8 decimals), parsed strictly.
 //! * [`interim`]: keys, addresses, making an output for a recipient, recognising one's own outputs.
 //! * [`chain`]: what the wallet needs from a node (two small traits; `Node` implements them).
 //! * [`wallet`]: scanning (with reorganisations), balances, building and sending a payment.
 //! * [`file`]: the encrypted wallet file.
 
+pub mod amount;
 pub mod chain;
 pub mod file;
 pub mod interim;

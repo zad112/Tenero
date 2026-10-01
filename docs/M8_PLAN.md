@@ -316,7 +316,7 @@ this machine; a block mined at the real difficulty has not been mined (only at a
 and the epoch switch); mining waits while the node is syncing and does not otherwise check that the node is on the
 best chain; no pool or stratum; and it is unreviewed (M9).
 
-### M8.6 The wallet, without waiting for Carrot (size L) **BUILT 2026-10, as a library and tests (`crates/tenero-wallet`); no program yet (M8.7)**
+### M8.6 The wallet, without waiting for Carrot (size L) **BUILT 2026-10, as a library and tests (`crates/tenero-wallet`); the program is M8.7 (`tenero-wallet`)**
 Keys (encrypted at rest), scanning the chain for one's outputs, building transactions (the prover exists), decoy
 selection (wallet policy, `CONSENSUS_V2.md` 6.3), fee choice from `dynamic_min_fee`, and the connection to the
 node. **The project does not stop for Carrot** (decision 6): everything runs on an **interim output scheme**
@@ -380,17 +380,70 @@ scanning or proving has been timed, and nothing ran on a chain with real proof o
   use. The anonymity set is a ring of 16 until FCMP++.
 * **A wallet is only as private as its node:** a remote node (M8.7) will see which blocks and outputs a wallet reads
   unless that is designed around.
-* **No program, no passphrase prompt, no seed backup phrase:** the seed is raw bytes (`Wallet::seed`); a human-friendly
-  backup (a word list) needs a design and, per rule 3, an audited library or a published standard. Until then a seed is
-  one more thing to lose.
+* **No seed backup phrase:** the seed is raw bytes (`Wallet::seed`; the program of M8.7 shows it once as 64 hexadecimal
+  digits); a human-friendly backup (a word list) needs a design and, per rule 3, an audited library or a published
+  standard. Until then a seed is one more thing to lose.
 * **Malware, memory scraping and a weak passphrase are out of scope** of the file (the module documentation says so).
 * **One wallet file, one process:** nothing locks the file; two programs saving over each other lose one's changes.
 * **Rings need mature outputs to hide among:** on a young chain a payment fails with "too few mature outputs".
 * Only run on the SHA-256 test chain (with the real proof check); the real-difficulty chain has not run a wallet.
 
-### M8.7 Interfaces and operation (size S to M)
+### M8.7 Interfaces and operation (size S to M) **BUILT 2026-10 (`crates/tenero-app`); run it with `docs/RUNNING.md`**
 A local control interface for the wallet and miner to reach the node (DECIDE 4), a config file, logging,
 graceful shutdown, and the node kinds of `CONSENSUS_V2.md` 14 (archive, pruned) selectable by flag.
+*Built:* a new crate `tenero-app` with two programs. **`tenerod`**, the node: settings from a `key = value` file and
+`--key value` options (a typo, a repeat or a bad value is an error naming the setting, never a silent default; the
+network must be named, `test` or `dev`; no mainnet exists), logging to standard error and a rotated file (one line per
+message, so a peer-supplied string cannot forge a log line), a status line, the side-branch pool loaded at start and saved
+every five minutes and at shutdown, **archive or pruned** by `prune_keep`, opt-in assume-valid, an in-process miner
+(`mine = sha256 | cpu | gpu`, paying a wallet address, with a pace so a CPU-mined test chain does not run away), and
+**clean shutdown** on Ctrl-C (the `ctrlc` crate, approved), on `tenerod stop`, or from outside. **`tenero-wallet`**, the
+wallet: `create`, `restore`, `address`, `balance`, `pay`, `seed`, `info`; the passphrase typed at a hidden prompt (the
+`rpassword` crate, approved), the seed shown once at `create`, amounts parsed strictly (8 decimals), every bad request
+refused before a node is touched. **The control interface** (`docs/CONTROL_PROTOCOL.md`, vectors
+`tests/vectors/control.json`, an independent Python reference): the wallet reaches the node over a loopback socket with
+eleven request messages; **loopback only, and only a program that can read the node's data directory** (a new random
+cookie at every start must be the first message); limits on connections, queue and idle time; the node's own loop does
+the work, so no locks. Decision 4 asked for "the same protocol with a few extra messages"; what was built is the same
+style (length-prefixed frames, strict decoding, golden vectors) with its own message set, for the reasons in that
+document. Two changes to existing code came with it: the network loop now polls hooks on their own clock (`hook_tick`,
+10 ms in the node) instead of once per 250 ms engine tick, **found by thinking through a wallet sync, which would have
+taken a quarter of a second per request**; and the wallet scans in batches of 64 blocks (`ChainView::blocks`).
+*Tests (58 new in `tenero-app`, 4 elsewhere (amounts, out-of-order blocks, the hook clock, mining pace) and 6 in Python):* the codec and the vectors in both languages (every one of 36
+valid messages byte for byte; 90 malformed ones refused with the reference's error; every single-bit change of every valid
+message is refused or encodes back to the same bytes); the server on real sockets (no cookie, a wrong cookie, garbage,
+oversized and zero-length frames, the auth and idle timeouts, the connection cap, a request flood, a full queue answered
+"busy", at most 32 answers per look, a transaction the pool will not keep not reported accepted, the byte budget of a
+`blocks` answer); the settings and logs; and **whole programs**: a node starts, serves, stops cleanly and keeps its chain
+across a restart; each start makes a new cookie; one node per data directory; a dev node refuses a test chain; **two nodes
+find each other and sync while the first mines to a wallet made by the program, and that wallet pays another through the
+control interface** (sync in batches, a payment with real proofs, the reservation saved to the wallet file, the second
+wallet seeing it).
+**Fault injection:** 76 faults over the protocol, the server, the client, the settings, the log, the node and wallet
+programs, the hook clock, the mining pace and the wallet's batching. The first sweep caught 52 of its 65 and its survivors
+found real holes, now filled: **my own test helper counted a read that merely timed out as "connection closed"**, which
+hid several faults (the connection cap, a malformed request keeping a connection open); there was no test that the loop
+answers at most 32 requests per look, that a full queue is answered "busy", that a transaction the pool refuses is not
+reported accepted, that a coinbase or transaction count over its cap is refused when all the bytes are present (the
+vectors only cut them short), that a ring size too big for 32 bits is an error, that a client clamps a block count, that a
+wallet refuses blocks that are not the ones it asked for, or that the node applies `assume_valid` (now a test: a node
+given a wrong checkpoint takes nothing from a peer, a node given the right one syncs). All are caught now. **One is left
+and is not a hole:** the frame reader reserves its buffer from the announced length up to 64 KiB, which no test can
+observe (memory, not behaviour).
+*Limits, stated plainly:*
+* **Mining runs inside the node's process.** A miner in its own process needs block-template and block-submit messages
+  on the control interface, which were not built.
+* **The control interface is not encrypted** and trusts anything that holds the cookie (read the chain, send
+  transactions, stop the node). The cookie file has the data directory's default permissions: protecting the directory is the
+  operator's job. A node a wallet trusts can lie to it.
+* **Nothing locks the wallet file** (two programs saving at once lose one's changes), and `--passphrase-file` keeps a
+  passphrase in a file (it exists for scripts and tests).
+* **No seed word list,** no Windows service or installer, no Tor or I2P.
+* **Only tried on Windows,** on the test network with real sockets and on the machine that built it; the `dev` network's
+  real proof of work was not started by these tests (the 4.3 GiB dataset), only its settings are checked.
+* **The status line and log are untested beyond their format;** nothing here was run for a day (the day-long run of M8.4 is
+  still the owner's).
+* Unreviewed (M9), like everything else.
 
 ## 3. Decisions (owner, 2026-09-30)
 

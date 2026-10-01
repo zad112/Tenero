@@ -1288,3 +1288,52 @@ fn a_failed_dial_is_reported_to_the_engine_so_it_stops_waiting_for_it() {
         log.dump()
     );
 }
+
+// ---- how often the hooks run -------------------------------------------------------------------------------------
+
+struct CountPolls(Arc<std::sync::atomic::AtomicU64>);
+
+impl Hooks for CountPolls {
+    fn poll(&mut self, _engine: &mut Engine<'_>, _now_ms: u64) -> Vec<Event> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Vec::new()
+    }
+}
+
+fn polls_in(hook_tick: Option<Duration>) -> u64 {
+    let rigs = SimRig::rigs("hooktick", 1);
+    let mut engine = engine_on(&rigs[0], local_cfg(&[]));
+    let mut cfg = NetConfig::new(NodeKey::generate(), rigs[0].store.chain_id());
+    cfg.log = Arc::new(|_| {});
+    if let Some(t) = hook_tick {
+        cfg.hook_tick = t;
+    }
+    let net = Net::bind(cfg).unwrap();
+    let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    thread::scope(|s| {
+        let (stop2, count2) = (Arc::clone(&stop), Arc::clone(&count));
+        let t = s.spawn(move || {
+            net.run(&mut engine, stop2, &mut CountPolls(count2))
+                .unwrap();
+        });
+        thread::sleep(Duration::from_millis(1_000));
+        stop.store(true, Ordering::SeqCst);
+        t.join().unwrap();
+    });
+    count.load(Ordering::SeqCst)
+}
+
+#[test]
+fn the_hooks_are_polled_on_their_own_clock_not_the_engines() {
+    // the default: once per engine tick (250 ms), so about four a second
+    let slow = polls_in(None);
+    assert!(
+        (2..=6).contains(&slow),
+        "{slow} polls in a second at the default"
+    );
+    // a faster hook clock: many more, while the engine still ticks at its own pace
+    let fast = polls_in(Some(Duration::from_millis(10)));
+    assert!(fast >= 40, "{fast} polls in a second at 10 ms");
+    assert!(fast <= 130, "{fast} polls in a second at 10 ms is too many");
+}

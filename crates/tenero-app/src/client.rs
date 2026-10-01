@@ -1,0 +1,170 @@
+//! The other end of the control protocol: [`RemoteNode`] is a node in another process, reached on this machine, and
+//! stands in for an in-process node wherever the wallet wants a [`ChainView`] and a [`Submitter`].
+
+use std::io;
+use std::net::{SocketAddr, TcpStream};
+use std::path::Path;
+use std::sync::Mutex;
+use std::time::Duration;
+
+use rand_core::{CryptoRng, RngCore};
+use tenero_core::hash::hex_lower;
+use tenero_core::v2::Transaction;
+use tenero_store::StoredOutput;
+use tenero_wallet::{ChainView, Rules, ScanBlock, Submitter};
+
+use crate::control::{read_frame, write_frame, NodeInfo, Request, Response};
+
+/// The file in a node's data directory that holds the cookie, as 64 lower-case hexadecimal digits.
+pub const COOKIE_FILE: &str = "control.cookie";
+
+/// Makes a fresh cookie, writes it to `path` (replacing any there), and returns it. The file gets the default
+/// permissions of the data directory: **protecting that directory is the node operator's job.**
+pub fn create_cookie(path: &Path, rng: &mut (impl RngCore + CryptoRng)) -> io::Result<[u8; 32]> {
+    let mut cookie = [0u8; 32];
+    rng.fill_bytes(&mut cookie);
+    tenero_net::transport::write_atomic(path, hex_lower(&cookie).as_bytes())?;
+    Ok(cookie)
+}
+
+pub fn read_cookie(path: &Path) -> Result<[u8; 32], String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let text = text.trim();
+    if text.len() != 64 || !text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err(format!("{} does not hold a cookie", path.display()));
+    }
+    let mut out = [0u8; 32];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&text[2 * i..2 * i + 2], 16).map_err(|e| e.to_string())?;
+    }
+    Ok(out)
+}
+
+pub struct RemoteNode {
+    stream: Mutex<TcpStream>,
+}
+
+impl RemoteNode {
+    /// Connects and authenticates. Refuses an address that is not loopback: the cookie must never leave this
+    /// machine.
+    pub fn connect(addr: SocketAddr, cookie: &[u8; 32]) -> Result<RemoteNode, String> {
+        if !addr.ip().is_loopback() {
+            return Err(
+                "the control interface is only reachable on this machine (127.0.0.1)".into(),
+            );
+        }
+        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+            .map_err(|e| format!("cannot reach the node at {addr}: {e} (is it running?)"))?;
+        stream.set_nodelay(true).map_err(|e| e.to_string())?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(120)))
+            .map_err(|e| e.to_string())?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(30)))
+            .map_err(|e| e.to_string())?;
+        let node = RemoteNode {
+            stream: Mutex::new(stream),
+        };
+        match node.request(&Request::Auth { cookie: *cookie })? {
+            Response::Authed => Ok(node),
+            other => Err(format!("the node did not accept the cookie: {other:?}")),
+        }
+    }
+
+    /// One request, one answer. An error answer from the node is an `Err` with its message.
+    pub fn request(&self, req: &Request) -> Result<Response, String> {
+        let mut s = self.stream.lock().map_err(|_| "poisoned".to_string())?;
+        let body = req.to_body().map_err(|e| e.to_string())?;
+        write_frame(&mut *s, &body).map_err(|e| format!("lost the node: {e}"))?;
+        let answer = read_frame(&mut *s).map_err(|e| format!("lost the node: {e}"))?;
+        match Response::from_body(&answer).map_err(|e| e.to_string())? {
+            Response::Error(m) => Err(m),
+            r => Ok(r),
+        }
+    }
+
+    pub fn info(&self) -> Result<NodeInfo, String> {
+        match self.request(&Request::Info)? {
+            Response::Info(i) => Ok(i),
+            other => Err(format!("unexpected answer: {other:?}")),
+        }
+    }
+
+    /// Asks the node to shut down cleanly.
+    pub fn stop(&self) -> Result<(), String> {
+        match self.request(&Request::Stop)? {
+            Response::Stopping => Ok(()),
+            other => Err(format!("unexpected answer: {other:?}")),
+        }
+    }
+}
+
+fn unexpected<T>(r: Response) -> Result<T, String> {
+    Err(format!("unexpected answer: {r:?}"))
+}
+
+impl ChainView for RemoteNode {
+    fn tip(&self) -> Result<(u64, [u8; 32]), String> {
+        match self.request(&Request::Tip)? {
+            Response::Tip { height, id } => Ok((height, id)),
+            r => unexpected(r),
+        }
+    }
+
+    fn block(&self, height: u64) -> Result<Option<ScanBlock>, String> {
+        match self.request(&Request::Block { height })? {
+            Response::Block(b) => Ok(b),
+            r => unexpected(r),
+        }
+    }
+
+    fn blocks(&self, from: u64, max: u64) -> Result<Vec<ScanBlock>, String> {
+        let count = max.clamp(1, u64::from(crate::control::MAX_BLOCKS_PER_REQUEST)) as u16;
+        match self.request(&Request::Blocks { from, count })? {
+            Response::Blocks(b) => Ok(b),
+            r => unexpected(r),
+        }
+    }
+
+    fn output(&self, global_index: u64) -> Result<Option<StoredOutput>, String> {
+        match self.request(&Request::Output {
+            index: global_index,
+        })? {
+            Response::Output(o) => Ok(o),
+            r => unexpected(r),
+        }
+    }
+
+    fn output_count(&self) -> Result<u64, String> {
+        match self.request(&Request::OutputCount)? {
+            Response::OutputCount(n) => Ok(n),
+            r => unexpected(r),
+        }
+    }
+
+    fn key_image_spent(&self, key_image: &[u8; 32]) -> Result<bool, String> {
+        match self.request(&Request::KeyImageSpent {
+            key_image: *key_image,
+        })? {
+            Response::Spent(b) => Ok(b),
+            r => unexpected(r),
+        }
+    }
+
+    fn rules(&self) -> Result<Rules, String> {
+        match self.request(&Request::Rules)? {
+            Response::Rules(r) => Ok(r),
+            r => unexpected(r),
+        }
+    }
+}
+
+impl Submitter for RemoteNode {
+    fn submit(&mut self, tx: Transaction) -> Result<(), String> {
+        match self.request(&Request::SubmitTx(tx))? {
+            Response::TxAccepted { .. } => Ok(()),
+            r => unexpected(r),
+        }
+    }
+}

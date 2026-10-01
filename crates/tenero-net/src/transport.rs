@@ -71,6 +71,9 @@ pub struct NetConfig {
     pub connect_timeout: Duration,
     /// How often the engine is ticked at least.
     pub tick: Duration,
+    /// How often the hooks are polled. Separate from `tick` because a hook may answer a program waiting for it (the
+    /// wallet's requests), which should not wait a quarter of a second for every answer; the default is `tick`.
+    pub hook_tick: Duration,
     /// Handshakes in progress at once, in all and from one address.
     pub max_pending_handshakes: usize,
     pub max_pending_per_host: usize,
@@ -93,6 +96,7 @@ impl NetConfig {
             handshake_timeout: Duration::from_secs(10),
             connect_timeout: Duration::from_secs(10),
             tick: Duration::from_millis(250),
+            hook_tick: Duration::from_millis(250),
             max_pending_handshakes: 64,
             max_pending_per_host: 4,
             max_queued_bytes: 32 * 1024 * 1024,
@@ -483,9 +487,12 @@ impl Loop<'_> {
 
     fn event_loop<H: Hooks>(&mut self, engine: &mut Engine<'_>, rx: &Receiver<Ev>, hooks: &mut H) {
         let mut next_tick = Instant::now();
+        let mut next_hook = Instant::now();
         let mut next_save = Instant::now() + self.cfg.save_every;
         while !self.shutdown.load(Ordering::SeqCst) {
-            let wait = next_tick.saturating_duration_since(Instant::now());
+            let wait = next_tick
+                .min(next_hook)
+                .saturating_duration_since(Instant::now());
             match rx.recv_timeout(wait) {
                 Ok(ev) => self.on_event(engine, ev),
                 Err(RecvTimeoutError::Timeout) => {}
@@ -495,6 +502,9 @@ impl Loop<'_> {
                 next_tick = Instant::now() + self.cfg.tick;
                 let actions = engine.handle(now_ms(), Event::Tick);
                 self.exec(engine, actions);
+            }
+            if Instant::now() >= next_hook {
+                next_hook = Instant::now() + self.cfg.hook_tick;
                 for ev in hooks.poll(engine, now_ms()) {
                     let actions = engine.handle(now_ms(), ev);
                     self.exec(engine, actions);
