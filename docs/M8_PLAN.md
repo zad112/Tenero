@@ -224,7 +224,7 @@ dataset build being most of what is left). Full tables and the straight-line est
 cost only: no network, no transaction proofs, coinbase-only blocks, no `target-cpu=native`.
 **M8.3 is done** apart from what its notes list as limits; the next step is M8.4 (real sockets and Noise).
 
-### M8.4 Real sockets (size M) **BUILT AND MEASURED 2026-10; the day-long run is the owner's and not done yet** (`crates/tenero-net/src/{noise,transport}.rs`, `docs/TESTNET.md`)
+### M8.4 Real sockets (size M) **BUILT AND MEASURED 2026-10; the first day-long run FAILED (see below) and has to be repeated** (`crates/tenero-net/src/{noise,transport}.rs`, `docs/TESTNET.md`)
 TCP transport, the Noise channel (decision 3), inbound and outbound limits, per-peer rate limits and a ban score,
 message timeouts. With 50+ connections the relay rules matter for bandwidth: a new block or transaction is
 announced by its id and fetched from ONE peer, never pushed in full to all of them.
@@ -268,7 +268,12 @@ detected (bans are by address); memory under attack scales with connections time
 is no per-peer byte rate limit, only the engine's message rate limit; seeds and dialled addresses are `ip:port`
 only (no DNS seeds); the test-network node is a test tool (no wallet, SHA-256 chain, nothing real); nothing calls
 `Node::save_pool` yet (M8.7); Windows was the only system tried; and it is unreviewed (M9).
-*Not done:* the day-long three-node run (`docs/TESTNET.md`).
+*The day-long run, first attempt (2026-09-30 to 10-01, 18.5 h): FAILED, and it taught something.* The three nodes stayed
+in sync for about six hours (379 blocks) and then split into three separate chains that never rejoined, with 24-hour bans
+in their saved state. The likely cause is the test node mining inside its network loop (the real miner does not), which
+stalls it for tens of seconds once the difficulty has adapted; peers then score its late replies as hostile. **The engine
+should not score a reply that arrives after its request timed out** ("slow is not hostile"): not fixed, a KNOWN ISSUE to
+fix before any launch. Details and the evidence are in `docs/TESTNET.md`. A repeat run should use `tenerod`.
 
 ### M8.5 The miner (size M to L) **BUILT AND MEASURED 2026-10** (`crates/tenero-miner`, `MatmulPow` in `tenero-chain`)
 A block template from the node (mempool, correct coinbase, Merkle root, `Validator::next_block` for the target),

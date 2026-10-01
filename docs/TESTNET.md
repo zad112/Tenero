@@ -80,6 +80,37 @@ Add `--mine-for 50 --duration 75` to each command: the nodes mine for 50 seconds
 themselves. The three `stopped at height ... tip ...` lines should be identical. (This run, on the machine it was
 written on, ended with all three at height 32 and the same block id.)
 
+## The first day-long run (2026-09-30 21:19 to 2026-10-01 15:50, 18.5 hours): what it showed
+
+Three `p2p_testnode` processes on loopback, each mining about a block a minute. **It did not stay one network.** Read
+from the three chain databases after the nodes were stopped (measured, not estimated):
+
+* All three chains were identical **up to height 379**, then split into **three separate chains** of 1,328, 1,332 and
+  1,335 blocks, each about 950 blocks past the split. They never rejoined.
+* The processes were alive to the end, with flat memory (about 8.6 MB each) and **no established connections**.
+* The saved ban lists held entries: node 2 had banned the hosts of nodes 1 and 3, node 3 the host of node 1, each for the
+  engine's 24 hours. (Which message earned each ban was not logged: the nodes print to their windows only.)
+* The difficulty had climbed from the starting target to about 2^28 hashes a block, so that a single CPU thread needs
+  tens of seconds per block, and one node was using about 87% of a core when stopped.
+
+**What I think happened (a hypothesis, not proven):** the test node mines *inside* the network loop: it searches for the
+nonce in a plain loop until it finds one, and nothing else runs meanwhile. The difficulty retargets to a block a minute for
+whatever speed the CPU has, so after a few hours each search blocks the loop for tens of seconds. A stalled node answers no
+pings and no requests, its peers' requests time out, and when it wakes the replies it sent late (or the blocks it asked for)
+reach peers that have already given up on them: *"unsolicited pong"* (10 points), *"a block nobody asked for"* (20) and
+similar are scored, and 100 points is a 24-hour ban. Two such bans on one host and the network is split for a day.
+
+**What it means:**
+* **The test tool is wrong, not necessarily the engine.** The real miner runs on its own thread (`tenero-miner`, `tenerod`)
+  and never blocks the loop; `p2p_testnode` is the only thing that mines in the loop. The repeat run should use `tenerod`
+  with `mine = sha256` and a `mine_pace`.
+* **But the engine has a real weakness this exposed:** a reply that arrives *after* its request timed out is scored as if
+  it were unsolicited, so a node that merely stalls (for example while a real node builds a 4.3 GiB proof-of-work dataset
+  at an epoch change, which takes seconds inside the loop) can be banned by honest peers. The engine's own principle is
+  "slow is not hostile" (a timed-out request is not scored); it should extend to the late answer. **Not fixed; recorded
+  as a known issue to fix before any launch** (`docs/M8_PLAN.md`).
+* The first 379 blocks, about six hours, did stay in sync across three nodes, with forks settled as designed.
+
 ## Many connections
 
 To see what a node costs with many peers, in one window run a node (`--max-inbound 300`) and in another:
