@@ -655,6 +655,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenero-miner"
+version = "0.0.0"
+dependencies = [
+ "tenero-chain",
+ "tenero-core",
+ "tenero-gpu",
+ "tenero-net",
+ "tenero-node",
+ "tenero-store",
+]
+
+[[package]]
 name = "tenero-net"
 version = "0.0.0"
 dependencies = [

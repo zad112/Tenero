@@ -62,6 +62,29 @@ The whole 4 GiB dataset builds on the GPU in **0.116 s** (measured; the README's
   owner's RTX 5070 Ti) is roughly 130 times the 6-thread native CPU figure. CPU mining is a test-chain
   curiosity, not a competitor.
 
+## The GPU miner end to end (measured on the owner's machine, RTX 5070 Ti, 2026-10)
+
+`cargo test --release -p tenero-miner --test gpu_mining -- --ignored --nocapture --test-threads=1`. The miner
+(`tenero-miner`) finds blocks on the GPU; the node checks every one with the full CPU proof of work.
+
+| batch | sustained attempts/s (the backend alone, a target never met) |
+|---|---|
+| 32 | 34,058 |
+| 64 | 34,790 |
+| 128 | 35,745 |
+| 256 | 35,959 |
+
+* **Every block the GPU found was accepted by the CPU check; none was refused** (20 blocks in one epoch, 30 across six
+  epoch boundaries, 60 across two).
+* **Epoch boundaries:** the GPU builds a 4 GiB dataset in about 0.1 s and does it ahead of time. The stall was the NODE
+  building its CPU dataset (about 3 s) when the first block of a new epoch arrived: with epochs of 25 blocks and 60
+  blocks, the slowest later block was 3.42 s with no prefetch and showed no stall with the node looking 20 blocks
+  ahead (total 20.8 s against 15.7 s). On the real chain (a block a minute, a lookahead of 10) the next epoch's dataset
+  has ten minutes to build.
+* A run at an easy target does not measure hashing: each block was found within one batch, so its time (about 0.2 s)
+  is the node's CPU check.
+* Not measured: a block at the real difficulty, more than one GPU, other batch sizes or settings, any other machine.
+
 ## Syncing a chain with the real proof of work (measured on the owner's machine, 2026-10)
 
 `cargo test --release -p tenero-chain --test real_pow_sync -- --ignored --nocapture`: 30 blocks mined on the CPU with

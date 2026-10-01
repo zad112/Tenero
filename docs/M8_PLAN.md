@@ -270,13 +270,51 @@ only (no DNS seeds); the test-network node is a test tool (no wallet, SHA-256 ch
 `Node::save_pool` yet (M8.7); Windows was the only system tried; and it is unreviewed (M9).
 *Not done:* the day-long three-node run (`docs/TESTNET.md`).
 
-### M8.5 The miner (size M to L)
+### M8.5 The miner (size M to L) **BUILT AND MEASURED 2026-10** (`crates/tenero-miner`, `MatmulPow` in `tenero-chain`)
 A block template from the node (mempool, correct coinbase, Merkle root, `Validator::next_block` for the target),
 the GPU engine feeding attempts, epoch switching with the next dataset prefetched (gap 6), and submission through
 `Chain`. A CPU path for the SHA-256 test chain. Respects `--max-cores` (CLAUDE.md rule 8).
 *Done when:* the GPU miner mines blocks accepted by a node that verifies them with the CPU check (the real
 end-to-end test of "bit for bit"), **and the owner measures the attempts per second** (CLAUDE.md rule 5: no GPU
 number is claimed without one).
+*Built:* a new crate `tenero-miner`. **The node** builds the template (`Node::block_template`: mempool
+transactions, a coinbase paying exactly what the rules say, the Merkle root; the target comes from
+`Validator::next_block`). **A backend** searches for the nonce, and for matmulhash the mix, on a thread of its own:
+`Sha256Backend` (the test chain), `CpuMatmulBackend` (the real matmulhash on at most 6 threads, rule 8) and
+`GpuBackend` (the real matmulhash on an NVIDIA GPU, in batches). **`MinerHook`** plugs the miner into the node's loop:
+it starts a job from a fresh template when the tip moves or a template is a minute old, stops the old job, pauses
+while the node is catching up, takes a found block back as a local block (so **the node's own CPU check validates
+every block the GPU finds**), and at its next look reports the verdict (in the chain, lost a race, or refused as
+invalid). A solution that does not meet the target, or is for a job that has been replaced, is discarded. **Epoch
+switching:** the GPU backend keeps two datasets in video memory and builds the next epoch's a few blocks ahead
+(never more than two exist at once); `MatmulPow` (the node's CPU check) was changed to build outside its lock,
+share one build between callers, free the furthest dataset before building, and prefetch in the background when the
+engine asks (the tip moved: `pow_prefetch_blocks`, 10 by default, i.e. ten blocks before an epoch ends on the real
+chain). This last change came from the measurement below, not from the plan: **the stall was on the node, not the
+GPU**.
+*Measured on the owner's machine (an RTX 5070 Ti), real parameters, CUDA 13.4:* **the GPU backend does about
+34,000 attempts a second at batch 32, 34,800 at 64, 35,700 at 128 and 36,000 at 256** (a target that is never met,
+15 s each, after a 5 s warm-up), in line with the earlier benchmark of about 35,000. **Bit for bit, end to end:** the
+GPU mined 20 blocks (one epoch), then 30 blocks across six epoch boundaries, then 60 across two, and the node's CPU
+proof of work accepted **every block, with none refused**. Epoch crossing, 60 blocks with epochs of 25: **20.8 s
+with no prefetch against 15.7 s with the node looking 20 blocks ahead**, the slowest later block falling from 3.4 s
+(the node building its dataset for the first block of a new epoch) to no stall at all. (The attempts per second of
+a run at an easy target are NOT a hashing speed: a block was found in one batch, so the time is the node's 0.2 s CPU
+check per block. The hashing speed is the sustained figure above.)
+*Tests:* 19 miner tests and 8 dataset-cache tests run anywhere; 2 GPU tests are `#[ignore]`d and run with
+`cargo test --release -p tenero-miner --test gpu_mining -- --ignored --nocapture --test-threads=1`. **Fault
+injection:** about 50 faults in the miner, the cache and the engine's and node's hooks; all caught (several of them as
+tests that hang) except one redundant call (an extra cancel, because starting a job already cancels the old one) and
+the ones I judged equivalent and removed. It found real holes in my tests, now filled: a late solution for another
+job that would have been used, a block that loses a race being reported as refused, a failed backend that kept
+getting templates, mining while the node is syncing, an id equal to the target counting as meeting it, the miner
+thread starting a job it should have skipped, and counters of datasets built that counted calls rather than builds.
+*Limits, stated plainly:* the miner runs **inside the node's process** (a hook of its loop): reaching a node in
+another process is M8.7; the payout is a placeholder nobody can spend (the wallet is M8.6); only the first of
+several GPUs is used, one stream, no tuning beyond the batch size; the speed above is at generic CUDA settings and
+this machine; a block mined at the real difficulty has not been mined (only at an easy target, to test correctness
+and the epoch switch); mining waits while the node is syncing and does not otherwise check that the node is on the
+best chain; no pool or stratum; and it is unreviewed (M9).
 
 ### M8.6 The wallet, without waiting for Carrot (size L)
 Keys (encrypted at rest), scanning the chain for one's outputs, building transactions (the prover exists), decoy

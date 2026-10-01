@@ -160,6 +160,10 @@ pub struct EngineConfig {
     pub addr_answer_ttl_ms: u64,
     /// How many groups' answers are remembered.
     pub addr_answer_cache: usize,
+    /// When the tip moves, the proof of work is asked to prepare for blocks this far ahead (a dataset for the next
+    /// epoch is built in the background when that many blocks from the end of an epoch), so the first block of a
+    /// new epoch is not checked after a wait of several seconds.
+    pub pow_prefetch_blocks: u64,
 }
 
 impl Default for EngineConfig {
@@ -195,6 +199,7 @@ impl Default for EngineConfig {
             addr_answer_floor: 20,
             addr_answer_ttl_ms: 24 * 3600 * 1000,
             addr_answer_cache: 1024,
+            pow_prefetch_blocks: 10,
         }
     }
 }
@@ -1647,6 +1652,8 @@ impl<'a> Engine<'a> {
                 if was_assumed {
                     self.stats.assumed_blocks += 1;
                 }
+                self.node
+                    .prefetch_proof_of_work(self.cfg.pow_prefetch_blocks);
                 // past the checkpoint: everything from here on is checked in full, and nothing stays assumed
                 if let Some(a) = self.cfg.assume_valid {
                     if self.tip().0 >= a.height {

@@ -1,0 +1,22 @@
+[package]
+name = "tenero-miner"
+description = "Tenero miner (M8.5): block templates from the node, a nonce search on the GPU, the CPU or the SHA-256 test chain, epoch switching, submission. Experimental and unaudited."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tenero-core = { path = "../tenero-core" }
+tenero-chain = { path = "../tenero-chain" }
+tenero-node = { path = "../tenero-node" }
+tenero-net = { path = "../tenero-net" }
+# The GPU engine. It needs the CUDA driver only when a GPU backend is started (the library is loaded at run time),
+# so this crate builds and its CPU paths run on any machine.
+tenero-gpu = { path = "../tenero-gpu" }
+
+[dev-dependencies]
+tenero-store = { path = "../tenero-store" }
+
+[lints]
+workspace = true

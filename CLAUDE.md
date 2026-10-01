@@ -38,7 +38,9 @@ python tools/make_vectors_wire.py --check    # the peer-to-peer wire protocol ve
   (`tenero-core` rules and data model, `tenero-store` storage, `tenero-chain` block validation and fork choice, `tenero-node` the node core (mempool), `tenero-net` the protocol engine and network simulator,
   `tenero-gpu` the GPU engine). `tenero-net` also has the encrypted channel (`noise.rs`, via `snow`, which has had
   no formal audit: an owner-approved exception to rule 3) and the real-socket transport (`transport.rs`);
-  `docs/TESTNET.md` runs a private test network on one machine. `tenero-crypto` holds the CLSAG and Bulletproofs+ verification (`RingCtProofs`, opt-in; the default validator still accepts every proof) and the prover; Carrot is not built. Nothing cryptographic is audited as used.
+  `docs/TESTNET.md` runs a private test network on one machine. `tenero-miner` is the miner (a hook of the node's
+  loop; GPU, CPU and SHA-256 test backends): `cargo test --release -p tenero-miner --test gpu_mining -- --ignored
+  --nocapture --test-threads=1` is the GPU end-to-end check and speed test (the owner's machine). `tenero-crypto` holds the CLSAG and Bulletproofs+ verification (`RingCtProofs`, opt-in; the default validator still accepts every proof) and the prover; Carrot is not built. Nothing cryptographic is audited as used.
 - `tests/vectors/` golden vectors (see its README); `tools/make_vectors.py` generates them, and
   `tools/make_vectors_v2.py` the version 2 data-model ones
 

@@ -113,6 +113,15 @@ impl<'a> Node<'a> {
         &self.chain
     }
 
+    /// Tells the proof of work that blocks about `lookahead` blocks past the tip will be checked soon, so that one
+    /// that needs a dataset for a new epoch builds it in the background now (it never blocks, and does nothing when
+    /// the dataset is already there or the proof of work needs none). Call it when the tip moves.
+    pub fn prefetch_proof_of_work(&self, lookahead: u64) {
+        if let Ok((height, _)) = self.tip() {
+            self.pow.prefetch(height + 1 + lookahead);
+        }
+    }
+
     /// Assume-valid (see `Chain::set_assumed`): these block ids skip the full proof of work and the proofs.
     pub fn set_assumed(&mut self, ids: std::collections::HashSet<[u8; 32]>) {
         self.chain.set_assumed(ids);
