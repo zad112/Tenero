@@ -360,8 +360,29 @@ pub trait PayoutSource {
     fn payout(&mut self, height: u64) -> Payout;
 }
 
-/// A placeholder payout derived from a seed: the outputs it makes have no spendable key behind them (there is no
-/// wallet yet, M8.6), so **coins mined to it are unspendable**. For tests and for a test chain.
+/// Pays every block's reward to a wallet's address (the interim output scheme, `tenero-wallet`), with fresh
+/// randomness for every block, so the rewards cannot be linked to one another by anyone without the view key.
+pub struct WalletPayout {
+    address: tenero_wallet::Address,
+}
+
+impl WalletPayout {
+    /// `None` if the address holds an invalid key (a reward could not be made for it).
+    pub fn new(address: tenero_wallet::Address) -> Option<WalletPayout> {
+        tenero_wallet::coinbase_payout_random(&address, 0)?;
+        Some(WalletPayout { address })
+    }
+}
+
+impl PayoutSource for WalletPayout {
+    fn payout(&mut self, height: u64) -> Payout {
+        tenero_wallet::coinbase_payout_random(&self.address, height)
+            .expect("the address was checked when this payout was made")
+    }
+}
+
+/// A placeholder payout derived from a seed: the outputs it makes have no spendable key behind them, so **coins
+/// mined to it are unspendable**. For tests and for a test chain; use [`WalletPayout`] to be paid.
 pub struct PlaceholderPayout {
     pub seed: [u8; 32],
 }

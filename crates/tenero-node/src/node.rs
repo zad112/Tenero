@@ -113,6 +113,11 @@ impl<'a> Node<'a> {
         &self.chain
     }
 
+    /// The rules this node runs (a wallet needs the ring size and the maturities).
+    pub fn params(&self) -> &'a ChainParams {
+        self.params
+    }
+
     /// Tells the proof of work that blocks about `lookahead` blocks past the tip will be checked soon, so that one
     /// that needs a dataset for a new epoch builds it in the background now (it never blocks, and does nothing when
     /// the dataset is already there or the proof of work needs none). Call it when the tip moves.

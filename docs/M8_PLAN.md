@@ -316,7 +316,7 @@ this machine; a block mined at the real difficulty has not been mined (only at a
 and the epoch switch); mining waits while the node is syncing and does not otherwise check that the node is on the
 best chain; no pool or stratum; and it is unreviewed (M9).
 
-### M8.6 The wallet, without waiting for Carrot (size L)
+### M8.6 The wallet, without waiting for Carrot (size L) **BUILT 2026-10, as a library and tests (`crates/tenero-wallet`); no program yet (M8.7)**
 Keys (encrypted at rest), scanning the chain for one's outputs, building transactions (the prover exists), decoy
 selection (wallet policy, `CONSENSUS_V2.md` 6.3), fee choice from `dynamic_min_fee`, and the connection to the
 node. **The project does not stop for Carrot** (decision 6): everything runs on an **interim output scheme**
@@ -331,6 +331,62 @@ properties the interim scheme lacks (Carrot's Janus protection among them) until
 Carrot-derived addresses.
 *Done when:* two wallets pay each other through a running node, with real CLSAG and range proofs, and the docs
 say exactly what is interim.
+*Built:* a new crate `tenero-wallet` (library; the command-line program and the connection to a node in another
+process are M8.7). **`interim`**: the interim output scheme in one module, with its limits at the top of the file:
+keys from a 32-byte seed (spend and view), an address `(K_s, K_v)` written `tni1` + hex + a 4-byte checksum (so it
+cannot be taken for a final address format or a Monero one), making an output for a recipient (an Ed25519 key
+exchange `De = r*G`, a shared secret `8*r*K_v`, a 3-byte view tag, a one-time key `t*G + K_s`, a commitment whose
+mask is derived from the shared secret, an XOR-encrypted amount, an encrypted random anchor) and recognising one's
+own (view tag first, then the key, then the commitment must match what the secrets give). A coinbase output is
+public: mask 1, the fixed commitment. **`wallet`**: scanning with reorganisation handling (the wallet remembers the
+last 100 block ids; a reorganisation rolls back what is gone, and a deeper one rescans from the birth height),
+balances (total, spendable, immature, reserved), coin selection (the smallest single coin that covers the payment, else
+the largest first; at most 32 inputs), 15 decoys per input, the fee from `dynamic_min_fee` with a 25% margin, the
+payment and its change in a random order, the real CLSAG and Bulletproofs+ proofs from `tenero-crypto`, and **a
+verification of its own transaction before anything is sent**. Coins a payment spends are reserved for 20 blocks, so a
+second payment does not pick them. **`file`**: the wallet file (Argon2id, then ChaCha20-Poly1305: the two RustCrypto
+crates the owner approved on 2026-10-01; 64 MiB and 3 passes by default; a fresh salt and nonce at every save; atomic
+replace; a hostile file cannot make the wallet allocate gigabytes). **`chain`**: what the wallet needs from a node as two
+small traits (`ChainView`, `Submitter`), implemented for the in-process `Node`; M8.7 implements them over the
+network protocol. The miner pays a wallet through `WalletPayout`.
+*Tests (40 in the wallet, 1 in the miner):* the interim scheme against an **independent Python reference** with its
+own Ed25519 arithmetic (`tools/make_vectors_interim.py`, `tests/vectors/interim_scheme.json`: six outputs, valid and
+invalid addresses); two wallets paying each other through a node that **verifies every proof for real** (CLSAG,
+Bulletproofs+, the balance), on the SHA-256 test chain (a CPU mines it, so no GPU and no 4.3 GiB dataset); rings of 16;
+payments that need several inputs; change spent from either position in the transaction; a restored wallet finding the
+same coins; reorganisations (a payment that is in the abandoned branch disappears and its coins come back; a
+reorganisation deeper than the wallet remembers rescans); a lost payment whose coins come back after the reservation;
+refusals (zero, too much, an invalid address, more than 32 inputs, too few outputs to hide among); the wallet file (every
+byte of it is protected: flipping any one bit fails; wrong passphrase; hostile cost settings; truncated and extended
+files). **Fault injection:** 59 faults; the first sweep caught 44, and the 15 survivors found real holes in the tests, all
+filled (the salt and nonce test compared a range that masked one of them; the fee-margin test used the constant it was
+testing; a test cleaned up reservations by a second path; coin selection and spent-coin handling had no deterministic
+test; the change output's position in the chain was never spent from; the file's state checks were each hidden by a
+redundant one). **Three survivors are left and are not holes:** a duplicate-output guard that cannot trigger (a rescan
+never revisits a block), a reservation cleanup that a second path makes redundant, and the wallet's check of its own
+transaction before sending (it only fires on a bug, and there is no way to make the prover produce a bad transaction
+from outside).
+*Measured:* a transaction with one input, two outputs and a ring of 16 is **1,690 bytes** (from a test; the minimum fee
+for it was 450,667 units and the wallet paid 563,334, at the test chain's reward). Nothing else is measured: no speed of
+scanning or proving has been timed, and nothing ran on a chain with real proof of work.
+*Limits, stated plainly (the module documentation says the same):*
+* **It is the interim scheme, not Carrot, and not private in the Monero sense:** no Janus protection (the anchor is
+  never checked), one address per wallet (no subaddresses, no payment ids), no outgoing view key (a view key cannot
+  show whom the wallet paid), Ed25519 instead of Carrot's X25519 key exchange, our own hashes. Built from audited
+  primitives (`curve25519-dalek`, SHA-256) but **the composition is ours and unaudited** (M9). Outputs made under it stay
+  spendable when Carrot arrives (decision 6).
+* **The decoy policy is a simplification** (age log-uniform from the newest output, not Monero's gamma distribution) and
+  has not been studied for what it reveals; coin selection is deterministic, which is itself a pattern an observer could
+  use. The anonymity set is a ring of 16 until FCMP++.
+* **A wallet is only as private as its node:** a remote node (M8.7) will see which blocks and outputs a wallet reads
+  unless that is designed around.
+* **No program, no passphrase prompt, no seed backup phrase:** the seed is raw bytes (`Wallet::seed`); a human-friendly
+  backup (a word list) needs a design and, per rule 3, an audited library or a published standard. Until then a seed is
+  one more thing to lose.
+* **Malware, memory scraping and a weak passphrase are out of scope** of the file (the module documentation says so).
+* **One wallet file, one process:** nothing locks the file; two programs saving over each other lose one's changes.
+* **Rings need mature outputs to hide among:** on a young chain a payment fails with "too few mature outputs".
+* Only run on the SHA-256 test chain (with the real proof check); the real-difficulty chain has not run a wallet.
 
 ### M8.7 Interfaces and operation (size S to M)
 A local control interface for the wallet and miner to reach the node (DECIDE 4), a config file, logging,

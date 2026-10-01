@@ -968,3 +968,57 @@ fn a_node_that_is_catching_up_is_not_mined_on_unless_told_to() {
         );
     }
 }
+
+// ---- paying a wallet ----------------------------------------------------------------------------------------
+
+#[test]
+fn the_miner_pays_a_wallet_that_finds_every_reward() {
+    use tenero_miner::WalletPayout;
+    use tenero_wallet::{Address, Wallet};
+    let wallet_seed = [5u8; 32];
+    let mut wallet = Wallet::from_seed(&wallet_seed, 0);
+    let rig = SimRig::rigs("mn-wallet", 1);
+    let mut engine = sha_engine(&rig[0]);
+    let lines = Lines::new();
+    let mut hook = MinerHook::new(
+        Miner::spawn(|| Ok(Sha256Backend)),
+        WalletPayout::new(wallet.address()).expect("a valid address"),
+        lines.cfg(),
+    );
+    let mut clock = START_MS;
+    assert!(
+        drive(
+            &mut engine,
+            &mut hook,
+            &mut clock,
+            |e| height(e) >= 6,
+            Duration::from_secs(30)
+        ),
+        "{}",
+        lines.dump()
+    );
+    let tip = height(&engine);
+    wallet.sync(engine.node()).unwrap();
+    // one reward in every block, each its own output, and the amounts are what the blocks paid
+    assert_eq!(wallet.owned().len() as u64, tip);
+    let paid: u64 = (1..=tip)
+        .map(|h| {
+            engine
+                .node()
+                .store()
+                .get_block(h)
+                .unwrap()
+                .unwrap()
+                .coinbase
+                .outputs[0]
+                .amount
+        })
+        .sum();
+    assert_eq!(wallet.balance(engine.node()).unwrap().total, paid);
+    // an address with an invalid key cannot be paid
+    assert!(WalletPayout::new(Address {
+        spend: [0; 32],
+        view: [0; 32]
+    })
+    .is_none());
+}

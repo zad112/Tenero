@@ -1,0 +1,410 @@
+//! The wallet file: the seed and the wallet's records, encrypted with a passphrase.
+//!
+//! ```text
+//! "TWL1" | m_kib u32 | t u32 | p u32 | salt 16 | nonce 12 | ciphertext + 16-byte tag
+//! ```
+//!
+//! The key is Argon2id (RustCrypto `argon2`) of the passphrase with that salt and those cost parameters; the cipher
+//! is ChaCha20-Poly1305 (RustCrypto `chacha20poly1305`). The first 32 bytes (the magic, the cost parameters and
+//! the salt) are the associated data, so a changed cost parameter fails to decrypt rather than weakening the key.
+//! A fresh salt and nonce are drawn at every save. The plaintext is the seed and the scan state (the outputs the
+//! wallet owns and where it has scanned to), because that state says what the wallet has received and is private too.
+//!
+//! **What this does not do:** it does not hide that a file exists or its size; it does not protect against malware
+//! on the machine (which can read the passphrase as it is typed, or the seed from memory); a weak passphrase is
+//! guessable offline, only slowed by Argon2. Nothing here is audited as used.
+
+use std::io::Write;
+use std::path::Path;
+
+use argon2::{Algorithm, Argon2, Params, Version};
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+use rand_core::{CryptoRng, RngCore};
+use tenero_core::v2::{DecodeError, EncodeError, Reader, Writer};
+use zeroize::Zeroizing;
+
+use crate::interim::Keys;
+use crate::wallet::{Owned, Reserved, Wallet, RECENT_BLOCKS};
+
+const MAGIC: &[u8; 4] = b"TWL1";
+const HEADER: usize = 4 + 12 + 16;
+const STATE_VERSION: u16 = 1;
+const MAX_OWNED: usize = 1_000_000;
+const MAX_RESERVED: usize = 4_096;
+
+/// The Argon2id cost.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KdfParams {
+    pub memory_kib: u32,
+    pub iterations: u32,
+    pub lanes: u32,
+}
+
+impl KdfParams {
+    /// 64 MiB, 3 passes, one lane: the RFC 9106 "low memory" recommendation. (It is a recommendation for
+    /// interactive use; a wallet that holds value should use more.)
+    pub const DEFAULT: KdfParams = KdfParams {
+        memory_kib: 64 * 1024,
+        iterations: 3,
+        lanes: 1,
+    };
+
+    /// The cheapest Argon2 allows. **For tests only**: it makes a guess nearly free.
+    pub const TEST_ONLY_WEAK: KdfParams = KdfParams {
+        memory_kib: 8,
+        iterations: 1,
+        lanes: 1,
+    };
+
+    /// What a file may ask a reader to spend: more than this is refused (a hostile file must not be able to
+    /// make the wallet allocate gigabytes).
+    const MAX_MEMORY_KIB: u32 = 1024 * 1024;
+    const MAX_ITERATIONS: u32 = 64;
+    const MAX_LANES: u32 = 16;
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum FileError {
+    Io(String),
+    /// Not a wallet file (wrong magic, or too short).
+    NotAWalletFile,
+    /// The cost parameters are not acceptable.
+    BadParams,
+    /// Wrong passphrase, or the file has been changed.
+    WrongPassphraseOrCorrupt,
+    /// Decrypted, but the contents are not a valid wallet.
+    Corrupt(String),
+}
+
+impl std::fmt::Display for FileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FileError::Io(e) => write!(f, "file error: {e}"),
+            FileError::NotAWalletFile => write!(f, "not a wallet file"),
+            FileError::BadParams => {
+                write!(f, "the file asks for unacceptable key-derivation settings")
+            }
+            FileError::WrongPassphraseOrCorrupt => {
+                write!(f, "wrong passphrase, or the file has been changed")
+            }
+            FileError::Corrupt(e) => write!(f, "the wallet file is damaged: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for FileError {}
+
+fn derive(
+    passphrase: &[u8],
+    salt: &[u8; 16],
+    p: &KdfParams,
+) -> Result<Zeroizing<[u8; 32]>, FileError> {
+    let params = Params::new(p.memory_kib, p.iterations, p.lanes, Some(32))
+        .map_err(|_| FileError::BadParams)?;
+    let mut key = Zeroizing::new([0u8; 32]);
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+        .hash_password_into(passphrase, salt, &mut *key)
+        .map_err(|_| FileError::BadParams)?;
+    Ok(key)
+}
+
+fn enc_err(e: EncodeError) -> FileError {
+    FileError::Corrupt(e.to_string())
+}
+
+fn dec_err(e: DecodeError) -> FileError {
+    FileError::Corrupt(e.as_str().to_string())
+}
+
+impl Wallet {
+    fn state_bytes(&self) -> Result<Zeroizing<Vec<u8>>, FileError> {
+        let mut w = Writer::new();
+        w.u16(STATE_VERSION);
+        w.raw(self.seed());
+        w.u64(self.birth_height);
+        match self.scanned {
+            Some(h) => {
+                w.raw(&[1]);
+                w.u64(h);
+            }
+            None => {
+                w.raw(&[0]);
+                w.u64(0);
+            }
+        }
+        w.count(self.recent.len(), 0, RECENT_BLOCKS)
+            .map_err(enc_err)?;
+        for (h, id) in &self.recent {
+            w.u64(*h);
+            w.raw(id);
+        }
+        w.count(self.owned.len(), 0, MAX_OWNED).map_err(enc_err)?;
+        for o in &self.owned {
+            w.u64(o.global_index);
+            w.u64(o.height);
+            w.raw(&[u8::from(o.coinbase)]);
+            w.raw(&o.onetime_address);
+            w.u64(o.amount);
+            w.raw(&o.mask);
+            w.raw(&o.offset);
+            w.raw(&o.key_image);
+        }
+        w.count(self.reserved.len(), 0, MAX_RESERVED)
+            .map_err(enc_err)?;
+        for r in &self.reserved {
+            w.raw(&r.key_image);
+            w.u64(r.until_height);
+        }
+        Ok(Zeroizing::new(w.into_bytes()))
+    }
+
+    fn from_state_bytes(data: &[u8]) -> Result<Wallet, FileError> {
+        let mut r = Reader::new(data);
+        if r.u16().map_err(dec_err)? != STATE_VERSION {
+            return Err(FileError::Corrupt("unknown state version".into()));
+        }
+        let seed: [u8; 32] = r.array().map_err(dec_err)?;
+        let birth = r.u64().map_err(dec_err)?;
+        let flag = r.take(1).map_err(dec_err)?[0];
+        let scanned_h = r.u64().map_err(dec_err)?;
+        let scanned = match flag {
+            0 if scanned_h == 0 => None,
+            1 => Some(scanned_h),
+            _ => return Err(FileError::Corrupt("bad scan marker".into())),
+        };
+        let recent = r
+            .list(0, RECENT_BLOCKS, |r| Ok((r.u64()?, r.array::<32>()?)))
+            .map_err(dec_err)?;
+        let owned = r
+            .list(0, MAX_OWNED, |r| {
+                let global_index = r.u64()?;
+                let height = r.u64()?;
+                let coinbase = match r.take(1)?[0] {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(DecodeError::CountOutOfRange),
+                };
+                Ok(Owned {
+                    global_index,
+                    height,
+                    coinbase,
+                    onetime_address: r.array()?,
+                    amount: r.u64()?,
+                    mask: r.array()?,
+                    offset: r.array()?,
+                    key_image: r.array()?,
+                })
+            })
+            .map_err(dec_err)?;
+        let reserved = r
+            .list(0, MAX_RESERVED, |r| {
+                Ok(Reserved {
+                    key_image: r.array()?,
+                    until_height: r.u64()?,
+                })
+            })
+            .map_err(dec_err)?;
+        r.finish().map_err(dec_err)?;
+        // the records must belong to this seed (a corrupted or swapped state is refused, not trusted)
+        let keys = Keys::from_seed(&seed);
+        for o in &owned {
+            let secret = keys
+                .onetime_secret(&o.offset)
+                .ok_or_else(|| FileError::Corrupt("a bad offset".into()))?;
+            if tenero_crypto::ringct::public_key(&secret) != Some(o.onetime_address)
+                || tenero_crypto::ringct::key_image(&secret) != Some(o.key_image)
+            {
+                return Err(FileError::Corrupt(
+                    "an output does not belong to this seed".into(),
+                ));
+            }
+        }
+        // the remembered blocks are in order and end at the last scanned height
+        if recent.windows(2).any(|w| w[0].0 >= w[1].0) || recent.last().map(|l| l.0) != scanned {
+            return Err(FileError::Corrupt(
+                "the scanned blocks are not in order".into(),
+            ));
+        }
+        let mut w = Wallet::from_seed(&seed, birth);
+        w.scanned = scanned;
+        w.recent = recent;
+        w.owned = owned;
+        w.reserved = reserved;
+        Ok(w)
+    }
+
+    /// Writes the wallet to `path`, encrypted, replacing any file there atomically (a crash leaves the old
+    /// file or the new one, never half of each).
+    pub fn save(
+        &self,
+        path: &Path,
+        passphrase: &[u8],
+        kdf: KdfParams,
+        rng: &mut (impl RngCore + CryptoRng),
+    ) -> Result<(), FileError> {
+        let mut salt = [0u8; 16];
+        let mut nonce = [0u8; 12];
+        rng.fill_bytes(&mut salt);
+        rng.fill_bytes(&mut nonce);
+        let key = derive(passphrase, &salt, &kdf)?;
+        let mut header = Vec::with_capacity(HEADER);
+        header.extend_from_slice(MAGIC);
+        header.extend_from_slice(&kdf.memory_kib.to_le_bytes());
+        header.extend_from_slice(&kdf.iterations.to_le_bytes());
+        header.extend_from_slice(&kdf.lanes.to_le_bytes());
+        header.extend_from_slice(&salt);
+        let state = self.state_bytes()?;
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(&*key));
+        let sealed = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &state,
+                    aad: &header,
+                },
+            )
+            .map_err(|_| FileError::Corrupt("encryption failed".into()))?;
+        let mut out = header;
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&sealed);
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = std::path::PathBuf::from(tmp);
+        let io = |e: std::io::Error| FileError::Io(e.to_string());
+        {
+            let mut f = std::fs::File::create(&tmp).map_err(io)?;
+            f.write_all(&out).map_err(io)?;
+            f.sync_all().map_err(io)?;
+        }
+        std::fs::rename(&tmp, path).map_err(io)
+    }
+
+    /// Reads a wallet file.
+    pub fn load(path: &Path, passphrase: &[u8]) -> Result<Wallet, FileError> {
+        let data = std::fs::read(path).map_err(|e| FileError::Io(e.to_string()))?;
+        if data.len() < HEADER + 12 + 16 || &data[..4] != MAGIC {
+            return Err(FileError::NotAWalletFile);
+        }
+        let u32_at = |i: usize| u32::from_le_bytes(data[i..i + 4].try_into().expect("4 bytes"));
+        let kdf = KdfParams {
+            memory_kib: u32_at(4),
+            iterations: u32_at(8),
+            lanes: u32_at(12),
+        };
+        if kdf.memory_kib > KdfParams::MAX_MEMORY_KIB
+            || kdf.iterations > KdfParams::MAX_ITERATIONS
+            || kdf.lanes > KdfParams::MAX_LANES
+        {
+            return Err(FileError::BadParams);
+        }
+        let salt: [u8; 16] = data[16..32].try_into().expect("16 bytes");
+        let nonce = &data[32..44];
+        let key = derive(passphrase, &salt, &kdf)?;
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(&*key));
+        let plain = cipher
+            .decrypt(
+                Nonce::from_slice(nonce),
+                Payload {
+                    msg: &data[44..],
+                    aad: &data[..32],
+                },
+            )
+            .map_err(|_| FileError::WrongPassphraseOrCorrupt)?;
+        let plain = Zeroizing::new(plain);
+        Wallet::from_state_bytes(&plain)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn belonging(keys: &Keys, n: u8, global_index: u64) -> Owned {
+        let mut offset = [0u8; 32];
+        offset[0] = n;
+        let secret = keys.onetime_secret(&offset).unwrap();
+        Owned {
+            global_index,
+            height: 3,
+            coinbase: false,
+            onetime_address: tenero_crypto::ringct::public_key(&secret).unwrap(),
+            amount: 77,
+            mask: [4; 32],
+            offset,
+            key_image: tenero_crypto::ringct::key_image(&secret).unwrap(),
+        }
+    }
+
+    fn sample() -> Wallet {
+        let keys = Keys::from_seed(&[1; 32]);
+        let mut w = Wallet::from_seed(&[1; 32], 2);
+        w.owned = vec![belonging(&keys, 5, 10), belonging(&keys, 6, 11)];
+        w.recent = vec![(2, [9; 32]), (3, [8; 32])];
+        w.scanned = Some(3);
+        w.reserved = vec![Reserved {
+            key_image: [7; 32],
+            until_height: 40,
+        }];
+        w
+    }
+
+    #[test]
+    fn the_state_round_trips() {
+        let w = sample();
+        let back = Wallet::from_state_bytes(&w.state_bytes().unwrap()).unwrap();
+        assert_eq!(back.owned, w.owned);
+        assert_eq!(back.recent, w.recent);
+        assert_eq!(back.reserved, w.reserved);
+        assert_eq!((back.scanned, back.birth_height), (Some(3), 2));
+        assert_eq!(back.address(), w.address());
+    }
+
+    #[test]
+    fn trailing_bytes_are_refused() {
+        let mut bytes = sample().state_bytes().unwrap().to_vec();
+        bytes.push(0);
+        assert!(matches!(
+            Wallet::from_state_bytes(&bytes),
+            Err(FileError::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn an_output_that_is_not_this_seeds_is_refused() {
+        let mut w = sample();
+        let other = Keys::from_seed(&[2; 32]);
+        w.owned.push(belonging(&other, 7, 12));
+        assert!(matches!(
+            Wallet::from_state_bytes(&w.state_bytes().unwrap()),
+            Err(FileError::Corrupt(_))
+        ));
+        // right key, wrong key image
+        let mut w = sample();
+        w.owned[0].key_image = [1; 32];
+        assert!(matches!(
+            Wallet::from_state_bytes(&w.state_bytes().unwrap()),
+            Err(FileError::Corrupt(_))
+        ));
+        // right key image, wrong one-time address
+        let mut w = sample();
+        w.owned[0].onetime_address = [1; 32];
+        assert!(matches!(
+            Wallet::from_state_bytes(&w.state_bytes().unwrap()),
+            Err(FileError::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn remembered_blocks_must_be_in_order_and_end_where_the_scan_did() {
+        let mut w = sample();
+        w.recent = vec![(3, [9; 32]), (2, [8; 32])];
+        assert!(Wallet::from_state_bytes(&w.state_bytes().unwrap()).is_err());
+        let mut w = sample();
+        w.scanned = Some(4);
+        assert!(Wallet::from_state_bytes(&w.state_bytes().unwrap()).is_err());
+        let mut w = sample();
+        w.scanned = None;
+        assert!(Wallet::from_state_bytes(&w.state_bytes().unwrap()).is_err());
+    }
+}

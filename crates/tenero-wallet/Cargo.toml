@@ -1,0 +1,33 @@
+[package]
+name = "tenero-wallet"
+description = "Tenero's wallet: keys, scanning, transaction building (experimental; the output scheme is an INTERIM stand-in for Carrot)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tenero-core = { path = "../tenero-core" }
+tenero-store = { path = "../tenero-store" }
+tenero-node = { path = "../tenero-node" }
+tenero-crypto = { path = "../tenero-crypto" }
+
+# already in the tree through tenero-crypto
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = "1"
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+# The wallet file (RustCrypto, both MIT OR Apache-2.0; approved by the owner 2026-10-01). Argon2id hashes the
+# passphrase into a key; ChaCha20-Poly1305 encrypts and authenticates. chacha20poly1305 had an NCC Group audit
+# (2020); neither is audited as used here.
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+
+[dev-dependencies]
+serde_json = "1"
+tenero-net = { path = "../tenero-net" }
+tenero-chain = { path = "../tenero-chain" }
+rand_chacha = "0.3"
+
+[lints]
+workspace = true

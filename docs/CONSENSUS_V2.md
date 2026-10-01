@@ -375,6 +375,11 @@ the addressing protocol designed for FCMP++, is maintained by Monero's developer
 classic CryptoNote addresses (the "Janus" attack and burning bugs). It provides the key hierarchy (spend,
 view, generate-address), subaddresses, integrated addresses with an 8-byte payment id, and outgoing view keys.
 
+- **As built (M8.6, 2026-10): the wallet does NOT yet follow Carrot.** It uses an interim scheme (`crates/tenero-wallet/
+  src/interim.rs`, decision 6 in `docs/M8_PLAN.md`) that fills the same 123-byte output with the classic CryptoNote
+  design: no Janus protection, one address per wallet, Ed25519 key exchange. Its addresses are written `tni1` + hex +
+  checksum so that they cannot be mistaken for the final format. Carrot arrives as a wallet update, not a consensus
+  change; outputs made under the interim scheme stay spendable.
 - The text encoding of an address (checksum, prefix, human-readable form) is **left to the specification and
   to the wallet milestone**. A network prefix for Tenero is chosen there so that a Tenero address cannot be
   mistaken for a Monero one.

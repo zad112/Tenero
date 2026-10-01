@@ -1,0 +1,202 @@
+{
+ "addresses": {
+  "invalid": [
+   {
+    "address": "tni2ca69dc577e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577aebea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d250441930376cce398",
+    "error": "format",
+    "note": "wrong prefix"
+   },
+   {
+    "address": "ca69dc577e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577aebea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d250441930376cce398",
+    "error": "format",
+    "note": "no prefix at all"
+   },
+   {
+    "address": "tni1CA69DC577E885B06854CFB655A2BDB5E7A4612B5BD0D874C11B13AD4D86577AEBEA3B307DA85900A9500AB83F39FE2D40CE59DC6CE4F2C5957892D250441930376CCE398",
+    "error": "format",
+    "note": "upper-case digits"
+   },
+   {
+    "address": "tni1ca69dc577e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577aebea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d250441930376cce3",
+    "error": "format",
+    "note": "too short"
+   },
+   {
+    "address": "tni1ca69dc577e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577aebea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d250441930376cce39800",
+    "error": "format",
+    "note": "too long"
+   },
+   {
+    "address": "tni1ca69dc577e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577aebea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d250441930376cce39g",
+    "error": "format",
+    "note": "not hexadecimal"
+   },
+   {
+    "address": "tni1ca69dc077e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577aebea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d250441930376cce398",
+    "error": "checksum",
+    "note": "a changed digit"
+   },
+   {
+    "address": "tni10100000000000000000000000000000000000000000000000000000000000000bea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d250441930315bb002e",
+    "error": "key",
+    "note": "the spend key is the identity"
+   },
+   {
+    "address": "tni1ca69dc577e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577aec7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037ad07f2549",
+    "error": "key",
+    "note": "the view key has small order"
+   }
+  ],
+  "valid": [
+   {
+    "address": "tni1ca69dc577e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577aebea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d250441930376cce398",
+    "seed": "a5fa86d262a39d261913064ac3f846ad41d7cd84953bf6d499f2f3408d0da553",
+    "spend": "ca69dc577e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577ae",
+    "view": "bea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d2504419303"
+   }
+  ]
+ },
+ "description": "The INTERIM wallet output scheme (crates/tenero-wallet/src/interim.rs; NOT Carrot): keys, addresses, making an output for a recipient, and what the receiver recovers. An independent Python reference (tools/make_vectors_interim.py).",
+ "enotes": [
+  {
+   "address": "tni1ca69dc577e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577aebea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d250441930376cce398",
+   "amount": 123456789,
+   "coinbase": false,
+   "context": "71c3b24bfa90fc96a7855f9f96e4eca409c29bcbb5264d83374b4f06f2f878ff",
+   "context_input": "b5fc20f69f88a4a71a990b47a65e9cb6173ddb5cb82ebb0acbd5250cb6f981e2",
+   "context_kind": "tx",
+   "enote": {
+    "amount_commitment": "f826b884136d2e76dd999d2e795e089f067fad0b87ce9d75cf1ad1a5c7e22cbf",
+    "amount_enc": "a0bf6bcdae978c88",
+    "anchor_enc": "8244b219f11e7a020a22c6843c2d9969",
+    "ephemeral_pubkey": "f464f94641974e125359698421b474d2850592ae9719ad2d918028548f452cb2",
+    "mask": "198bac142af4bd43f1573221107fff88af9b46a75a13380a86d1e7f5ff137b07",
+    "onetime_address": "c8de7ee1e5552a4587664b478ca8a88a71c57592d54d6102177b3a8994b12388",
+    "view_tag": "63dd6c"
+   },
+   "index": 0,
+   "note": "ordinary output 0",
+   "offset": "2d0e40341e481eac49e92e51a5c03e676abe3ec83841423546db6d7d833abe0f",
+   "onetime_secret": "fe288f1c92c30333c7a641e488fe6539786b86f3532d72a6f34c0dbbdc1cda08",
+   "rng": "2819f8154d12a5f14e42fee6866b0114858935c5cbae541e75fc8fb5ebbe8b516673c3e59248471dac35ed8b59aca6aed5c2ce38d9962710a35a53025a11ae872a0ba29c2b327828fec2024283a95551",
+   "seed": "a5fa86d262a39d261913064ac3f846ad41d7cd84953bf6d499f2f3408d0da553"
+  },
+  {
+   "address": "tni1a5770eb40636e2bdca01d652c218f4df36315bde9ea4291cf0ea9d17af33ad3029485f8f1d37c30e14ffa6827a61628d243ac2c781fb994fe25081649df543400603d4e7",
+   "amount": 7,
+   "coinbase": false,
+   "context": "9e2a958390716e8bac5d94759be8fec32ad9ada62eb473117e71efdeaa8ab830",
+   "context_input": "06c335cf1961a2e20de06bd2eaa695e12a9b57f6c06475132deb3f75370973de",
+   "context_kind": "tx",
+   "enote": {
+    "amount_commitment": "b30415c56efcc7b5796255615eace6c12646032b752dd91ce15acd7b79a232f7",
+    "amount_enc": "92f76929ae5f99e8",
+    "anchor_enc": "8b6ef74a51de26da5df1cb2ee01eb22a",
+    "ephemeral_pubkey": "e3b8fcf0e06ee31bb85557006c5d3cd4253fbfd8b33e5c4286008d6063728562",
+    "mask": "09466f6dbc93022b39a7b4fbd1b7f167a362d7b4aab33b3e2edec58d540f3a07",
+    "onetime_address": "04a6d040b7a3aa927092e529a08bea0a07d085c887f95da55b2921eaccadc424",
+    "view_tag": "6d0693"
+   },
+   "index": 1,
+   "note": "ordinary output 1 (the change)",
+   "offset": "90aebf129cd0c521cab39e6f1dceb9c1530d0657dd522af5245b8be26c715a00",
+   "onetime_secret": "a14cdb0fbbd9afd8d61af389922488b6a5a9590f511050cc0ed1f57387854401",
+   "rng": "da9fd59f0aa72c04e0e4277729b53d77835c3887f031deb26fe2291aced9fda1926c688592ec9ef131d44fcb7741efe44b967f18ed76ae11e0cf75013c558a47b8ac60ba6979b544caf4045e213516e8",
+   "seed": "7dd3298d0c026461b21da6c0eb6949b57502414abd09a0cd49fef3d5f53f2c18"
+  },
+  {
+   "address": "tni1ca69dc577e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577aebea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d250441930376cce398",
+   "amount": 18446744073709551615,
+   "coinbase": false,
+   "context": "c7fef82891de32d311f888ba72e5be9c0f1e8d87a141d0bcc2a316fa7fe09c2e",
+   "context_input": "8867d685db1e3c090790bbdcf86fe40ec6835c9c9afdcd5660963923bc27e6a3",
+   "context_kind": "tx",
+   "enote": {
+    "amount_commitment": "feea5ab89e6953b21ed7de2fd848a2c6112473b35e1f953e95da96ae968dcf20",
+    "amount_enc": "9a9c6f32cc118e78",
+    "anchor_enc": "957dcaaa2a4acb7f8c32614552201ed5",
+    "ephemeral_pubkey": "6f5cf5dd288b2a62a8510a661a8e20b0c4692328612f36b798a117f768c16b01",
+    "mask": "d57f47922405329dc37f0a0f15c4c30c31123419828349a888f89594d487cd0e",
+    "onetime_address": "063d2251d0628ef3c9151e17b5b714b7a98217bfe834bbfe389dc2b41102da8d",
+    "view_tag": "fd7097"
+   },
+   "index": 5,
+   "note": "ordinary output 5, a large amount",
+   "offset": "d6b674ccea3fe55572531af47c91b17d886874c210dddbde8964300f6298380b",
+   "onetime_secret": "a7d1c3b45ebbcadcef102d8760cfd84f9615bced2bc90b5037d6cf4cbb7a5404",
+   "rng": "f142a96a50fbddb822b2aa797233a8cab65c7b51944b9dc193cfa252837c13b26dfac77f7a453eb3fdee5a80540078c584e8f52f4a739d38ed5a3f971eb6ce591f1ecef73f7ea8c2036d60b172258dbf",
+   "seed": "a5fa86d262a39d261913064ac3f846ad41d7cd84953bf6d499f2f3408d0da553"
+  },
+  {
+   "address": "tni1def132d3840325590aff0b067d0f440f02e11a209974828cc7debcf105887d018f61fb507683c51681b0928094b4eb60d070f438dfe7b51ca3ea8c39e13d1412a579552e",
+   "amount": 0,
+   "coinbase": false,
+   "context": "f380e5493c0a0fced62c39c93f5631d6fbc05761409ec2cbd92d5b343c304ede",
+   "context_input": "ce5cff7f9b2d21a66a541b65a87961f0f59c256b3201320e22e4c20a13cdfb5a",
+   "context_kind": "tx",
+   "enote": {
+    "amount_commitment": "1976c4bbb9f31b7183b00553181b19efd86d9bbb1810adfecd3ec8930ba21a9e",
+    "amount_enc": "fccaf14217ecb441",
+    "anchor_enc": "49bde963ceec4e5f9b3f5ce64f2d4812",
+    "ephemeral_pubkey": "b3fcb0edeaaa6ee6b282dbd6b1d423bee4658e789688644bb2fb37f878c24379",
+    "mask": "156e96b16e9683b887eb20016165b9fba46c357767997ad0aae91907106f1809",
+    "onetime_address": "e59da46057274469363421fefd8e574db066659ef370434aaf92dfefab7f765d",
+    "view_tag": "cbb273"
+   },
+   "index": 1,
+   "note": "a zero-amount output",
+   "offset": "8fc1c0ea9fb3b1e3941a68cd8c49ec3695d2a5ff26522d0757d50104934bbe06",
+   "onetime_secret": "1b479ae312fdcc9c9c9243d1dc854618d08ee3a706dd0d00602bc6cb00bd1906",
+   "rng": "d94e791ef36c2b60942f78427a3c72e77a0323df98c6ba77848fab7480cf86ac49d037d348ce800bce807434d8714f170f5ba11a7c7a6d502a7b814ec69bd98f252b689ddf0276f76b1b20fde7ec7975",
+   "seed": "e657171fbfbf80dae0d29b2fa3ea8f8835d6c1f3d23356d141f379edefa13453"
+  },
+  {
+   "address": "tni1ca69dc577e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577aebea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d250441930376cce398",
+   "amount": 4000000000,
+   "coinbase": true,
+   "context": "77308e88fc3ca7ef3169a1ba9240fd324031436e7092d7880bf4da4843d19f0e",
+   "context_input": 1000,
+   "context_kind": "coinbase",
+   "enote": {
+    "amount_commitment": "da3acb00ab2d8dccacec8f775921c40e26b1ffbeca9eb7e657256f5968f2341c",
+    "amount_enc": "0000000000000000",
+    "anchor_enc": "9b97f372c8f6516c77839794a4b066ea",
+    "ephemeral_pubkey": "af52f8d128c62150529da0deb4e40d3e90586cc2f97bbf790dff46804cc18ec7",
+    "mask": "0100000000000000000000000000000000000000000000000000000000000000",
+    "onetime_address": "f7f17e47aa98f5b95d47248d94a4d4ab33decdf3efc4d44e57efdec50d38285b",
+    "view_tag": "bc67dd"
+   },
+   "index": 0,
+   "note": "coinbase output 0",
+   "offset": "9df71b69ba7c2f7f9ecf45774bff49d585272f12a9a85fa942fe0992915dab0a",
+   "onetime_secret": "6e126b512ef814061c8d580a2f3d71a793d4763dc4948f1af06fa9cfea3fc703",
+   "rng": "4a91f1797342bba1d5b1ed2ce6a145118c9369e046a5216cd30a441c9ded7699611e7b9450c5e9f097bf4f05ed72965c69d8da0507fa2c6a8406b87c683d4995703a8c12eef47c095df6785ef9ec5fa4",
+   "seed": "a5fa86d262a39d261913064ac3f846ad41d7cd84953bf6d499f2f3408d0da553"
+  },
+  {
+   "address": "tni1a5770eb40636e2bdca01d652c218f4df36315bde9ea4291cf0ea9d17af33ad3029485f8f1d37c30e14ffa6827a61628d243ac2c781fb994fe25081649df543400603d4e7",
+   "amount": 1,
+   "coinbase": true,
+   "context": "b31732335a2f27d24709231da0534fbde818a3d820ca4b90ac6d7e3ce188bc3a",
+   "context_input": 0,
+   "context_kind": "coinbase",
+   "enote": {
+    "amount_commitment": "1738eb7a677c6149228a2beaa21bea9e3370802d72a3eec790119580e02bd522",
+    "amount_enc": "0000000000000000",
+    "anchor_enc": "64fe6c14b28d129917091a48fff968f1",
+    "ephemeral_pubkey": "aa01b06175599930a0812b13d2719523df00d6bf1e7091a401720b6a5d7baa95",
+    "mask": "0100000000000000000000000000000000000000000000000000000000000000",
+    "onetime_address": "f48d0f1cba31bf92af543598e58e949d1005dd9c4c14e9801db9e964d85b98b4",
+    "view_tag": "b5bec6"
+   },
+   "index": 0,
+   "note": "coinbase at height 0",
+   "offset": "4937e5024fa205c801ea92050fe0167401daeb8c793563575acd0e5b12d8ed01",
+   "onetime_secret": "5ad500006eabef7e0e51e71f8436e56853763f45edf2882e444379ec2cecd702",
+   "rng": "7fe65053faa15213f7a309c912d03f7a28210d21910749fe13c17bb18ceea691eba7dca6f6823c694469c5c40106db6acc5f3ed0a8d84dda059e6722f0faea7c336918d4331dd5555b2c39ec0d8d9ef0",
+   "seed": "7dd3298d0c026461b21da6c0eb6949b57502414abd09a0cd49fef3d5f53f2c18"
+  }
+ ],
+ "name": "interim_scheme",
+ "schema": 1
+}
