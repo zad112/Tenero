@@ -1,4 +1,6 @@
-# Tenero
+<p align="center">
+  <img src="assets/banner.webp" alt="Tenero" width="100%">
+</p>
 
 An experimental proof-of-work cryptocurrency in Python, built to learn how these things work.
 The interesting part is its **GPU proof of work, "matmulhash v2"**: an int8 matrix multiplication
