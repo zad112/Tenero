@@ -40,6 +40,18 @@ These are not new work; they are open items that a release to others would other
 
 ### M10.1 Command-line output that reads like a product (size S to M)
 
+**Status 2026-10-02: built and tested; NOT yet looked at on a real Windows console.** Done: one formatting module (`ui.rs`) with golden
+tests for every kind of line; the banner; the status block (redrawn in place on a terminal; plain lines with the time otherwise); events in
+plain words, including "block N mined in S s, reward R"; errors with what to do for the common failures (port in use, data folder in use,
+no cookie, node not running, wrong chain, bad address); sync percent, blocks a second and time left; `--quiet`, `--verbose`, `--color`; colour
+only on a terminal and never with `NO_COLOR`; the same screen for `tenero-miner`; the log file unchanged. Run for real on scratch chains,
+off a terminal (the plain mode): the node mining, the node syncing from the heavy test network, the miner program mining for a node, two
+real errors, forced colour and `--quiet`. **Not done or not seen:** the in-place redraw on a real console (it is tested by the exact bytes
+it writes, not by eye; the terminal panel of the app could not be driven from here), the hash rate meaning (M10.2: the miner shows raw
+attempts a second until then), `tenero-wallet` (the plan names the node and the miner only), local time (the screen is UTC), terminal
+width (assumed 80). One new dependency: `anstyle-query` 1.1.5 (MIT OR Apache-2.0, not audited as far as I know; it reads `NO_COLOR` and
+turns on escape codes in the Windows console; its only dependency, `windows-sys`, was already in the tree).
+
 * **One format for `tenerod` and `tenero-miner`:** a short banner (name, version, network, "EXPERIMENTAL, no value"), then
   a status block that *redraws in place* on a terminal (height, peers, sync progress with an estimate, mempool, disk,
   uptime) and plain lines when output goes to a file. Colours only on a terminal, switched off by `NO_COLOR`. Block and

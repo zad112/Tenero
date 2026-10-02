@@ -415,6 +415,49 @@ impl PayoutSource for PlaceholderPayout {
 
 pub type Logger = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// What a miner tells the program, in a form a screen can use. (The log lines carry the full detail and are unchanged; this is the
+/// summary: a block in the chain, a lost race, a pause.)
+#[derive(Clone, Debug, PartialEq)]
+pub enum MinerEvent {
+    /// The backend is ready: what is mining (`matmulhash on 2 CPU thread(s)`).
+    Started {
+        backend: String,
+    },
+    /// A block this miner found is in the chain: how long it took from the start of the job, and the reward in units.
+    InChain {
+        height: u64,
+        secs: f64,
+        reward: u64,
+    },
+    /// A block this miner found lost a race: another block took its place.
+    LostRace {
+        height: u64,
+    },
+    /// A block this miner found was refused by the node.
+    Refused {
+        height: u64,
+    },
+    /// Mining is paused because the node is syncing, and resumed when it is done.
+    Paused,
+    Resumed,
+    /// The backend failed and mining has stopped.
+    BackendFailed {
+        why: String,
+    },
+    /// (The separate miner.) Connected to the node, or lost it.
+    NodeConnected,
+    NodeLost {
+        why: String,
+    },
+}
+
+pub type EventSink = Arc<dyn Fn(MinerEvent) + Send + Sync>;
+
+/// The reward a block pays, in units: its coinbase outputs.
+pub fn block_reward(block: &Block) -> u64 {
+    block.coinbase.outputs.iter().map(|o| o.amount).sum()
+}
+
 #[derive(Clone)]
 pub struct MinerConfig {
     /// The most transaction bytes to put in a block.
@@ -428,6 +471,8 @@ pub struct MinerConfig {
     /// the backend can; a test chain mined by a CPU needs a pace, or its difficulty runs away.
     pub min_block_interval: Duration,
     pub log: Logger,
+    /// Structured events for the screen; nothing by default.
+    pub events: EventSink,
 }
 
 impl Default for MinerConfig {
@@ -438,6 +483,7 @@ impl Default for MinerConfig {
             mine_while_syncing: false,
             min_block_interval: Duration::ZERO,
             log: Arc::new(|_| {}),
+            events: Arc::new(|_| {}),
         }
     }
 }
@@ -473,6 +519,9 @@ pub struct MinerHook<P: PayoutSource> {
     current: Option<Current>,
     next_id: u64,
     awaiting: Option<([u8; 32], u64)>,
+    /// How long the block being waited for took to find, and what it pays.
+    awaiting_info: (f64, u64),
+    paused: bool,
     last_found: Option<Instant>,
     failed: bool,
     pub stats: MinerStats,
@@ -488,6 +537,8 @@ impl<P: PayoutSource> MinerHook<P> {
             current: None,
             next_id: 1,
             awaiting: None,
+            awaiting_info: (0.0, 0),
+            paused: false,
             last_found: None,
             failed: false,
             stats: MinerStats::default(),
@@ -510,6 +561,10 @@ impl<P: PayoutSource> MinerHook<P> {
 
     fn log(&self, line: &str) {
         (self.cfg.log)(line);
+    }
+
+    fn event(&self, e: MinerEvent) {
+        (self.cfg.events)(e);
     }
 
     fn on_solution(&mut self, sol: Solution, pow: PowKind, events: &mut Vec<Event>) {
@@ -543,6 +598,7 @@ impl<P: PayoutSource> MinerHook<P> {
             cur.started.elapsed().as_secs_f64()
         ));
         self.awaiting = Some((id, block.coinbase.height));
+        self.awaiting_info = (cur.started.elapsed().as_secs_f64(), block_reward(&block));
         self.last_found = Some(Instant::now());
         events.push(Event::LocalBlock(block));
     }
@@ -557,22 +613,32 @@ impl<P: PayoutSource> Hooks for MinerHook<P> {
             if matches!(engine.node().store().height_of(&id), Ok(Some(_))) {
                 self.stats.blocks_accepted += 1;
                 self.log(&format!("block {height} is in the chain"));
+                self.event(MinerEvent::InChain {
+                    height,
+                    secs: self.awaiting_info.0,
+                    reward: self.awaiting_info.1,
+                });
             } else if engine.node().chain().holds_block(&id) {
                 self.stats.blocks_lost_race += 1;
                 self.log(&format!(
                     "block {height} lost a race: another block took its place and ours is on a side branch"
                 ));
+                self.event(MinerEvent::LostRace { height });
             } else {
                 self.stats.blocks_rejected += 1;
                 self.log(&format!(
                     "block {height} was REFUSED by our own node: the block or its proof of work is wrong"
                 ));
+                self.event(MinerEvent::Refused { height });
             }
         }
         // 2. what the thread has to say
         while let Some(msg) = self.miner.try_msg() {
             match msg {
-                Msg::Ready(name) => self.log(&format!("mining with {name}")),
+                Msg::Ready(name) => {
+                    self.log(&format!("mining with {name}"));
+                    self.event(MinerEvent::Started { backend: name });
+                }
                 Msg::Solved(sol) => self.on_solution(sol, pow, &mut events),
                 Msg::Finished(id) => {
                     // the thread is idle: if that was the job we are waiting on, it needs another
@@ -585,11 +651,20 @@ impl<P: PayoutSource> Hooks for MinerHook<P> {
                         "the mining backend failed and mining has stopped: {e}"
                     ));
                     self.failed = true;
+                    self.event(MinerEvent::BackendFailed { why: e });
                 }
             }
         }
         // 3. a job, if we should be mining
         let syncing = engine.is_syncing() && !self.cfg.mine_while_syncing;
+        if syncing != self.paused && !self.failed {
+            self.paused = syncing;
+            self.event(if syncing {
+                MinerEvent::Paused
+            } else {
+                MinerEvent::Resumed
+            });
+        }
         if !self.enabled.load(Ordering::SeqCst) || self.failed || syncing {
             self.miner.cancel();
             self.current = None;

@@ -37,6 +37,7 @@ zeroize = "1"
 # without our own unsafe code. rpassword (Apache-2.0): reads a passphrase without echoing it.
 ctrlc = "3"
 rpassword = "7"
+anstyle-query = "1.1.5"
 
 [dev-dependencies]
 serde_json = "1"

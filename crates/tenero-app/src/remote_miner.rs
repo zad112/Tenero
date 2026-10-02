@@ -18,7 +18,10 @@ use std::time::{Duration, Instant};
 use tenero_core::u256::U256;
 use tenero_core::v2::ids::{self, PowKind};
 use tenero_core::v2::Block;
-use tenero_miner::{meets_target, Counters, Job, Miner, Msg, PayoutSource, Solution, WalletPayout};
+use tenero_miner::{
+    block_reward, meets_target, Counters, EventSink, Job, Miner, MinerEvent, Msg, PayoutSource,
+    Solution, WalletPayout,
+};
 
 use crate::client::{BlockVerdict, RemoteNode};
 
@@ -33,6 +36,8 @@ pub struct RemoteMinerConfig {
     /// The least time between a block found and the next job (0: as fast as possible).
     pub min_block_interval: Duration,
     pub log: Logger,
+    /// Structured events for the screen; nothing by default.
+    pub events: EventSink,
 }
 
 impl Default for RemoteMinerConfig {
@@ -42,8 +47,17 @@ impl Default for RemoteMinerConfig {
             refresh_every: Duration::from_secs(60),
             min_block_interval: Duration::ZERO,
             log: Arc::new(|_| {}),
+            events: Arc::new(|_| {}),
         }
     }
+}
+
+/// What the node last said about itself, readable from another thread (the status display).
+#[derive(Default)]
+pub struct NodeProgress {
+    pub height: std::sync::atomic::AtomicU64,
+    pub syncing: AtomicBool,
+    pub connected: AtomicBool,
 }
 
 /// What the miner has done, for an operator and for tests.
@@ -84,6 +98,10 @@ pub struct RemoteMiner {
     next_id: u64,
     last_found: Option<Instant>,
     failed: Option<String>,
+    /// Whether the node was last seen syncing (mining paused), and whether the loss of the node has been reported.
+    paused: bool,
+    reported_down: bool,
+    progress: Arc<NodeProgress>,
     pub stats: RemoteStats,
 }
 
@@ -104,12 +122,20 @@ impl RemoteMiner {
             next_id: 1,
             last_found: None,
             failed: None,
+            paused: false,
+            reported_down: false,
+            progress: Arc::new(NodeProgress::default()),
             stats: RemoteStats::default(),
         }
     }
 
     pub fn counters(&self) -> Arc<Counters> {
         Arc::clone(&self.miner.counters)
+    }
+
+    /// What the node last said, for a display on another thread.
+    pub fn progress(&self) -> Arc<NodeProgress> {
+        Arc::clone(&self.progress)
     }
 
     /// Why mining has stopped for good (the backend failed), if it has.
@@ -119,6 +145,10 @@ impl RemoteMiner {
 
     fn log(&self, line: &str) {
         (self.cfg.log)(line);
+    }
+
+    fn event(&self, e: MinerEvent) {
+        (self.cfg.events)(e);
     }
 
     /// Drops the job in hand (the connection is gone, or the node is not ready).
@@ -150,6 +180,8 @@ impl RemoteMiner {
             return Ok(());
         }
         let height = block.coinbase.height;
+        let reward = block_reward(&block);
+        let secs = cur.started.elapsed().as_secs_f64();
         self.stats.blocks_found += 1;
         self.last_found = Some(Instant::now());
         self.log(&format!(
@@ -161,18 +193,25 @@ impl RemoteMiner {
             BlockVerdict::InChain(_) => {
                 self.stats.blocks_accepted += 1;
                 self.log(&format!("block {height} is in the chain"));
+                self.event(MinerEvent::InChain {
+                    height,
+                    secs,
+                    reward,
+                });
             }
             BlockVerdict::LostRace(_) => {
                 self.stats.blocks_lost_race += 1;
                 self.log(&format!(
                     "block {height} lost a race: another block took its place and ours is on a side branch"
                 ));
+                self.event(MinerEvent::LostRace { height });
             }
             BlockVerdict::Refused(why) => {
                 self.stats.blocks_refused += 1;
                 self.log(&format!(
                     "block {height} was REFUSED by the node: {why} (the block or its proof of work is wrong)"
                 ));
+                self.event(MinerEvent::Refused { height });
             }
         }
         Ok(())
@@ -183,7 +222,10 @@ impl RemoteMiner {
     pub fn step(&mut self, node: &RemoteNode) -> Result<(), String> {
         while let Some(msg) = self.miner.try_msg() {
             match msg {
-                Msg::Ready(name) => self.log(&format!("mining with {name}")),
+                Msg::Ready(name) => {
+                    self.log(&format!("mining with {name}"));
+                    self.event(MinerEvent::Started { backend: name });
+                }
                 Msg::Solved(sol) => self.on_solution(sol, node)?,
                 Msg::Finished(id) => {
                     // the thread is idle: if that was our job, it needs another
@@ -195,6 +237,7 @@ impl RemoteMiner {
                     self.log(&format!(
                         "the mining backend failed and mining has stopped: {e}"
                     ));
+                    self.event(MinerEvent::BackendFailed { why: e.clone() });
                     self.failed = Some(e);
                 }
             }
@@ -203,6 +246,17 @@ impl RemoteMiner {
             return Ok(());
         }
         let info = node.info()?;
+        self.progress.height.store(info.height, Ordering::Relaxed);
+        self.progress.syncing.store(info.syncing, Ordering::Relaxed);
+        self.progress.connected.store(true, Ordering::Relaxed);
+        if info.syncing != self.paused {
+            self.paused = info.syncing;
+            self.event(if info.syncing {
+                MinerEvent::Paused
+            } else {
+                MinerEvent::Resumed
+            });
+        }
         if info.syncing {
             // a node that is catching up has no tip worth building on
             if self.current.is_some() {
@@ -276,11 +330,18 @@ impl RemoteMiner {
                 match connect() {
                     Ok(n) => {
                         self.log("connected to the node");
+                        self.event(MinerEvent::NodeConnected);
+                        self.reported_down = false;
                         node = Some(n);
                         backoff = Duration::from_millis(500);
                     }
                     Err(e) => {
                         self.log(&format!("cannot reach the node: {e} (trying again)"));
+                        self.progress.connected.store(false, Ordering::Relaxed);
+                        if !self.reported_down {
+                            self.reported_down = true;
+                            self.event(MinerEvent::NodeLost { why: e.clone() });
+                        }
                         sleep_until(shutdown, backoff);
                         backoff = (backoff * 2).min(Duration::from_secs(10));
                         continue;
@@ -291,6 +352,9 @@ impl RemoteMiner {
                 if let Err(e) = self.step(n) {
                     self.stats.connections_lost += 1;
                     self.log(&format!("lost the node: {e}"));
+                    self.reported_down = true;
+                    self.progress.connected.store(false, Ordering::Relaxed);
+                    self.event(MinerEvent::NodeLost { why: e.clone() });
                     self.drop_job();
                     node = None;
                     continue;

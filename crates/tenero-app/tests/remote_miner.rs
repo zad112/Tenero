@@ -20,7 +20,9 @@ use tenero_chain::Sha256Pow;
 use tenero_core::u256::U256;
 use tenero_core::v2::ids::PowKind;
 use tenero_core::v2::{Block, BlockHeader, Coinbase, CoinbaseOutput, VERSION};
-use tenero_miner::{Backend, Counters, Job, Miner, Sha256Backend, Solution, WalletPayout};
+use tenero_miner::{
+    Backend, Counters, Job, Miner, MinerEvent, Sha256Backend, Solution, WalletPayout,
+};
 use tenero_net::sim::{mine_test_block, test_chain_params, LABEL};
 use tenero_net::transport::Hooks;
 use tenero_net::{Engine, EngineConfig, Event, Hello, Message, PROTOCOL_VERSION};
@@ -325,6 +327,19 @@ fn cfg() -> RemoteMinerConfig {
     RemoteMinerConfig::default()
 }
 
+/// A configuration that records what the miner tells the screen.
+fn cfg_events() -> (RemoteMinerConfig, Arc<Mutex<Vec<MinerEvent>>>) {
+    let ev = Arc::new(Mutex::new(Vec::new()));
+    let e2 = Arc::clone(&ev);
+    (
+        RemoteMinerConfig {
+            events: Arc::new(move |e| e2.lock().unwrap().push(e)),
+            ..RemoteMinerConfig::default()
+        },
+        ev,
+    )
+}
+
 fn sha_miner(cfg: RemoteMinerConfig) -> RemoteMiner {
     RemoteMiner::new(
         Miner::spawn(|| Ok(Sha256Backend)),
@@ -595,7 +610,7 @@ fn is_submit(r: &Request) -> bool {
 
 // ---- what a node says about a block --------------------------------------------------------------------------------
 
-fn verdict_miner(answer: Response) -> (Fake, RemoteMiner) {
+fn verdict_miner(answer: Response) -> (Fake, RemoteMiner, Arc<Mutex<Vec<MinerEvent>>>) {
     let f = fake(Box::new(move |r| {
         Some(match r {
             Request::Info => info(5, 5, false),
@@ -604,12 +619,13 @@ fn verdict_miner(answer: Response) -> (Fake, RemoteMiner) {
             _ => return None,
         })
     }));
-    (f, sha_miner(cfg()))
+    let (c, ev) = cfg_events();
+    (f, sha_miner(c), ev)
 }
 
 #[test]
 fn a_block_in_the_chain_is_counted() {
-    let (f, mut rm) = verdict_miner(Response::BlockSubmitted {
+    let (f, mut rm, ev) = verdict_miner(Response::BlockSubmitted {
         id: [1; 32],
         in_chain: true,
     });
@@ -620,22 +636,52 @@ fn a_block_in_the_chain_is_counted() {
         rm.stats.blocks_accepted + rm.stats.blocks_lost_race + rm.stats.blocks_refused
     );
     assert_eq!((rm.stats.blocks_lost_race, rm.stats.blocks_refused), (0, 0));
+    // the screen is told, with the time it took and what the block pays (the reward of the block that was submitted)
+    let seen = f.seen.lock().unwrap();
+    let Some(Request::SubmitBlock(b)) = seen.iter().find(|r| is_submit(r)) else {
+        panic!("no block was submitted")
+    };
+    let paid = tenero_miner::block_reward(b);
+    assert!(paid > 0);
+    let ev = ev.lock().unwrap();
+    // (stepping the miner by hand: the connection events belong to `run`)
+    assert!(matches!(ev[0], MinerEvent::Started { .. }), "{ev:?}");
+    assert!(
+        ev.iter().any(|e| matches!(e, MinerEvent::Started { .. })),
+        "{ev:?}"
+    );
+    let got = ev.iter().find_map(|e| match e {
+        MinerEvent::InChain {
+            height,
+            secs,
+            reward,
+        } => Some((*height, *secs, *reward)),
+        _ => None,
+    });
+    let (h, secs, reward) = got.expect("an InChain event");
+    assert_eq!((h, reward), (6, paid));
+    assert!(secs.is_finite() && (0.0..20.0).contains(&secs), "{secs}");
 }
 
 #[test]
 fn a_block_that_lost_a_race_is_counted_as_that_and_not_as_accepted() {
-    let (f, mut rm) = verdict_miner(Response::BlockSubmitted {
+    let (f, mut rm, ev) = verdict_miner(Response::BlockSubmitted {
         id: [1; 32],
         in_chain: false,
     });
     let node = f.node();
     assert!(drive(&mut rm, &node, 20, |m| m.stats.blocks_lost_race >= 1));
     assert_eq!((rm.stats.blocks_accepted, rm.stats.blocks_refused), (0, 0));
+    let ev = ev.lock().unwrap();
+    assert!(ev.contains(&MinerEvent::LostRace { height: 6 }), "{ev:?}");
+    assert!(!ev
+        .iter()
+        .any(|e| matches!(e, MinerEvent::InChain { .. } | MinerEvent::Refused { .. })));
 }
 
 #[test]
 fn a_block_the_node_refuses_is_counted_and_mining_goes_on() {
-    let (f, mut rm) = verdict_miner(Response::Error(
+    let (f, mut rm, ev) = verdict_miner(Response::Error(
         "the node refused the block (it is not valid)".into(),
     ));
     let node = f.node();
@@ -649,11 +695,14 @@ fn a_block_the_node_refuses_is_counted_and_mining_goes_on() {
         (0, 0)
     );
     assert!(rm.failure().is_none());
+    let ev = ev.lock().unwrap();
+    assert!(ev.contains(&MinerEvent::Refused { height: 6 }), "{ev:?}");
+    assert!(!ev.iter().any(|e| matches!(e, MinerEvent::InChain { .. })));
 }
 
 #[test]
 fn a_found_block_has_the_nonce_the_backend_found_and_meets_the_target() {
-    let (f, mut rm) = verdict_miner(Response::BlockSubmitted {
+    let (f, mut rm, _) = verdict_miner(Response::BlockSubmitted {
         id: [1; 32],
         in_chain: true,
     });
@@ -684,7 +733,8 @@ fn a_node_that_is_syncing_gets_no_mining() {
         })
     }));
     let jobs = Jobs::default();
-    let mut rm = idle_miner(&jobs, cfg());
+    let (c, ev) = cfg_events();
+    let mut rm = idle_miner(&jobs, c);
     let node = f.node();
     // syncing from the first look: no template is even asked for
     syncing.store(true, Ordering::SeqCst);
@@ -715,6 +765,18 @@ fn a_node_that_is_syncing_gets_no_mining() {
     }
     assert_eq!(f.count(is_template), asked, "no new template while syncing");
     assert_eq!(rm.stats.paused_syncing, 1, "one pause, counted once");
+    // the screen is told each change once: paused, resumed, paused
+    let changes: Vec<MinerEvent> = ev
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| matches!(e, MinerEvent::Paused | MinerEvent::Resumed))
+        .cloned()
+        .collect();
+    assert_eq!(
+        changes,
+        vec![MinerEvent::Paused, MinerEvent::Resumed, MinerEvent::Paused]
+    );
 }
 
 #[test]
@@ -938,11 +1000,12 @@ fn a_backend_that_fails_stops_the_miner_with_its_reason() {
             _ => return None,
         })
     }));
+    let (bcfg, bev) = cfg_events();
     let mut rm = RemoteMiner::new(
         Miner::spawn(|| Ok(Broken)),
         WalletPayout::new(address()).unwrap(),
         PowKind::Sha256,
-        cfg(),
+        bcfg,
     );
     let addr = f.addr;
     let stop = AtomicBool::new(false);
@@ -953,6 +1016,14 @@ fn a_backend_that_fails_stops_the_miner_with_its_reason() {
     );
     let e = r.unwrap_err();
     assert!(e.contains("no GPU"), "{e}");
+    assert!(
+        bev.lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, MinerEvent::BackendFailed { why } if why.contains("no GPU"))),
+        "{:?}",
+        bev.lock().unwrap()
+    );
     // and one that cannot even be built
     let mut rm = RemoteMiner::new(
         Miner::spawn(|| -> Result<Broken, String> { Err("no device".into()) }),
@@ -995,10 +1066,11 @@ fn a_miner_whose_node_goes_away_reconnects_and_carries_on() {
     let addr = f.addr;
     let stop = Arc::new(AtomicBool::new(false));
     let connects = Arc::new(AtomicU64::new(0));
+    let (mcfg, ev) = cfg_events();
     let (stats, ()) = thread::scope(|s| {
         let (stop2, c2) = (Arc::clone(&stop), Arc::clone(&connects));
         let t = s.spawn(move || {
-            let mut rm = sha_miner(cfg());
+            let mut rm = sha_miner(mcfg);
             rm.run(
                 || {
                     c2.fetch_add(1, Ordering::SeqCst);
@@ -1029,6 +1101,18 @@ fn a_miner_whose_node_goes_away_reconnects_and_carries_on() {
         stats.blocks_accepted >= 1,
         "mining resumed after the reconnect: {stats:?}"
     );
+    // the screen is told: connected, lost, connected again
+    let net: Vec<String> = ev
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            MinerEvent::NodeConnected => Some("connected".to_string()),
+            MinerEvent::NodeLost { .. } => Some("lost".to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(net, vec!["connected", "lost", "connected"]);
 }
 
 #[test]
@@ -1047,10 +1131,11 @@ fn a_miner_started_before_its_node_waits_for_it() {
     let addr = f.addr;
     let stop = Arc::new(AtomicBool::new(false));
     let attempts = Arc::new(AtomicU64::new(0));
+    let (mcfg, ev) = cfg_events();
     thread::scope(|s| {
         let (stop2, a2) = (Arc::clone(&stop), Arc::clone(&attempts));
         let t = s.spawn(move || {
-            let mut rm = sha_miner(cfg());
+            let mut rm = sha_miner(mcfg);
             rm.run(
                 || {
                     // the node is "not up" for the first two tries
@@ -1078,6 +1163,19 @@ fn a_miner_started_before_its_node_waits_for_it() {
         t.join().unwrap();
     });
     assert!(attempts.load(Ordering::SeqCst) >= 3);
+    // two failed tries are ONE report, and then the connection
+    let net: Vec<MinerEvent> = ev
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| matches!(e, MinerEvent::NodeConnected | MinerEvent::NodeLost { .. }))
+        .cloned()
+        .collect();
+    assert_eq!(net.len(), 2, "{net:?}");
+    assert!(
+        matches!(&net[0], MinerEvent::NodeLost { why } if why.contains("cannot reach the node"))
+    );
+    assert_eq!(net[1], MinerEvent::NodeConnected);
 }
 
 #[test]

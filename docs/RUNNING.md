@@ -63,9 +63,33 @@ parse is an error that names the setting; nothing silently falls back to a defau
 | `log_level` | `error`, `warn`, `info`, `debug` | info |
 | `log_file` | also write the log here (rotated to `<name>.old` at 20 MiB) | standard error only |
 | `status_every` | seconds between status lines | 60 |
+| `quiet` | show only warnings and errors on the screen (`--quiet` alone means yes) | no |
+| `verbose` | also show every line of the log on the screen (`--verbose` alone means yes) | no |
+| `color` | `auto`, `always` or `never` (auto: only on a terminal, never with `NO_COLOR`, never on a `dumb` terminal) | auto |
 | `allow_open_data_dir` | start even if other accounts on this computer can read the data directory (the node otherwise refuses, and says how to fix it; a new directory is made private) | no |
 
-**The status line and the alarms.** Every `status_every` seconds the node logs a line such as
+**What the screen shows (M10.1).** A banner (what this is, the network, "EXPERIMENTAL and UNAUDITED"), then events in plain words
+(`block 1,204 mined in 0.4 s, reward 20 TNR`, `synced: the chain is up to date at height 5,000`, an error with a `what to do:` line
+under it) and a **status block** that is redrawn in place when the output is a terminal:
+
+```
+-- status ------------------------------------------------------------
+  chain    height 1,204 (a1b2c3d4) | last block 41s ago
+  sync     syncing 1,204 of 5,000 (24%) | 41 blocks/s | 1m 33s left
+  peers    5 (in 2, out 3) | outbound in 3 network groups
+  node     mempool 7 | up 2h 05m | disk 12.3 MiB
+  mining   mining (cpu, 2 threads) | 3 found, 3 in the chain
+  alarms   none
+```
+
+When the output is a file, a pipe or a service, there is no redrawing: events are lines with the time (UTC) in front, and a status line
+every `status_every` seconds. **The log file is not changed by any of this:** it keeps every line, with ids and nonces, as before. `--quiet`
+shows only warnings and errors; `--verbose` also shows each line of the log as it is written to the file. The screen is ASCII only, lines are
+at most 78 columns, colour is off with `NO_COLOR`, and `tenero-miner` has the same options and the same kind of screen (the node it
+mines for, its attempts a second, the blocks it has found). **The `TNR` after a reward is a placeholder for the coin's name** (a decision for
+the owner). `tenerod status` and `tenerod stop` print the same one-liners as before (scripts read them).
+
+**The status line and the alarms (in the log).** Every `status_every` seconds the node logs a line such as
 `status: tip 782 (00000000) | peers 4 (in 2, out 2) | out groups 2 | last block 40s ago | samples 3 | alarms none | book 8 | ...`.
 `out groups` is how many different network ranges (IPv4 /16) the node's own outbound peers are in; `last block` is how long since the chain moved;
 `samples` is how many other nodes it has briefly connected to in the last half hour (a *feeler*: once every two minutes it dials one address it has

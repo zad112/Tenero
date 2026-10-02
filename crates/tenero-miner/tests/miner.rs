@@ -12,8 +12,8 @@ use tenero_core::matmulhash::Params;
 use tenero_core::u256::U256;
 use tenero_core::v2::ids::{self, PowKind};
 use tenero_miner::{
-    Backend, Counters, CpuMatmulBackend, Job, Miner, MinerConfig, MinerHook, PlaceholderPayout,
-    Sha256Backend, Solution, MAX_CORES,
+    Backend, Counters, CpuMatmulBackend, Job, Miner, MinerConfig, MinerEvent, MinerHook,
+    PlaceholderPayout, Sha256Backend, Solution, MAX_CORES,
 };
 use tenero_net::sim::{mine_test_block, SimRig, LABEL};
 use tenero_net::transport::Hooks;
@@ -38,18 +38,27 @@ fn sha_engine(rig: &SimRig) -> Engine<'_> {
     Engine::new(node, EngineConfig::default())
 }
 
-struct Lines(Arc<Mutex<Vec<String>>>);
+struct Lines(Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<MinerEvent>>>);
 
 impl Lines {
     fn new() -> Lines {
-        Lines(Arc::new(Mutex::new(Vec::new())))
+        Lines(
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+        )
     }
     fn cfg(&self) -> MinerConfig {
         let lines = Arc::clone(&self.0);
+        let events = Arc::clone(&self.1);
         MinerConfig {
             log: Arc::new(move |l| lines.lock().unwrap().push(l.to_string())),
+            events: Arc::new(move |e| events.lock().unwrap().push(e)),
             ..MinerConfig::default()
         }
+    }
+    /// What the miner told the screen, in order.
+    fn events(&self) -> Vec<MinerEvent> {
+        self.1.lock().unwrap().clone()
     }
     fn contains(&self, needle: &str) -> bool {
         self.0.lock().unwrap().iter().any(|l| l.contains(needle))
@@ -180,6 +189,48 @@ fn the_miner_mines_blocks_its_own_node_accepts_one_after_another() {
     // the coinbase of each block pays the placeholder address of its height
     let b5 = rig[0].store.get_block(5).unwrap().unwrap().coinbase;
     assert_eq!(b5.height, 5);
+    // the screen is told: what is mining, then each block in the chain, with how long it took and what it pays
+    let ev = lines.events();
+    assert_eq!(
+        ev[0],
+        MinerEvent::Started {
+            backend: "sha256 test chain (CPU)".to_string()
+        },
+        "{ev:?}"
+    );
+    let in_chain: Vec<(u64, f64, u64)> = ev
+        .iter()
+        .filter_map(|e| match e {
+            MinerEvent::InChain {
+                height,
+                secs,
+                reward,
+            } => Some((*height, *secs, *reward)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(in_chain.len() as u64, hook.stats.blocks_accepted, "{ev:?}");
+    assert!(in_chain.len() >= 11);
+    for (i, (h, secs, reward)) in in_chain.iter().enumerate() {
+        assert_eq!(*h, i as u64 + 1, "blocks come in order: {in_chain:?}");
+        assert!(secs.is_finite() && *secs >= 0.0 && *secs < 30.0, "{secs}");
+        let paid: u64 = rig[0]
+            .store
+            .get_block(*h)
+            .unwrap()
+            .unwrap()
+            .coinbase
+            .outputs
+            .iter()
+            .map(|o| o.amount)
+            .sum();
+        assert!(paid > 0);
+        assert_eq!(*reward, paid, "the reward told is what block {h} pays");
+    }
+    assert!(!ev.iter().any(|e| matches!(
+        e,
+        MinerEvent::LostRace { .. } | MinerEvent::Refused { .. } | MinerEvent::Paused
+    )));
 }
 
 // ---- the job follows the tip -------------------------------------------------------------------------------
@@ -409,6 +460,9 @@ fn a_block_the_node_refuses_is_reported_and_mining_goes_on() {
         lines.dump()
     );
     assert!(hook.stats.blocks_accepted >= 1);
+    let ev = lines.events();
+    assert!(ev.contains(&MinerEvent::Refused { height: 1 }), "{ev:?}");
+    assert!(ev.iter().any(|e| matches!(e, MinerEvent::InChain { .. })));
 }
 
 #[test]
@@ -467,6 +521,13 @@ fn a_backend_that_cannot_start_stops_mining_and_says_so() {
     }
     assert!(hook.failed());
     assert!(lines.contains("no GPU found"), "{}", lines.dump());
+    assert!(
+        lines.events().contains(&MinerEvent::BackendFailed {
+            why: "no GPU found".to_string()
+        }),
+        "{:?}",
+        lines.events()
+    );
     assert_eq!(height(&engine), 0);
     // and it stays stopped
     assert!(hook.poll(&mut engine, clock).is_empty());
@@ -892,6 +953,11 @@ fn a_block_that_loses_a_race_is_reported_as_that_and_not_as_a_refusal() {
         lines.dump()
     );
     assert!(lines.contains("lost a race"), "{}", lines.dump());
+    let ev = lines.events();
+    assert!(ev.contains(&MinerEvent::LostRace { height: 1 }), "{ev:?}");
+    assert!(!ev
+        .iter()
+        .any(|e| matches!(e, MinerEvent::Refused { .. } | MinerEvent::InChain { .. })));
 }
 
 #[test]
@@ -952,9 +1018,10 @@ fn a_node_that_is_catching_up_is_not_mined_on_unless_told_to() {
         );
         assert!(engine.is_syncing());
         let (backend, heights, _) = idle();
+        let lines = Lines::new();
         let cfg = MinerConfig {
             mine_while_syncing,
-            ..MinerConfig::default()
+            ..lines.cfg()
         };
         let mut hook = hook_with(move || Ok(backend), cfg);
         for _ in 0..40 {
@@ -966,6 +1033,33 @@ fn a_node_that_is_catching_up_is_not_mined_on_unless_told_to() {
             expect_jobs,
             "mine_while_syncing = {mine_while_syncing}"
         );
+        // a miner that waits says so, once; one that does not wait has nothing to say
+        let paused = lines
+            .events()
+            .iter()
+            .filter(|e| **e == MinerEvent::Paused)
+            .count();
+        assert_eq!(paused, 1 - expect_jobs, "{:?}", lines.events());
+        if !mine_while_syncing {
+            // the peer goes away, the node is no longer syncing, and the miner says it has resumed (once)
+            engine.handle(START_MS, Event::PeerDisconnected { peer: 1 });
+            assert!(!engine.is_syncing());
+            for _ in 0..10 {
+                hook.poll(&mut engine, START_MS);
+                thread::sleep(Duration::from_millis(5));
+            }
+            let ev = lines.events();
+            assert_eq!(
+                ev.iter().filter(|e| **e == MinerEvent::Resumed).count(),
+                1,
+                "{ev:?}"
+            );
+            let (p, r) = (
+                ev.iter().position(|e| *e == MinerEvent::Paused).unwrap(),
+                ev.iter().position(|e| *e == MinerEvent::Resumed).unwrap(),
+            );
+            assert!(p < r);
+        }
     }
 }
 

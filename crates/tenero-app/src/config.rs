@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use crate::log::Level;
+use crate::ui::ColorChoice;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Network {
@@ -73,6 +74,10 @@ pub struct Config {
     pub status_every: u64,
     /// Start even if other accounts on this computer can read the data directory (see `private_dir.rs`).
     pub allow_open_data_dir: bool,
+    /// What the screen shows (`ui.rs`): only warnings and errors, or also every line of the log; and whether it uses colour.
+    pub quiet: bool,
+    pub verbose: bool,
+    pub color: ColorChoice,
 }
 
 /// What a node's operator is told when a setting is wrong.
@@ -113,6 +118,9 @@ const KEYS: &[&str] = &[
     "log_file",
     "status_every",
     "allow_open_data_dir",
+    "quiet",
+    "verbose",
+    "color",
 ];
 
 /// Keys that may be given more than once.
@@ -168,13 +176,21 @@ impl Raw {
         // a repeatable key given on the command line replaces the file's values (it means exactly those)
         let mut repeated_from_args = std::collections::BTreeSet::new();
         let mut seen = std::collections::BTreeSet::new();
-        let mut it = args.iter();
+        let mut it = args.iter().peekable();
         while let Some(flag) = it.next() {
             let Some(key) = flag.strip_prefix("--") else {
                 return Err(ConfigError(format!("unexpected argument `{flag}`")));
             };
-            let Some(value) = it.next() else {
-                return Err(bad(key, "needs a value"));
+            // `--quiet` and `--verbose` alone mean yes
+            let bare = matches!(key, "quiet" | "verbose")
+                && it.peek().is_none_or(|next| next.starts_with("--"));
+            let value = if bare {
+                &"yes".to_string()
+            } else {
+                match it.next() {
+                    Some(v) => v,
+                    None => return Err(bad(key, "needs a value")),
+                }
             };
             if !KEYS.contains(&key) {
                 return Err(ConfigError(format!("unknown option `--{key}`")));
@@ -362,6 +378,15 @@ impl Raw {
         if status_every == 0 {
             return Err(bad("status_every", "must be at least 1 second"));
         }
+        let (quiet, verbose) = (self.flag("quiet", false)?, self.flag("verbose", false)?);
+        if quiet && verbose {
+            return Err(bad("quiet", "cannot be combined with `verbose`"));
+        }
+        let color = match self.one("color") {
+            None => ColorChoice::Auto,
+            Some(v) => ColorChoice::parse(v)
+                .ok_or_else(|| bad("color", format!("`{v}` is not auto, always or never")))?,
+        };
         Ok(Config {
             data: PathBuf::from(data),
             network,
@@ -384,6 +409,9 @@ impl Raw {
             log_file: self.one("log_file").map(PathBuf::from),
             status_every,
             allow_open_data_dir: self.flag("allow_open_data_dir", false)?,
+            quiet,
+            verbose,
+            color,
         })
     }
 }

@@ -7,8 +7,10 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::ui::{error_event, Event as UiEvent, Screen};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
@@ -53,8 +55,10 @@ struct FileSink {
 pub struct Logger {
     level: Level,
     file: Option<Mutex<FileSink>>,
-    /// Print to standard error too (the programs do; tests do not).
+    /// Print to standard error too (tests do not).
     stderr: bool,
+    /// The screen of a program with one (`ui.rs`): it shows the summary, this logger keeps the detail.
+    screen: Option<Arc<Screen>>,
 }
 
 /// `2026-10-02T09:05:03Z` for a time in seconds since 1970-01-01 (UTC), by the civil-calendar algorithm of Howard
@@ -108,6 +112,7 @@ impl Logger {
             level,
             file: sink,
             stderr,
+            screen: None,
         })
     }
 
@@ -116,7 +121,18 @@ impl Logger {
     }
 
     pub fn log(&self, level: Level, msg: &str) {
-        if !self.enabled(level) {
+        self.emit(level, msg, None);
+    }
+
+    /// A line for the log file AND an event for the screen, which shows it in its own words. (The screen shows its events whatever the
+    /// log level is; the file keeps the line as it always was.)
+    pub fn log_event(&self, level: Level, msg: &str, event: UiEvent) {
+        self.emit(level, msg, Some(event));
+    }
+
+    fn emit(&self, level: Level, msg: &str, event: Option<UiEvent>) {
+        let file_on = self.enabled(level);
+        if !file_on && event.is_none() {
             return;
         }
         let now = SystemTime::now()
@@ -129,8 +145,20 @@ impl Logger {
             .map(|c| if c.is_control() { ' ' } else { c })
             .collect();
         let line = format!("{} {} {clean}\n", utc_timestamp(now), level.name());
-        if self.stderr {
-            eprint!("{line}");
+        match (&self.screen, event) {
+            // the screen shows what the caller made of it; warnings and errors without an event are shown as such (an error with what to do
+            // about it); the rest is detail, for verbose mode
+            (Some(sc), Some(e)) => sc.event(&e),
+            (Some(sc), None) if file_on => match level {
+                Level::Error => sc.event(&error_event(&clean)),
+                Level::Warn => sc.event(&UiEvent::Warn(clean.clone())),
+                _ => sc.detail(line.trim_end()),
+            },
+            (None, _) if self.stderr && file_on => eprint!("{line}"),
+            _ => {}
+        }
+        if !file_on {
+            return;
         }
         if let Some(sink) = &self.file {
             if let Ok(mut s) = sink.lock() {
@@ -154,6 +182,17 @@ impl Logger {
                 }
             }
         }
+    }
+
+    /// The screen this logger also writes to, if it has one.
+    pub fn screen(&self) -> Option<&Arc<Screen>> {
+        self.screen.as_ref()
+    }
+
+    /// Also show warnings, errors and the events given to `log_event` on `screen` (and, in verbose mode, every line).
+    pub fn with_screen(mut self, screen: Arc<Screen>) -> Logger {
+        self.screen = Some(screen);
+        self
     }
 
     pub fn error(&self, msg: &str) {

@@ -7,9 +7,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tenero_app::config::Network;
-use tenero_app::daemon::DEV_EPOCH_BLOCKS;
+use tenero_app::daemon::{MiningShared, DEV_EPOCH_BLOCKS};
 use tenero_app::log::{Level, Logger};
 use tenero_app::remote_miner::{connect_to, RemoteMiner, RemoteMinerConfig};
+use tenero_app::ui::{
+    miner_event_to_ui, Banner, ColorChoice, Event as UiEvent, MinerStatus, NodeLink, Screen,
+    Verbosity,
+};
 use tenero_chain::MatmulPow;
 use tenero_core::matmulhash::Params;
 use tenero_core::v2::ids::PowKind;
@@ -29,7 +33,9 @@ tenero-miner: mines for a Tenero node in another process (EXPERIMENTAL, UNAUDITE
   --gpu-device N     which GPU (default 0)       --gpu-batch N   attempts per batch (default 128)
   --pace SECS        wait this long after a block is found before the next job (default 0)
   --log-level L      error, warn, info, debug (default info)    --log-file FILE   also log to this file
-  --status-every S   seconds between status lines (default 60)
+  --status-every S   seconds between status lines when the output is not a terminal (default 60)
+  --quiet            show only warnings and errors     --verbose   also show every line of the log
+  --color C          auto, always or never (colour is off with NO_COLOR and when the output is not a terminal)
 
 The miner asks the node for a block, searches for it on its own thread, and hands a found block back; the node checks it
 completely. It pauses while the node is syncing and carries on if the node restarts.";
@@ -46,6 +52,8 @@ struct Args {
     level: Level,
     log_file: Option<PathBuf>,
     status_every: u64,
+    verbosity: Verbosity,
+    color: ColorChoice,
 }
 
 fn parse() -> Result<Args, String> {
@@ -61,13 +69,30 @@ fn parse() -> Result<Args, String> {
         level: Level::Info,
         log_file: None,
         status_every: 60,
+        verbosity: Verbosity::Normal,
+        color: ColorChoice::Auto,
     };
     let mut seen = std::collections::BTreeSet::new();
-    let mut it = std::env::args().skip(1);
+    let mut it = std::env::args().skip(1).peekable();
     while let Some(flag) = it.next() {
         let Some(key) = flag.strip_prefix("--") else {
             return Err(format!("unexpected argument `{flag}`"));
         };
+        // `--quiet` and `--verbose` stand alone
+        if matches!(key, "quiet" | "verbose") {
+            if !seen.insert(key.to_string()) {
+                return Err(format!("--{key} given twice"));
+            }
+            a.verbosity = if key == "quiet" {
+                Verbosity::Quiet
+            } else {
+                Verbosity::Verbose
+            };
+            if seen.contains("quiet") && seen.contains("verbose") {
+                return Err("--quiet and --verbose cannot be combined".into());
+            }
+            continue;
+        }
         let v = it.next().ok_or_else(|| format!("--{key} needs a value"))?;
         if !seen.insert(key.to_string()) {
             return Err(format!("--{key} given twice"));
@@ -96,6 +121,10 @@ fn parse() -> Result<Args, String> {
             }
             "log-file" => a.log_file = Some(PathBuf::from(&v)),
             "status-every" => a.status_every = num("status-every")?.max(1),
+            "color" => {
+                a.color = ColorChoice::parse(&v)
+                    .ok_or_else(|| format!("--color: `{v}` is not auto, always or never"))?
+            }
             other => return Err(format!("unknown option `--{other}`")),
         }
     }
@@ -132,8 +161,13 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let log = match Logger::new(args.level, args.log_file.as_deref(), true) {
-        Ok(l) => Arc::new(l),
+    let screen = Arc::new(Screen::for_stderr(
+        args.color,
+        args.verbosity,
+        args.status_every,
+    ));
+    let log = match Logger::new(args.level, args.log_file.as_deref(), false) {
+        Ok(l) => Arc::new(l.with_screen(Arc::clone(&screen))),
         Err(e) => {
             eprintln!("error: cannot open the log file: {e}");
             std::process::exit(2);
@@ -157,12 +191,42 @@ fn main() {
             if s.swap(true, Ordering::SeqCst) {
                 std::process::exit(130);
             }
-            l.info("shutdown requested");
+            l.log_event(Level::Info, "shutdown requested", UiEvent::ShuttingDown);
         });
     }
     log.info(
         "tenero-miner: EXPERIMENTAL and UNAUDITED. Nothing on the test or dev networks has value.",
     );
+    // the banner names the network the backend belongs to (the node is asked below, and a mismatch is an error)
+    let implied = if args.backend == "sha256" {
+        Network::Test
+    } else {
+        Network::Dev
+    };
+    screen.banner(&Banner {
+        role: "miner".to_string(),
+        version: format!("v{}", tenero_app::daemon::VERSION),
+        network: implied.name().to_string(),
+        network_note: if implied == Network::Test {
+            "SHA-256 test chain, no real proof of work".to_string()
+        } else {
+            "development chain, real matmulhash proof of work".to_string()
+        },
+        details: {
+            let mut d = vec![
+                format!(
+                    "  node     data {}, control {}",
+                    args.data.display(),
+                    args.control
+                ),
+                format!("  pays to  {}", args.address),
+            ];
+            if let Some(f) = &args.log_file {
+                d.push(format!("  log      {} (full detail)", f.display()));
+            }
+            d
+        },
+    });
 
     // the first connection tells us which network the node is on, so that the backend can be checked against it
     let connect = || connect_to(&args.data, args.control);
@@ -227,37 +291,103 @@ fn main() {
         }
     };
     let l = Arc::clone(&log);
+    let tally = Arc::new(MiningShared::default());
+    let events = {
+        let (log, tally) = (Arc::clone(&log), Arc::clone(&tally));
+        Arc::new(move |e: tenero_miner::MinerEvent| {
+            tally.record(&e);
+            if let (Some(ev), Some(sc)) = (miner_event_to_ui(&e), log.screen()) {
+                sc.event(&ev);
+            }
+        })
+    };
     let cfg = RemoteMinerConfig {
         min_block_interval: Duration::from_secs(args.pace),
         log: Arc::new(move |line| l.info(&format!("miner: {line}"))),
+        events,
         ..RemoteMinerConfig::default()
     };
     let mut rm = RemoteMiner::new(miner, payout, pow, cfg);
-    // a status line now and then, from a thread of its own (the miner is busy in `run`)
+    // the status, from a thread of its own (the miner is busy in `run`): the screen once a second, and a line of the log now and then
     {
-        let (counters, l, s) = (rm.counters(), Arc::clone(&log), Arc::clone(&shutdown));
-        let every = Duration::from_secs(args.status_every);
+        let (counters, progress, tally) = (rm.counters(), rm.progress(), Arc::clone(&tally));
+        let (l, screen, s) = (Arc::clone(&log), Arc::clone(&screen), Arc::clone(&shutdown));
+        let (backend, every) = (args.backend.clone(), Duration::from_secs(args.status_every));
         std::thread::spawn(move || {
-            let (mut last, mut at) = (0u64, Instant::now());
+            let started = Instant::now();
+            // the rate over the last few seconds, so that it neither jumps about nor lags
+            let mut window: std::collections::VecDeque<(Instant, u64)> = Default::default();
+            let (mut last_log, mut last_logged) = (Instant::now(), 0u64);
             while !s.load(Ordering::SeqCst) {
-                std::thread::sleep(every);
-                let now = counters.attempts.load(Ordering::Relaxed);
-                let rate = (now - last) as f64 / at.elapsed().as_secs_f64().max(0.001);
-                l.info(&format!(
-                    "status: {rate:.0} attempts/s | jobs {} | solutions {}",
-                    counters.jobs.load(Ordering::Relaxed),
-                    counters.found.load(Ordering::Relaxed)
-                ));
-                (last, at) = (now, Instant::now());
+                std::thread::sleep(Duration::from_secs(1));
+                let now = Instant::now();
+                let attempts = counters.attempts.load(Ordering::Relaxed);
+                window.push_back((now, attempts));
+                while window
+                    .front()
+                    .is_some_and(|(t, _)| now.duration_since(*t) > Duration::from_secs(5))
+                {
+                    window.pop_front();
+                }
+                let rate = match (window.front(), window.back()) {
+                    (Some((t0, a0)), Some((t1, a1)))
+                        if t1.duration_since(*t0).as_secs_f64() >= 2.0 =>
+                    {
+                        Some((a1 - a0) as f64 / t1.duration_since(*t0).as_secs_f64())
+                    }
+                    _ => None,
+                };
+                let link = if !progress.connected.load(Ordering::Relaxed) {
+                    NodeLink::Down
+                } else if progress.syncing.load(Ordering::Relaxed) {
+                    NodeLink::Syncing
+                } else {
+                    NodeLink::Connected
+                };
+                let name = tally
+                    .backend
+                    .lock()
+                    .map(|b| b.clone())
+                    .ok()
+                    .filter(|b| !b.is_empty())
+                    .unwrap_or_else(|| backend.clone());
+                screen.miner_status(&MinerStatus {
+                    backend: name,
+                    link,
+                    node_height: progress.height.load(Ordering::Relaxed),
+                    rate,
+                    found: tally.found.load(Ordering::Relaxed),
+                    accepted: tally.accepted.load(Ordering::Relaxed),
+                    lost_race: tally.lost_race.load(Ordering::Relaxed),
+                    refused: tally.refused.load(Ordering::Relaxed),
+                    uptime_secs: now.duration_since(started).as_secs(),
+                });
+                if now.duration_since(last_log) >= every {
+                    let rate = (attempts - last_logged) as f64
+                        / now.duration_since(last_log).as_secs_f64().max(0.001);
+                    l.info(&format!(
+                        "status: {rate:.0} attempts/s | jobs {} | solutions {}",
+                        counters.jobs.load(Ordering::Relaxed),
+                        counters.found.load(Ordering::Relaxed)
+                    ));
+                    (last_log, last_logged) = (now, attempts);
+                }
             }
         });
     }
     let result = rm.run(connect, &shutdown, Duration::from_millis(200));
     let s = rm.stats;
-    log.info(&format!(
-        "stopped: found {} blocks (in chain {}, lost a race {}, refused {})",
-        s.blocks_found, s.blocks_accepted, s.blocks_lost_race, s.blocks_refused
-    ));
+    log.log_event(
+        Level::Info,
+        &format!(
+            "stopped: found {} blocks (in chain {}, lost a race {}, refused {})",
+            s.blocks_found, s.blocks_accepted, s.blocks_lost_race, s.blocks_refused
+        ),
+        UiEvent::Info(format!(
+            "stopped: {} blocks found, {} in the chain, {} lost a race, {} refused",
+            s.blocks_found, s.blocks_accepted, s.blocks_lost_race, s.blocks_refused
+        )),
+    );
     if let Err(e) = result {
         log.error(&e);
         std::process::exit(1);

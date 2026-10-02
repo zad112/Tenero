@@ -15,4 +15,5 @@ pub mod private_dir;
 pub mod remote_miner;
 pub mod seedcheck;
 pub mod server;
+pub mod ui;
 pub mod wallet_cli;

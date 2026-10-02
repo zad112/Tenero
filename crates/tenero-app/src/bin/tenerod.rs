@@ -9,7 +9,8 @@ use std::sync::Arc;
 use tenero_app::client::{read_cookie, RemoteNode, COOKIE_FILE};
 use tenero_app::config::Raw;
 use tenero_app::daemon;
-use tenero_app::log::Logger;
+use tenero_app::log::{Level, Logger};
+use tenero_app::ui::{Event as UiEvent, Screen, Verbosity};
 
 const USAGE: &str = "\
 tenerod: the Tenero node (EXPERIMENTAL, UNAUDITED; no launched network exists)
@@ -22,7 +23,11 @@ tenerod: the Tenero node (EXPERIMENTAL, UNAUDITED; no launched network exists)
 Settings (the same keys in the file as `key = value` and on the command line as `--key value`):
   data, network (test|dev), listen, seed (repeatable), peers, max_inbound, allow_private_peers, control,
   prune_keep (0 = archive node), assume_valid (height:blockid), mine (off|sha256|cpu|gpu), mine_to (address),
-  mine_cores, mine_pace, gpu_device, gpu_batch, log_level, log_file, status_every.";
+  mine_cores, mine_pace, gpu_device, gpu_batch, log_level, log_file, status_every, quiet, verbose, color.
+
+What the screen shows: a banner, a status block that redraws in place on a terminal (plain lines when the output is a file or a pipe),
+and events in plain words. The log file keeps the full detail. `--quiet` shows only warnings and errors; `--verbose` also shows every
+line of the log; `--color auto|always|never` (colour is off with NO_COLOR, and never used when the output is not a terminal).";
 
 fn control_client(args: &[String]) -> Result<RemoteNode, String> {
     let (mut data, mut control) = (None, "127.0.0.1:18332".to_string());
@@ -122,8 +127,16 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let log = match Logger::new(cfg.log_level, cfg.log_file.as_deref(), true) {
-        Ok(l) => Arc::new(l),
+    let verbosity = if cfg.quiet {
+        Verbosity::Quiet
+    } else if cfg.verbose {
+        Verbosity::Verbose
+    } else {
+        Verbosity::Normal
+    };
+    let screen = Arc::new(Screen::for_stderr(cfg.color, verbosity, cfg.status_every));
+    let log = match Logger::new(cfg.log_level, cfg.log_file.as_deref(), false) {
+        Ok(l) => Arc::new(l.with_screen(Arc::clone(&screen))),
         Err(e) => {
             eprintln!("error: cannot open the log file: {e}");
             std::process::exit(2);
@@ -137,7 +150,11 @@ fn main() {
             if s.swap(true, Ordering::SeqCst) {
                 std::process::exit(130);
             }
-            l.info("shutdown requested (Ctrl-C again to stop at once)");
+            l.log_event(
+                Level::Info,
+                "shutdown requested (Ctrl-C again to stop at once)",
+                UiEvent::ShuttingDown,
+            );
         });
         if let Err(e) = handler {
             log.warn(&format!("Ctrl-C will not shut the node down cleanly: {e}"));

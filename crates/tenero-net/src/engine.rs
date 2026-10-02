@@ -584,6 +584,16 @@ impl<'a> Engine<'a> {
         self.syncing.is_some()
     }
 
+    /// The height of the tallest chain any ready peer has reported (0 with no peers): how far a sync has to go.
+    pub fn best_peer_height(&self) -> u64 {
+        self.peers
+            .values()
+            .filter(|p| !p.addr_only && !p.feeler && p.hello.is_some())
+            .map(|p| p.tip_height)
+            .max()
+            .unwrap_or(0)
+    }
+
     /// A one-line description of what the engine is waiting for, for logs and for debugging.
     pub fn debug_summary(&self) -> String {
         let (h, _, w) = self.tip();

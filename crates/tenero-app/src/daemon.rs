@@ -5,7 +5,7 @@
 //! of work with a placeholder starting difficulty and a genesis made from a label. Neither has value, and the
 //! launch gates in `docs/M8_PLAN.md` section 7 are not met. **Experimental and unaudited.**
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -18,7 +18,9 @@ use tenero_core::matmulhash::Params;
 use tenero_core::u256::U256;
 use tenero_core::v2::ids::PowKind;
 use tenero_miner::gpu::GpuBackend;
-use tenero_miner::{CpuMatmulBackend, Miner, MinerConfig, MinerHook, Sha256Backend, WalletPayout};
+use tenero_miner::{
+    CpuMatmulBackend, Miner, MinerConfig, MinerEvent, MinerHook, Sha256Backend, WalletPayout,
+};
 use tenero_net::addrbook::AddrBookConfig;
 use tenero_net::engine::Alarm;
 use tenero_net::noise::NodeKey;
@@ -30,8 +32,9 @@ use tenero_store::Store;
 use crate::client::{create_cookie, COOKIE_FILE};
 use crate::config::{Config, MineMode, Network};
 use crate::control::NodeKind;
-use crate::log::Logger;
+use crate::log::{Level, Logger};
 use crate::server::{self, ControlHook, Meta};
+use crate::ui::{Banner, Event as UiEvent, MiningStatus, NodeStatus, SyncProgress};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// What every start-up prints, so nobody mistakes what this is.
@@ -167,6 +170,90 @@ pub fn health_summary(h: &tenero_net::engine::NetHealth) -> String {
     )
 }
 
+/// What the in-process miner has done, kept by its event callback and read for the status block.
+#[derive(Default)]
+pub struct MiningShared {
+    pub backend: std::sync::Mutex<String>,
+    pub found: std::sync::atomic::AtomicU64,
+    pub accepted: std::sync::atomic::AtomicU64,
+    pub lost_race: std::sync::atomic::AtomicU64,
+    pub refused: std::sync::atomic::AtomicU64,
+    pub paused: AtomicBool,
+}
+
+impl MiningShared {
+    /// Counts what the miner reports (the screen is told separately).
+    pub fn record(&self, e: &MinerEvent) {
+        let one = |c: &std::sync::atomic::AtomicU64| c.fetch_add(1, Ordering::Relaxed);
+        match e {
+            MinerEvent::Started { backend } => {
+                if let Ok(mut b) = self.backend.lock() {
+                    *b = backend.clone();
+                }
+            }
+            MinerEvent::InChain { .. } => {
+                one(&self.found);
+                one(&self.accepted);
+            }
+            MinerEvent::LostRace { .. } => {
+                one(&self.found);
+                one(&self.lost_race);
+            }
+            MinerEvent::Refused { .. } => {
+                one(&self.found);
+                one(&self.refused);
+            }
+            MinerEvent::Paused => self.paused.store(true, Ordering::Relaxed),
+            MinerEvent::Resumed => self.paused.store(false, Ordering::Relaxed),
+            MinerEvent::BackendFailed { .. }
+            | MinerEvent::NodeConnected
+            | MinerEvent::NodeLost { .. } => {}
+        }
+    }
+
+    fn status(&self) -> MiningStatus {
+        MiningStatus {
+            // (the backend names itself a moment after the miner starts)
+            backend: self
+                .backend
+                .lock()
+                .map(|b| b.clone())
+                .ok()
+                .filter(|b| !b.is_empty())
+                .unwrap_or_else(|| "starting".to_string()),
+            blocks_found: self.found.load(Ordering::Relaxed),
+            blocks_accepted: self.accepted.load(Ordering::Relaxed),
+            paused: self.paused.load(Ordering::Relaxed),
+            hashrate: None,
+        }
+    }
+}
+
+/// The size of everything under `path` in bytes, to a few levels down (the chain database and its segments).
+pub fn dir_size(path: &std::path::Path) -> u64 {
+    fn walk(p: &std::path::Path, depth: u32) -> u64 {
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return 0;
+        };
+        rd.flatten()
+            .map(|e| match e.metadata() {
+                Ok(m) if m.is_dir() && depth < 4 => walk(&e.path(), depth + 1),
+                Ok(m) if m.is_file() => m.len(),
+                _ => 0,
+            })
+            .sum()
+    }
+    walk(path, 0)
+}
+
+/// Blocks a second over the samples (newest last), if they span long enough to say.
+pub fn sync_rate(samples: &VecDeque<(Instant, u64)>) -> Option<f64> {
+    let (t0, h0) = *samples.front()?;
+    let (t1, h1) = *samples.back()?;
+    let secs = t1.duration_since(t0).as_secs_f64();
+    (secs >= 5.0 && h1 > h0).then(|| (h1 - h0) as f64 / secs)
+}
+
 /// Status line, saving the pool, pruning.
 struct Maintenance {
     log: Arc<Logger>,
@@ -179,6 +266,61 @@ struct Maintenance {
     next_prune: Instant,
     /// The alarm kinds already reported (to log a change, not every look).
     alarms: BTreeSet<&'static str>,
+    /// What the screen shows: when the node started, when the status block is next redrawn, the heights seen over the last half
+    /// minute (for the sync rate), when a sync began, the size of the data directory (looked at now and then), the mining state.
+    started: Instant,
+    next_ui: Instant,
+    heights: VecDeque<(Instant, u64)>,
+    sync_began: Option<(Instant, u64)>,
+    data_dir: std::path::PathBuf,
+    disk: Option<u64>,
+    next_disk: Instant,
+    mining: Option<Arc<MiningShared>>,
+}
+
+impl Maintenance {
+    /// The facts for the status block, from the node as it is now.
+    fn node_status(
+        &mut self,
+        engine: &Engine<'_>,
+        health: &tenero_net::engine::NetHealth,
+    ) -> Option<NodeStatus> {
+        let (height, tip) = engine.node().store().tip().ok()?;
+        let now = Instant::now();
+        self.heights.push_back((now, height));
+        while self
+            .heights
+            .front()
+            .is_some_and(|(t, _)| now.duration_since(*t) > Duration::from_secs(30))
+        {
+            self.heights.pop_front();
+        }
+        if now >= self.next_disk {
+            self.next_disk = now + Duration::from_secs(30);
+            self.disk = Some(dir_size(&self.data_dir));
+        }
+        let target = engine.best_peer_height();
+        let sync = (engine.is_syncing() && target > height).then(|| SyncProgress {
+            current: height,
+            target,
+            rate: sync_rate(&self.heights),
+        });
+        Some(NodeStatus {
+            height,
+            tip: short_id(&tip.block_id),
+            last_block_age_secs: health.tip_age_ms / 1000,
+            peers_in: engine.inbound_count(),
+            peers_out: engine.outbound_count(),
+            out_groups: health.outbound_groups,
+            sync,
+            mempool: engine.node().pool().len(),
+            uptime_secs: now.duration_since(self.started).as_secs(),
+            disk_bytes: self.disk,
+            pruned_below: engine.node().store().pruned_below().unwrap_or(0),
+            alarms: health.alarms.iter().map(|a| a.kind().to_string()).collect(),
+            mining: self.mining.as_ref().map(|m| m.status()),
+        })
+    }
 }
 
 impl Hooks for Maintenance {
@@ -187,9 +329,45 @@ impl Hooks for Maintenance {
         let health = engine.health();
         for (begun, text) in alarm_changes(&mut self.alarms, &health.alarms) {
             if begun {
-                self.log.warn(&text);
+                self.log
+                    .log_event(Level::Warn, &text, UiEvent::AlarmBegan(text.clone()));
             } else {
-                self.log.info(&format!("alarm ended: {text}"));
+                self.log.log_event(
+                    Level::Info,
+                    &format!("alarm ended: {text}"),
+                    UiEvent::AlarmEnded(text),
+                );
+            }
+        }
+        if self.log.screen().is_some() && now >= self.next_ui {
+            self.next_ui = now + Duration::from_secs(1);
+            // the end of a real sync is worth a line (a few blocks fetched in passing are not)
+            let syncing = engine.is_syncing();
+            match (syncing, self.sync_began) {
+                (true, None) => {
+                    let h = engine.node().store().tip().map(|(h, _)| h).unwrap_or(0);
+                    self.sync_began = Some((now, h));
+                }
+                (false, Some((t, h0))) => {
+                    self.sync_began = None;
+                    if let Ok((h, _)) = engine.node().store().tip() {
+                        if now.duration_since(t) >= Duration::from_secs(5)
+                            || h.saturating_sub(h0) >= 10
+                        {
+                            self.log.log_event(
+                                Level::Info,
+                                &format!("synced: the chain is up to date at height {h}"),
+                                UiEvent::Synced { height: h },
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if let Some(st) = self.node_status(engine, &health) {
+                if let Some(sc) = self.log.screen() {
+                    sc.status(&st);
+                }
             }
         }
         if now >= self.next_status {
@@ -252,10 +430,24 @@ impl Hooks for AllHooks {
     }
 }
 
+/// What the screen is told when the miner reports something, and the counters the status block shows.
+fn miner_events(log: &Arc<Logger>, shared: &Arc<MiningShared>) -> tenero_miner::EventSink {
+    let (log, shared) = (Arc::clone(log), Arc::clone(shared));
+    Arc::new(move |e| {
+        shared.record(&e);
+        if let Some(ev) = crate::ui::miner_event_to_ui(&e) {
+            if let Some(sc) = log.screen() {
+                sc.event(&ev);
+            }
+        }
+    })
+}
+
 fn miner_hook(
     cfg: &Config,
     chain: &Chain,
     log: &Arc<Logger>,
+    shared: &Arc<MiningShared>,
 ) -> Result<Option<Box<dyn Hooks>>, String> {
     if cfg.mine == MineMode::Off {
         return Ok(None);
@@ -269,6 +461,7 @@ fn miner_hook(
     let l = Arc::clone(log);
     let mcfg = MinerConfig {
         log: Arc::new(move |line| l.info(&format!("miner: {line}"))),
+        events: miner_events(log, shared),
         min_block_interval: Duration::from_secs(cfg.mine_pace),
         ..MinerConfig::default()
     };
@@ -319,6 +512,35 @@ pub fn run(
     // a new data directory is made private to its owner; an existing one that other accounts can read is refused
     crate::private_dir::ensure_private(&cfg.data, cfg.allow_open_data_dir, &log)?;
     let chain = chain_of(cfg.network)?;
+    if let Some(sc) = log.screen() {
+        let mut details = vec![
+            format!("  data     {}", cfg.data.display()),
+            format!(
+                "  kind     {}",
+                if cfg.prune_keep == 0 {
+                    "archive node (keeps every block in full)".to_string()
+                } else {
+                    format!(
+                        "pruned node (keeps the last {} blocks' proofs)",
+                        cfg.prune_keep
+                    )
+                }
+            ),
+        ];
+        if let Some(f) = &cfg.log_file {
+            details.push(format!("  log      {} (full detail)", f.display()));
+        }
+        sc.banner(&Banner {
+            role: "node".to_string(),
+            version: format!("v{VERSION}"),
+            network: cfg.network.name().to_string(),
+            network_note: match cfg.network {
+                Network::Test => "SHA-256 test chain, no real proof of work".to_string(),
+                Network::Dev => "development chain, real matmulhash proof of work".to_string(),
+            },
+            details,
+        });
+    }
     log.info(&format!(
         "network {} ({}), data {}, {}",
         cfg.network.name(),
@@ -411,12 +633,19 @@ pub fn run(
     };
     let (handle, control) = server::start(cfg.control, cookie, Arc::clone(&shutdown), meta)
         .map_err(|e| format!("cannot start the control interface on {}: {e}", cfg.control))?;
-    log.info(&format!(
-        "peer-to-peer on {:?}; control interface on {} (cookie in {})",
-        net.local_addr(),
-        handle.addr,
-        cfg.data.join(COOKIE_FILE).display()
-    ));
+    log.log_event(
+        Level::Info,
+        &format!(
+            "peer-to-peer on {:?}; control interface on {} (cookie in {})",
+            net.local_addr(),
+            handle.addr,
+            cfg.data.join(COOKIE_FILE).display()
+        ),
+        UiEvent::Listening {
+            p2p: net.local_addr().map(|a| a.to_string()),
+            control: handle.addr.to_string(),
+        },
+    );
     if let Some(tx) = ready {
         let _ = tx.send(Ready {
             p2p: net.local_addr(),
@@ -424,7 +653,8 @@ pub fn run(
         });
     }
 
-    let miner = miner_hook(cfg, &chain, &log)?;
+    let mining = Arc::new(MiningShared::default());
+    let miner = miner_hook(cfg, &chain, &log, &mining)?;
     if miner.is_some() {
         log.info("mining is ON (in this process)");
     }
@@ -440,6 +670,14 @@ pub fn run(
             prune_keep: cfg.prune_keep,
             next_prune: Instant::now(),
             alarms: BTreeSet::new(),
+            started: Instant::now(),
+            next_ui: Instant::now(),
+            heights: VecDeque::new(),
+            sync_began: None,
+            data_dir: cfg.data.clone(),
+            disk: None,
+            next_disk: Instant::now(),
+            mining: miner.is_some().then(|| Arc::clone(&mining)),
         },
         miner,
     };
@@ -452,10 +690,17 @@ pub fn run(
     drop(handle);
     result.map_err(|e| format!("network error: {e}"))?;
     let (height, tip) = store.tip().map_err(|e| e.to_string())?;
-    log.info(&format!(
-        "stopped at height {height}, tip {}",
-        short_id(&tip.block_id)
-    ));
+    log.log_event(
+        Level::Info,
+        &format!(
+            "stopped at height {height}, tip {}",
+            short_id(&tip.block_id)
+        ),
+        UiEvent::Stopped {
+            height,
+            tip: short_id(&tip.block_id),
+        },
+    );
     Ok(Summary {
         height,
         tip_id: tip.block_id,
