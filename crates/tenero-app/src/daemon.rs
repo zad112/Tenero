@@ -82,6 +82,23 @@ fn chain_of(network: Network) -> Result<Chain, String> {
     }
 }
 
+/// The chain id (the genesis block id) of a network. Every node of the network works it out the same way, from the label of the network, and
+/// speaks only to nodes with the same one; the seed check needs it to talk to the nodes of a network. Found by opening a throwaway database.
+pub fn chain_id_of(network: Network) -> Result<[u8; 32], String> {
+    let chain = chain_of(network)?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("tenero-chainid-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let id = Store::open(dir.join("chain.redb"), &chain.label, chain.kind)
+        .map(|s| s.chain_id())
+        .map_err(|e| e.to_string());
+    let _ = std::fs::remove_dir_all(&dir);
+    id
+}
+
 /// Where a running node says it is listening (for tests, which ask for port 0).
 #[derive(Clone, Copy, Debug)]
 pub struct Ready {

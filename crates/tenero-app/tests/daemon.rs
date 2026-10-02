@@ -1028,6 +1028,42 @@ fn a_node_in_a_new_directory_makes_it_private_and_starts() {
     node.stop();
 }
 
+// ---- the seed check against a real node (M9) -----------------------------------------------------------------------------
+
+#[test]
+fn the_seed_check_reads_a_real_node_and_a_node_of_another_chain_is_refused() {
+    use tenero_app::config::Network;
+    use tenero_app::daemon::chain_id_of;
+    use tenero_app::seedcheck::{evaluate, probe, EvalConfig, ProbeConfig, Severity};
+    let d = Dir::new("seedcheck-real");
+    let n = Running::start(config(&d.0, ""));
+    let addr = n.ready.p2p.expect("the node listens").to_string();
+    let chain = chain_id_of(Network::Test).unwrap();
+    let cfg = ProbeConfig {
+        timeout: Duration::from_secs(5),
+        addr_wait: Duration::from_millis(800),
+    };
+    let p = probe(&addr, chain, &cfg);
+    assert_eq!((p.stage, p.error.clone()), ("addrs", None), "{p:?}");
+    let h = p.hello.clone().expect("a hello");
+    assert_eq!((h.chain_id, h.tip_height, h.pruned_below), (chain, 0, 0));
+    let ec = EvalConfig {
+        private_network: true,
+        min_seeds: 1,
+        ..EvalConfig::new(chain)
+    };
+    let r = evaluate(&[p], &ec);
+    // a node that has just started knows no addresses: that is the only thing to say
+    assert_eq!(r.seeds[0].severity, Severity::Warn, "{}", r.to_text());
+    assert_eq!(r.seeds[0].findings.len(), 1);
+    assert!(r.seeds[0].findings[0].text.contains("no addresses"));
+    // a probe that speaks another chain is refused at the encrypted handshake
+    let bad = probe(&addr, [1; 32], &cfg);
+    assert_eq!(bad.stage, "handshake", "{bad:?}");
+    assert!(bad.error.is_some() && bad.hello.is_none());
+    n.stop();
+}
+
 // ---- the status line (M9, threat model C1) -------------------------------------------------------------------------------
 
 #[test]

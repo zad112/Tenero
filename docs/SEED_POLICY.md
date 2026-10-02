@@ -54,6 +54,13 @@ honest one (the worst case). Seeds hang up after answering. The measure is the s
 * Pinned peers (`trusted_peer`), anchors and stale-tip detection (see `THREAT_MODEL.md`) are what remain once a node has run: a node that has
   already connected needs seeds much less, and an operator who got a peer's address from a person they trust is not subject to any of this.
 
+## Checking a seed list
+
+`tenero-seedcheck` (`RUNNING.md`) is the tool that goes with this policy: it checks each seed (reachable, the right chain and protocol, enough routable
+addresses in several groups, not slow, not pruned, not far behind the others) and the list (at least three seeds, none twice, **no two in one network
+group**, because the wait in rule 1 counts a group once). Run it before a seed is added to a release and then from a schedule with `--history` to see
+how often each seed was up. **It cannot tell whether a seed is honest**; that is governance, not code.
+
 ## What this does not show
 
 * **An attacker who owns a large part of the honest population**, or who can block a node's connections to honest addresses, or who poisons the

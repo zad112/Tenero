@@ -150,6 +150,31 @@ no node settings.
   miner together need about 9 GiB on the dev network. `--backend gpu` keeps its datasets in video memory instead.
 * Stop it with Ctrl-C (it prints how many blocks it found and what became of them).
 
+## The seed check: `tenero-seedcheck`
+
+Connects to each seed the way a new node would and says which are fit to be on a list (`SEED_POLICY.md` says why that matters). It reads nothing
+from a data directory and changes nothing on the seeds: it connects, says hello, asks for addresses and leaves.
+
+```
+tenero-seedcheck --network test --seed 203.0.113.5:18331 --seed 198.51.100.7:18331 --seed 192.0.2.9:18331 [--history seeds.tsv]
+tenero-seedcheck --network dev --seeds-file seeds.txt        (one seed per line, # comments)
+```
+
+For each seed it checks that the address resolves and the connection opens; that the encrypted handshake works **for this network's chain** (a seed of
+another chain or protocol version fails here); that it says hello in the same protocol version; that it answers an address request with at least 5
+addresses (`--min-addrs`), at least half of them routable and in more than one network group; that it is not slow (3 s to its hello); that it is not
+pruned (a seed should be able to serve the whole chain); and that it is not more than 3 blocks (`--max-lag`) behind the middle of the answering seeds
+(a failure; more than 3 ahead is a warning, and so is a different tip at the same height as most). For the list: at least 3 seeds listed and
+answering (`--min-seeds`), none listed twice, and **no two in one network group**, because a new node counts a group once.
+
+The exit code is 0 when all is well, 1 for warnings and 2 for a failure, so it can be run from a schedule. `--history FILE` adds a line per seed
+to a file (time, seed, up or down, severity, milliseconds, tip) and shows how many of the last 50 checks found each seed up; run it every few
+minutes from a scheduler to build that record. On the test network (`--private yes` is its default) addresses need not be routable and groups are not compared.
+
+**What it cannot tell you:** whether a seed is *honest*. A seed that answers promptly, with plausible addresses and the right tip, passes; the policy's
+protection is a mostly-honest list of independent operators, and a program cannot check who runs a seed. It is one moment's look at a seed unless
+you keep a history. Measured on 2026-10-02 against the 8 nodes of the heavy test network (run 4): all 8 up, one tip, 6 to 9 ms each.
+
 ## Not done in M8.7
 * **A Windows service, a systemd unit, an installer.** Run it in a window, or under a scheduler you trust.
 * **Tor or I2P,** and any encryption of the control interface (it never leaves the machine).
