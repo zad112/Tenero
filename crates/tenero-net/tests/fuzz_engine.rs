@@ -981,3 +981,45 @@ proptest! {
         }
     }
 }
+
+/// Found by the fuzzer (6,000 cases, once in several thousand): after a failed dial and a disconnect, a peer's honest hello, then ten
+/// seconds, then a request for block ids, the engine sent `GetBlockIds` to a peer that was no longer connected.
+#[test]
+fn a_found_case_a_block_ids_request_to_a_peer_that_is_gone() {
+    let steps = vec![
+        Step::Connect {
+            inbound: false,
+            addr: 0,
+        },
+        Step::Disconnect { slot: 0 },
+        Step::AnswerDial { ok: false },
+        Step::Connect {
+            inbound: false,
+            addr: 0,
+        },
+        Step::Connect {
+            inbound: false,
+            addr: 0,
+        },
+        Step::HonestHello {
+            slot: 808575776582213578,
+        },
+        Step::Msg {
+            slot: 6636649917422582488,
+            spec: MsgSpec::NotFound(vec![]),
+        },
+        Step::HonestHello {
+            slot: 9403484183228689622,
+        },
+        Step::Tick { ms: 10001 },
+        Step::Msg {
+            slot: 32872654927256,
+            spec: MsgSpec::Pong(0),
+        },
+        Step::Msg {
+            slot: 110681382362,
+            spec: MsgSpec::GetBlockIds(vec![IdSpec::Real(1)]),
+        },
+    ];
+    run_case(&steps, &cfg_variant(2)).unwrap();
+}

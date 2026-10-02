@@ -1147,8 +1147,8 @@ impl<'a> Engine<'a> {
             .iter()
             .find_map(|id| store.height_of(id).ok().flatten());
         let Some(common) = common else {
-            // not even the genesis block: this peer is not on our chain
-            self.penalize(peer, 20, "locator shares nothing with our chain", out);
+            // not even the genesis block: this peer is not on our chain. The (empty) answer goes first: the penalty may be the one that
+            // bans the peer, and nothing is sent to a peer that has been ordered off.
             self.send(
                 peer,
                 Message::BlockIds {
@@ -1157,6 +1157,7 @@ impl<'a> Engine<'a> {
                 },
                 out,
             );
+            self.penalize(peer, 20, "locator shares nothing with our chain", out);
             return;
         };
         let (tip_h, _, _) = self.tip();
