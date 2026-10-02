@@ -451,6 +451,58 @@ fn a_transaction_no_block_could_hold_is_refused() {
 }
 
 #[test]
+fn a_block_template_never_holds_more_than_a_block_may_carry_whatever_it_is_asked_for() {
+    // a median floor of 1,000 bytes: a block may carry 2,000
+    let rig = Rig::new("limit", Some(1000));
+    let mut net = Net::new("limit-net", 8, Some(1000));
+    let mut node = rig.node(BIG);
+    grow(&mut net, &mut node, 8);
+    let size = net.std_tx(0, 0).to_bytes().unwrap().len() as u64;
+    let limit = tenero_core::fees::v2_block_limit(1000);
+    assert_eq!(limit, 2000);
+    assert!(size < limit, "a transaction of {size} bytes");
+    let n = (limit / size + 3) as usize;
+    for i in 0..n {
+        node.submit_tx(net.std_tx(i as u64 + 1, 5 + i as i64))
+            .unwrap();
+    }
+    assert!(
+        node.pool().len() as u64 * size > limit,
+        "the pool holds more than a block may"
+    );
+    // asked for everything, it still gives no more than a valid block holds
+    let got = node.block_template_txs(u64::MAX);
+    let body: u64 = got.iter().map(|t| t.to_bytes().unwrap().len() as u64).sum();
+    assert!(
+        !got.is_empty() && body <= limit,
+        "{body} bytes for a limit of {limit}"
+    );
+    // the same for the whole block the node builds for a miner
+    let payout = tenero_node::Payout {
+        onetime_address: [1; 32],
+        view_tag: [2; 3],
+        ephemeral_pubkey: [3; 32],
+        anchor_enc: [4; 16],
+    };
+    let template = node.block_template(NOW, u64::MAX, payout).unwrap();
+    let template_body: u64 = template
+        .transactions
+        .iter()
+        .map(|t| t.to_bytes().unwrap().len() as u64)
+        .sum();
+    assert!(
+        !template.transactions.is_empty() && template_body <= limit,
+        "a template of {template_body} bytes for a limit of {limit}"
+    );
+    // and the block built from the first is accepted
+    let b = net.extend(got);
+    assert!(matches!(
+        node.submit_block(&b, NOW).unwrap(),
+        Submitted::Extended(_)
+    ));
+}
+
+#[test]
 fn a_block_template_takes_the_best_fee_rates_within_the_budget() {
     let rig = Rig::new("select", None);
     let mut net = Net::new("select-net", 7, None);

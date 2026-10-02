@@ -151,10 +151,10 @@ impl Mempool {
         }
         let info = validator.check_pool_tx(&tx).map_err(PoolError::Invalid)?;
         // a transaction no block could ever hold is not worth keeping
-        if fees::over_hard_limit(info.size, info.median) {
+        if fees::v2_over_limit(info.size, info.median) {
             return Err(PoolError::TooLarge {
                 size: info.size,
-                limit: info.median.saturating_mul(2),
+                limit: fees::v2_block_limit(info.median),
             });
         }
         for input in &tx.prefix.inputs {
@@ -268,7 +268,7 @@ impl Mempool {
             .entries
             .iter()
             .filter(|(_, e)| match validator.check_pool_tx(&e.tx) {
-                Ok(info) => fees::over_hard_limit(info.size, info.median),
+                Ok(info) => fees::v2_over_limit(info.size, info.median),
                 Err(_) => true,
             })
             .map(|(id, _)| *id)

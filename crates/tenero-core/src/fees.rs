@@ -54,9 +54,27 @@ pub fn median_at(sizes: &[u64], pos: usize, floor: u64) -> u64 {
     median(if lo < hi { &sizes[lo..hi] } else { &[] }, floor)
 }
 
-/// A block larger than twice the median is invalid.
+/// A block larger than twice the median is invalid. (Version 1's rule; version 2 adds a ceiling, [`v2_block_limit`].)
 pub fn over_hard_limit(size: u64, median: u64) -> bool {
     u128::from(size) > 2 * u128::from(median)
+}
+
+/// Version 2: the most transaction bytes a block may carry, whatever the median says (`CONSENSUS_V2.md` 8.4). Without it
+/// the limit of twice the median can grow, by a miner who stuffs blocks, past what the wire can carry (a 16 MiB frame),
+/// and a block that cannot be relayed stops every new node from syncing. Decided 4 MiB (2026-10-02).
+pub const V2_MAX_BLOCK_BODY: u64 = 4 * 1024 * 1024;
+
+/// Version 2: the most transaction bytes a block may carry when the block-size median is `median`: twice the median, but
+/// never more than [`V2_MAX_BLOCK_BODY`].
+pub fn v2_block_limit(median: u64) -> u64 {
+    u64::try_from(2 * u128::from(median))
+        .unwrap_or(u64::MAX)
+        .min(V2_MAX_BLOCK_BODY)
+}
+
+/// Version 2: whether `size` transaction bytes are too many for a block at this median.
+pub fn v2_over_limit(size: u64, median: u64) -> bool {
+    size > v2_block_limit(median)
 }
 
 /// The reward lost by a block over the median: `ceil(base * over^2 / median^2)` where

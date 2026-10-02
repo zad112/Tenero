@@ -21,6 +21,13 @@ pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// The most bytes of blocks one `blocks` message is asked to carry (the frame ceiling is twice this, so a message always fits).
 pub const BLOCKS_REPLY_BYTES: usize = MAX_FRAME / 2;
 
+// A block of the largest size the rules allow (4 MiB of transactions, `fees::V2_MAX_BLOCK_BODY`, plus its header and coinbase,
+// well under 64 KiB) must fit one reply, and a reply must fit a frame: if either of these stops being true, a block could
+// exist that no node can send.
+const _: () =
+    assert!(tenero_core::fees::V2_MAX_BLOCK_BODY + 64 * 1024 <= BLOCKS_REPLY_BYTES as u64);
+const _: () = assert!(BLOCKS_REPLY_BYTES * 2 <= MAX_FRAME);
+
 /// Splits blocks into groups whose encoded sizes add up to at most `budget` bytes (one block over it goes alone), so that
 /// every group fits in a `blocks` frame however large the blocks are; and the blocks that cannot be sent at all (one that
 /// alone is too big for a frame), returned apart. Order is kept. (A reply of thirty-two blocks that together passed

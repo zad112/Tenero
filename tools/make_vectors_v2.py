@@ -60,6 +60,10 @@ FEE_REFERENCE_WEIGHT = 3000
 # carries no penalty, so it bounds the free growth of the chain. DECIDED 150,000 (docs/CONSENSUS_V2.md 8.2).
 MIN_BLOCK_MEDIAN = 150_000
 MEDIAN_WINDOW = 10
+# The most transaction bytes a block may carry, whatever the median says (docs/CONSENSUS_V2.md 8.4). Without it the limit
+# of twice the median could grow, by a miner who stuffs blocks, past what the wire can carry (a 16 MiB frame), and a block
+# that cannot be relayed would stop every new node from syncing. DECIDED 4 MiB (2026-10-02).
+MAX_BLOCK_BODY = 4 * 1024 * 1024
 U64_MAX = 2 ** 64 - 1
 
 
@@ -680,6 +684,16 @@ def median_at(sizes_by_position, pos, floor, window=MEDIAN_WINDOW):
     return block_median(sizes_by_position[max(1, pos - window):pos], floor)
 
 
+def block_limit(median):
+    """The most transaction bytes a block may carry when the block-size median is `median`: twice the median, but never more
+    than MAX_BLOCK_BODY."""
+    return min(2 * median, MAX_BLOCK_BODY)
+
+
+def block_too_large(size, median):
+    return size > block_limit(median)
+
+
 def fees_vectors():
     rewards = [20 * UNIT, 10 * UNIT, UNIT // 2, 1]
     medians = [MIN_BLOCK_MEDIAN, 300_000, 600_000, 10_000_000]
@@ -703,16 +717,27 @@ def fees_vectors():
     penalty_cases = [{"base": b, "median": m, "size": s, "penalty": oversize_penalty(b, s, m)}
                      for b in (20 * UNIT, UNIT // 2) for m in (MIN_BLOCK_MEDIAN, 1_000_000)
                      for s in (m - 1, m, m + 1, m * 3 // 2, m * 2, 777_777)]
+    # the limit at medians around every place it changes: below the cap's half, at it, above it
+    limit_medians = [1, MIN_BLOCK_MEDIAN, 300_000, MAX_BLOCK_BODY // 2 - 1, MAX_BLOCK_BODY // 2, MAX_BLOCK_BODY // 2 + 1,
+                     MAX_BLOCK_BODY - 1, MAX_BLOCK_BODY, 10_000_000, 2 ** 40, U64_MAX]
+    limit_cases = []
+    for m in limit_medians:
+        lim = block_limit(m)
+        for s in sorted({0, 1, lim - 1, lim, lim + 1, 2 * m, 2 * m + 1, MAX_BLOCK_BODY, MAX_BLOCK_BODY + 1}):
+            if 0 <= s <= U64_MAX:
+                limit_cases.append({"median": m, "size": s, "limit": lim, "too_large": block_too_large(s, m)})
     return wrap("v2_fees",
                 "The dynamic minimum fee of the version 2 rules (docs/CONSENSUS_V2.md section 8): fee >= max(1, "
                 "ceil(base_reward * FEE_REFERENCE_WEIGHT * size / median^2)), in units of 10^-8 coins, where base_reward "
                 "is the block's reward before any penalty and median is the block-size median that block is judged "
                 "against. `fee` is null when the result does not fit in a u64. Also the oversize penalty in the new units "
                 "(the version 1 rule, unchanged), and the block-size median with the version 2 floor of 150,000 bytes "
-                "(the rule of version 1, with a different floor).",
+                "(the rule of version 1, with a different floor). And the block size limit (section 8.4): the transaction bytes of a "
+                "block may not exceed min(2 * median, MAX_BLOCK_BODY = 4 MiB); `block_limit` lists the limit and whether a size "
+                "is too large, at medians around every place the limit changes.",
                 {"constants": {"FEE_REFERENCE_WEIGHT": FEE_REFERENCE_WEIGHT, "MIN_BLOCK_MEDIAN": MIN_BLOCK_MEDIAN,
-                               "MEDIAN_WINDOW": MEDIAN_WINDOW, "DECIMALS": DECIMALS},
-                 "dynamic_min_fee": fee_cases, "penalty": penalty_cases,
+                               "MEDIAN_WINDOW": MEDIAN_WINDOW, "DECIMALS": DECIMALS, "MAX_BLOCK_BODY": MAX_BLOCK_BODY},
+                 "dynamic_min_fee": fee_cases, "penalty": penalty_cases, "block_limit": limit_cases,
                  "median": median_cases, "median_history": history})
 
 

@@ -388,8 +388,8 @@ impl<'a> Validator<'a> {
                 .ok_or_else(|| BlockError::Malformed("the block size overflows".into()))?;
             sizes.push(size);
         }
-        let limit = next.median.saturating_mul(2);
-        if fees::over_hard_limit(body_size, next.median) {
+        let limit = fees::v2_block_limit(next.median);
+        if fees::v2_over_limit(body_size, next.median) {
             return Err(BlockError::BlockTooLarge {
                 size: body_size,
                 limit,

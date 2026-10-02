@@ -61,6 +61,36 @@ fn three_blocks_of_ten_megabytes_cannot_be_one_message_but_can_be_three() {
     assert_eq!(flat, blocks);
 }
 
+/// The ceiling of the rules (`fees::V2_MAX_BLOCK_BODY`) leaves no block that cannot be sent.
+#[test]
+fn a_block_as_large_as_the_rules_allow_is_sent_in_a_reply_of_its_own() {
+    use tenero_core::fees::V2_MAX_BLOCK_BODY;
+    // 125 transactions of the longest the format allows: just under the ceiling
+    let b = big_block(125, 1);
+    let body: usize = b
+        .transactions
+        .iter()
+        .map(|t| t.to_bytes().unwrap().len())
+        .sum();
+    assert!(
+        body as u64 <= V2_MAX_BLOCK_BODY && body as u64 > V2_MAX_BLOCK_BODY - 40_000,
+        "{body}"
+    );
+    let frame = encode(&Message::Blocks {
+        blocks: vec![b.clone()],
+    })
+    .expect("it fits a frame");
+    assert!(frame.len() < MAX_FRAME);
+    // three of them (together over the budget) go in more than one reply, every reply fits a frame, and none is lost
+    let (groups, too_big) = split_blocks(vec![b.clone(), b.clone(), b.clone()], BLOCKS_REPLY_BYTES);
+    assert!(too_big.is_empty());
+    assert!(groups.len() >= 2, "{} replies", groups.len());
+    assert_eq!(groups.iter().map(Vec::len).sum::<usize>(), 3);
+    for g in groups {
+        assert!(encode(&Message::Blocks { blocks: g }).is_ok());
+    }
+}
+
 #[test]
 fn blocks_are_packed_up_to_the_budget_and_no_further() {
     let blocks: Vec<Block> = (0..4).map(|i| big_block(10, i)).collect();

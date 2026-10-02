@@ -1,11 +1,446 @@
 {
+ "block_limit": [
+  {
+   "limit": 2,
+   "median": 1,
+   "size": 0,
+   "too_large": false
+  },
+  {
+   "limit": 2,
+   "median": 1,
+   "size": 1,
+   "too_large": false
+  },
+  {
+   "limit": 2,
+   "median": 1,
+   "size": 2,
+   "too_large": false
+  },
+  {
+   "limit": 2,
+   "median": 1,
+   "size": 3,
+   "too_large": true
+  },
+  {
+   "limit": 2,
+   "median": 1,
+   "size": 4194304,
+   "too_large": true
+  },
+  {
+   "limit": 2,
+   "median": 1,
+   "size": 4194305,
+   "too_large": true
+  },
+  {
+   "limit": 300000,
+   "median": 150000,
+   "size": 0,
+   "too_large": false
+  },
+  {
+   "limit": 300000,
+   "median": 150000,
+   "size": 1,
+   "too_large": false
+  },
+  {
+   "limit": 300000,
+   "median": 150000,
+   "size": 299999,
+   "too_large": false
+  },
+  {
+   "limit": 300000,
+   "median": 150000,
+   "size": 300000,
+   "too_large": false
+  },
+  {
+   "limit": 300000,
+   "median": 150000,
+   "size": 300001,
+   "too_large": true
+  },
+  {
+   "limit": 300000,
+   "median": 150000,
+   "size": 4194304,
+   "too_large": true
+  },
+  {
+   "limit": 300000,
+   "median": 150000,
+   "size": 4194305,
+   "too_large": true
+  },
+  {
+   "limit": 600000,
+   "median": 300000,
+   "size": 0,
+   "too_large": false
+  },
+  {
+   "limit": 600000,
+   "median": 300000,
+   "size": 1,
+   "too_large": false
+  },
+  {
+   "limit": 600000,
+   "median": 300000,
+   "size": 599999,
+   "too_large": false
+  },
+  {
+   "limit": 600000,
+   "median": 300000,
+   "size": 600000,
+   "too_large": false
+  },
+  {
+   "limit": 600000,
+   "median": 300000,
+   "size": 600001,
+   "too_large": true
+  },
+  {
+   "limit": 600000,
+   "median": 300000,
+   "size": 4194304,
+   "too_large": true
+  },
+  {
+   "limit": 600000,
+   "median": 300000,
+   "size": 4194305,
+   "too_large": true
+  },
+  {
+   "limit": 4194302,
+   "median": 2097151,
+   "size": 0,
+   "too_large": false
+  },
+  {
+   "limit": 4194302,
+   "median": 2097151,
+   "size": 1,
+   "too_large": false
+  },
+  {
+   "limit": 4194302,
+   "median": 2097151,
+   "size": 4194301,
+   "too_large": false
+  },
+  {
+   "limit": 4194302,
+   "median": 2097151,
+   "size": 4194302,
+   "too_large": false
+  },
+  {
+   "limit": 4194302,
+   "median": 2097151,
+   "size": 4194303,
+   "too_large": true
+  },
+  {
+   "limit": 4194302,
+   "median": 2097151,
+   "size": 4194304,
+   "too_large": true
+  },
+  {
+   "limit": 4194302,
+   "median": 2097151,
+   "size": 4194305,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 2097152,
+   "size": 0,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 2097152,
+   "size": 1,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 2097152,
+   "size": 4194303,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 2097152,
+   "size": 4194304,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 2097152,
+   "size": 4194305,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 2097153,
+   "size": 0,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 2097153,
+   "size": 1,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 2097153,
+   "size": 4194303,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 2097153,
+   "size": 4194304,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 2097153,
+   "size": 4194305,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 2097153,
+   "size": 4194306,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 2097153,
+   "size": 4194307,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 4194303,
+   "size": 0,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 4194303,
+   "size": 1,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 4194303,
+   "size": 4194303,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 4194303,
+   "size": 4194304,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 4194303,
+   "size": 4194305,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 4194303,
+   "size": 8388606,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 4194303,
+   "size": 8388607,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 4194304,
+   "size": 0,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 4194304,
+   "size": 1,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 4194304,
+   "size": 4194303,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 4194304,
+   "size": 4194304,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 4194304,
+   "size": 4194305,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 4194304,
+   "size": 8388608,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 4194304,
+   "size": 8388609,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 10000000,
+   "size": 0,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 10000000,
+   "size": 1,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 10000000,
+   "size": 4194303,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 10000000,
+   "size": 4194304,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 10000000,
+   "size": 4194305,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 10000000,
+   "size": 20000000,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 10000000,
+   "size": 20000001,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 1099511627776,
+   "size": 0,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 1099511627776,
+   "size": 1,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 1099511627776,
+   "size": 4194303,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 1099511627776,
+   "size": 4194304,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 1099511627776,
+   "size": 4194305,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 1099511627776,
+   "size": 2199023255552,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 1099511627776,
+   "size": 2199023255553,
+   "too_large": true
+  },
+  {
+   "limit": 4194304,
+   "median": 18446744073709551615,
+   "size": 0,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 18446744073709551615,
+   "size": 1,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 18446744073709551615,
+   "size": 4194303,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 18446744073709551615,
+   "size": 4194304,
+   "too_large": false
+  },
+  {
+   "limit": 4194304,
+   "median": 18446744073709551615,
+   "size": 4194305,
+   "too_large": true
+  }
+ ],
  "constants": {
   "DECIMALS": 8,
   "FEE_REFERENCE_WEIGHT": 3000,
+  "MAX_BLOCK_BODY": 4194304,
   "MEDIAN_WINDOW": 10,
   "MIN_BLOCK_MEDIAN": 150000
  },
- "description": "The dynamic minimum fee of the version 2 rules (docs/CONSENSUS_V2.md section 8): fee >= max(1, ceil(base_reward * FEE_REFERENCE_WEIGHT * size / median^2)), in units of 10^-8 coins, where base_reward is the block's reward before any penalty and median is the block-size median that block is judged against. `fee` is null when the result does not fit in a u64. Also the oversize penalty in the new units (the version 1 rule, unchanged), and the block-size median with the version 2 floor of 150,000 bytes (the rule of version 1, with a different floor).",
+ "description": "The dynamic minimum fee of the version 2 rules (docs/CONSENSUS_V2.md section 8): fee >= max(1, ceil(base_reward * FEE_REFERENCE_WEIGHT * size / median^2)), in units of 10^-8 coins, where base_reward is the block's reward before any penalty and median is the block-size median that block is judged against. `fee` is null when the result does not fit in a u64. Also the oversize penalty in the new units (the version 1 rule, unchanged), and the block-size median with the version 2 floor of 150,000 bytes (the rule of version 1, with a different floor). And the block size limit (section 8.4): the transaction bytes of a block may not exceed min(2 * median, MAX_BLOCK_BODY = 4 MiB); `block_limit` lists the limit and whether a size is too large, at medians around every place the limit changes.",
  "dynamic_min_fee": [
   {
    "base_reward": 2000000000,

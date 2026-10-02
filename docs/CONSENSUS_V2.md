@@ -270,8 +270,8 @@ For a block at height `h` on top of a known parent:
    5.5 (median time; too early is invalid, too far ahead is deferred).
 2. The **required target** for `h` (v1 section 7) and the **cheap** proof-of-work check.
 3. The **full** proof-of-work check (needs the epoch's dataset).
-4. The block **decodes strictly** (section 4), its size is within `2 * median` (v1 section 6), and `tx_root`
-   matches its transactions.
+4. The block **decodes strictly** (section 4), its size (the sum of its transactions' sizes) is within
+   **`min(2 * median, 4 MiB)`** (8.4), and `tx_root` matches its transactions.
 5. The first transaction is the coinbase for height `h`, no other transaction is a coinbase, and its
    plaintext outputs sum to **exactly** `reward(h) - penalty + sum(fees)`.
 6. For every other transaction, in order: it decodes strictly; its counts and lengths are within their
@@ -329,7 +329,7 @@ Consequences to know about:
 
 The block-size median (v1 section 6: the upper median of the last 10 block sizes) never goes below
 **`MIN_BLOCK_MEDIAN = 150,000` bytes** in version 2 (v1 used 300,000). A block is penalty-free up to the median,
-loses reward quadratically above it, and is invalid above twice the median (v1's rules, unchanged). The floor is
+loses reward quadratically above it, and is invalid above twice the median or above the ceiling of 8.4 (4 MiB), whichever is less. The floor is
 therefore the size a block may be **for free**, so it bounds how fast the chain can grow without anyone paying
 for it:
 
@@ -342,6 +342,40 @@ for it:
   higher than they would be at 300 kB (8.1).
 - It is a consensus constant of rules version 2; changing it later is a new version (section 10). `v2_fees.json`
   pins the floor and the median rule.
+
+### 8.4 The block-size ceiling: 4 MiB  (**DECIDED 2026-10-02**, found by fuzzing the engine, threat model E10)
+
+Version 1's hard limit is twice the median, and the median is the upper median of the last 10 block sizes, so a miner who
+produces about half the blocks can double the median about every 5 blocks (each oversize block forfeits part or all of its
+base reward by the quadratic penalty, which costs nothing real on a test network). Nothing stopped the limit growing past what
+the wire can carry: **a frame is at most 16 MiB, so a block larger than that could be mined but never relayed, and one such
+block would stop every new node from syncing** (it would ask for the block, be told `not_found`, and punish the only peer
+that has it).
+
+**The rule (version 2): the transactions of a block may not total more than `min(2 * median, MAX_BLOCK_BODY)` bytes, with
+`MAX_BLOCK_BODY = 4 * 1024 * 1024`.** It replaces "within `2 * median`" in section 8's check 4. The size is, as before, the sum of
+the transactions' serialized sizes (the header and coinbase are not counted). Nothing else changes: the penalty is
+still computed against the median, the fee still scales with `1 / median^2`, and below the ceiling every block is judged
+exactly as before.
+
+* **Why 4 MiB.** It is about 26 times the free floor of 8.2 (150,000 bytes), room for roughly 1,300 to 2,000 ordinary
+  transactions a block, and **well under the wire's limits**: a block of this size and its header and coinbase (under 64 KiB)
+  fit one `blocks` reply (which carries at most 8 MiB) and every reply fits a 16 MiB frame; the build checks this at
+  compile time (`wire.rs`). The alternatives weighed were 2 MiB (more conservative) and 8 MiB (a block would fill
+  half a frame).
+* **What it costs.** At the cap a chain grows by at most 4 MiB a block, about 2 TB a year at 60-second blocks, and
+  reaching it needs sustained demand to raise the median to 2 MiB first. It is a guess about future demand: **raising
+  it after a network has launched is a hard fork** (a new rules version, section 10). The network is not launched, the
+  data model is still a draft, and the chain restarts from a new genesis before any release (M11), so changing it now
+  costs nothing in compatibility.
+* **What it does not do.** It does not slow how fast the median can rise toward the ceiling (a longer median window, or a
+  limit on the growth of the median, as Monero has, remain options), and a majority miner can still push blocks to the
+  ceiling at the cost of the penalty. It bounds the damage; it does not remove the incentive question.
+* **Tests.** `v2_fees.json` (made by `tools/make_vectors_v2.py`) lists the limit and whether a size is too large at
+  medians around every place it changes (below, at and above half the ceiling; the largest `u64`); the validator refuses
+  a block one byte over the ceiling when twice the median would allow 2 MiB more, and does not refuse one of exactly the
+  ceiling; a block template never holds more than a block may carry; a block as large as the rules allow is sent in a
+  reply of its own.
 
 ### 8.3 Fork choice and reorganisation (as built in `tenero-chain`, `chain.rs`)
 

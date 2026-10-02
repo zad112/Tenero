@@ -121,7 +121,7 @@ These come from the tests; none of it is audited.
 | E6 | **Inflation or double-spend bug in the validator** | independent Python vectors, tests that break each rule, key-image uniqueness, balance equation, reviewed upstream proof libraries | **Partly**: this is the highest-consequence risk and exactly what an independent review is for; the signed message and the balance check are *ours* (not the libraries') and unaudited |
 | E7 | **Two implementations disagreeing**, causing a split | the Python reference and vectors | **Partly**: there is only one node implementation; the vectors make a second one possible |
 | E8 | **A consensus change forced by an exploit on a live chain** | none yet | **Open**: the emergency-fork plan is a launch gate (`M8_PLAN.md` section 7) and is not written |
-| E10 | **No absolute maximum block size.** The consensus rule is "at most twice the recent median", and the median can grow, but a frame on the wire is at most 16 MiB: a block over that can be mined but **never relayed**. Found with A4 | none: the wire ceiling and the consensus rule do not agree | **Open**: a consensus decision (an absolute cap, or a frame ceiling above any allowed block), to be made deliberately with new vectors (`CLAUDE.md` rule 1) before a real network; at the current floor (a median of 150 KB) it would take sustained very large blocks to reach |
+| E10 | **No absolute maximum block size.** The consensus rule was "at most twice the recent median", and the median can grow (about double every 5 blocks for a miner producing half the blocks), but a frame on the wire is at most 16 MiB: a block over that could be mined but **never relayed**, and one would stop every new node from syncing. Found with A4 | **Fixed 2026-10-02 (decided by the owner): a block may carry at most `min(2 * median, 4 MiB)` of transactions** (`CONSENSUS_V2.md` 8.4; vectors in `v2_fees.json`; the validator, the mempool and the block template use it; a compile-time check that a largest block fits a reply and a reply fits a frame). Tests: the vectors in both languages, the validator at exactly the ceiling and one byte over with twice the median above it, the template, a largest block sent in one reply | **Mitigated**. Still open: how fast the median can rise toward the ceiling (a longer window or a growth limit are options), and the ceiling is a guess about demand (a change after launch is a hard fork) |
 | E9 | **Premine or hidden allocation** | the genesis has no coinbase output (a test), and the new genesis keeps that (M11.2); every coin is mined | **Mitigated by construction**; says nothing about safety or value |
 
 ### F. Cryptography
@@ -209,7 +209,7 @@ privacy of Monero**, for these reasons:
 6. **C1: anchor peers** (keep two or three outbound peers across restarts) and a recommended multi-seed configuration. *Small to medium.*
 7. **J1, J2: `cargo audit` and `cargo deny` in CI; reproducible, checksummed releases.** *Small to medium.*
 8. **E8: the emergency-fork plan**, written down: who can decide, how a bad block or rule is handled, how testers are told. *Small, but a decision, not code.*
-9. **Decide E10** (the absolute block size), then change the rules, vectors and wire ceiling together. *A decision first.*
+9. ~~Decide E10~~ **Done 2026-10-02:** 4 MiB ceiling (`CONSENSUS_V2.md` 8.4).
 10. **Verify the "to verify" items** in this document, each with a test or a changed sentence.
 11. **A test that no log line contains a secret** (G6), and one that sends an HTTP request to the control port (G2). *Small.*
 

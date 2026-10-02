@@ -844,6 +844,68 @@ fn the_size_penalty_and_the_hard_limit() {
     );
 }
 
+/// The ceiling of `CONSENSUS_V2.md` 8.4: a block may carry at most `min(2 * median, 4 MiB)` transaction bytes. With a median
+/// of 3 MiB twice it is 6 MiB, and the ceiling is what holds.
+#[test]
+fn no_block_may_carry_more_than_the_ceiling_even_when_twice_the_median_is_more() {
+    let ceiling = fees::V2_MAX_BLOCK_BODY;
+    assert_eq!(ceiling, 4 * 1024 * 1024);
+    let mut params = test_params();
+    params.min_block_median = 3 * 1024 * 1024;
+    let mut net = Net::with_params("ceiling", params);
+    net.coinbase_blocks(FIRST_SPEND_HEIGHT as usize - 1);
+    let next = net.validator().next_block().unwrap();
+    assert_eq!(next.median, 3 * 1024 * 1024);
+    assert_eq!(fees::v2_block_limit(next.median), ceiling);
+    let ring = net.ring(net.height() + 1);
+    let size = |t: &Transaction| t.to_bytes().unwrap().len() as u64;
+    // transactions that add up to exactly the ceiling: as many full ones as fit and one trimmed to land on it
+    let full = net.tx(vec![ring.clone(), ring.clone()], MAX_PROOF, 0);
+    let k = (ceiling / size(&full)) as usize;
+    let mut txs: Vec<Transaction> = (0..k)
+        .map(|_| net.tx(vec![ring.clone(), ring.clone()], MAX_PROOF, 0))
+        .collect();
+    let used: u64 = txs.iter().map(size).sum();
+    let base = size(&full) - MAX_PROOF as u64;
+    let last_proof = (ceiling - used - base) as usize;
+    assert!(last_proof <= MAX_PROOF);
+    txs.push(net.tx(vec![ring.clone(), ring.clone()], last_proof, 0));
+    assert_eq!(txs.iter().map(size).sum::<u64>(), ceiling);
+
+    let build = |net: &mut Net, txs: &[Transaction]| {
+        let mut b = net.block(vec![]);
+        b.transactions = txs.to_vec();
+        net.finish(&mut b);
+        b
+    };
+    // exactly the ceiling is not too large (it may fail some other rule: these transactions are only as big as they must be)
+    let b = build(&mut net, &txs);
+    let r = net.validator().accept_block(&b, NOW);
+    assert!(
+        !matches!(r, Err(BlockError::BlockTooLarge { .. })),
+        "a block of exactly the ceiling: {r:?}"
+    );
+    // one byte more is, although twice the median allows 2 MiB more
+    let mut bigger = txs.clone();
+    bigger.last_mut().unwrap().prunable.proof_data.push(7);
+    let b = build(&mut net, &bigger);
+    assert_eq!(
+        net.rejects(&b),
+        BlockError::BlockTooLarge {
+            size: ceiling + 1,
+            limit: ceiling
+        }
+    );
+    // and a whole extra transaction is, too
+    let mut more = txs.clone();
+    more.push(net.tx(vec![ring.clone(), ring], MAX_PROOF, 0));
+    let b = build(&mut net, &more);
+    assert!(matches!(
+        net.rejects(&b),
+        BlockError::BlockTooLarge { limit, .. } if limit == ceiling
+    ));
+}
+
 // ------------------------------------------------------------------ the coinbase
 
 #[test]

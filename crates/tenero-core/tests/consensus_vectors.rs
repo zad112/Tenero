@@ -442,6 +442,40 @@ fn the_dynamic_minimum_fee() {
     assert_eq!(nulls, 3);
 }
 
+/// The block size ceiling (`CONSENSUS_V2.md` 8.4): `min(2 * median, 4 MiB)`, at medians around every place it changes.
+#[test]
+fn the_block_size_limit_and_its_ceiling() {
+    let v = load("v2_fees").unwrap();
+    assert_eq!(
+        u(&v["constants"]["MAX_BLOCK_BODY"]),
+        fees::V2_MAX_BLOCK_BODY
+    );
+    assert_eq!(fees::V2_MAX_BLOCK_BODY, 4 * 1024 * 1024);
+    let cases = v["block_limit"].as_array().unwrap();
+    assert!(cases.len() >= 60, "{} cases", cases.len());
+    let (mut capped, mut uncapped, mut too_large, mut fits) = (0, 0, 0, 0);
+    for c in cases {
+        let (m, s, limit) = (u(&c["median"]), u(&c["size"]), u(&c["limit"]));
+        assert_eq!(fees::v2_block_limit(m), limit, "median {m}");
+        let tl = c["too_large"].as_bool().unwrap();
+        assert_eq!(fees::v2_over_limit(s, m), tl, "median {m} size {s}");
+        if limit == fees::V2_MAX_BLOCK_BODY {
+            capped += 1;
+        } else {
+            assert_eq!(limit, 2 * m);
+            uncapped += 1;
+        }
+        if tl {
+            too_large += 1;
+        } else {
+            fits += 1;
+        }
+    }
+    assert!(capped > 10 && uncapped > 10 && too_large > 10 && fits > 10);
+    // the largest median there is does not overflow
+    assert_eq!(fees::v2_block_limit(u64::MAX), fees::V2_MAX_BLOCK_BODY);
+}
+
 /// The version 2 floor is 150 kB: the median (and so the free block size, and the fee) starts there.
 #[test]
 fn the_version_2_median_floor_and_the_fee_it_gives() {

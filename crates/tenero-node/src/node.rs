@@ -225,7 +225,13 @@ impl<'a> Node<'a> {
 
     /// The transactions a miner should put in the next block: best fee rate first, within `max_body_bytes`.
     pub fn block_template_txs(&self, max_body_bytes: u64) -> Vec<Transaction> {
-        self.pool.select(max_body_bytes)
+        // never more than a block may carry, whatever the caller asks for (none if the rules cannot be read)
+        let limit = self
+            .validator()
+            .next_block()
+            .map(|n| tenero_core::fees::v2_block_limit(n.median))
+            .unwrap_or(0);
+        self.pool.select(max_body_bytes.min(limit))
     }
 
     /// An unmined block on the tip: transactions from the pool (best fee rate first, within `max_body_bytes`),
@@ -239,7 +245,10 @@ impl<'a> Node<'a> {
     ) -> Result<Block, BlockError> {
         let v = self.validator();
         let next = v.next_block()?;
-        let txs = self.pool.select(max_body_bytes);
+        // never more than a block may carry, whatever the caller asks for (a block over the limit is invalid)
+        let txs = self
+            .pool
+            .select(max_body_bytes.min(tenero_core::fees::v2_block_limit(next.median)));
         let mut body = 0u64;
         let mut fees_total = 0u64;
         for t in &txs {
