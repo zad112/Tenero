@@ -85,6 +85,22 @@ The whole 4 GiB dataset builds on the GPU in **0.116 s** (measured; the README's
   is the node's CPU check.
 * Not measured: a block at the real difficulty, more than one GPU, other batch sizes or settings, any other machine.
 
+## The GPU miner in its own process (measured on the owner's machine, RTX 5070 Ti, 2026-10-02)
+
+`tenerod` on the dev network (real matmulhash, start target 2^253) and `tenero-miner --backend gpu` (batch 128) as two
+separate programs on one machine, started by the owner, run about 6.5 minutes and stopped with Ctrl-C.
+
+* **64 blocks found: 64 in the chain, 0 lost a race, 0 refused.** The node (a CPU check of every block) logged 0 bans and
+  stayed in sync; it stopped cleanly at height 64.
+* **Steady speed: 32,600 to 35,600 attempts/s** (the miner's own status line, every 15 s, from about block 35 on). That
+  matches the in-process figure above (34,000 to 36,000 at batch 128), so the separate process costs nothing measurable.
+* The first status line (3,046/s) and the first blocks include the one-time 4.3 GiB dataset build and an almost-free
+  target; the first 35 blocks took about 20 s because at 2^253 a block needs about 8 attempts, so the pace was the node's
+  check (about 0.2 s a block), not the GPU. The difficulty then rose on its own: from block 35 to block 64 a block took
+  0.4 to 46 s, about 12 s on average (still well short of the real one-minute target).
+* Not measured: the real difficulty (a block a minute) held for long enough to see the adjustment settle, a run of hours,
+  a node and miner restart during mining on this arrangement, other machines. 6.5 minutes of one run.
+
 ## Syncing a chain with the real proof of work (measured on the owner's machine, 2026-10)
 
 `cargo test --release -p tenero-chain --test real_pow_sync -- --ignored --nocapture`: 30 blocks mined on the CPU with

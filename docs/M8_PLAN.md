@@ -458,9 +458,10 @@ injection: 37 faults; the first sweep caught 30 (two of its 7 survivors were mut
 "the mix is copied into the block" was untested; the template's two heights were never made to disagree; a job left running
 after an unusable template; no pause between connection attempts; a stop not heard during a pause; the dev network's wrong
 backend) and all are caught now.**
-*Not measured:* the GPU miner in its own process against a node on the dev network (the real matmulhash). The test chain and
-the real programs on it are tested; **no number for the GPU in this arrangement exists yet**. (The in-process GPU miner's
-numbers, `docs/BENCHMARKS.md`, are from M8.5.)
+*Measured on the owner's machine (2026-10-02, RTX 5070 Ti, run by the owner):* `tenerod` on the dev network and `tenero-miner
+--backend gpu` as two programs, about 6.5 minutes: **64 blocks found, 64 in the chain, 0 lost a race, 0 refused; the node
+had 0 bans; steady 32,600 to 35,600 attempts/s**, the same as the in-process miner (`docs/BENCHMARKS.md`). *Not measured:*
+the difficulty settled at a block a minute, runs of hours, a restart of either program during mining on the dev network.
 *Limits, stated plainly:*
 * **Mining can run inside the node's process or in a program of its own (`tenero-miner`, built after the first M8.7
   commit; see below).** The separate miner is only as private and as safe as the control interface it uses: anything with the
