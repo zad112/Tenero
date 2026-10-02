@@ -197,11 +197,22 @@ value. **Recommended order: finish the three "before M10" items, then M9's fuzzi
 send a build to a few trusted people sooner, I would do it after the "before M10" items and with a seed node that is not
 the owner's own computer.
 
-## Decisions for the owner
+## Decisions for the owner (answered 2026-10-02)
 
-1. The GUI toolkit (egui recommended; Tauri; iced), and approval of its dependencies and a QR crate (rule 3).
-2. Approval of an NVML crate for GPU temperature and power, and a terminal-colour crate (rule 3).
-3. Whether M9's fuzzing comes before M10 (my recommendation) or after M11.
-4. Which of the "my suggestions" in M10.4 and M11.4 to keep, cut or defer.
-5. The project's licence (none chosen yet), and whether to buy a code-signing certificate.
-6. Where the seed node will run.
+1. **GUI toolkit: egui/eframe, approved**, with a QR-code crate (its licence to be listed when it is added).
+2. **An NVML crate (GPU temperature and power) and a terminal-colour crate: approved** (rule 3 satisfied; each one's licence and
+   audit state to be noted in the commit that adds it).
+3. **Fuzzing before M10 (my recommendation): not answered; I proceed on the recommendation** (proof checks, then fuzzing of the
+   decoders and network handlers, then M10) unless the owner says otherwise.
+4. **All the suggestions in M10.4 and M11.4 are kept.**
+5. **The project licence: still to choose**, and it must be chosen before the first release. Considerations for the owner (not legal
+   advice): the dependencies are MIT, Apache-2.0 and BSD-style, which all allow either choice; Monero itself is BSD-3-Clause;
+   Rust projects commonly use "MIT OR Apache-2.0" (the Apache part carries a patent grant); a copyleft licence (GPL-3.0)
+   would require anyone who ships a modified version to publish their source. A `THIRD-PARTY-LICENCES` file is needed
+   whichever is picked.
+6. **A code-signing certificate: maybe, depends on cost.** Decided when M11.3 starts, with real prices; until then the release
+   notes carry the checksum and the SmartScreen warning.
+7. **Seed nodes, the way Monero does them:** a list of seed addresses built into the program (several, run by *different*
+   people, not only the owner) plus a `--seed` option and a peers file, so one dead seed does not strand a new node. Monero's
+   additional DNS seeds are a later option (DNS names can be hijacked, so they add a trust point). Where the first seeds
+   run is still open: the owner's machine is the weakest choice (see M11.4).
