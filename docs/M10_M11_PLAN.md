@@ -4,6 +4,22 @@ Tenero is still an experiment: **unaudited, not for real value.** A release to o
 every screen, file name and page that a tester sees must say so. Coins on it have no value, and the chain may be reset
 at any time.
 
+## M9 groundwork: fuzzing (started 2026-10-02)
+
+* **proptest, done:** a dev-dependency (approved 2026-10-02, MIT OR Apache-2.0, features cut to `std`, never in a shipped program; the
+  nine crates it adds are all MIT OR Apache-2.0). Three test files run with `cargo test`: `tenero-core/tests/fuzz_decode.rs`
+  (the nine version 2 decoders and the prunable part), `tenero-net/tests/fuzz_wire.rs` (the peer frame decoder and the streaming
+  decoder in random chunking, a huge declared length) and `tenero-app/tests/fuzz_control.rs` (the control requests, responses and
+  frames). Inputs: 4,000 random byte strings and 4,000 golden-vector objects with random edits per property. They check no panic, no hang, strict
+  decoding (what decodes re-encodes to the same bytes), and that a failed stream decoder stays failed and stops buffering.
+  **First run: no bug found.** Five deliberate faults (trailing bytes accepted, zero-length control frame accepted, a failed decoder not final or
+  still buffering) were all caught after two properties were tightened. Not covered: the engine's message handling as a whole
+  (what a peer can do with a *valid* message sent in a hostile order), the noise handshake, and the store's file readers.
+* **cargo-fuzz (libFuzzer), planned, before the first release** (approved in principle 2026-10-02): coverage-guided runs of the same
+  decoders, then the engine's event handler, run under WSL or a Linux CI runner (the owner's Windows setup is the weak platform for it;
+  it needs a nightly Rust). A corpus seeded from the golden vectors; crashes become regression tests. A run of hours with no
+  finding is evidence, not proof.
+
 ## Before M10 starts: things from M8 that must be finished first
 
 These are not new work; they are open items that a release to others would otherwise ship broken.
@@ -210,7 +226,9 @@ the owner's own computer.
 3. **Fuzzing before M10 (my recommendation): not answered; I proceed on the recommendation** (proof checks, then fuzzing of the
    decoders and network handlers, then M10) unless the owner says otherwise.
 4. **All the suggestions in M10.4 and M11.4 are kept.**
-5. **The project licence: still to choose**, and it must be chosen before the first release. Considerations for the owner (not legal
+5. **The project licence: the repository already carries `LICENSE` (BSD-3-Clause, copyright 2026 zad112) and the Cargo files say so.** (The first
+   draft of this plan said none was chosen; that was wrong.) The owner asked to find a *good* licence, so it is open to change before the
+   first release. Considerations for the owner (not legal
    advice): the dependencies are MIT, Apache-2.0 and BSD-style, which all allow either choice; Monero itself is BSD-3-Clause;
    Rust projects commonly use "MIT OR Apache-2.0" (the Apache part carries a patent grant); a copyleft licence (GPL-3.0)
    would require anyone who ships a modified version to publish their source. A `THIRD-PARTY-LICENCES` file is needed

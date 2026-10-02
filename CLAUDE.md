@@ -17,7 +17,7 @@ python miner.py <address> [--pow sha256]     # sha256 = a small chain a CPU can 
 $env:TENERO_DATA = "$HOME\scratch"          # do experiments on a scratch chain, not the real one
 
 # The native rewrite (branch `rewrite`; Rust only): cargo is in $HOME\.cargo\bin
-cargo test --workspace                       # the Rust code against the golden vectors; no GPU needed
+cargo test --workspace                       # the Rust code against the golden vectors, and the proptest fuzz-style properties (`tests/fuzz_*.rs`); no GPU needed
 cargo clippy --workspace --all-targets -- -D warnings
 $env:TENERO_SLOW_VECTORS = "1"; cargo test --test pow_vectors      # the deep and full (4.3 GiB) vectors
 cargo test --release -p tenero-gpu -- --ignored --test-threads=1  # the GPU checks: owner's machine, CUDA 13.4 bin\x64 on PATH

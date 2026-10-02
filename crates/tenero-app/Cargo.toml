@@ -36,6 +36,9 @@ rpassword = "7"
 
 [dev-dependencies]
 serde_json = "1"
+# Approved by the owner 2026-10-02 (rule 3), a DEV-dependency only: never in a shipped program. proptest, licence
+# MIT OR Apache-2.0. Features cut to "std" (no fork mode, no timeouts, no bit sets) to keep the supply chain small.
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true
