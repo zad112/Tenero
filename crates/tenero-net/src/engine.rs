@@ -353,6 +353,10 @@ pub struct Engine<'a> {
     anchors: Vec<String>,
     /// The tip id last seen and since when (the engine's clock): how long the chain has not moved.
     tip_seen: Option<([u8; 32], u64)>,
+    /// Set when a handler sent requests, to the clock it was called with: the requests were really sent when the handler
+    /// RETURNED, which can be much later (applying a batch of blocks takes a while), so their timeout clocks are restarted at
+    /// the next event (see `restamp`).
+    stamp_fresh: Option<u64>,
     /// Whether the tip is stale now, and when extra peers were last dialled because of it.
     stale: bool,
     last_stale_action: Option<u64>,
@@ -392,6 +396,7 @@ impl<'a> Engine<'a> {
             syncing: None,
             anchors: Vec::new(),
             tip_seen: None,
+            stamp_fresh: None,
             stale: false,
             last_stale_action: None,
             trusted_last: HashMap::new(),
@@ -472,6 +477,13 @@ impl<'a> Engine<'a> {
 
     /// The single entry point. `now_ms` is the transport's clock (Unix milliseconds).
     pub fn handle(&mut self, now_ms: u64, ev: Event) -> Vec<Action> {
+        // requests sent by the last handler were stamped with the time that handler STARTED; it may have taken long, and the
+        // peer cannot have seen them before it ended: start their clocks now (once; the next event does not move them again)
+        if let Some(old) = self.stamp_fresh.take() {
+            if now_ms > old {
+                self.restamp(old, now_ms);
+            }
+        }
         self.now = now_ms;
         let mut out = Vec::new();
         match ev {
@@ -522,7 +534,40 @@ impl<'a> Engine<'a> {
     // ---------------------------------------------------------------------------------------------
     // helpers
 
+    /// Moves every request timestamp equal to `old` to `new` (see `stamp_fresh`).
+    fn restamp(&mut self, old: u64, new: u64) {
+        for t in self.asked.values_mut() {
+            if *t == old {
+                *t = new;
+            }
+        }
+        for r in self
+            .req_blocks
+            .values_mut()
+            .chain(self.req_txs.values_mut())
+        {
+            if r.at == old {
+                r.at = new;
+            }
+        }
+        if let Some(s) = self.syncing.as_mut() {
+            if s.started == old {
+                s.started = new;
+            }
+        }
+    }
+
     fn send(&mut self, peer: PeerId, msg: Message, out: &mut Vec<Action>) {
+        if matches!(
+            msg,
+            Message::GetBlockIds { .. }
+                | Message::GetHeaders { .. }
+                | Message::GetBlocks { .. }
+                | Message::GetTxs { .. }
+        ) {
+            // (not pings: a ping's nonce IS its send time, and it is sent from the quick tick handler)
+            self.stamp_fresh = Some(self.now);
+        }
         if let Message::GetBlocks { ids } = &msg {
             for id in ids {
                 self.asked.insert((peer, *id), self.now);

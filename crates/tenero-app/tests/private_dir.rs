@@ -130,8 +130,8 @@ fn a_new_data_directory_is_created_private_and_stays_acceptable() {
 #[cfg(windows)]
 mod windows {
     use super::*;
-    use tenero_app::private_dir::make_private;
     use std::path::PathBuf;
+    use tenero_app::private_dir::make_private;
 
     /// A directory made directly under `C:\`, where Windows gives every user read access (and every signed-in user the
     /// right to write), removed again when this is dropped. `None` where one cannot be made.
