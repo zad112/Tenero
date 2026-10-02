@@ -8,10 +8,13 @@ at any time.
 
 These are not new work; they are open items that a release to others would otherwise ship broken.
 
-1. **Proof checks on by default.** The node validates blocks with a validator that still *accepts every transaction proof*
-   unless `RingCtProofs` is switched on (`tenero-crypto`). A search of `tenero-app` and `tenero-node` found no use of it, so
-   the running nodes most likely do not check signatures or range proofs. Testers must not run a node that does not. (To
-   be confirmed by a test that sends a transaction with a broken proof to a real `tenerod` and sees it refused.)
+1. **Proof checks on by default: CHECKED 2026-10-02, and already true.** (The first draft of this plan said the nodes
+   probably did not check proofs. That was wrong: it came from searching for one name in `tenero-app`.) `Node::new` uses the
+   real `RingCtProofs` check, `Node::with_proof_check` refuses a checker that does not verify unless a test flag is set
+   (`tenero-node/tests/mempool.rs`, `a_node_refuses_to_run_without_real_proof_checking`), and `tenerod` uses `Node::new`.
+   The chain-level tests refuse a broken proof, a spend for another chain, a raised fee and a repeated key image
+   (`tenero-crypto/tests/chain_spend.rs`). Still worth adding: one test that sends a broken-proof transaction to a real `tenerod`
+   over the control interface and sees it refused (an end-to-end check of the same thing).
 2. **The day-long three-node run** (M8.4) finishing with matching tips and 0 bans (the lighter run 3 started 2026-10-02).
 3. **The difficulty settling** at one block a minute on a real-PoW network, watched for at least an hour (never yet seen).
 
