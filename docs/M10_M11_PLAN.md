@@ -76,8 +76,8 @@ screens show the card's temperature, power, fan, clocks, memory used, how busy t
 the clocks down; a missing NVML or an unreported figure leaves rows out and never affects mining. Read once on the owner's real card
 (idle). **NVML does not report memory bandwidth**, so the `reads` row is the attempt rate times 16 MiB, labelled as an estimate. The
 CUDA and NVML card numbers are assumed to be the same (true with one GPU; not handled for several). **Measured on the owner's card
-(2026-10-02, details and caveats in `BENCHMARKS.md`):** 31,758 to 33,348 attempts/s in the backend test (about 6 % below the earlier run, cause not
-found, **not faster than before**), 34,417 average for the in-process miner over 3 minutes, the card at about 50 C and 256 to 264 W; the new
+(2026-10-02, details and caveats in `BENCHMARKS.md`):** three runs of the backend test: 31,758 to 35,566 attempts/s (at batch 128 to 256: 33,348 to 35,566; the first run was a low outlier that did not repeat;
+run-to-run variation is about 7 %; **not faster than the earlier measurement**), 34,417 average for the in-process miner over 3 minutes, the card at about 50 C and 256 to 264 W; the new
 rows and the rate figures showed on a real node under load. **Not done:** the effective rate and expected-versus-actual blocks,
 `--gpu-batch` auto-selection (the batch sizes measured within noise of each other), several GPUs, the miner program (`tenero-miner`) under
 load, and the full redraw block on a real console while mining on the GPU.

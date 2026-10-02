@@ -74,11 +74,24 @@ per batch size after 5 s of warm-up, one run each):
 | 128 | 33,348 |
 | 256 | 32,997 |
 
-* **This is about 6 to 7 % below the earlier run on the same card (34,058 to 35,959), and it is not faster than before.** I do not know
-  why, and have not tested the explanations. **One thing differed that I know of:** the 8 nodes of the heavy test network (run 4) were
-  mining on the CPU, one core each, at the same time, and the GPU backend does CPU work between batches. One run per batch size is
-  also too few to call a 6 % difference more than possible noise. The ordering of the batch sizes is different from the earlier run
-  too (here 128 is best, there 256), which fits noise.
+* **That first run was about 6 to 7 % below the earlier run on the same card (34,058 to 35,959), but the gap did not repeat.** I ran the same
+  test twice more, a few minutes later, with the 8 run 4 nodes still mining on the CPU exactly as in the first run (I was not allowed to pause
+  them, so I could not test their effect directly):
+
+  | batch | run 1 | run 2 | run 3 | the earlier run |
+  |---|---|---|---|---|
+  | 32 | 32,353 | 32,942 | 32,533 | 34,058 |
+  | 64 | 31,758 | 33,966 | 33,595 | 34,790 |
+  | 128 | 33,348 | 34,457 | 34,824 | 35,745 |
+  | 256 | 32,997 | 35,344 | 35,566 | 35,959 |
+
+  **What this shows:** at the larger batch sizes runs 2 and 3 are back within about 1.5 % of the earlier run (256: 35,344 and 35,566 against
+  35,959), and run 1 was the low outlier (at batch 256, 6.6 % under run 3). Run 4 was running in all three, so it does not explain run 1 (my
+  first guess), and I do not know what did. **Batch 32 is lower than the earlier run in all three (32,353 to 32,942 against 34,058, 3 to 5 %), and I
+  have no explanation for that either**; the larger batches show the same order in every run (the speed rises with the batch size, as
+  before). **Run-to-run variation on this machine is about 7 % at one batch size, so a difference of a few per cent between two single runs
+  means nothing.** The number to quote is "about 33,000 to 36,000 attempts/s at batch 128 to 256", **not** a single figure, and no run has
+  been faster than the earlier ones: this milestone is about reporting, not speed.
 * **The card while it ran** (`nvidia-smi` once a second, 80 samples under load): 47 C on average (up to 50), 236 W on average (up to 257;
   the average includes the warm-up and the dataset builds), graphics clock 2,985 MHz, memory clock 15,801 MHz, GPU busy 89 % on average
   (94 % at most), memory controller busy 62 % on average (67 % at most), 6.0 GiB of video memory used. The driver reported no
