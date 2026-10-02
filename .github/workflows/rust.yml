@@ -26,8 +26,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        if: matrix.name == 'ubuntu'
         with:
           components: clippy, rustfmt
+      # On the owner's machine that action fails (its `bash` is the WSL launcher, with no distro installed), and the toolchain is
+      # already there: use it as it is (so Windows can be a Rust release behind or ahead of Ubuntu)
+      - name: use the installed Rust (self-hosted Windows)
+        if: matrix.name == 'windows'
+        shell: powershell
+        run: |
+          "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          & "$env:USERPROFILE\.cargo\bin\rustc.exe" --version
+          & "$env:USERPROFILE\.cargo\bin\cargo.exe" clippy --version
+          & "$env:USERPROFILE\.cargo\bin\cargo.exe" fmt --version
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
