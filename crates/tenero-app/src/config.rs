@@ -69,6 +69,8 @@ pub struct Config {
     pub log_level: Level,
     pub log_file: Option<PathBuf>,
     pub status_every: u64,
+    /// Start even if other accounts on this computer can read the data directory (see `private_dir.rs`).
+    pub allow_open_data_dir: bool,
 }
 
 /// What a node's operator is told when a setting is wrong.
@@ -107,6 +109,7 @@ const KEYS: &[&str] = &[
     "log_level",
     "log_file",
     "status_every",
+    "allow_open_data_dir",
 ];
 
 /// The raw settings: each key's values in the order given.
@@ -355,6 +358,7 @@ impl Raw {
             log_level,
             log_file: self.one("log_file").map(PathBuf::from),
             status_every,
+            allow_open_data_dir: self.flag("allow_open_data_dir", false)?,
         })
     }
 }

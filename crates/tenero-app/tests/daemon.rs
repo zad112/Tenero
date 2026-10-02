@@ -62,7 +62,12 @@ impl Running {
     }
 
     fn try_start(cfg: Config) -> Result<Running, String> {
-        let log_file = cfg.data.join("node.log");
+        // beside the data directory when that does not exist yet (the node makes it, and has to be the one to)
+        let log_file = if cfg.data.exists() {
+            cfg.data.join("node.log")
+        } else {
+            cfg.data.with_extension("log")
+        };
         let log = Arc::new(Logger::new(Level::Info, Some(&log_file), false).unwrap());
         let shutdown = Arc::new(AtomicBool::new(false));
         let (tx, rx) = channel();
@@ -966,4 +971,52 @@ fn a_real_node_refuses_every_tampered_copy_of_a_good_transaction_and_takes_the_g
     );
     // none of them got into the pool or the chain; the good one is taken
     remote.submit(good).unwrap_or_else(|e| panic!("{e}"));
+}
+
+// ---- who can read the data directory (M9, threat model G1) --------------------------------------------------------------
+
+#[cfg(windows)]
+#[test]
+fn a_node_refuses_a_data_directory_other_accounts_can_read_and_starts_with_the_override() {
+    // a folder directly under C:\, which Windows opens to every user
+    let open = PathBuf::from(format!(r"C:\tenero-open-node-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&open);
+    if std::fs::create_dir(&open).is_err() {
+        eprintln!("cannot make a directory in the root of C: here: test skipped");
+        return;
+    }
+    struct Gone(PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _gone = Gone(open.clone());
+    let refused = Running::try_start(config(&open, ""));
+    let err = match refused {
+        Ok(_) => panic!("the node started in a directory every user can read"),
+        Err(e) => e,
+    };
+    assert!(err.contains("open to other accounts"), "{err}");
+    assert!(err.contains("allow_open_data_dir"), "{err}");
+    // the override starts it, with a warning in the log
+    let node = Running::start(config(&open, "allow_open_data_dir = yes\n"));
+    assert!(
+        node.log().contains("open to other accounts"),
+        "{}",
+        node.log()
+    );
+    node.stop();
+}
+
+#[test]
+fn a_node_in_a_new_directory_makes_it_private_and_starts() {
+    let dir = Dir::new("private-start");
+    std::fs::remove_dir_all(&dir.0).unwrap();
+    let node = Running::start(config(&dir.0, ""));
+    assert_eq!(
+        tenero_app::private_dir::check(&dir.0),
+        tenero_app::private_dir::Exposure::Private
+    );
+    node.stop();
 }

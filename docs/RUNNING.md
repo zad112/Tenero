@@ -62,6 +62,7 @@ parse is an error that names the setting; nothing silently falls back to a defau
 | `log_level` | `error`, `warn`, `info`, `debug` | info |
 | `log_file` | also write the log here (rotated to `<name>.old` at 20 MiB) | standard error only |
 | `status_every` | seconds between status lines | 60 |
+| `allow_open_data_dir` | start even if other accounts on this computer can read the data directory (the node otherwise refuses, and says how to fix it; a new directory is made private) | no |
 
 **Stopping:** Ctrl-C (or closing the window) shuts the node down cleanly: it closes its connections, saves the peers and
 the side-branch pool, and prints `stopped at height H, tip ID`. A second Ctrl-C ends it at once. From another window:

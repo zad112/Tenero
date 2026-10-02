@@ -236,8 +236,8 @@ pub fn run(
     ready: Option<Sender<Ready>>,
 ) -> Result<Summary, String> {
     log.info(BANNER);
-    std::fs::create_dir_all(&cfg.data)
-        .map_err(|e| format!("cannot create {}: {e}", cfg.data.display()))?;
+    // a new data directory is made private to its owner; an existing one that other accounts can read is refused
+    crate::private_dir::ensure_private(&cfg.data, cfg.allow_open_data_dir, &log)?;
     let chain = chain_of(cfg.network)?;
     log.info(&format!(
         "network {} ({}), data {}, {}",
