@@ -1028,6 +1028,36 @@ fn a_node_in_a_new_directory_makes_it_private_and_starts() {
     node.stop();
 }
 
+// ---- the status line (M9, threat model C1) -------------------------------------------------------------------------------
+
+#[test]
+fn the_status_line_of_a_running_node_shows_the_network_health() {
+    let d = Dir::new("status-health");
+    let n = Running::start(config(
+        &d.0,
+        "status_every = 1
+",
+    ));
+    let end = Instant::now() + Duration::from_secs(20);
+    let line = loop {
+        if let Some(l) = n.log().lines().find(|l| l.contains("status: tip")) {
+            break l.to_string();
+        }
+        assert!(
+            Instant::now() < end,
+            "no status line
+{}",
+            n.log()
+        );
+        thread::sleep(Duration::from_millis(200));
+    };
+    assert!(line.contains("out groups 0"), "{line}");
+    assert!(line.contains("last block "), "{line}");
+    assert!(line.contains("samples 0"), "{line}");
+    // a node with no peers and no seeds: no alarm yet (the minimum time has not passed), and nothing claims there is one
+    assert!(line.contains("alarms none"), "{line}");
+}
+
 // ---- pinned peers (M9, threat model C1) -----------------------------------------------------------------------------------
 
 #[test]

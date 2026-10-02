@@ -191,10 +191,20 @@ pub struct EngineConfig {
     /// help, because hostile seeds fill the quota before the honest ones answer (`docs/SEED_POLICY.md` has the measurement).
     /// 0 turns it off (threat model C1).
     pub bootstrap_wait_ms: u64,
-    /// The most outbound connections (while the first `outbound_target` slots are being filled) to addresses that descend from ONE
-    /// seed: the least that seed may have, whatever its fair share of the slots is (`outbound_target` divided by the number of
-    /// origins the book knows). The seeds' own addresses are not limited by this. 0 turns it off.
-    pub max_outbound_per_source: usize,
+    /// A feeler connection (`docs/SEED_POLICY.md`, threat model C1): every this many milliseconds the node dials ONE address it has
+    /// never connected to, reads its tip and work from its `hello`, and hangs up. It never counts as an outbound peer, an anchor or a
+    /// sync peer. It gives independent samples of the wider network (an eclipsed node's peers all say the same thing), and it moves
+    /// addresses that work into the "tried" part of the book. 0 turns it off.
+    pub feeler_interval_ms: u64,
+    /// How long a condition must last before it is an alarm (`Engine::health`): a peer reporting more work than we have, feeler samples
+    /// of the same, too few outbound peers. 0 turns the alarms off.
+    pub alarm_after_ms: u64,
+    /// Fewer outbound peers than this (once the bootstrap is over) is an alarm after `alarm_after_ms`.
+    pub min_outbound_peers: usize,
+    /// Outbound peers in fewer network groups than this is an alarm (not on a private network, where all addresses are one group).
+    pub min_outbound_groups: usize,
+    /// Feeler samples older than this are forgotten.
+    pub sample_window_ms: u64,
 }
 
 impl Default for EngineConfig {
@@ -240,7 +250,11 @@ impl Default for EngineConfig {
             trusted: Vec::new(),
             trusted_retry_ms: 30 * 1000,
             bootstrap_wait_ms: 20 * 1000,
-            max_outbound_per_source: 2,
+            feeler_interval_ms: 2 * 60 * 1000,
+            alarm_after_ms: 5 * 60 * 1000,
+            min_outbound_peers: 2,
+            min_outbound_groups: 2,
+            sample_window_ms: 30 * 60 * 1000,
         }
     }
 }
@@ -269,6 +283,89 @@ pub struct Stats {
     pub bootstrap_started: u64,
     pub bootstrap_done: u64,
     pub bootstrap_timeouts: u64,
+    /// Feeler connections: dialled, and read (their tip and work noted).
+    pub feelers_dialled: u64,
+    pub feelers_sampled: u64,
+}
+
+/// What a feeler connection read from one address.
+#[derive(Clone, Debug)]
+struct Sample {
+    at: u64,
+    addr: String,
+    work: U256,
+}
+
+/// Something the operator should look at (`Engine::health`). None of them is proof of an attack: each is what an eclipse, a
+/// partition or a fork would look like from inside, and so is also what a bad network day looks like.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Alarm {
+    /// No new block for `stale_tip_ms`.
+    StaleTip { age_ms: u64 },
+    /// At least one ready peer has reported more work than we have for this long, and we have not caught up.
+    Behind { for_ms: u64 },
+    /// At least two nodes we sampled with feeler connections reported more work than we have now, at least `alarm_after_ms` ago: the
+    /// wider network seems to be ahead of every peer we are connected to.
+    SamplesAhead { count: usize },
+    /// Fewer than `min_outbound_peers` outbound peers for `alarm_after_ms`.
+    FewOutbound { count: usize },
+    /// Outbound peers in fewer than `min_outbound_groups` network groups.
+    FewGroups { groups: usize },
+}
+
+impl Alarm {
+    /// A short name that does not change as the numbers do (to log a change of state, not every look).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Alarm::StaleTip { .. } => "stale-tip",
+            Alarm::Behind { .. } => "behind-peers",
+            Alarm::SamplesAhead { .. } => "network-ahead",
+            Alarm::FewOutbound { .. } => "few-outbound",
+            Alarm::FewGroups { .. } => "few-groups",
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            Alarm::StaleTip { age_ms } => format!(
+                "no new block for {} minutes: this node may be cut off from the real network",
+                age_ms / 60_000
+            ),
+            Alarm::Behind { for_ms } => format!(
+                "peers have reported more work than this node has for {} minutes and it has not caught up: possible eclipse, fork or a node that cannot sync",
+                for_ms / 60_000
+            ),
+            Alarm::SamplesAhead { count } => format!(
+                "{count} nodes sampled outside this node's peers reported more work than it has: the wider network seems ahead of every peer it is connected to (possible eclipse)"
+            ),
+            Alarm::FewOutbound { count } => {
+                format!("only {count} outbound peers: this node is not choosing enough of its own peers")
+            }
+            Alarm::FewGroups { groups } => format!(
+                "outbound peers are in only {groups} network group(s): one network range could be all this node hears from"
+            ),
+        }
+    }
+}
+
+/// A snapshot of how well connected the node is (`Engine::health`).
+#[derive(Clone, Debug)]
+pub struct NetHealth {
+    pub peers: usize,
+    pub inbound: usize,
+    pub outbound: usize,
+    /// Distinct network groups among the outbound peers.
+    pub outbound_groups: usize,
+    pub tip_age_ms: u64,
+    /// Ready peers that have reported more work than we have.
+    pub peers_ahead: usize,
+    /// How long that has been so (0 if no peer is ahead).
+    pub behind_for_ms: u64,
+    /// Feeler samples held, and how many of those are older than `alarm_after_ms` and still ahead of us.
+    pub samples: usize,
+    pub samples_ahead: usize,
+    pub bootstrapping: bool,
+    pub alarms: Vec<Alarm>,
 }
 
 /// Where a first start is in its bootstrap.
@@ -311,6 +408,8 @@ struct Peer {
     addr_only: bool,
     /// Its handshake was accepted (an address-only peer never gets `hello`).
     greeted: bool,
+    /// A feeler connection: dialled only to read its `hello`, then dropped; never counted as an outbound peer.
+    feeler: bool,
 }
 
 enum Phase {
@@ -388,6 +487,14 @@ pub struct Engine<'a> {
     /// the next event (see `restamp`).
     stamp_fresh: Option<u64>,
     boot: Boot,
+    /// The address of the feeler connection in progress, if any (one at a time), and when the last one was started.
+    feeler: Option<String>,
+    last_feeler: Option<u64>,
+    /// What feeler connections have read, newest last.
+    samples: VecDeque<Sample>,
+    /// Since when some ready peer has reported more work than we have, and since when we have had too few outbound peers.
+    behind_since: Option<u64>,
+    few_since: Option<u64>,
     /// Whether the tip is stale now, and when extra peers were last dialled because of it.
     stale: bool,
     last_stale_action: Option<u64>,
@@ -429,6 +536,11 @@ impl<'a> Engine<'a> {
             tip_seen: None,
             stamp_fresh: None,
             boot: Boot::NotStarted,
+            feeler: None,
+            last_feeler: None,
+            samples: VecDeque::new(),
+            behind_since: None,
+            few_since: None,
             stale: false,
             last_stale_action: None,
             trusted_last: HashMap::new(),
@@ -748,6 +860,7 @@ impl<'a> Engine<'a> {
                 return;
             }
         }
+        let feeler = !inbound && self.feeler.as_deref() == Some(addr.as_str());
         self.peers.insert(
             peer,
             Peer {
@@ -770,6 +883,7 @@ impl<'a> Engine<'a> {
                 self_announced: false,
                 addr_only,
                 greeted: false,
+                feeler,
             },
         );
         let hello = self.our_hello();
@@ -843,6 +957,26 @@ impl<'a> Engine<'a> {
             Some(p) => (p.addr.clone(), p.inbound),
             None => return,
         };
+        if self.peers.get(&peer).is_some_and(|p| p.feeler) {
+            // a feeler: note what it said, remember that the address works, and go
+            let work = self
+                .peers
+                .get(&peer)
+                .map(|p| p.work)
+                .unwrap_or(U256::from_be_bytes(&[0; 32]));
+            self.book.mark_success(&addr, self.secs());
+            self.samples.push_back(Sample {
+                at: self.now,
+                addr,
+                work,
+            });
+            while self.samples.len() > 32 {
+                self.samples.pop_front();
+            }
+            self.stats.feelers_sampled += 1;
+            self.drop_peer(peer, "feeler done", false, out);
+            return;
+        }
         if !inbound {
             self.book.mark_success(&addr, self.secs());
             if let Some(p) = self.peers.get_mut(&peer) {
@@ -1246,15 +1380,9 @@ impl<'a> Engine<'a> {
             if let Some(p) = self.peers.get_mut(&peer) {
                 p.asked_addrs = false; // one answer to each request
             }
-            // the addresses descend from the same seed as the peer that told us
-            let origin = self
-                .book
-                .origin_of(&peer_addr)
-                .map_or_else(|| source.clone(), str::to_string);
             for a in &addrs {
                 if let Some(text) = peer_addr_to_string(a) {
-                    self.book
-                        .add_from(&text, a.last_seen, &source, &origin, secs);
+                    self.book.add(&text, a.last_seen, &source, secs);
                 }
             }
             if self
@@ -1292,10 +1420,15 @@ impl<'a> Engine<'a> {
         self.dial_anchors(now, out);
         self.dial_for_stale_tip(now, out);
         let seeds_only = self.update_bootstrap(now);
+        self.update_health_timers(now, seeds_only);
+        if !seeds_only {
+            self.dial_feeler(now, out);
+        }
 
-        let regular = self.peers.values().filter(|p| !p.addr_only);
-        let total = regular.clone().count() + self.connecting.len();
-        let outbound = regular.filter(|p| !p.inbound).count() + self.connecting.len();
+        let regular = self.peers.values().filter(|p| !p.addr_only && !p.feeler);
+        let dialling = self.ordinary_dials().count();
+        let total = regular.clone().count() + dialling;
+        let outbound = regular.filter(|p| !p.inbound).count() + dialling;
         let want = self
             .cfg
             .outbound_target
@@ -1308,41 +1441,13 @@ impl<'a> Engine<'a> {
         // a host we are already connected to (in either direction) is not dialled again
         let hosts: HashSet<String> = self.peers.values().map(|p| host_of(&p.addr)).collect();
         let mut groups: HashMap<String, usize> = HashMap::new();
-        for p in self.peers.values().filter(|p| !p.inbound) {
+        for p in self.peers.values().filter(|p| !p.inbound && !p.feeler) {
             *groups.entry(group_of(&p.addr)).or_default() += 1;
         }
-        for a in self.connecting.keys() {
+        for a in self.ordinary_dials() {
             *groups.entry(group_of(a)).or_default() += 1;
         }
         let per_group = self.cfg.max_outbound_per_group;
-        // the outbound peers, by the seed their address descends from (a seed's own address is not counted)
-        // each origin may have its fair share of the outbound_target slots, and never fewer than `max_outbound_per_source`
-        let per_source = if self.cfg.max_outbound_per_source == 0 {
-            0
-        } else {
-            let origins = self.book.origin_count().max(1);
-            self.cfg
-                .max_outbound_per_source
-                .max(self.cfg.outbound_target.div_ceil(origins))
-        };
-        let mut sources: HashMap<String, usize> = HashMap::new();
-        // how many outbound peers there are that the seeds did not themselves provide: the seeds are only a start (and hang up), so
-        // the slots that matter are these, and the limit holds until `outbound_target` of them are filled
-        let mut chosen = 0;
-        if per_source > 0 {
-            let dialled = self
-                .peers
-                .values()
-                .filter(|p| !p.inbound)
-                .map(|p| &p.addr)
-                .chain(self.connecting.keys());
-            for a in dialled {
-                if let Some(e) = self.book.get(a).filter(|e| e.source != "seed") {
-                    *sources.entry(e.origin.clone()).or_default() += 1;
-                    chosen += 1;
-                }
-            }
-        }
         let own = self.cfg.advertise.clone();
         let bans = &self.bans;
         let connecting = &self.connecting;
@@ -1353,12 +1458,9 @@ impl<'a> Engine<'a> {
                 || own.as_deref() == Some(a)
         };
         let full = |g: &str| groups.get(g).copied().unwrap_or(0) >= per_group;
-        // the per-source limit is for the outbound_target slots an eclipse has to capture; peers beyond them are extra
-        let cap_on = per_source > 0 && chosen < self.cfg.outbound_target;
-        let source_full = |s: &str| cap_on && sources.get(s).copied().unwrap_or(0) >= per_source;
-        let candidates =
-            self.book
-                .candidates_with(now, want * 4, &skip, &full, &source_full, seeds_only);
+        let candidates = self
+            .book
+            .candidates_with(now, want * 4, &skip, &full, seeds_only);
         let mut chosen_hosts: HashSet<String> = HashSet::new();
         let mut dialled = 0;
         for a in candidates {
@@ -1366,32 +1468,169 @@ impl<'a> Engine<'a> {
                 break;
             }
             let g = group_of(&a);
-            let source = self
-                .book
-                .get(&a)
-                .filter(|e| e.source != "seed")
-                .map(|e| e.origin.clone());
-            if let Some(s) = &source {
-                if per_source > 0
-                    && chosen < self.cfg.outbound_target
-                    && sources.get(s).copied().unwrap_or(0) >= per_source
-                {
-                    continue;
-                }
-            }
             let count = groups.entry(g).or_default();
             if *count >= per_group || !chosen_hosts.insert(host_of(&a)) {
                 continue;
             }
             *count += 1;
-            if let Some(s) = source {
-                *sources.entry(s).or_default() += 1;
-                chosen += 1;
-            }
             self.book.mark_attempt(&a, now);
             self.connecting.insert(a.clone(), now);
             out.push(Action::Connect { addr: a });
             dialled += 1;
+        }
+    }
+
+    /// The addresses we have asked the transport to dial, not counting a feeler: it holds no slot, so a feeler on its way must not make
+    /// the node want one peer fewer of its own.
+    fn ordinary_dials(&self) -> impl Iterator<Item = &String> + '_ {
+        self.connecting
+            .keys()
+            .filter(move |a| self.feeler.as_deref() != Some(a.as_str()))
+    }
+
+    /// Starts or ends the clocks behind the alarms (since when some peer has been ahead of us, and since when we have been short of
+    /// outbound peers).
+    fn update_health_timers(&mut self, now: u64, bootstrapping: bool) {
+        let ours = self.tip().2;
+        let ahead = self
+            .peers
+            .values()
+            .any(|p| !p.addr_only && !p.feeler && p.hello.is_some() && p.work > ours);
+        self.behind_since = match (ahead, self.behind_since) {
+            (true, None) => Some(now),
+            (true, some) => some,
+            (false, _) => None,
+        };
+        let outbound = self.outbound_count();
+        let short = !bootstrapping && outbound < self.cfg.min_outbound_peers;
+        self.few_since = match (short, self.few_since) {
+            (true, None) => Some(now),
+            (true, some) => some,
+            (false, _) => None,
+        };
+    }
+
+    /// Dials one address that has never connected, to read its tip and work (see `EngineConfig::feeler_interval_ms`). One at a
+    /// time, never a host we are connected to, never a banned address, never our own.
+    fn dial_feeler(&mut self, now: u64, out: &mut Vec<Action>) {
+        if self.cfg.feeler_interval_ms == 0 {
+            return;
+        }
+        // forget a feeler that is over (it connected and left, or failed, or timed out)
+        if let Some(a) = &self.feeler {
+            let alive = self.connecting.contains_key(a)
+                || self.peers.values().any(|p| p.feeler && &p.addr == a);
+            if alive {
+                return;
+            }
+            self.feeler = None;
+        }
+        let last = *self.last_feeler.get_or_insert(now);
+        if now.saturating_sub(last) < self.cfg.feeler_interval_ms {
+            return;
+        }
+        let hosts: HashSet<String> = self.peers.values().map(|p| host_of(&p.addr)).collect();
+        let own = self.cfg.advertise.clone();
+        let bans = &self.bans;
+        let connecting = &self.connecting;
+        let skip = |a: &str| {
+            hosts.contains(&host_of(a))
+                || connecting.contains_key(a)
+                || bans.is_banned(a, now)
+                || own.as_deref() == Some(a)
+        };
+        let Some(addr) = self.book.untried_candidate(now, &skip) else {
+            return;
+        };
+        self.last_feeler = Some(now);
+        self.book.mark_attempt(&addr, now);
+        self.connecting.insert(addr.clone(), now);
+        self.feeler = Some(addr.clone());
+        self.stats.feelers_dialled += 1;
+        out.push(Action::Connect { addr });
+    }
+
+    /// How well connected the node is, and what the operator should look at (`Alarm`).
+    pub fn health(&self) -> NetHealth {
+        let now = self.now;
+        let ours = self.tip().2;
+        let regular = self.peers.values().filter(|p| !p.addr_only && !p.feeler);
+        let outbound_groups: HashSet<String> = regular
+            .clone()
+            .filter(|p| !p.inbound)
+            .map(|p| group_of(&p.addr))
+            .collect();
+        let peers_ahead = regular
+            .clone()
+            .filter(|p| p.hello.is_some() && p.work > ours)
+            .count();
+        let alarm_after = self.cfg.alarm_after_ms;
+        let behind_for_ms = self.behind_since.map_or(0, |s| now.saturating_sub(s));
+        let window = self.cfg.sample_window_ms;
+        let samples = self
+            .samples
+            .iter()
+            .filter(|s| now.saturating_sub(s.at) <= window)
+            .count();
+        // (distinct nodes: one node sampled twice is one witness)
+        let samples_ahead = self
+            .samples
+            .iter()
+            .filter(|s| {
+                let age = now.saturating_sub(s.at);
+                age <= window && age >= alarm_after && s.work > ours
+            })
+            .map(|s| s.addr.as_str())
+            .collect::<HashSet<_>>()
+            .len();
+        let outbound = self.outbound_count();
+        let bootstrapping = self.is_bootstrapping();
+        let mut alarms = Vec::new();
+        if self.is_tip_stale() {
+            alarms.push(Alarm::StaleTip {
+                age_ms: self.tip_age_ms(),
+            });
+        }
+        if alarm_after != 0 {
+            if peers_ahead > 0 && behind_for_ms >= alarm_after {
+                alarms.push(Alarm::Behind {
+                    for_ms: behind_for_ms,
+                });
+            }
+            if samples_ahead >= 2 {
+                alarms.push(Alarm::SamplesAhead {
+                    count: samples_ahead,
+                });
+            }
+            if self
+                .few_since
+                .is_some_and(|s| now.saturating_sub(s) >= alarm_after)
+            {
+                alarms.push(Alarm::FewOutbound { count: outbound });
+            }
+            if !bootstrapping
+                && !self.cfg.addrbook.accept_private
+                && self.cfg.min_outbound_groups > 0
+                && outbound >= self.cfg.min_outbound_peers.max(1)
+                && outbound_groups.len() < self.cfg.min_outbound_groups
+            {
+                alarms.push(Alarm::FewGroups {
+                    groups: outbound_groups.len(),
+                });
+            }
+        }
+        NetHealth {
+            peers: regular.clone().count(),
+            inbound: regular.filter(|p| p.inbound).count(),
+            outbound,
+            outbound_groups: outbound_groups.len(),
+            tip_age_ms: self.tip_age_ms(),
+            peers_ahead,
+            behind_for_ms,
+            samples,
+            samples_ahead,
+            bootstrapping,
+            alarms,
         }
     }
 
@@ -1533,10 +1772,10 @@ impl<'a> Engine<'a> {
         let mut used_groups: HashSet<String> = self
             .peers
             .values()
-            .filter(|p| !p.inbound)
+            .filter(|p| !p.inbound && !p.feeler)
             .map(|p| group_of(&p.addr))
             .collect();
-        used_groups.extend(self.connecting.keys().map(|a| group_of(a)));
+        used_groups.extend(self.ordinary_dials().map(|a| group_of(a)));
         let own = self.cfg.advertise.clone();
         let bans = &self.bans;
         let connecting = &self.connecting;
@@ -1700,13 +1939,16 @@ impl<'a> Engine<'a> {
     pub fn outbound_addrs(&self) -> Vec<String> {
         self.peers
             .values()
-            .filter(|p| !p.inbound)
+            .filter(|p| !p.inbound && !p.feeler)
             .map(|p| p.addr.clone())
             .collect()
     }
 
     pub fn outbound_count(&self) -> usize {
-        self.peers.values().filter(|p| !p.inbound).count()
+        self.peers
+            .values()
+            .filter(|p| !p.inbound && !p.feeler)
+            .count()
     }
 
     pub fn inbound_count(&self) -> usize {
@@ -1796,6 +2038,7 @@ impl<'a> Engine<'a> {
             .iter()
             .filter(|(id, p)| {
                 self.can_serve_us(p)
+                    && !p.feeler
                     && p.work > ours
                     && self.cooldown.get(id).is_none_or(|&until| until <= now)
             })

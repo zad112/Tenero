@@ -4,18 +4,13 @@
 (eclipse). The numbers below are from a simulation that drives the REAL engine against scripted peers (`crates/tenero-net/tests/eclipse_sim.rs`),
 so they show what the engine does under a stated model, **not what an attacker on the real Internet can do**. Read "What this does not show".
 
-## The rules (all in `engine.rs`, tests in `bootstrap_rules.rs`)
+## The rules (in `engine.rs` and `addrbook.rs`, tests in `bootstrap_rules.rs`)
 
 1. **Wait for every seed.** A node with no tried address (a first start) dials ONLY its configured seeds. It dials addresses those seeds
    told it about only after every seed *group* (an IPv4 /16, an IPv6 /32) has answered its address request, or after
    `bootstrap_wait_ms` (20 s) have passed. Two seeds in one group count as one. A dead seed therefore costs a first start one wait of 20 s.
    Setting `bootstrap_wait_ms = 0` turns the rule off.
-2. **A fair share per seed.** While the first `outbound_target` (8) peers that the seeds did not themselves provide are being chosen, the
-   addresses that descend from one seed may fill at most `max(2, outbound_target / number of origins)` of them. An address's *origin* is
-   the seed it ultimately came from (an address told by a peer that a seed told us of has that seed's origin), **not** the peer that told
-   us, because every peer an attacker owns is a new source for free, but only the seed list starts an origin. The seeds' own addresses are not
-   limited. Peers beyond `outbound_target` are extra and are not limited. `max_outbound_per_source = 0` turns it off.
-3. **Corroboration (`prefer_corroborated`): off.** Preferring addresses told by two or more source groups was built and measured; it helps
+2. **Corroboration (`prefer_corroborated`): off.** Preferring addresses told by two or more source groups was built and measured; it helps
    the attacker (below), so it is off.
 
 ## What was measured
@@ -39,10 +34,12 @@ honest one (the worst case). Seeds hang up after answering. The measure is the s
   attacker can run.
 * **Waiting for a quota of seeds does not work** (it was built first and failed): hostile seeds answer first and fill the quota. Only waiting for
   all of them, or a timeout, puts the honest answers into the choice.
-* **The per-seed fair-share limit (rule 2) showed no measurable gain** over the wait alone, in the first wave or after every peer drops and the
-  node refills (about 25–50% hostile with either; the differences were inside the noise or went both ways). It is kept because it is the only
-  thing that bounds an attacker who feeds a node new addresses through the peers it has already connected to, and it costs little; **its benefit
-  is argued, not measured.** The injected-fault sweep shows the code does what it says, not that it is needed.
+* **A per-seed fair-share limit was built, measured and REMOVED (2026-10-02).** The idea was that addresses descending from one seed (tracked
+  through the peers that passed them on, because every peer an attacker owns is a new source for free) may fill only a share of a node's first 8
+  outbound slots. It showed **no measurable gain** over the wait alone (in the first wave, and in the refill after every peer drops, the differences
+  were inside the noise or went both ways). Then a simulation of 120 honest nodes showed a **cost**: a node could stay at 7 of its 8 outbound
+  slots, because the addresses it knew came from too few seeds for the shares to add up. A rule with a measured cost and no measured gain is
+  removed. (It could come back as a preference that relaxes after a delay; there is no evidence that it is worth it.)
 * **Preferring corroborated addresses made things worse** against an attacker whose seeds hand out one shared list: honest seeds' random samples
   rarely overlap, a coordinated attacker's lists overlap completely, so "told by two sources" picks out the attacker (6 honest + 3 hostile:
   47% hostile with it, 22% without).
@@ -71,10 +68,10 @@ honest one (the worst case). Seeds hang up after answering. The measure is the s
 
 ## Tests and faults
 
-* `bootstrap_rules.rs`: 16 tests (the wait, its timeout to the millisecond, off switch, groups, restart, the fair share, descendants of
-  descendants, seeds never limited, peers beyond the slots, the address-book origin and reporters).
+* `bootstrap_rules.rs`: 9 tests (the wait, its timeout to the millisecond, off switch, no seeds, seed groups, a restarted node, the address
+  book's reporters, the corroboration preference, seeds-only candidates).
 * `eclipse_sim.rs`: 6 tests that state the measured findings with margins, and two ignored measurements that print the tables above
   (`cargo test --release -p tenero-net --test eclipse_sim -- --ignored --nocapture`; `TENERO_SIM_COORDINATED=0` for seeds with their own lists).
-* A 29-fault injected sweep: **22 were caught the first time and 7 survived**. One survivor was dead code (an anchors clause that could never be true;
-  removed), four were real gaps in the tests of the limit (now closed, all four caught), and two cannot change behaviour (a check that only matters
-  for peers that cannot exist while only seeds are dialled, and a guard that a deduplication already makes redundant).
+* A 29-fault injected sweep of the first version: **22 were caught the first time and 7 survived**: one was dead code (removed), four were gaps in
+  the tests of the fair-share limit (closed; the limit itself was later removed, with those tests), and two cannot change behaviour. The waiting
+  rule, the reporters and the corroboration preference were all caught.

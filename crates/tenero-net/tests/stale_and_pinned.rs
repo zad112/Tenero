@@ -34,6 +34,8 @@ fn quiet_cfg(seeds: Vec<String>) -> EngineConfig {
         outbound_target: 3,
         max_outbound_per_group: 2,
         seeds,
+        // (feelers are another feature's dials: these tests count the dials of this one)
+        feeler_interval_ms: 0,
         ..EngineConfig::default()
     }
 }

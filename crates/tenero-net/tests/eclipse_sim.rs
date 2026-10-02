@@ -29,14 +29,10 @@ use tenero_node::{Node, NodeConfig};
 pub enum Rules {
     /// The engine as it was before these rules: a node dials whatever it knows.
     Baseline,
-    /// Only the wait: dial nothing but seeds until every seed group has answered (up to 20 s).
-    WaitOnly,
-    /// Only the limit of two outbound peers from one source.
-    CapOnly,
-    /// Both (the engine's defaults).
-    Both,
-    /// Both, and addresses reported by two or more sources are preferred.
-    BothAndCorroboration,
+    /// The engine's defaults: dial nothing but seeds until every seed group has answered (up to 20 s).
+    Wait,
+    /// The wait, and addresses reported by two or more sources are preferred.
+    WaitAndCorroboration,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -151,14 +147,9 @@ pub fn run_trial(sc: &Scenario, trial: u64, rig: &SimRig) -> Outcome {
         ..EngineConfig::default()
     };
     match sc.rules {
-        Rules::Baseline => {
-            cfg.bootstrap_wait_ms = 0;
-            cfg.max_outbound_per_source = 0;
-        }
-        Rules::WaitOnly => cfg.max_outbound_per_source = 0,
-        Rules::CapOnly => cfg.bootstrap_wait_ms = 0,
-        Rules::Both => {}
-        Rules::BothAndCorroboration => book.prefer_corroborated = true,
+        Rules::Baseline => cfg.bootstrap_wait_ms = 0,
+        Rules::Wait => {}
+        Rules::WaitAndCorroboration => book.prefer_corroborated = true,
     }
     cfg.addrbook = book;
     let node = Node::with_proof_check(
@@ -376,12 +367,10 @@ fn scenario(h: usize, x: usize, delay: u64, rules: Rules) -> Scenario {
     }
 }
 
-const ALL: [(Rules, &str); 5] = [
+const ALL: [(Rules, &str); 3] = [
     (Rules::Baseline, "baseline"),
-    (Rules::WaitOnly, "wait only"),
-    (Rules::CapOnly, "cap only"),
-    (Rules::Both, "both"),
-    (Rules::BothAndCorroboration, "both+corrob"),
+    (Rules::Wait, "wait"),
+    (Rules::WaitAndCorroboration, "wait+corrob"),
 ];
 
 /// The measurement that the policy is based on. Slow; `cargo test --release -p tenero-net --test eclipse_sim -- --ignored
@@ -434,11 +423,11 @@ fn measure_the_refill_after_all_peers_drop() {
     eprintln!(
         "\nThe share of the first 8 dials AFTER every outbound peer dropped at 60 s that are hostile ({trials} trials per cell)\n"
     );
-    eprintln!("honest hostile |        baseline |       wait only |            both |");
+    eprintln!("honest hostile |        baseline |            wait |");
     for h in [2, 3, 6] {
         for x in [1, 2, 3, 4] {
             let mut line = format!("{h:>6} {x:>7} |");
-            for rules in [Rules::Baseline, Rules::WaitOnly, Rules::Both] {
+            for rules in [Rules::Baseline, Rules::Wait] {
                 let sc = Scenario {
                     churn_at: Some(60),
                     ..scenario(h, x, 3, rules)
@@ -478,11 +467,9 @@ fn one_fast_hostile_seed_takes_every_first_dial_without_the_wait_and_a_minority_
     let rig = SimRig::new("eclipse-fast", 0);
     // three honest seeds and one hostile one that answers at once while the honest ones take 3 s (measured: 100% against 27%)
     let base = first_share(&scenario(3, 1, 3, Rules::Baseline), &rig);
-    let wait = first_share(&scenario(3, 1, 3, Rules::WaitOnly), &rig);
-    let both = first_share(&scenario(3, 1, 3, Rules::Both), &rig);
+    let wait = first_share(&scenario(3, 1, 3, Rules::Wait), &rig);
     assert!(base >= 0.95, "baseline {base}");
-    assert!(wait <= 0.45, "wait only {wait}");
-    assert!(both <= 0.45, "both {both}");
+    assert!(wait <= 0.45, "wait {wait}");
 }
 
 #[test]
@@ -493,7 +480,7 @@ fn the_wait_gives_an_attacker_about_his_share_of_the_seed_list_whatever_his_spee
     for coordinated in [true, false] {
         let sc = Scenario {
             coordinated,
-            ..scenario(3, 3, 3, Rules::WaitOnly)
+            ..scenario(3, 3, 3, Rules::Wait)
         };
         let share = first_share(&sc, &rig);
         assert!(
@@ -517,7 +504,7 @@ fn nothing_helps_when_most_of_the_seed_list_is_hostile() {
     let rig = SimRig::new("eclipse-limit", 0);
     let sc = Scenario {
         coordinated: false,
-        ..scenario(1, 4, 3, Rules::Both)
+        ..scenario(1, 4, 3, Rules::Wait)
     };
     let share = first_share(&sc, &rig);
     assert!(
@@ -531,11 +518,11 @@ fn preferring_corroborated_addresses_helps_the_attacker_who_coordinates_his_seed
     // honest seeds give independent random samples, which rarely overlap; coordinated hostile ones give one list, which overlaps
     // completely: so "reported twice" picks out the attacker (measured: 47% against 22%). That is why it is off.
     let rig = SimRig::new("eclipse-corrob", 0);
-    let both = first_share(&scenario(6, 3, 3, Rules::Both), &rig);
-    let corrob = first_share(&scenario(6, 3, 3, Rules::BothAndCorroboration), &rig);
+    let wait = first_share(&scenario(6, 3, 3, Rules::Wait), &rig);
+    let corrob = first_share(&scenario(6, 3, 3, Rules::WaitAndCorroboration), &rig);
     assert!(
-        corrob >= both + 0.1,
-        "corroborated {corrob}, without {both}"
+        corrob >= wait + 0.1,
+        "corroborated {corrob}, without {wait}"
     );
 }
 
@@ -547,6 +534,6 @@ fn the_wait_also_protects_the_refill_after_every_peer_drops() {
         ..scenario(3, 2, 3, rules)
     };
     let base = first_share(&churn(Rules::Baseline), &rig);
-    let wait = first_share(&churn(Rules::WaitOnly), &rig);
+    let wait = first_share(&churn(Rules::Wait), &rig);
     assert!(base >= wait + 0.1, "baseline {base}, wait only {wait}");
 }

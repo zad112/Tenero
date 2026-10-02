@@ -5,6 +5,7 @@
 //! of work with a placeholder starting difficulty and a genesis made from a label. Neither has value, and the
 //! launch gates in `docs/M8_PLAN.md` section 7 are not met. **Experimental and unaudited.**
 
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -19,6 +20,7 @@ use tenero_core::v2::ids::PowKind;
 use tenero_miner::gpu::GpuBackend;
 use tenero_miner::{CpuMatmulBackend, Miner, MinerConfig, MinerHook, Sha256Backend, WalletPayout};
 use tenero_net::addrbook::AddrBookConfig;
+use tenero_net::engine::Alarm;
 use tenero_net::noise::NodeKey;
 use tenero_net::transport::{Counters, Hooks, Net, NetConfig};
 use tenero_net::{AssumeValid, Engine, EngineConfig, Event};
@@ -98,6 +100,56 @@ pub fn short_id(id: &[u8; 32]) -> String {
     id[..4].iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A time span for the status line: `42s`, `7m`, `2h05m`, `3d04h`.
+pub fn format_age(ms: u64) -> String {
+    let s = ms / 1000;
+    match s {
+        0..=119 => format!("{s}s"),
+        120..=7199 => format!("{}m", s / 60),
+        7200..=172_799 => format!("{}h{:02}m", s / 3600, (s % 3600) / 60),
+        _ => format!("{}d{:02}h", s / 86_400, (s % 86_400) / 3600),
+    }
+}
+
+/// What changed since the last look: `(true, text)` for an alarm that has just begun and `(false, kind)` for one that has just ended.
+/// `known` is the set of alarm kinds already reported, and is updated. A kind that stays raised says nothing more (its numbers change,
+/// the situation does not), so a log of a long episode is two lines, not one a minute.
+pub fn alarm_changes(known: &mut BTreeSet<&'static str>, alarms: &[Alarm]) -> Vec<(bool, String)> {
+    let mut out = Vec::new();
+    let now: BTreeSet<&'static str> = alarms.iter().map(|a| a.kind()).collect();
+    for a in alarms {
+        if known.insert(a.kind()) {
+            out.push((true, a.describe()));
+        }
+    }
+    let ended: Vec<&'static str> = known.difference(&now).copied().collect();
+    for k in ended {
+        known.remove(k);
+        out.push((false, k.to_string()));
+    }
+    out
+}
+
+/// The network part of the status line: outbound network groups, the age of the newest block, feeler samples, and the alarms.
+pub fn health_summary(h: &tenero_net::engine::NetHealth) -> String {
+    let alarms = if h.alarms.is_empty() {
+        "none".to_string()
+    } else {
+        h.alarms
+            .iter()
+            .map(|a| a.kind())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "out groups {} | last block {} ago | samples {} | alarms {}",
+        h.outbound_groups,
+        format_age(h.tip_age_ms),
+        h.samples,
+        alarms
+    )
+}
+
 /// Status line, saving the pool, pruning.
 struct Maintenance {
     log: Arc<Logger>,
@@ -108,32 +160,31 @@ struct Maintenance {
     next_save: Instant,
     prune_keep: u64,
     next_prune: Instant,
-    /// Whether the last look found the tip stale (to log the change, not every look).
-    was_stale: bool,
+    /// The alarm kinds already reported (to log a change, not every look).
+    alarms: BTreeSet<&'static str>,
 }
 
 impl Hooks for Maintenance {
     fn poll(&mut self, engine: &mut Engine<'_>, _now_ms: u64) -> Vec<Event> {
         let now = Instant::now();
-        let stale = engine.is_tip_stale();
-        if stale && !self.was_stale {
-            self.log.warn(&format!(
-                "no new block for {} minutes: this node may be cut off from the real network (an eclipse or a partition); dialling extra peers from other network groups",
-                engine.tip_age_ms() / 60_000
-            ));
-        } else if !stale && self.was_stale {
-            self.log.info("blocks are arriving again");
+        let health = engine.health();
+        for (begun, text) in alarm_changes(&mut self.alarms, &health.alarms) {
+            if begun {
+                self.log.warn(&text);
+            } else {
+                self.log.info(&format!("alarm ended: {text}"));
+            }
         }
-        self.was_stale = stale;
         if now >= self.next_status {
             self.next_status = now + self.status_every;
             if let Ok((h, tip)) = engine.node().store().tip() {
                 self.log.info(&format!(
-                    "status: tip {h} ({}) | peers {} (in {}, out {}) | book {} | mempool {} | blocks applied {} | bans {} | bytes in {}, out {} | {}",
+                    "status: tip {h} ({}) | peers {} (in {}, out {}) | {} | book {} | mempool {} | blocks applied {} | bans {} | bytes in {}, out {} | {}",
                     short_id(&tip.block_id),
                     engine.peer_count(),
                     engine.inbound_count(),
                     engine.outbound_count(),
+                    health_summary(&health),
                     engine.addr_book().len(),
                     engine.node().pool().len(),
                     engine.stats.blocks_applied,
@@ -371,7 +422,7 @@ pub fn run(
             next_save: Instant::now() + POOL_SAVE_EVERY,
             prune_keep: cfg.prune_keep,
             next_prune: Instant::now(),
-            was_stale: false,
+            alarms: BTreeSet::new(),
         },
         miner,
     };

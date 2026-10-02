@@ -65,6 +65,17 @@ parse is an error that names the setting; nothing silently falls back to a defau
 | `status_every` | seconds between status lines | 60 |
 | `allow_open_data_dir` | start even if other accounts on this computer can read the data directory (the node otherwise refuses, and says how to fix it; a new directory is made private) | no |
 
+**The status line and the alarms.** Every `status_every` seconds the node logs a line such as
+`status: tip 782 (00000000) | peers 4 (in 2, out 2) | out groups 2 | last block 40s ago | samples 3 | alarms none | book 8 | ...`.
+`out groups` is how many different network ranges (IPv4 /16) the node's own outbound peers are in; `last block` is how long since the chain moved;
+`samples` is how many other nodes it has briefly connected to in the last half hour (a *feeler*: once every two minutes it dials one address it has
+never connected to, reads that node's tip and work, and hangs up). `alarms` lists what the node thinks you should look at, and each is also logged once
+as a warning when it begins and once when it ends: `stale-tip` (no new block for 10 minutes), `behind-peers` (a peer has reported more work than the node
+has for 5 minutes and the node has not caught up), `network-ahead` (two sampled nodes report more work than the node has, for 5 minutes), `few-outbound`
+(fewer than 2 outbound peers for 5 minutes), `few-groups` (outbound peers in fewer than 2 network ranges; not on a private network).
+**None of these is proof of an attack:** each is what an eclipse, a partition or a fork looks like from inside, and also what a bad network day looks like.
+A node cut off by an attacker who feeds it a valid chain slowly cannot tell from inside; see `THREAT_MODEL.md` C1.
+
 **Stopping:** Ctrl-C (or closing the window) shuts the node down cleanly: it closes its connections, saves the peers and
 the side-branch pool, and prints `stopped at height H, tip ID`. A second Ctrl-C ends it at once. From another window:
 `tenerod stop --data DIR` (and `tenerod status --data DIR`). If the node is killed instead, what it has saved is at most
