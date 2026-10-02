@@ -5,6 +5,11 @@ on:
     branches: [main, rewrite]
   pull_request:
 
+# A newer push to the same branch makes the older run pointless: cancel it instead of queueing (the Windows job is slow).
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     strategy:
