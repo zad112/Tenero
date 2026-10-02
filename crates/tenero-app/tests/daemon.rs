@@ -1020,3 +1020,49 @@ fn a_node_in_a_new_directory_makes_it_private_and_starts() {
     );
     node.stop();
 }
+
+// ---- pinned peers (M9, threat model C1) -----------------------------------------------------------------------------------
+
+#[test]
+fn a_node_with_no_seeds_but_a_pinned_peer_finds_it_and_finds_it_again_after_it_restarts() {
+    let da = Dir::new("pin-a");
+    let a = Running::start(config(&da.0, ""));
+    let a_p2p = a.ready.p2p.unwrap();
+    let db = Dir::new("pin-b");
+    // no seed, only the pin
+    let b = Running::start(config(&db.0, &format!("trusted_peer = {a_p2p}\n")));
+    assert!(b.log().contains("pinned peers"), "{}", b.log());
+    let end = Instant::now() + Duration::from_secs(30);
+    while b.client().info().unwrap().peers < 1 {
+        assert!(
+            Instant::now() < end,
+            "never found its pinned peer\n{}",
+            b.log()
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    // the pinned peer goes away and comes back (on the same address)
+    let a_cfg_dir = da.0.clone();
+    a.stop();
+    let end = Instant::now() + Duration::from_secs(30);
+    while b.client().info().unwrap().peers > 0 {
+        assert!(Instant::now() < end, "the dead peer was never dropped");
+        thread::sleep(Duration::from_millis(100));
+    }
+    // (the same data directory and the same address, which `config` does not allow, so the settings are written out)
+    let again = format!(
+        "data = {}\nnetwork = test\nlisten = {a_p2p}\ncontrol = 127.0.0.1:0\n",
+        a_cfg_dir.display()
+    );
+    let a2 = Running::start(Raw::from_file_text(&again).unwrap().into_config().unwrap());
+    let _keep = &a2;
+    let end = Instant::now() + Duration::from_secs(90);
+    while b.client().info().unwrap().peers < 1 {
+        assert!(
+            Instant::now() < end,
+            "the pinned peer was not dialled again\n{}",
+            b.log()
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+}

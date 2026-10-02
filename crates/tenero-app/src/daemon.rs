@@ -108,11 +108,23 @@ struct Maintenance {
     next_save: Instant,
     prune_keep: u64,
     next_prune: Instant,
+    /// Whether the last look found the tip stale (to log the change, not every look).
+    was_stale: bool,
 }
 
 impl Hooks for Maintenance {
     fn poll(&mut self, engine: &mut Engine<'_>, _now_ms: u64) -> Vec<Event> {
         let now = Instant::now();
+        let stale = engine.is_tip_stale();
+        if stale && !self.was_stale {
+            self.log.warn(&format!(
+                "no new block for {} minutes: this node may be cut off from the real network (an eclipse or a partition); dialling extra peers from other network groups",
+                engine.tip_age_ms() / 60_000
+            ));
+        } else if !stale && self.was_stale {
+            self.log.info("blocks are arriving again");
+        }
+        self.was_stale = stale;
         if now >= self.next_status {
             self.next_status = now + self.status_every;
             if let Ok((h, tip)) = engine.node().store().tip() {
@@ -286,6 +298,7 @@ pub fn run(
             ..AddrBookConfig::default()
         },
         seeds: cfg.seeds.clone(),
+        trusted: cfg.trusted_peers.clone(),
         peer_target: cfg.peer_target,
         outbound_target: cfg.peer_target.min(8),
         max_inbound: cfg.max_inbound,
@@ -293,6 +306,12 @@ pub fn run(
         nonce: u64::from_le_bytes(pk[..8].try_into().expect("8 bytes")) | 1,
         ..EngineConfig::default()
     };
+    if !cfg.trusted_peers.is_empty() {
+        log.info(&format!(
+            "pinned peers (always dialled): {}",
+            cfg.trusted_peers.join(", ")
+        ));
+    }
     if let Some((height, id)) = cfg.assume_valid {
         log.warn(&format!(
             "assume-valid is ON: blocks up to height {height} are trusted to have valid proofs (id {})",
@@ -352,6 +371,7 @@ pub fn run(
             next_save: Instant::now() + POOL_SAVE_EVERY,
             prune_keep: cfg.prune_keep,
             next_prune: Instant::now(),
+            was_stale: false,
         },
         miner,
     };

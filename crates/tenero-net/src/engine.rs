@@ -173,6 +173,18 @@ pub struct EngineConfig {
     /// An outbound peer must have been connected this long before it may be an anchor: a connection made a moment ago says
     /// little about who is on the other end.
     pub anchor_min_age_ms: u64,
+    /// No new tip for this long (10 target block intervals on the 60-second chain) and the node suspects it is cut off from
+    /// the real network (an eclipse, or a partition): it dials extra outbound peers from network groups it has none in
+    /// (threat model C1). 0 turns it off.
+    pub stale_tip_ms: u64,
+    /// How many extra outbound peers to dial each time, and the least time between two such attempts.
+    pub stale_extra_outbound: usize,
+    pub stale_retry_ms: u64,
+    /// Peers the operator pinned (`ip:port`, got out of band): dialled first, again whenever they are not connected (at
+    /// most once per `trusted_retry_ms` each), and exempt from the per-network-group limit. Never put in the address book, so
+    /// never passed on to other nodes. They are still validated like any peer, and still banned if they misbehave.
+    pub trusted: Vec<String>,
+    pub trusted_retry_ms: u64,
 }
 
 impl Default for EngineConfig {
@@ -212,6 +224,11 @@ impl Default for EngineConfig {
             blocks_reply_bytes: crate::wire::BLOCKS_REPLY_BYTES,
             anchor_count: 2,
             anchor_min_age_ms: 10 * 60 * 1000,
+            stale_tip_ms: 10 * 60 * 1000,
+            stale_extra_outbound: 2,
+            stale_retry_ms: 5 * 60 * 1000,
+            trusted: Vec::new(),
+            trusted_retry_ms: 30 * 1000,
         }
     }
 }
@@ -230,6 +247,11 @@ pub struct Stats {
     pub late_replies_forgiven: u64,
     /// Anchor peers dialled first after a restart.
     pub anchors_dialled: u64,
+    /// Times the tip went stale (no new block for `stale_tip_ms`), and the extra outbound peers dialled because of it.
+    pub stale_tip_events: u64,
+    pub stale_extra_dials: u64,
+    /// Pinned peers dialled.
+    pub trusted_dialled: u64,
 }
 
 struct Peer {
@@ -329,6 +351,13 @@ pub struct Engine<'a> {
     syncing: Option<Sync>,
     /// Anchor peers loaded from the saved state, still to be dialled first (`anchors.rs`); each is tried once.
     anchors: Vec<String>,
+    /// The tip id last seen and since when (the engine's clock): how long the chain has not moved.
+    tip_seen: Option<([u8; 32], u64)>,
+    /// Whether the tip is stale now, and when extra peers were last dialled because of it.
+    stale: bool,
+    last_stale_action: Option<u64>,
+    /// When each pinned peer was last dialled.
+    trusted_last: HashMap<String, u64>,
     /// Replies that would be forgiven if they came now, and until when (see [`Late`]).
     forgivable: Vec<(PeerId, Late, u64)>,
     /// The answer last given to each requesting network group, and when it stops being reused.
@@ -362,6 +391,10 @@ impl<'a> Engine<'a> {
             connecting: BTreeMap::new(),
             syncing: None,
             anchors: Vec::new(),
+            tip_seen: None,
+            stale: false,
+            last_stale_action: None,
+            trusted_last: HashMap::new(),
             forgivable: Vec::new(),
             addr_answers: HashMap::new(),
             cooldown: HashMap::new(),
@@ -1162,7 +1195,10 @@ impl<'a> Engine<'a> {
         }
         self.bans.expire(now);
         self.book.expire(self.secs());
+        self.watch_tip(now);
+        self.dial_trusted(now, out);
         self.dial_anchors(now, out);
+        self.dial_for_stale_tip(now, out);
 
         let regular = self.peers.values().filter(|p| !p.addr_only);
         let total = regular.clone().count() + self.connecting.len();
@@ -1245,6 +1281,121 @@ impl<'a> Engine<'a> {
             }
         }
         out
+    }
+
+    /// Notes whether the tip moved since the last look (a new block, or a reorganisation).
+    fn watch_tip(&mut self, now: u64) {
+        let id = match self.node.store().tip() {
+            Ok((_, i)) => i.block_id,
+            Err(_) => return,
+        };
+        match self.tip_seen {
+            Some((seen, _)) if seen == id => {}
+            _ => {
+                self.tip_seen = Some((id, now));
+                self.stale = false;
+            }
+        }
+    }
+
+    /// How long the tip has been the same, in milliseconds of the engine's clock (0 before the first look).
+    pub fn tip_age_ms(&self) -> u64 {
+        self.tip_seen
+            .map_or(0, |(_, since)| self.now.saturating_sub(since))
+    }
+
+    /// Whether no new tip has come for `stale_tip_ms` (never, if that is 0).
+    pub fn is_tip_stale(&self) -> bool {
+        self.cfg.stale_tip_ms != 0 && self.tip_age_ms() >= self.cfg.stale_tip_ms
+    }
+
+    /// When the tip has been the same for too long, dials a few extra outbound peers from network groups none of the current
+    /// outbound peers is in, so that one attacker's peers cannot be all that a node hears from. Repeats, not more often than
+    /// `stale_retry_ms`, while the tip stays stale; never past `max_peers`.
+    fn dial_for_stale_tip(&mut self, now: u64, out: &mut Vec<Action>) {
+        if self.cfg.stale_extra_outbound == 0 || !self.is_tip_stale() {
+            return;
+        }
+        if !self.stale {
+            self.stale = true;
+            self.stats.stale_tip_events += 1;
+        }
+        if let Some(last) = self.last_stale_action {
+            if now.saturating_sub(last) < self.cfg.stale_retry_ms {
+                return;
+            }
+        }
+        self.last_stale_action = Some(now);
+        let held = self.peers.values().filter(|p| !p.addr_only).count() + self.connecting.len();
+        let room = self.cfg.max_peers.saturating_sub(held);
+        let k = self.cfg.stale_extra_outbound.min(room);
+        if k == 0 {
+            return;
+        }
+        let hosts: HashSet<String> = self.peers.values().map(|p| host_of(&p.addr)).collect();
+        let mut used_groups: HashSet<String> = self
+            .peers
+            .values()
+            .filter(|p| !p.inbound)
+            .map(|p| group_of(&p.addr))
+            .collect();
+        used_groups.extend(self.connecting.keys().map(|a| group_of(a)));
+        let own = self.cfg.advertise.clone();
+        let bans = &self.bans;
+        let connecting = &self.connecting;
+        let skip = |a: &str| {
+            hosts.contains(&host_of(a))
+                || connecting.contains_key(a)
+                || bans.is_banned(a, now)
+                || own.as_deref() == Some(a)
+        };
+        // a group that already has an outbound peer counts as full: only new groups
+        let in_use = used_groups.clone();
+        let full = |g: &str| in_use.contains(g);
+        let candidates = self.book.candidates(now, k * 4, &skip, &full);
+        let mut dialled = 0;
+        for a in candidates {
+            if dialled >= k {
+                break;
+            }
+            if !used_groups.insert(group_of(&a)) {
+                continue;
+            }
+            self.book.mark_attempt(&a, now);
+            self.connecting.insert(a.clone(), now);
+            self.stats.stale_extra_dials += 1;
+            out.push(Action::Connect { addr: a });
+            dialled += 1;
+        }
+    }
+
+    /// Dials the pinned peers that are not connected, not being dialled, not banned and not tried within `trusted_retry_ms`.
+    fn dial_trusted(&mut self, now: u64, out: &mut Vec<Action>) {
+        if self.cfg.trusted.is_empty() {
+            return;
+        }
+        let hosts: HashSet<String> = self.peers.values().map(|p| host_of(&p.addr)).collect();
+        let trusted = self.cfg.trusted.clone();
+        for a in trusted {
+            let held = self.peers.values().filter(|p| !p.addr_only).count() + self.connecting.len();
+            if held >= self.cfg.max_peers
+                || hosts.contains(&host_of(&a))
+                || self.connecting.contains_key(&a)
+                || self.bans.is_banned(&a, now)
+                || self.cfg.advertise.as_deref() == Some(a.as_str())
+            {
+                continue;
+            }
+            if let Some(&last) = self.trusted_last.get(&a) {
+                if now.saturating_sub(last) < self.cfg.trusted_retry_ms {
+                    continue;
+                }
+            }
+            self.trusted_last.insert(a.clone(), now);
+            self.connecting.insert(a.clone(), now);
+            self.stats.trusted_dialled += 1;
+            out.push(Action::Connect { addr: a });
+        }
     }
 
     /// The anchors loaded from a saved state that have not been dialled yet.

@@ -347,3 +347,70 @@ fn a_log_file_in_a_missing_directory_is_an_error() {
         .join("x.log");
     assert!(Logger::new(Level::Info, Some(&path), false).is_err());
 }
+
+// ---- pinned peers (M9, threat model C1) -----------------------------------------------------------------------------
+
+#[test]
+fn pinned_peers_may_repeat_default_to_none_and_must_be_ip_and_port() {
+    assert!(ok("data=d\nnetwork=dev").trusted_peers.is_empty());
+    let c = ok("data=d\nnetwork=dev\ntrusted_peer=1.2.3.4:5\ntrusted_peer = [2001:db8::1]:6");
+    assert_eq!(c.trusted_peers, vec!["1.2.3.4:5", "[2001:db8::1]:6"]);
+    for bad in [
+        "nowhere",
+        "1.2.3.4",
+        "1.2.3.4:0",
+        "1.2.3.4:99999",
+        "example.org:5",
+    ] {
+        let e = err(&format!("data=d\nnetwork=dev\ntrusted_peer={bad}"));
+        assert!(
+            e.contains("trusted_peer") && e.contains("not ip:port"),
+            "{bad}: {e}"
+        );
+    }
+    // not too many
+    let many: String = (1..=17)
+        .map(|i| format!("trusted_peer=1.2.3.{i}:5\n"))
+        .collect();
+    assert!(err(&format!("data=d\nnetwork=dev\n{many}")).contains("at most 16"));
+    let sixteen: String = (1..=16)
+        .map(|i| format!("trusted_peer=1.2.3.{i}:5\n"))
+        .collect();
+    assert_eq!(
+        ok(&format!("data=d\nnetwork=dev\n{sixteen}"))
+            .trusted_peers
+            .len(),
+        16
+    );
+}
+
+#[test]
+fn a_command_line_that_names_pinned_peers_means_exactly_those_and_seeds_are_separate() {
+    let c = parse(
+        "data=d\nnetwork=dev\ntrusted_peer=1.1.1.1:1\nseed=9.9.9.9:9",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(c.trusted_peers, vec!["1.1.1.1:1"]);
+    let c = parse(
+        "data=d\nnetwork=dev\ntrusted_peer=1.1.1.1:1\nseed=9.9.9.9:9",
+        &["--trusted_peer", "2.2.2.2:2", "--trusted_peer", "3.3.3.3:3"],
+    )
+    .unwrap();
+    assert_eq!(c.trusted_peers, vec!["2.2.2.2:2", "3.3.3.3:3"]);
+    assert_eq!(
+        c.seeds,
+        vec!["9.9.9.9:9"],
+        "the seeds are untouched by pinned peers on the command line"
+    );
+    // and the other way round
+    let c = parse(
+        "data=d\nnetwork=dev\ntrusted_peer=1.1.1.1:1\nseed=9.9.9.9:9",
+        &["--seed", "8.8.8.8:8"],
+    )
+    .unwrap();
+    assert_eq!(c.seeds, vec!["8.8.8.8:8"]);
+    assert_eq!(c.trusted_peers, vec!["1.1.1.1:1"]);
+    // a key that is not repeatable is still refused twice
+    assert!(parse("data=d\nnetwork=dev", &["--peers", "5", "--peers", "6"]).is_err());
+}

@@ -52,6 +52,8 @@ pub struct Config {
     pub network: Network,
     pub listen: Option<SocketAddr>,
     pub seeds: Vec<String>,
+    /// Peers pinned by the operator (`ip:port`, got out of band): always dialled, whenever not connected.
+    pub trusted_peers: Vec<String>,
     pub peer_target: usize,
     pub max_inbound: usize,
     pub allow_private_peers: bool,
@@ -94,6 +96,7 @@ const KEYS: &[&str] = &[
     "network",
     "listen",
     "seed",
+    "trusted_peer",
     "peers",
     "max_inbound",
     "allow_private_peers",
@@ -111,6 +114,14 @@ const KEYS: &[&str] = &[
     "status_every",
     "allow_open_data_dir",
 ];
+
+/// Keys that may be given more than once.
+fn is_repeatable(key: &str) -> bool {
+    key == "seed" || key == "trusted_peer"
+}
+
+/// The most peers an operator may pin.
+const MAX_TRUSTED_PEERS: usize = 16;
 
 /// The raw settings: each key's values in the order given.
 #[derive(Default, Debug)]
@@ -145,7 +156,7 @@ impl Raw {
             return Err(ConfigError(format!("unknown setting `{key}`")));
         }
         let e = self.0.entry(key.to_string()).or_default();
-        if key != "seed" && !e.is_empty() {
+        if !is_repeatable(key) && !e.is_empty() {
             return Err(bad(key, "given twice"));
         }
         e.push(value.to_string());
@@ -154,7 +165,8 @@ impl Raw {
 
     /// Applies command-line options (`--key value`) over the file's settings.
     pub fn with_args(mut self, args: &[String]) -> Result<Raw, ConfigError> {
-        let mut seeds_from_args = false;
+        // a repeatable key given on the command line replaces the file's values (it means exactly those)
+        let mut repeated_from_args = std::collections::BTreeSet::new();
         let mut seen = std::collections::BTreeSet::new();
         let mut it = args.iter();
         while let Some(flag) = it.next() {
@@ -167,10 +179,9 @@ impl Raw {
             if !KEYS.contains(&key) {
                 return Err(ConfigError(format!("unknown option `--{key}`")));
             }
-            if key == "seed" {
-                if !seeds_from_args {
-                    self.0.remove("seed");
-                    seeds_from_args = true;
+            if is_repeatable(key) {
+                if repeated_from_args.insert(key.to_string()) {
+                    self.0.remove(key);
                 }
             } else {
                 if !seen.insert(key.to_string()) {
@@ -245,6 +256,19 @@ impl Raw {
             if s.parse::<SocketAddr>().is_err() {
                 return Err(bad("seed", format!("`{s}` is not ip:port")));
             }
+        }
+        let trusted_peers = self.0.get("trusted_peer").cloned().unwrap_or_default();
+        for s in &trusted_peers {
+            match s.parse::<SocketAddr>() {
+                Ok(sa) if sa.port() != 0 => {}
+                _ => return Err(bad("trusted_peer", format!("`{s}` is not ip:port"))),
+            }
+        }
+        if trusted_peers.len() > MAX_TRUSTED_PEERS {
+            return Err(bad(
+                "trusted_peer",
+                format!("at most {MAX_TRUSTED_PEERS} peers may be pinned"),
+            ));
         }
         let peer_target: usize = self.parse("peers", 50)?;
         let max_inbound: usize = self.parse("max_inbound", 64)?;
@@ -343,6 +367,7 @@ impl Raw {
             network,
             listen,
             seeds,
+            trusted_peers,
             peer_target,
             max_inbound,
             allow_private_peers: self.flag("allow_private_peers", network == Network::Test)?,
