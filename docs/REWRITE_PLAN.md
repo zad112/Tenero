@@ -127,7 +127,7 @@ chain must be able to run pruned (`CONSENSUS_V2.md` section 14). The original op
   stand-in membership proof; (P2) FCMP++ when a stable, audited implementation exists; (P3) subaddresses,
   view keys, integrated addresses, multisig; (P4) network privacy.
 - **M8. Networking, the node and the wallet.** *Plan with the owner's decisions recorded 2026-09-30: `docs/M8_PLAN.md` (nothing built yet; the `snow` exception awaits confirmation).*
-- **M9. Hardening.** Fuzzing, a written threat model, a review plan.
+- **M9. Hardening.** Fuzzing, a written threat model, a review plan. *Started 2026-10-02: the threat model is `docs/THREAT_MODEL.md` (first version); proptest fuzz-style tests are in; cargo-fuzz and the review plan are next.*
 - **M10 and M11 (added 2026-10-02): a usable program, then a first test release for Windows and Linux on a fresh chain**
   (readable CLI, miner reporting, a wallet GUI that runs the node; then retiring the old Python, a new genesis with no
   premine, packaging). A proposal: `docs/M10_M11_PLAN.md`.

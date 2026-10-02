@@ -1,0 +1,218 @@
+# Threat model (M9, first version, 2026-10-02)
+
+**Status of this document.** Written by the author of the code, from the code, its tests and its design notes. It is a
+list of what can go wrong and what is done about it, **not a security audit, and not a claim that the software is
+safe.** An author is the worst person to find their own blind spots; the independent review that `docs/M8_PLAN.md` section 7
+requires is still ahead and will change this document. Tenero remains **an experiment: unaudited, no launched network,
+not for real value.** Where a statement below is "from the docs" and I did not re-trace the code today, it says
+**to verify**.
+
+Every threat has a status:
+
+* **Mitigated** — a defence exists and a test exercises it (the test is named).
+* **Partly** — a defence exists but has a stated gap.
+* **Open** — nothing defends against it yet.
+* **Accepted** — known, and left for now with a reason.
+* **Out of scope** — not something this project can defend.
+
+## 1. What is being protected
+
+| Asset | Why it matters |
+|---|---|
+| **Chain integrity**: the rules of `CONSENSUS_V2.md` are enforced identically by every node | One bug that accepts an invalid block (inflation, a double spend) or two nodes that disagree about a rule splits or breaks the chain; on a real network this would need a coordinated hard fork. |
+| **Node availability**: a node stays up, in sync, and responsive | Nodes are what testers run; a remote crash or a memory blow-up is the most likely first attack. |
+| **Wallet secrets**: the seed, the passphrase, the spend and view keys | Loss of the seed is loss of coins (on a test network, of nothing of value; the habits learned here must still be right). |
+| **User privacy** | The point of the design. **Only partly delivered** (section 4, N). |
+| **The operator's machine**: files, the GPU, the network position | A node and a miner are programs that talk to strangers and run a lot of native code. |
+| **Honesty of the project's claims** | Calling a test network "private", "secure" or "money" would harm testers. |
+
+## 2. Who might attack, and from where (trust boundaries)
+
+1. **An anonymous peer on the internet** (the main adversary): can connect, send any bytes, be slow, lie, flood, or run many nodes.
+2. **A passive network observer** (an ISP, a Wi-Fi owner): sees traffic, cannot alter it undetected (Noise).
+3. **An active network attacker** (a man in the middle): can alter, drop, delay, or sit in the path.
+4. **A miner with a large share of the hash power**: can reorganise, withhold, or manipulate timestamps.
+5. **A local program or user on the same machine** as the node or wallet: can read files the operator can, and connect to loopback.
+6. **A hostile file**: a damaged or crafted data directory, wallet file, peers file or pool file.
+7. **A dependency or the build/release chain** (supply chain).
+8. **A tester making a mistake**, or being tricked (fake downloads, "send me your seed").
+9. **The operator of a seed node**, and the person who chooses the seed list.
+
+**Out of scope for the program itself:** malware on the user's machine (a keylogger sees the passphrase), physical access to an unlocked
+machine, a compromised operating system or GPU driver, and attacks on the hardware.
+
+## 3. What is defended, in one place
+
+These come from the tests; none of it is audited.
+
+* **Decoding.** Every message is decoded strictly (wrong length, trailing bytes, out-of-range counts, non-canonical forms refused) and each
+  of the three decoders has golden vectors from an independent Python implementation, hundreds of hand-made invalid cases, and (new,
+  2026-10-02) proptest properties: random bytes and edited valid objects never panic, hang or allocate wildly, and what decodes
+  re-encodes to the same bytes (`fuzz_decode.rs`, `fuzz_wire.rs`, `fuzz_control.rs`; 5 injected faults, all caught).
+* **Validation.** Blocks pass every rule in `CONSENSUS_V2.md` section 8 (each tested by breaking exactly it); transaction proofs (CLSAG, Bulletproofs+) are
+  verified by default (`Node::new`; a node refuses to start without them; a real `tenerod` refused seven tampered copies of a real transaction).
+* **Fork choice** by cumulative work, with reorganisation that restores the old state exactly on failure (16 tests, 18 injected faults).
+* **Peers.** A message-rate limit with burst; scores and bans by host; a handshake deadline; limits on pending handshakes (total and per host);
+  a bounded write queue in bytes; self-connection and duplicate-connection detection; address-book limits (per source group, per /16);
+  one `get_addrs` answer per connection and a repeat-proof sample; a full node still helps newcomers; assume-valid is off unless chosen.
+* **Transport.** Noise XX (`snow`, unaudited) with the chain id and version in the prologue: confidentiality and integrity of the stream.
+* **Sync.** "Slow is not hostile": late replies are forgiven once (the first day-long run split because this was missing); sync peers
+  are chosen by work; orphans and side branches are held in bounded pools; the pool file is checksummed and every block in it is re-validated.
+* **Wallet.** Argon2id plus ChaCha20-Poly1305 for the file (every byte is protected and a hostile file cannot make it allocate gigabytes, tested);
+  the transaction is verified by the wallet before it is sent; a node that serves wrong blocks is not believed (`pay.rs` test).
+* **Control interface.** Loopback only, a random cookie per start that must be the first message, a bounded queue, connection limits and timeouts.
+
+## 4. Threats by area
+
+### A. Parsing what a stranger sends
+
+| # | Threat | Defence and test | Status |
+|---|---|---|---|
+| A1 | A malformed message crashes or hangs a node | strict decoders; vectors; proptest; the 60 invalid wire cases | **Mitigated** for the decoders; **Partly** overall (coverage-guided fuzzing and the engine's handlers are not fuzzed; cargo-fuzz is planned) |
+| A2 | A length or count field makes a decoder allocate gigabytes | counts are checked against limits before allocating; `a_huge_declared_length...` property; hostile wallet file test | **Mitigated** for the decoders (**to verify** for the store's segment-file readers: they read our own files, but a damaged file is a hostile file) |
+| A3 | A valid message sent at the wrong time or in a hostile order (before `hello`, twice, unsolicited) | `message before hello` 50 points, `second hello` 50, unsolicited address messages punished; scripted-peer tests | **Partly**: tested for the cases listed in `M8_PLAN.md`; there is no systematic fuzzing of message order |
+
+### B. Making a node run out of something (denial of service)
+
+| # | Threat | Defence | Status |
+|---|---|---|---|
+| B1 | **Memory: many connections each holding 16 MiB frames.** `transport.rs` says a connection can hold "a couple of frames of 16 MiB" at once. At the default peer target of 50 that is on the order of 1.6 GB, and an attacker who fills every inbound slot can approach that (**my estimate from the documented limit; not measured**) | frames are bounded by `MAX_FRAME`; the write queue by bytes; readers block when the loop is full | **Open** — recommended fix: a per-message-kind size cap well below 16 MiB (a block is at most about 2 MB of transactions; only `blocks` replies need much), and a measurement under 128 hostile connections |
+| B2 | **No byte-rate limit per peer** (only messages per second) | message limit with burst | **Open** (documented in `transport.rs`): a peer can send 16 MiB frames at the message limit |
+| B3 | **Threads**: about two per peer | peer caps (`max_peers`, `max_inbound`, `max_addr_only`) | **Accepted** at tens of peers; **to verify** at the caps under attack |
+| B4 | **Handshake CPU**: Curve25519 work an attacker can ask for repeatedly | deadline, pending caps (total and per host), bans refused before cryptography | **Partly**: a botnet of many addresses defeats per-host limits |
+| B5 | **Proof-of-work cost**: each unknown block costs the CPU check (about 0.2 s for the real PoW) and a dataset of 4.3 GiB per epoch (about 2.6 s to build) | cheap pre-check first (**to verify** the exact order in `Validator`), lookahead of 10 blocks, assume-valid (opt-in) | **Partly**: a stranger cannot make a node build a dataset for a far epoch without a block that passes the cheap check at the claimed height (**to verify**); the first block of each epoch stalls validation about 3 s |
+| B6 | **Orphan and side-branch pools** filled with junk that costs the sender nothing | bounded (128 orphans, 32 MiB; oldest dropped); side pool bounded | **Accepted**: honest orphans can be pushed out (a re-download) |
+| B7 | **Headers lead nowhere** until the checkpoint height (assume-valid) | opt-in, caught at the checkpoint | **Accepted** (bounded by the height gap) |
+| B8 | **Mempool flooding** | 32 MiB cap, lowest fee rate evicted only for a strictly higher rate, proofs verified before admission (**the proof check is itself CPU an attacker can request**: a transaction needs to be well-formed before it is checked) | **Partly**: no per-peer transaction rate beyond the message limit; **to verify** that cheap structural checks precede proof verification |
+| B9 | **Disk**: an archive node grows with the chain; logs have no rotation | pruning (`prune_keep`) | **Open** for logs (M10.4); **Accepted** for the chain on a young network |
+| B10 | **Control interface flooding** by a local program | 8 connections, queue 64, timeouts | **Mitigated** against accidents; a malicious same-user process can do worse (see H) |
+
+### C. Who the peers are (eclipse, Sybil, address poisoning)
+
+| # | Threat | Defence | Status |
+|---|---|---|---|
+| C1 | **Eclipse**: all of a node's peers are the attacker's, who then shows it a false chain | at least 8 outbound peers chosen by the node, at most 2 outbound per /16, an address book with per-source limits, seeds that are never forgotten | **Partly** — the docs say plainly that an attacker who controls the seeds or many network groups can still steer a node, and a young network with few honest nodes is *especially* exposed. Not yet done: persisting a few anchor peers across restarts (Bitcoin's "anchors"), several independent seed operators (planned, M11.4) |
+| C2 | **Sybil**: many cheap identities | no identity at all by design (bans are by host); outbound diversity | **Accepted** — nothing prevents one host from running many nodes on many addresses |
+| C3 | **Address poisoning** with fake or unreachable addresses | per-source cap (64 entries), never-worked entries dropped first, routable addresses only, 10 failures forget an entry | **Mitigated** in simulation (300 fake addresses, victim still reached the honest network); **not tried on a real network** |
+| C4 | **Reading the whole address book** (a map of the network) | 23 percent per answer, the same answer within 24 h per group | **Partly**: many groups each get a sample; the cache is lost on restart |
+| C5 | **Ban evasion** by changing address, or **collateral bans** (a shared IP) | bans by host | **Accepted**: a NAT with many users shares a ban; an attacker with many addresses is not slowed |
+| C6 | **Self-connection and duplicate links** | `nonce` in `Hello`, the smaller-nonce link is kept | **Mitigated**; a rare same-side double dial may drop both links (documented) |
+
+### D. The channel
+
+| # | Threat | Defence | Status |
+|---|---|---|---|
+| D1 | A passive observer reads the traffic | Noise XX, ChaCha20-Poly1305 | **Mitigated** (library unaudited) |
+| D2 | A man in the middle | encryption alone does not authenticate peers: nothing pins a key to a node, so a MITM running both handshakes is **not detected** | **Accepted for peer-to-peer** (a public network has no way to know who an honest peer is); **Open** for a wallet using a *remote* node over the network (not supported yet) and for any future seed-node authentication |
+| D3 | Replay, reorder, or drop within a stream | counters per chunk | **Mitigated** |
+| D4 | Traffic analysis; who talks to whom; which node first announced a transaction | none | **Out of scope for now** (P4: Dandelion++, Tor, I2P are not built) |
+| D5 | A node on another chain or version | the prologue fails the handshake; a version and network id in the handshake planned (M10.4) | **Mitigated** (chain id and version); the human-readable refusal message is M10 |
+
+### E. The chain as a system (consensus-level attacks)
+
+| # | Threat | Defence | Status |
+|---|---|---|---|
+| E1 | **51 percent / majority hash power**: rewrite history, double-spend | none possible in software; cumulative-work fork choice makes the heaviest chain win | **Accepted and certain on a young chain.** On the first test network *one miner can be the whole network*, including the owner; any tester with a GPU can out-mine others. This must be said in every tester document. |
+| E2 | **Deep reorganisations** | handled correctly and tested; no reorg limit | **Accepted**; the wallet remembers 100 block ids and rescans beyond that (tested) |
+| E3 | **Timestamp manipulation against the difficulty adjustment** (LWMA window 30, 6x clamp, median of 11) | standard ingredients, a future-time limit (held, not rejected, so honest disagreement is not permanent) | **Open**: `KNOWN_ISSUES.md` item 12 — never analysed for these parameters; important at tiny hash power where one miner controls the timestamps |
+| E4 | **Difficulty swings** when miners join and leave (a few GPUs, then none): the chain can stall or race | adjusts every block over 30 blocks | **Open**: the start difficulty and the behaviour at the extremes are chosen at M11.2 and have not been simulated for a network of a handful of miners |
+| E5 | **Selfish mining and block withholding** | none beyond proof of work | **Accepted** (research-level on any PoW chain; stronger on a tiny network) |
+| E6 | **Inflation or double-spend bug in the validator** | independent Python vectors, tests that break each rule, key-image uniqueness, balance equation, reviewed upstream proof libraries | **Partly**: this is the highest-consequence risk and exactly what an independent review is for; the signed message and the balance check are *ours* (not the libraries') and unaudited |
+| E7 | **Two implementations disagreeing**, causing a split | the Python reference and vectors | **Partly**: there is only one node implementation; the vectors make a second one possible |
+| E8 | **A consensus change forced by an exploit on a live chain** | none yet | **Open**: the emergency-fork plan is a launch gate (`M8_PLAN.md` section 7) and is not written |
+| E9 | **Premine or hidden allocation** | the genesis has no coinbase output (a test), and the new genesis keeps that (M11.2); every coin is mined | **Mitigated by construction**; says nothing about safety or value |
+
+### F. Cryptography
+
+| # | Threat | Defence | Status |
+|---|---|---|---|
+| F1 | A flaw in a library (`monero-oxide` CLSAG/Bulletproofs+, `curve25519-dalek`, `snow`, `argon2`, `chacha20poly1305`, `sha2`) | audited upstream state for the proof libraries (the audit's chapters were read; one medium finding is covered by our signed message); `snow` has had **no formal audit** (an owner-approved exception) | **Partly / Accepted**; the git pin of `monero-oxide` (a commit, not a crates.io release) means updates are manual |
+| F2 | A flaw in *our* use: the signed message, proof layout, point checks, composition | tests with real proofs and 19 injected faults (18 caught; one redundant guard kept) | **Partly**: unreviewed |
+| F3 | **The interim output scheme**: no Janus protection (the anchor in an output is not verified by the receiver; with one address per wallet this limits what it exposes, but it is not the protection Carrot gives) and a key derivation of our own composition | labelled everywhere; one address per wallet; replaced by Carrot later | **Accepted**: *not private in Monero's sense*; funds on it are not Carrot-safe |
+| F4 | **The proof of work's memory-hardness is simulated, not proven**, and the fill/fold construction has had no cryptanalysis (`KNOWN_ISSUES` 11) | bit-exact vectors; measured on one GPU | **Open / Accepted**: a shortcut (a faster miner) would centralise mining, not break funds; a PoW *collision or preimage* weakness would be worse |
+| F5 | **Randomness**: a bad RNG weakens keys and proofs | `OsRng` (the operating system's) | **Mitigated** |
+| F6 | Side channels (timing, memory) in key handling | the libraries' constant-time code; `zeroize` on secrets | **Open**: not examined for our code paths |
+
+### G. Local files and the control interface
+
+| # | Threat | Defence | Status |
+|---|---|---|---|
+| G1 | A local process connects to the control port | loopback only; the random cookie is required first | **Partly**: the cookie is a file in the data directory with **the operating system's default permissions** (`client.rs`: protecting the directory is the operator's job). Any program running as the same user can read it and then stop the node, submit blocks and transactions, and read the chain and key-image status. It cannot read wallet keys through the node (the wallet file is separate and encrypted). **To verify** the default ACL on Windows keeps other *users* out. |
+| G2 | A web page reaching the control port (DNS rebinding / cross-site requests) | a raw binary protocol on a TCP port, not HTTP; the first message must carry the cookie | **Mitigated** (**to verify** with a test that sends an HTTP request and gets no useful answer) |
+| G3 | Tampered `chain.redb`, segment files, `peers.dat`, `pool.dat`, `node.key` | `pool.dat` and `peers.dat` are checksummed and re-validated; the store is crash-safe and tested against damaged files; a chain from another network is refused | **Partly**: **the node trusts its own chain database**; someone who can edit it can feed the node an invalid chain. Accepted: whoever can write the data directory owns the node. |
+| G4 | Two nodes on one data directory | an exclusive open (`only_one_node_may_use_a_data_directory`) | **Mitigated** |
+| G5 | `node.key` and the data directory readable by others | default permissions | **Open** (same as G1) |
+| G6 | The log leaking secrets | logs carry addresses, ids and IPs, never seeds or keys (**to verify** with a grep test over all log call sites) | **Partly** |
+
+### H. The wallet
+
+| # | Threat | Defence | Status |
+|---|---|---|---|
+| H1 | Offline guessing of the passphrase from the file | Argon2id (default parameters not the test ones, tested), authenticated encryption, every byte protected | **Mitigated**; strength depends on the passphrase |
+| H2 | `--passphrase-file` leaves a passphrase on disk | documented as weaker | **Accepted** (for automation and tests) |
+| H3 | The seed shown once on the terminal stays in scrollback and logs | a banner; shown once | **Accepted** now; the GUI (M10.3) must show it with care and ask for confirmation |
+| H4 | Secrets staying in memory, swap or hibernation files | `zeroize` for the secret types | **Open**: no memory locking; not examined |
+| H5 | A **lying node** feeds the wallet false chain data | the wallet checks what it can (the chain id, block links, its own proofs are self-verified before sending); a node that sends wrong blocks is not believed (test) | **Partly**: against a *remote* node a wallet cannot know a chain is the real one (no proof of work check in the wallet); today the node is local |
+| H6 | The node a wallet uses learns what the wallet cares about | the wallet scans whole blocks (no per-address queries); **it asks for specific outputs when it builds rings, and the real output is among them** | **Accepted for a local node**; **Open** before any remote-node use |
+| H7 | A fingerprintable transaction: coin selection that always spends the same way, decoys from a log-uniform guess, a fixed ring size | randomised decoys; the docs say the selection is not randomised | **Accepted**: this is the weakest part of the privacy design (section N) |
+| H8 | Spending the same coins twice from two copies of a wallet | reservations in the wallet file; the key image makes the second spend fail on chain | **Mitigated** against self-conflict; **Accepted** across two copies |
+| H9 | An address typo or a malicious address substitution (clipboard malware) | a checksum on the text address | **Partly**: catches typos, not substitution |
+| H10 | Fee set too low, a stuck payment; or too high | the minimum is dynamic; the wallet pays 25 percent over; a stale reservation expires in 20 blocks | **Mitigated** |
+
+### I. The miner
+
+| # | Threat | Defence | Status |
+|---|---|---|---|
+| I1 | A wrong block template wastes work or pays the wrong address | the template is for the next height; the coinbase's key exchange binds the height and the miner discards a mismatch; the node validates every submitted block fully | **Mitigated** (tests with a fake node: wrong height, wrong target) |
+| I2 | A malicious node feeding a remote miner bad work | the miner trusts its node's templates; loopback only today | **Accepted** (a remote miner is not supported yet) |
+| I3 | GPU driver or CUDA bugs | `unsafe` is confined to one crate (`tenero-gpu`); every GPU result is checked by the CPU node | **Mitigated** for correctness; availability is the driver's |
+| I4 | Mining overheating a machine | `--pace`, batch size; no thermal control | **Accepted**; M10.2 reports temperature and power |
+
+### J. Supply chain and release
+
+| # | Threat | Defence | Status |
+|---|---|---|---|
+| J1 | A malicious or compromised dependency | a small, reviewed set; licences recorded; the lock file committed; owner approval per dependency (rule 3) | **Partly**: no `cargo audit` or `cargo deny` yet; the `monero-oxide` pin is a git commit; `snow` is unaudited |
+| J2 | A tampered download | none yet | **Open**: M11.3 plans checksums, tagged builds, a recorded build; **no code signing** unless a certificate is bought, so Windows will warn and antivirus may flag it (this already happened to a launch of the miner on the owner's machine) |
+| J3 | A fake "Tenero" site, a scam coin, an impersonating download | none possible in software | **Open**: the README and every release say what is official; the experimental labels are the defence against anyone treating the test coins as money |
+| J4 | The build machine or the CI secrets compromised | none yet | **Open** (to be addressed when CI is set up: minimal permissions, no secrets in forks, pinned actions) |
+| J5 | A tester runs an old, vulnerable build | the handshake version and network id (M10.4); announcements | **Partly** |
+
+### K. Operating a seed node (planned, M11.4)
+
+A seed is an internet-facing node that strangers connect to. It makes B1, B2, B4, C1 and C4 real. **It should not run on the owner's own
+computer**, should run with a firewall that allows only the p2p port (never the control port), as an unprivileged user, with a
+restart policy, and **there should be several, run by different people** (Monero's way). A hard-coded seed list is itself a trust
+point: whoever changes it in a release controls where new nodes start.
+
+### L. Privacy (what is *not* private)
+
+This section exists so that nobody, including the author, overstates the design. **A user of this software today has none of the
+privacy of Monero**, for these reasons:
+
+* **The output scheme is an interim one**, with no Janus protection and a different (unreviewed) key derivation; it is not Carrot.
+* **The anonymity set is a ring of 16 and the chain is tiny**: with few outputs on a young chain, decoys are easy to rule out by age and amount patterns.
+* **Network privacy is absent**: a transaction is relayed from where it was made; a node can see the IP that first sent it (no Dandelion++, no Tor, no I2P).
+* **Timing and fingerprinting**: coin selection, ring construction and fees follow patterns an observer could learn (H7).
+* **A node knows its wallet**: the wallet and node today trust each other on one machine; a remote node would learn the wallet's real outputs (H6).
+* **Logs and the diagnostics bundle** can contain addresses and IPs unless scrubbed (M10.4 requires scrubbing).
+
+## 5. The gaps that matter most, in the order I would work on them
+
+1. **B1 and B2 (memory and bandwidth under attack).** Cap frames per message kind, add a per-peer byte budget, and *measure* a node under 128 hostile connections, because this is the cheapest way for a stranger to hurt a seed node. *Small to medium.*
+2. **Fuzz the engine** (cargo-fuzz, planned): the handlers for each message in each peer state, and the store's file readers (A1, A2, A3, G3). *Medium.*
+3. **E3 and E4: difficulty and timestamps on a small network.** Simulate a handful of miners joining and leaving, with a timestamp-manipulating miner, before choosing the fresh chain's parameters (M11.2). This decides whether the first test network survives its first hours. *Medium.*
+4. **E6, F2: the independent review** of the validator, the store and `tenero-crypto`, by someone other than the author. Not something I can do; the highest-value item on this list.
+5. **G1, G5: file permissions on the data directory and the cookie** (check what Windows does; set restrictive permissions explicitly on creation; test it). *Small.*
+6. **C1: anchor peers** (keep two or three outbound peers across restarts) and a recommended multi-seed configuration. *Small to medium.*
+7. **J1, J2: `cargo audit` and `cargo deny` in CI; reproducible, checksummed releases.** *Small to medium.*
+8. **E8: the emergency-fork plan**, written down: who can decide, how a bad block or rule is handled, how testers are told. *Small, but a decision, not code.*
+9. **Verify the "to verify" items** in this document, each with a test or a changed sentence.
+10. **A test that no log line contains a secret** (G6), and one that sends an HTTP request to the control port (G2). *Small.*
+
+## 6. How this document is kept honest
+
+* It is updated in the same commit as any change that adds or removes a defence, or finds a new threat.
+* A status moves to **Mitigated** only with a named test. "I believe so" stays **to verify**.
+* The independent review's findings are added here whether or not they are flattering; items found by someone else are marked as such.
+* The labels on tester-facing text (`unaudited`, `no value`, `may be reset`) are part of the defence, and removing them is a decision for the owner, not a side effect of any change.
