@@ -13,6 +13,7 @@ use tenero_app::ui::{
     MinerStatus, MiningStatus, NodeLink, NodeStatus, Screen, Severity, SyncProgress, Theme,
     Verbosity, MAX_LINE,
 };
+use tenero_miner::rate::Rates;
 
 const OFF: Theme = Theme { color: false };
 const ON: Theme = Theme { color: true };
@@ -264,7 +265,7 @@ fn the_status_block_while_syncing_mining_pruned_and_with_alarms() {
         blocks_found: 3,
         blocks_accepted: 2,
         paused: true,
-        hashrate: None,
+        rates: Rates::default(),
     });
     let got = render_status_block(&s, &OFF).join("\n");
     assert_eq!(
@@ -276,6 +277,7 @@ fn the_status_block_while_syncing_mining_pruned_and_with_alarms() {
   peers    5 (in 2, out 3) | outbound in 1 network group
   node     mempool 7 | up 2h 05m | disk 12.3 MiB | pruned below 1,000
   mining   paused (cpu, 2 threads) | 3 found, 2 in the chain
+  rate/s   (idle) starting
   alarms   stale-tip, few-outbound"
     );
     // a mining node that is running shows its rate when there is one
@@ -284,11 +286,15 @@ fn the_status_block_while_syncing_mining_pruned_and_with_alarms() {
         blocks_found: 0,
         blocks_accepted: 0,
         paused: false,
-        hashrate: Some(1_234_567.0),
+        rates: busy(),
     });
     let got = render_status_block(&s, &OFF).join("\n");
     assert!(
-        got.contains("  mining   mining (gpu) | 1,234,567 attempts/s | 0 found, 0 in the chain"),
+        got.contains(
+            "  mining   mining (gpu) | 0 found, 0 in the chain
+  rate/s   10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000 | avg 1,150,000
+"
+        ),
         "{got}"
     );
 }
@@ -314,7 +320,13 @@ fn every_status_line_is_ascii_and_fits_an_80_column_window() {
         blocks_found: 123_456,
         blocks_accepted: 123_456,
         paused: true,
-        hashrate: Some(99_999_999_999.0),
+        rates: Rates {
+            s10: Some(99_999_999_999.0),
+            s60: Some(99_999_999_999.0),
+            m15: Some(99_999_999_999.0),
+            average: Some(99_999_999_999.0),
+            searching: true,
+        },
     });
     for theme in [OFF, ON] {
         for l in render_status_block(&s, &theme) {
@@ -367,11 +379,11 @@ fn the_plain_status_line_says_the_same_on_one_line() {
         blocks_found: 4,
         blocks_accepted: 3,
         paused: true,
-        hashrate: None,
+        rates: Rates::default(),
     });
     assert_eq!(
         render_status_line(&s),
-        "height 1,204 (a1b2c3d4) | syncing 10 of 20 (50%) | estimating the time left | peers 5 (in 2, out 3) | mempool 7 | up 2h 05m | mining sha256: 4 found, 3 in the chain (paused) | ALARMS: stale-tip, few-groups"
+        "height 1,204 (a1b2c3d4) | syncing 10 of 20 (50%) | estimating the time left | peers 5 (in 2, out 3) | mempool 7 | up 2h 05m | mining sha256: 4 found, 3 in the chain (paused) | rate/s starting | ALARMS: stale-tip, few-groups"
     );
 }
 
@@ -833,12 +845,23 @@ fn a_line_that_is_too_long_is_cut_with_dots_and_colour_codes_take_no_room() {
 
 // ---- the miner program's screen ----------------------------------------------------------------------------------------------------------
 
+/// Rates of a miner that has been searching for a while.
+fn busy() -> Rates {
+    Rates {
+        s10: Some(1_234_567.0),
+        s60: Some(1_200_000.0),
+        m15: Some(1_100_000.0),
+        average: Some(1_150_000.0),
+        searching: true,
+    }
+}
+
 fn miner_status() -> MinerStatus {
     MinerStatus {
         backend: "gpu: NVIDIA RTX 5070 Ti".to_string(),
         link: NodeLink::Connected,
         node_height: 1204,
-        rate: Some(1_234_567.0),
+        rates: busy(),
         found: 4,
         accepted: 3,
         lost_race: 1,
@@ -857,16 +880,18 @@ fn the_miners_status_block_in_each_state_of_its_link_to_the_node() {
         got,
         "-- status ------------------------------------------------------------
   node     connected (height 1,204)
-  mining   gpu: NVIDIA RTX 5070 Ti | 1,234,567 attempts/s
+  mining   gpu: NVIDIA RTX 5070 Ti
+  rate/s   10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000 | avg 1,150,000
   blocks   4 found | 3 in the chain | 1 lost a race | 0 refused
   up       2h 05m"
     );
     let mut s = miner_status();
     s.link = NodeLink::Syncing;
-    s.rate = None;
+    s.rates = Rates::default();
     let got = render_miner_block(&s, &OFF);
     assert_eq!(got[1], "  node     syncing (height 1,204): mining waits");
-    assert_eq!(got[2], "  mining   gpu: NVIDIA RTX 5070 Ti | starting");
+    assert_eq!(got[2], "  mining   gpu: NVIDIA RTX 5070 Ti");
+    assert_eq!(got[3], "  rate/s   (idle) starting");
     s.link = NodeLink::Down;
     assert_eq!(
         render_miner_block(&s, &OFF)[1],
@@ -892,13 +917,13 @@ fn the_miners_status_block_in_each_state_of_its_link_to_the_node() {
 fn the_miners_plain_status_line() {
     assert_eq!(
         render_miner_line(&miner_status()),
-        "node connected (height 1,204) | gpu: NVIDIA RTX 5070 Ti | 1,234,567 attempts/s | blocks: 4 found, 3 in the chain, 1 lost a race, 0 refused | up 2h 05m"
+        "node connected (height 1,204) | gpu: NVIDIA RTX 5070 Ti | rate/s 10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000 | avg 1,150,000 | blocks: 4 found, 3 in the chain, 1 lost a race, 0 refused | up 2h 05m"
     );
     let mut s = miner_status();
     s.link = NodeLink::Syncing;
-    s.rate = None;
+    s.rates = Rates::default();
     assert!(render_miner_line(&s).starts_with("node syncing (height 1,204), mining waits | gpu"));
-    assert!(render_miner_line(&s).contains("| starting |"));
+    assert!(render_miner_line(&s).contains("| rate/s starting |"));
     s.link = NodeLink::Down;
     assert!(render_miner_line(&s).starts_with("node not reachable | "));
 }
@@ -1021,7 +1046,7 @@ fn a_miner_status_is_redrawn_in_place_like_the_nodes() {
     let mut next = miner_status();
     next.found = 5;
     s.miner_status(&next);
-    assert!(buf.take().starts_with("\x1b[5A\r\x1b[J"));
+    assert!(buf.take().starts_with("\x1b[6A\r\x1b[J"));
     // plain: one line, then silence until the interval is over
     let (buf, clock) = (Buf::default(), Arc::new(AtomicU64::new(1_700_000_000)));
     let p = screen(false, Verbosity::Normal, &buf, &clock);
@@ -1108,10 +1133,9 @@ fn the_clock_counts_minutes_in_sixties() {
 
 #[test]
 fn a_line_of_exactly_the_limit_is_not_cut_and_one_more_is() {
-    // "  mining   " (11) + backend + " | starting" (11)
+    // "  mining   " (11) + backend
     let mut s = miner_status();
-    s.rate = None;
-    s.backend = "b".repeat(MAX_LINE - 22);
+    s.backend = "b".repeat(MAX_LINE - 11);
     let line = &render_miner_block(&s, &OFF)[2];
     assert_eq!(line.len(), MAX_LINE);
     assert!(!line.ends_with("..."), "{line}");
@@ -1131,4 +1155,110 @@ fn an_unreachable_node_is_red_in_the_miners_block() {
 #[test]
 fn a_failure_to_listen_alone_gets_the_port_hint() {
     assert!(hint_for("cannot listen: no way").unwrap().contains("port"));
+}
+
+#[test]
+fn the_rates_in_words() {
+    use tenero_app::ui::rates_text;
+    assert_eq!(rates_text(&Rates::default()), "starting");
+    let part = Rates {
+        s10: Some(5.4),
+        average: Some(7.6),
+        ..Rates::default()
+    };
+    assert_eq!(rates_text(&part), "10s 5 | 60s - | 15m - | avg 8");
+    assert_eq!(
+        rates_text(&busy()),
+        "10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000 | avg 1,150,000"
+    );
+}
+
+#[test]
+fn a_miner_that_is_not_searching_says_so_on_its_rate_row_and_one_that_is_does_not() {
+    let mut s = miner_status();
+    assert!(render_miner_block(&s, &OFF)[3].starts_with("  rate/s   10s 1,234,567"));
+    s.rates.searching = false;
+    assert!(render_miner_block(&s, &OFF)[3]
+        .starts_with("  rate/s   (idle) 10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000"));
+    for l in render_miner_block(&s, &OFF) {
+        assert!(l.len() <= MAX_LINE, "{l}");
+    }
+}
+
+#[test]
+fn the_shared_counters_turn_the_backends_counters_into_rates_with_each_look() {
+    use std::sync::atomic::Ordering;
+    let shared = MiningShared::default();
+    assert_eq!(shared.status().rates, Rates::default(), "no counters yet");
+    assert_eq!(
+        shared.status_at(0).rates,
+        Rates::default(),
+        "nothing to look at: harmless"
+    );
+    let c = Arc::new(tenero_miner::Counters::default());
+    c.in_job.store(true, Ordering::SeqCst);
+    *shared.counters.lock().unwrap() = Some(Arc::clone(&c));
+    for sec in 0..=12u64 {
+        c.attempts.store(sec * 1000, Ordering::Relaxed);
+        shared.status_at(sec * 1000);
+    }
+    let r = shared.status().rates;
+    assert!(r.searching);
+    assert!((r.s10.unwrap() - 1000.0).abs() < 1.0, "{r:?}");
+    assert!(r.s60.is_none());
+    assert!((r.average.unwrap() - 1000.0).abs() < 1.0);
+    // the time is in milliseconds (a status a second apart is a second apart)
+    assert!((shared.status_at(13_000).rates.average.unwrap() - 923.0).abs() < 1.0);
+    // not in a job: not searching, and what the counter does meanwhile is not counted
+    c.in_job.store(false, Ordering::SeqCst);
+    c.attempts.store(1_000_000, Ordering::Relaxed);
+    shared.status_at(14_000);
+    c.attempts.store(2_000_000, Ordering::Relaxed);
+    let r = shared.status_at(15_000).rates;
+    assert!(!r.searching);
+    assert!(r.average.unwrap() < 1000.0, "{r:?}");
+}
+
+#[test]
+fn the_rates_in_words_when_only_some_windows_have_a_figure() {
+    use tenero_app::ui::rates_text;
+    let only = |r: Rates| rates_text(&r);
+    assert_eq!(
+        only(Rates {
+            average: Some(9.0),
+            ..Rates::default()
+        }),
+        "10s - | 60s - | 15m - | avg 9"
+    );
+    assert_eq!(
+        only(Rates {
+            m15: Some(9.0),
+            ..Rates::default()
+        }),
+        "10s - | 60s - | 15m 9 | avg -"
+    );
+    assert_eq!(
+        only(Rates {
+            s60: Some(9.0),
+            ..Rates::default()
+        }),
+        "10s - | 60s 9 | 15m - | avg -"
+    );
+}
+
+#[test]
+fn the_nodes_plain_status_line_carries_the_rates_of_a_miner_that_has_them() {
+    let mut s = status();
+    s.mining = Some(MiningStatus {
+        backend: "gpu".into(),
+        blocks_found: 1,
+        blocks_accepted: 1,
+        paused: false,
+        rates: busy(),
+    });
+    let line = render_status_line(&s);
+    assert!(
+        line.contains("| mining gpu: 1 found, 1 in the chain | rate/s 10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000 | avg 1,150,000"),
+        "{line}"
+    );
 }

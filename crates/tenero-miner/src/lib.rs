@@ -24,6 +24,7 @@
 //! placeholder that nobody can spend), and a command-line program.
 
 pub mod gpu;
+pub mod rate;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -77,6 +78,36 @@ pub struct Counters {
     pub prefetches: AtomicU64,
     /// Datasets built in all (the current epoch's, when it was not ready, and the prefetched ones).
     pub dataset_builds: AtomicU64,
+    /// Is the backend inside `mine` (a job is being searched)? False when it waits for a job.
+    pub in_job: AtomicBool,
+    /// Datasets being built right now (see [`Counters::building`]).
+    building: std::sync::atomic::AtomicU32,
+    /// How many times a build has been marked (one for each dataset built, so it equals `dataset_builds` when the marks are right).
+    pub build_marks: AtomicU64,
+}
+
+impl Counters {
+    /// Marks a dataset build for as long as the returned guard lives: no attempts are made meanwhile, and the rate meter leaves that
+    /// time out.
+    pub fn building(&self) -> BuildingGuard<'_> {
+        self.building.fetch_add(1, Ordering::SeqCst);
+        self.build_marks.fetch_add(1, Ordering::Relaxed);
+        BuildingGuard(self)
+    }
+
+    /// Is the miner searching for a nonce right now (in a job, and not building a dataset)?
+    pub fn searching(&self) -> bool {
+        self.in_job.load(Ordering::SeqCst) && self.building.load(Ordering::SeqCst) == 0
+    }
+}
+
+/// See [`Counters::building`].
+pub struct BuildingGuard<'a>(&'a Counters);
+
+impl Drop for BuildingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.building.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Something that searches a job's nonce space.
@@ -186,7 +217,10 @@ impl Backend for CpuMatmulBackend {
 
     fn mine(&mut self, job: &Job, counters: &Counters) -> Result<Option<Solution>, String> {
         let had = self.pow.has_dataset(job.height);
-        let data = self.pow.dataset_for(job.height)?;
+        let data = {
+            let _building = (!had).then(|| counters.building());
+            self.pow.dataset_for(job.height)?
+        };
         if !had {
             counters.dataset_builds.fetch_add(1, Ordering::Relaxed);
         }
@@ -204,7 +238,10 @@ impl Backend for CpuMatmulBackend {
             if self.prefetch_blocks > 0 && ahead != here && ahead != prefetched {
                 let at = job.height + self.prefetch_blocks;
                 let had = self.pow.has_dataset(at);
-                self.pow.dataset_for(at)?;
+                {
+                    let _building = (!had).then(|| counters.building());
+                    self.pow.dataset_for(at)?;
+                }
                 if !had {
                     // (a job restarted near the boundary finds it already built, and counts nothing)
                     counters.prefetches.fetch_add(1, Ordering::Relaxed);
@@ -301,7 +338,10 @@ impl Miner {
                     job = newer;
                 }
                 c.jobs.fetch_add(1, Ordering::Relaxed);
-                match backend.mine(&job, &c) {
+                c.in_job.store(true, Ordering::SeqCst);
+                let result = backend.mine(&job, &c);
+                c.in_job.store(false, Ordering::SeqCst);
+                match result {
                     Ok(Some(sol)) => {
                         let _ = rtx.send(Msg::Solved(sol));
                     }

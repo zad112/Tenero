@@ -63,6 +63,16 @@ turns on escape codes in the Windows console; its only dependency, `windows-sys`
 
 ### M10.2 A hash rate that means what other miners' numbers mean (size M)
 
+**Status 2026-10-02: the reporting half is built and tested without a GPU; NOTHING about GPU speed is measured yet.** Done: a rate meter
+(`tenero-miner/src/rate.rs`) giving attempts a second over 10 s, 60 s, 15 min and the run, in *searching time only* (a pause, a dataset
+build, or waiting for a job is left out, and so are the attempts counted in it; a window shows `-` until the samples cover all of it; a
+clock set back restarts the windows and does not inflate anything); the backends say when they build a dataset (CPU and GPU) and the
+miner thread when it is in a job; both screens show a `rate/s` row (`(idle)` in front when not searching); the miner program's log line
+uses the same figures. 44 screen tests, 16 meter tests; 50 injected faults, 14 got through the first time (one was a real bug, the clock
+set back), the gaps are closed, two are equivalent (how old samples are dropped). **Not done:** the measurement on the owner's GPU (needs
+the owner's machine), the effective rate and expected-versus-actual blocks, `--gpu-batch` auto-selection, several GPUs, and NVML
+(temperature, power, memory bandwidth: a new dependency, **not yet approved**).
+
 What the owner asked for is a rate that can be compared with other GPU miners. The honest part first:
 
 * **Our unit is one "attempt" (one matmulhash evaluation), and it is a different amount of work from one hash of any other

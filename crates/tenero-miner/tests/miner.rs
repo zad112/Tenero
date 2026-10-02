@@ -694,6 +694,13 @@ fn the_cpu_matmul_miner_mines_blocks_a_matmul_node_verifies_across_epoch_boundar
     );
     // and the only one built when it was needed, not ahead, was the very first
     assert_eq!(built, prefetched + 1, "{built} datasets built in all");
+    // every build was marked as one, so the rate meter leaves its time out (and nothing else was marked)
+    assert_eq!(
+        c.build_marks.load(Ordering::Relaxed),
+        built,
+        "builds marked"
+    );
+    assert!(!c.searching(), "the job is over and nothing is being built");
     assert!(
         lines.contains("matmulhash on 2 CPU thread"),
         "{}",

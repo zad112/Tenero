@@ -68,6 +68,7 @@ fn ensure_dataset(
         return Ok((Arc::clone(d), false));
     }
     cache.retain(|(e, _)| e + 1 >= epoch && *e <= epoch + 1);
+    let _building = counters.building();
     let built = gpu
         .build_dataset(params, &mh::epoch_seed(epoch), params.num_blocks)
         .map_err(|e| e.to_string())?;

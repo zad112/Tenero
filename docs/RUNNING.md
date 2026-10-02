@@ -86,8 +86,11 @@ When the output is a file, a pipe or a service, there is no redrawing: events ar
 every `status_every` seconds. **The log file is not changed by any of this:** it keeps every line, with ids and nonces, as before. `--quiet`
 shows only warnings and errors; `--verbose` also shows each line of the log as it is written to the file. The screen is ASCII only, lines are
 at most 78 columns, colour is off with `NO_COLOR`, and `tenero-miner` has the same options and the same kind of screen (the node it
-mines for, its attempts a second, the blocks it has found). **The `TNR` after a reward is a placeholder for the coin's name** (a decision for
-the owner). `tenerod status` and `tenerod stop` print the same one-liners as before (scripts read them).
+mines for, its attempts a second, the blocks it has found). **The `TNR` after a reward is the coin's ticker (the owner chose to keep it).**
+**The `rate/s` row** shows attempts a second over the last 10 seconds, 60 seconds, 15 minutes and the whole run, counting only the
+time the miner was searching (not while paused for a sync or building a dataset; `(idle)` means it is not searching at this moment; `-`
+means that window is not yet full). **An attempt is one matmulhash evaluation, which is a different amount of work from a hash of any
+other coin, so these numbers cannot be compared with another coin's miner.** `tenerod status` and `tenerod stop` print the same one-liners as before (scripts read them).
 
 **The status line and the alarms (in the log).** Every `status_every` seconds the node logs a line such as
 `status: tip 782 (00000000) | peers 4 (in 2, out 2) | out groups 2 | last block 40s ago | samples 3 | alarms none | book 8 | ...`.

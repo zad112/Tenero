@@ -179,9 +179,22 @@ pub struct MiningShared {
     pub lost_race: std::sync::atomic::AtomicU64,
     pub refused: std::sync::atomic::AtomicU64,
     pub paused: AtomicBool,
+    /// The backend's counters (set when the miner is made) and the meter that turns them into rates.
+    pub counters: std::sync::Mutex<Option<Arc<tenero_miner::Counters>>>,
+    pub meter: std::sync::Mutex<tenero_miner::rate::RateMeter>,
 }
 
 impl MiningShared {
+    /// One look at the backend's counters, `now_ms` after the node started (the status block takes one a second).
+    pub fn sample(&self, now_ms: u64) {
+        let Some(c) = self.counters.lock().ok().and_then(|c| c.clone()) else {
+            return;
+        };
+        if let Ok(mut m) = self.meter.lock() {
+            m.record(now_ms, c.attempts.load(Ordering::Relaxed), c.searching());
+        }
+    }
+
     /// Counts what the miner reports (the screen is told separately).
     pub fn record(&self, e: &MinerEvent) {
         let one = |c: &std::sync::atomic::AtomicU64| c.fetch_add(1, Ordering::Relaxed);
@@ -211,7 +224,13 @@ impl MiningShared {
         }
     }
 
-    fn status(&self) -> MiningStatus {
+    /// The status with a look at the counters first (`now_ms` after the node started): the rates are made of these looks.
+    pub fn status_at(&self, now_ms: u64) -> MiningStatus {
+        self.sample(now_ms);
+        self.status()
+    }
+
+    pub fn status(&self) -> MiningStatus {
         MiningStatus {
             // (the backend names itself a moment after the miner starts)
             backend: self
@@ -224,7 +243,7 @@ impl MiningShared {
             blocks_found: self.found.load(Ordering::Relaxed),
             blocks_accepted: self.accepted.load(Ordering::Relaxed),
             paused: self.paused.load(Ordering::Relaxed),
-            hashrate: None,
+            rates: self.meter.lock().map(|m| m.rates()).unwrap_or_default(),
         }
     }
 }
@@ -318,7 +337,10 @@ impl Maintenance {
             disk_bytes: self.disk,
             pruned_below: engine.node().store().pruned_below().unwrap_or(0),
             alarms: health.alarms.iter().map(|a| a.kind().to_string()).collect(),
-            mining: self.mining.as_ref().map(|m| m.status()),
+            mining: self
+                .mining
+                .as_ref()
+                .map(|m| m.status_at(now.duration_since(self.started).as_millis() as u64)),
         })
     }
 }
@@ -465,9 +487,16 @@ fn miner_hook(
         min_block_interval: Duration::from_secs(cfg.mine_pace),
         ..MinerConfig::default()
     };
+    // the hook is made here and the meter is told where its counters are, then the hook goes into the node's loop
+    let seen = |h: MinerHook<WalletPayout>| -> Box<dyn Hooks> {
+        if let Ok(mut c) = shared.counters.lock() {
+            *c = Some(h.counters());
+        }
+        Box::new(h)
+    };
     let hook: Box<dyn Hooks> = match cfg.mine {
         MineMode::Off => unreachable!("handled above"),
-        MineMode::Sha256 => Box::new(MinerHook::new(
+        MineMode::Sha256 => seen(MinerHook::new(
             Miner::spawn(|| Ok(Sha256Backend)),
             payout,
             mcfg,
@@ -480,7 +509,7 @@ fn miner_hook(
                     .ok_or("cpu mining needs the dev network")?,
             );
             let cores = cfg.mine_cores;
-            Box::new(MinerHook::new(
+            seen(MinerHook::new(
                 Miner::spawn(move || Ok(CpuMatmulBackend::new(pow, DEV_EPOCH_BLOCKS, cores, 10))),
                 payout,
                 mcfg,
@@ -488,7 +517,7 @@ fn miner_hook(
         }
         MineMode::Gpu => {
             let (device, batch) = (cfg.gpu_device, cfg.gpu_batch);
-            Box::new(MinerHook::new(
+            seen(MinerHook::new(
                 Miner::spawn(move || {
                     GpuBackend::new(device, Params::DEFAULT, DEV_EPOCH_BLOCKS, batch, 10)
                 }),

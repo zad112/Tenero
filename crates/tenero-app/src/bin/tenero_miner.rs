@@ -315,28 +315,18 @@ fn main() {
         let (backend, every) = (args.backend.clone(), Duration::from_secs(args.status_every));
         std::thread::spawn(move || {
             let started = Instant::now();
-            // the rate over the last few seconds, so that it neither jumps about nor lags
-            let mut window: std::collections::VecDeque<(Instant, u64)> = Default::default();
-            let (mut last_log, mut last_logged) = (Instant::now(), 0u64);
+            // the rates: 10 s, 60 s, 15 min and the run, over the time spent searching (see `tenero_miner::rate`)
+            let mut meter = tenero_miner::rate::RateMeter::new();
+            let mut last_log = Instant::now();
             while !s.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_secs(1));
                 let now = Instant::now();
                 let attempts = counters.attempts.load(Ordering::Relaxed);
-                window.push_back((now, attempts));
-                while window
-                    .front()
-                    .is_some_and(|(t, _)| now.duration_since(*t) > Duration::from_secs(5))
-                {
-                    window.pop_front();
-                }
-                let rate = match (window.front(), window.back()) {
-                    (Some((t0, a0)), Some((t1, a1)))
-                        if t1.duration_since(*t0).as_secs_f64() >= 2.0 =>
-                    {
-                        Some((a1 - a0) as f64 / t1.duration_since(*t0).as_secs_f64())
-                    }
-                    _ => None,
-                };
+                meter.record(
+                    now.duration_since(started).as_millis() as u64,
+                    attempts,
+                    counters.searching(),
+                );
                 let link = if !progress.connected.load(Ordering::Relaxed) {
                     NodeLink::Down
                 } else if progress.syncing.load(Ordering::Relaxed) {
@@ -355,7 +345,7 @@ fn main() {
                     backend: name,
                     link,
                     node_height: progress.height.load(Ordering::Relaxed),
-                    rate,
+                    rates: meter.rates(),
                     found: tally.found.load(Ordering::Relaxed),
                     accepted: tally.accepted.load(Ordering::Relaxed),
                     lost_race: tally.lost_race.load(Ordering::Relaxed),
@@ -363,14 +353,13 @@ fn main() {
                     uptime_secs: now.duration_since(started).as_secs(),
                 });
                 if now.duration_since(last_log) >= every {
-                    let rate = (attempts - last_logged) as f64
-                        / now.duration_since(last_log).as_secs_f64().max(0.001);
                     l.info(&format!(
-                        "status: {rate:.0} attempts/s | jobs {} | solutions {}",
+                        "status: attempts/s {} | jobs {} | solutions {}",
+                        tenero_app::ui::rates_text(&meter.rates()),
                         counters.jobs.load(Ordering::Relaxed),
                         counters.found.load(Ordering::Relaxed)
                     ));
-                    (last_log, last_logged) = (now, attempts);
+                    last_log = now;
                 }
             }
         });

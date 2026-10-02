@@ -12,7 +12,9 @@
 use std::io::Write;
 use std::sync::Mutex;
 
-/// The coin's ticker as the screen writes it. **A placeholder: the name is a decision for the owner**, kept in this one place.
+use tenero_miner::rate::Rates;
+
+/// The coin's ticker as the screen writes it (the owner chose `TNR`), kept in this one place.
 pub const TICKER: &str = "TNR";
 
 // ---- colour ------------------------------------------------------------------------------------------------------------------
@@ -208,8 +210,32 @@ pub struct MiningStatus {
     pub blocks_accepted: u64,
     /// Waiting for the node to finish syncing.
     pub paused: bool,
-    /// Attempts a second, when there is a figure worth showing (M10.2 gives it a meaning).
-    pub hashrate: Option<f64>,
+    /// Attempts a second over 10 s, 60 s, 15 min and the run (searching time only; see `tenero_miner::rate`).
+    pub rates: Rates,
+}
+
+/// The rates in words: `10s 35,012 | 60s 34,980 | 15m - | avg 34,990` (a window with no figure yet is `-`; nothing at all is `starting`).
+pub fn rates_text(r: &Rates) -> String {
+    if r.s10.is_none() && r.s60.is_none() && r.m15.is_none() && r.average.is_none() {
+        return "starting".to_string();
+    }
+    let f = |v: Option<f64>| v.map_or("-".to_string(), |v| group_digits(v.round() as u64));
+    format!(
+        "10s {} | 60s {} | 15m {} | avg {}",
+        f(r.s10),
+        f(r.s60),
+        f(r.m15),
+        f(r.average)
+    )
+}
+
+/// The row of rates, with a mark when the miner is not searching at this moment (paused, building a dataset, waiting for a job).
+fn rates_row(r: &Rates) -> String {
+    format!(
+        "  rate/s   {}{}",
+        if r.searching { "" } else { "(idle) " },
+        rates_text(r)
+    )
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -327,14 +353,11 @@ pub fn render_status_block(s: &NodeStatus, t: &Theme) -> Vec<String> {
         } else {
             t.green("mining")
         };
-        let rate = m
-            .hashrate
-            .map(|h| format!(" | {} attempts/s", group_digits(h as u64)))
-            .unwrap_or_default();
         lines.push(cut(&format!(
-            "  mining   {state} ({}){rate} | {} found, {} in the chain",
+            "  mining   {state} ({}) | {} found, {} in the chain",
             m.backend, m.blocks_found, m.blocks_accepted
         )));
+        lines.push(cut(&rates_row(&m.rates)));
     }
     let alarms = if s.alarms.is_empty() {
         "none".to_string()
@@ -369,6 +392,7 @@ pub fn render_status_line(s: &NodeStatus) -> String {
             m.blocks_accepted,
             if m.paused { " (paused)" } else { "" }
         ));
+        line.push_str(&format!(" | rate/s {}", rates_text(&m.rates)));
     }
     if !s.alarms.is_empty() {
         line.push_str(&format!(" | ALARMS: {}", s.alarms.join(", ")));
@@ -395,8 +419,8 @@ pub struct MinerStatus {
     pub backend: String,
     pub link: NodeLink,
     pub node_height: u64,
-    /// Attempts a second over the last status interval, if it can be told yet.
-    pub rate: Option<f64>,
+    /// Attempts a second over 10 s, 60 s, 15 min and the run.
+    pub rates: Rates,
     pub found: u64,
     pub accepted: u64,
     pub lost_race: u64,
@@ -416,14 +440,11 @@ pub fn render_miner_block(s: &MinerStatus, t: &Theme) -> Vec<String> {
         )),
         NodeLink::Down => t.red("not reachable: trying again"),
     };
-    let rate = match s.rate {
-        Some(r) => format!("{} attempts/s", group_digits(r as u64)),
-        None => "starting".to_string(),
-    };
     vec![
         t.dim("-- status ------------------------------------------------------------"),
         cut(&format!("  node     {node}")),
-        cut(&format!("  mining   {} | {rate}", s.backend)),
+        cut(&format!("  mining   {}", s.backend)),
+        cut(&rates_row(&s.rates)),
         cut(&format!(
             "  blocks   {} found | {} in the chain | {} lost a race | {} refused",
             s.found, s.accepted, s.lost_race, s.refused
@@ -441,10 +462,7 @@ pub fn render_miner_line(s: &MinerStatus) -> String {
         ),
         NodeLink::Down => "node not reachable".to_string(),
     };
-    let rate = s
-        .rate
-        .map(|r| format!("{} attempts/s", group_digits(r as u64)))
-        .unwrap_or_else(|| "starting".to_string());
+    let rate = format!("rate/s {}", rates_text(&s.rates));
     format!(
         "{link} | {} | {rate} | blocks: {} found, {} in the chain, {} lost a race, {} refused | up {}",
         s.backend,
