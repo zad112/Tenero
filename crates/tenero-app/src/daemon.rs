@@ -182,11 +182,20 @@ pub struct MiningShared {
     /// The backend's counters (set when the miner is made) and the meter that turns them into rates.
     pub counters: std::sync::Mutex<Option<Arc<tenero_miner::Counters>>>,
     pub meter: std::sync::Mutex<tenero_miner::rate::RateMeter>,
+    /// The card's health (GPU mining only, and only if NVML can be read): the connection, and what it said at the last look.
+    pub probe: std::sync::Mutex<Option<tenero_miner::gpu_stats::GpuProbe>>,
+    pub gpu: std::sync::Mutex<Option<tenero_miner::gpu_stats::GpuReading>>,
 }
 
 impl MiningShared {
     /// One look at the backend's counters, `now_ms` after the node started (the status block takes one a second).
     pub fn sample(&self, now_ms: u64) {
+        if let Some(p) = self.probe.lock().ok().as_deref().and_then(|p| p.as_ref()) {
+            let reading = p.read();
+            if let Ok(mut g) = self.gpu.lock() {
+                *g = Some(reading);
+            }
+        }
         let Some(c) = self.counters.lock().ok().and_then(|c| c.clone()) else {
             return;
         };
@@ -244,6 +253,7 @@ impl MiningShared {
             blocks_accepted: self.accepted.load(Ordering::Relaxed),
             paused: self.paused.load(Ordering::Relaxed),
             rates: self.meter.lock().map(|m| m.rates()).unwrap_or_default(),
+            gpu: self.gpu.lock().ok().and_then(|g| g.clone()),
         }
     }
 }
@@ -517,6 +527,15 @@ fn miner_hook(
         }
         MineMode::Gpu => {
             let (device, batch) = (cfg.gpu_device, cfg.gpu_batch);
+            // the card's health for the screen; if NVML cannot be read the miner is not affected
+            match tenero_miner::gpu_stats::GpuProbe::open(device) {
+                Ok(p) => {
+                    if let Ok(mut slot) = shared.probe.lock() {
+                        *slot = Some(p);
+                    }
+                }
+                Err(e) => log.info(&format!("GPU readings are not available: {e}")),
+            }
             seen(MinerHook::new(
                 Miner::spawn(move || {
                     GpuBackend::new(device, Params::DEFAULT, DEV_EPOCH_BLOCKS, batch, 10)

@@ -89,7 +89,10 @@ at most 78 columns, colour is off with `NO_COLOR`, and `tenero-miner` has the sa
 mines for, its attempts a second, the blocks it has found). **The `TNR` after a reward is the coin's ticker (the owner chose to keep it).**
 **The `rate/s` row** shows attempts a second over the last 10 seconds, 60 seconds, 15 minutes and the whole run, counting only the
 time the miner was searching (not while paused for a sync or building a dataset; `(idle)` means it is not searching at this moment; `-`
-means that window is not yet full). **An attempt is one matmulhash evaluation, which is a different amount of work from a hash of any
+means that window is not yet full). **When mining on a GPU there are also rows for the card** (`gpu`: temperature, power, fan, core and memory clocks; `memory`: used and how
+busy the memory controller is; `limited`: only if the driver is holding the clocks down; `reads`: **the memory reads the attempt rate
+implies, worked out from the rate and not measured**: NVML does not report bandwidth). They come from NVML and are left out where the
+driver or card does not say; mining does not depend on them. **An attempt is one matmulhash evaluation, which is a different amount of work from a hash of any
 other coin, so these numbers cannot be compared with another coin's miner.** `tenerod status` and `tenerod stop` print the same one-liners as before (scripts read them).
 
 **The status line and the alarms (in the log).** Every `status_every` seconds the node logs a line such as

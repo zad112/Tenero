@@ -69,9 +69,14 @@ build, or waiting for a job is left out, and so are the attempts counted in it; 
 clock set back restarts the windows and does not inflate anything); the backends say when they build a dataset (CPU and GPU) and the
 miner thread when it is in a job; both screens show a `rate/s` row (`(idle)` in front when not searching); the miner program's log line
 uses the same figures. 44 screen tests, 16 meter tests; 50 injected faults, 14 got through the first time (one was a real bug, the clock
-set back), the gaps are closed, two are equivalent (how old samples are dropped). **Not done:** the measurement on the owner's GPU (needs
-the owner's machine), the effective rate and expected-versus-actual blocks, `--gpu-batch` auto-selection, several GPUs, and NVML
-(temperature, power, memory bandwidth: a new dependency, **not yet approved**).
+set back), the gaps are closed, two are equivalent (how old samples are dropped). **NVML: done** (owner approved NVML; the crate is `nvml-wrapper` 0.13, MIT OR Apache-2.0, which loads NVIDIA's library at run time; it adds
+13 packages to the build: nvml-wrapper-sys, libloading (ISC), thiserror 1.0.69 and its macro, static_assertions, wrapcenum-derive and
+darling, darling_core, darling_macro, fnv, ident_case, strsim, all permissive; none audited as far as known): when mining on a GPU both
+screens show the card's temperature, power, fan, clocks, memory used, how busy the memory controller is, and when the driver is holding
+the clocks down; a missing NVML or an unreported figure leaves rows out and never affects mining. Read once on the owner's real card
+(idle). **NVML does not report memory bandwidth**, so the `reads` row is the attempt rate times 16 MiB, labelled as an estimate. The
+CUDA and NVML card numbers are assumed to be the same (true with one GPU; not handled for several). **Not done:** the measurement on
+the owner's GPU under load, the effective rate and expected-versus-actual blocks, `--gpu-batch` auto-selection, several GPUs.
 
 What the owner asked for is a rate that can be compared with other GPU miners. The honest part first:
 

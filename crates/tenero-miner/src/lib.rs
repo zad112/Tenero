@@ -24,6 +24,7 @@
 //! placeholder that nobody can spend), and a command-line program.
 
 pub mod gpu;
+pub mod gpu_stats;
 pub mod rate;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

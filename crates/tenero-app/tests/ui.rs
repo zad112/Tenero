@@ -13,6 +13,7 @@ use tenero_app::ui::{
     MinerStatus, MiningStatus, NodeLink, NodeStatus, Screen, Severity, SyncProgress, Theme,
     Verbosity, MAX_LINE,
 };
+use tenero_miner::gpu_stats::GpuReading;
 use tenero_miner::rate::Rates;
 
 const OFF: Theme = Theme { color: false };
@@ -266,6 +267,7 @@ fn the_status_block_while_syncing_mining_pruned_and_with_alarms() {
         blocks_accepted: 2,
         paused: true,
         rates: Rates::default(),
+        gpu: None,
     });
     let got = render_status_block(&s, &OFF).join("\n");
     assert_eq!(
@@ -287,6 +289,7 @@ fn the_status_block_while_syncing_mining_pruned_and_with_alarms() {
         blocks_accepted: 0,
         paused: false,
         rates: busy(),
+        gpu: None,
     });
     let got = render_status_block(&s, &OFF).join("\n");
     assert!(
@@ -327,6 +330,7 @@ fn every_status_line_is_ascii_and_fits_an_80_column_window() {
             average: Some(99_999_999_999.0),
             searching: true,
         },
+        gpu: None,
     });
     for theme in [OFF, ON] {
         for l in render_status_block(&s, &theme) {
@@ -380,6 +384,7 @@ fn the_plain_status_line_says_the_same_on_one_line() {
         blocks_accepted: 3,
         paused: true,
         rates: Rates::default(),
+        gpu: None,
     });
     assert_eq!(
         render_status_line(&s),
@@ -862,6 +867,7 @@ fn miner_status() -> MinerStatus {
         link: NodeLink::Connected,
         node_height: 1204,
         rates: busy(),
+        gpu: None,
         found: 4,
         accepted: 3,
         lost_race: 1,
@@ -1255,10 +1261,172 @@ fn the_nodes_plain_status_line_carries_the_rates_of_a_miner_that_has_them() {
         blocks_accepted: 1,
         paused: false,
         rates: busy(),
+        gpu: None,
     });
     let line = render_status_line(&s);
     assert!(
         line.contains("| mining gpu: 1 found, 1 in the chain | rate/s 10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000 | avg 1,150,000"),
         "{line}"
     );
+}
+
+fn card() -> GpuReading {
+    GpuReading {
+        name: Some("NVIDIA GeForce RTX 5070 Ti".into()),
+        temp_c: Some(68),
+        power_w: Some(211.6),
+        fan_pct: Some(54),
+        core_mhz: Some(2625),
+        mem_mhz: Some(14001),
+        mem_used_mib: Some(9300),
+        mem_total_mib: Some(16303),
+        busy_pct: Some(99),
+        mem_busy_pct: Some(94),
+        limited_by: None,
+    }
+}
+
+#[test]
+fn the_miners_block_shows_the_card_and_says_the_memory_reads_are_an_estimate() {
+    use tenero_app::ui::gpu_rows;
+    // 35,000 attempts a second of 16 MiB slices is 587 GB/s
+    let mut r = busy();
+    r.s10 = Some(35_000.0);
+    assert_eq!(
+        gpu_rows(&card(), &r, &OFF),
+        vec![
+            "  gpu      68 C | 212 W | fan 54% | core 2,625 MHz | mem 14,001 MHz",
+            "  memory   9.1 of 15.9 GiB used | controller busy 94%",
+            "  reads    ~587 GB/s implied by the rate (an estimate, not measured)",
+        ]
+    );
+    // a made-up speed shows the arithmetic and the commas: 1,234,567 a second is 20,713 GB/s
+    assert!(gpu_rows(&card(), &busy(), &OFF)[2].starts_with("  reads    ~20,713 GB/s"));
+}
+
+#[test]
+fn what_the_card_does_not_report_is_left_out_and_no_reading_is_no_rows() {
+    use tenero_app::ui::gpu_rows;
+    assert!(gpu_rows(&GpuReading::default(), &Rates::default(), &OFF).is_empty());
+    let only_temp = GpuReading {
+        temp_c: Some(40),
+        ..GpuReading::default()
+    };
+    assert_eq!(
+        gpu_rows(&only_temp, &Rates::default(), &OFF),
+        vec!["  gpu      40 C"]
+    );
+    let no_fan = GpuReading {
+        fan_pct: None,
+        ..card()
+    };
+    assert!(!gpu_rows(&no_fan, &busy(), &OFF)[0].contains("fan"));
+    // no rate yet: no estimate, and the rest of the memory row stays
+    let rows = gpu_rows(&card(), &Rates::default(), &OFF);
+    assert_eq!(
+        rows[1],
+        "  memory   9.1 of 15.9 GiB used | controller busy 94%"
+    );
+    // the average is used when the 10 s window is not there yet
+    let avg_only = Rates {
+        average: Some(35_000.0),
+        ..Rates::default()
+    };
+    assert!(gpu_rows(&card(), &avg_only, &OFF)[2].starts_with("  reads    ~587 GB/s"));
+}
+
+#[test]
+fn a_card_held_back_by_the_driver_says_so_in_yellow() {
+    use tenero_app::ui::gpu_rows;
+    let hot = GpuReading {
+        limited_by: Some("temperature"),
+        ..card()
+    };
+    let rows = gpu_rows(&hot, &busy(), &OFF);
+    assert_eq!(
+        rows[1],
+        "  limited  the driver is holding the clocks down: temperature"
+    );
+    assert!(gpu_rows(&hot, &busy(), &ON)[1].contains("[33mthe driver is holding"));
+    assert_eq!(
+        gpu_rows(&card(), &busy(), &OFF).len(),
+        3,
+        "not limited: no such row"
+    );
+}
+
+#[test]
+fn the_miner_block_and_both_plain_lines_carry_the_card_when_there_is_a_reading() {
+    let mut s = miner_status();
+    s.gpu = Some(card());
+    let block = render_miner_block(&s, &OFF);
+    assert_eq!(block.len(), 9);
+    assert!(block[4].starts_with("  gpu      68 C"));
+    assert!(block[5].starts_with("  memory   9.1 of 15.9 GiB"));
+    assert!(block[6].starts_with("  reads    ~20,713 GB/s"));
+    assert!(block[7].starts_with("  blocks"));
+    for l in &block {
+        assert!(l.is_ascii() && l.len() <= MAX_LINE, "{l}");
+    }
+    assert!(render_miner_line(&s).contains("| rate/s 10s 1,234,567"));
+    assert!(
+        render_miner_line(&s).contains(" | gpu 68 C, 212 W | blocks:"),
+        "{}",
+        render_miner_line(&s)
+    );
+    s.gpu = Some(GpuReading {
+        limited_by: Some("power cap"),
+        ..card()
+    });
+    assert!(render_miner_line(&s).contains(" | gpu 68 C, 212 W, limited by power cap | blocks:"));
+    s.gpu = None;
+    assert_eq!(
+        render_miner_block(&s, &OFF).len(),
+        6,
+        "no card: the rows of before"
+    );
+    // the node's block
+    let mut n = status();
+    n.mining = Some(MiningStatus {
+        backend: "gpu".into(),
+        blocks_found: 1,
+        blocks_accepted: 1,
+        paused: false,
+        rates: busy(),
+        gpu: Some(card()),
+    });
+    let block = render_status_block(&n, &OFF);
+    let at = block
+        .iter()
+        .position(|l| l.starts_with("  gpu "))
+        .expect("a gpu row");
+    assert!(block[at - 1].starts_with("  rate/s"));
+    assert!(block[at + 1].starts_with("  memory"));
+    assert!(block[at + 2].starts_with("  reads"));
+    assert!(render_status_line(&n).contains(
+        "| rate/s 10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000 | avg 1,150,000 | gpu 68 C, 212 W"
+    ));
+}
+
+#[test]
+fn the_shared_counters_hand_on_the_last_reading_of_the_card() {
+    let shared = MiningShared::default();
+    assert!(shared.status().gpu.is_none(), "no card, no reading");
+    *shared.gpu.lock().unwrap() = Some(card());
+    assert_eq!(shared.status().gpu, Some(card()));
+    // with no probe (no NVML, or not a GPU miner) a look at the counters does not make one up or lose the last
+    shared.status_at(1000);
+    assert_eq!(shared.status().gpu, Some(card()));
+}
+
+/// The owner's machine: the shared counters read a real card when a probe is set.
+#[test]
+#[ignore = "needs an NVIDIA GPU and its driver"]
+fn a_real_probe_in_the_shared_counters_gives_a_reading_with_each_look() {
+    let shared = MiningShared::default();
+    *shared.probe.lock().unwrap() =
+        Some(tenero_miner::gpu_stats::GpuProbe::open(0).expect("NVML and GPU 0"));
+    assert!(shared.status().gpu.is_none(), "nothing read yet");
+    let g = shared.status_at(1000).gpu.expect("a reading");
+    assert!(g.temp_c.is_some() && g.mem_total_mib.is_some());
 }

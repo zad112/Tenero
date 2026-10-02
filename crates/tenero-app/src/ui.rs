@@ -12,6 +12,7 @@
 use std::io::Write;
 use std::sync::Mutex;
 
+use tenero_miner::gpu_stats::{implied_read_bytes_per_sec, GpuReading, SLICE_BYTES};
 use tenero_miner::rate::Rates;
 
 /// The coin's ticker as the screen writes it (the owner chose `TNR`), kept in this one place.
@@ -212,6 +213,8 @@ pub struct MiningStatus {
     pub paused: bool,
     /// Attempts a second over 10 s, 60 s, 15 min and the run (searching time only; see `tenero_miner::rate`).
     pub rates: Rates,
+    /// The card's health, when mining on a GPU and NVML can be read.
+    pub gpu: Option<GpuReading>,
 }
 
 /// The rates in words: `10s 35,012 | 60s 34,980 | 15m - | avg 34,990` (a window with no figure yet is `-`; nothing at all is `starting`).
@@ -227,6 +230,65 @@ pub fn rates_text(r: &Rates) -> String {
         f(r.m15),
         f(r.average)
     )
+}
+
+/// The rows about the card: its health, what holds it back, and the memory reads the work implies. Nothing for a figure the card does
+/// not report; no rows at all when there is no reading. **The memory reads are worked out from the attempt rate, not measured**, and say so.
+pub fn gpu_rows(g: &GpuReading, rates: &Rates, t: &Theme) -> Vec<String> {
+    let mut health = vec![];
+    if let Some(v) = g.temp_c {
+        health.push(format!("{v} C"));
+    }
+    if let Some(v) = g.power_w {
+        health.push(format!("{} W", v.round() as u64));
+    }
+    if let Some(v) = g.fan_pct {
+        health.push(format!("fan {v}%"));
+    }
+    if let Some(v) = g.core_mhz {
+        health.push(format!("core {} MHz", group_digits(u64::from(v))));
+    }
+    if let Some(v) = g.mem_mhz {
+        health.push(format!("mem {} MHz", group_digits(u64::from(v))));
+    }
+    let mut rows = vec![];
+    if !health.is_empty() {
+        rows.push(cut(&format!("  gpu      {}", health.join(" | "))));
+    }
+    if let Some(why) = g.limited_by {
+        rows.push(cut(&format!(
+            "  limited  {}",
+            t.yellow(&format!("the driver is holding the clocks down: {why}"))
+        )));
+    }
+    let mut memory = vec![];
+    if let (Some(used), Some(total)) = (g.mem_used_mib, g.mem_total_mib) {
+        memory.push(format!(
+            "{} of {} GiB used",
+            format_gib(used),
+            format_gib(total)
+        ));
+    }
+    if let Some(v) = g.mem_busy_pct {
+        memory.push(format!("controller busy {v}%"));
+    }
+    if !memory.is_empty() {
+        rows.push(cut(&format!("  memory   {}", memory.join(" | "))));
+    }
+    if let Some(rate) = rates.s10.or(rates.average) {
+        let gb = implied_read_bytes_per_sec(rate, SLICE_BYTES) / 1e9;
+        rows.push(cut(&format!(
+            "  reads    ~{} GB/s implied by the rate (an estimate, not measured)",
+            group_digits(gb.round() as u64)
+        )));
+    }
+    rows
+}
+
+/// MiB as GiB with one decimal (`15.9`).
+fn format_gib(mib: u64) -> String {
+    let tenths = (mib * 10 + 512) / 1024;
+    format!("{}.{}", tenths / 10, tenths % 10)
 }
 
 /// The row of rates, with a mark when the miner is not searching at this moment (paused, building a dataset, waiting for a job).
@@ -358,6 +420,9 @@ pub fn render_status_block(s: &NodeStatus, t: &Theme) -> Vec<String> {
             m.backend, m.blocks_found, m.blocks_accepted
         )));
         lines.push(cut(&rates_row(&m.rates)));
+        if let Some(g) = &m.gpu {
+            lines.extend(gpu_rows(g, &m.rates, t));
+        }
     }
     let alarms = if s.alarms.is_empty() {
         "none".to_string()
@@ -393,6 +458,9 @@ pub fn render_status_line(s: &NodeStatus) -> String {
             if m.paused { " (paused)" } else { "" }
         ));
         line.push_str(&format!(" | rate/s {}", rates_text(&m.rates)));
+        if let Some(g) = &m.gpu {
+            line.push_str(&gpu_plain(g));
+        }
     }
     if !s.alarms.is_empty() {
         line.push_str(&format!(" | ALARMS: {}", s.alarms.join(", ")));
@@ -421,6 +489,7 @@ pub struct MinerStatus {
     pub node_height: u64,
     /// Attempts a second over 10 s, 60 s, 15 min and the run.
     pub rates: Rates,
+    pub gpu: Option<GpuReading>,
     pub found: u64,
     pub accepted: u64,
     pub lost_race: u64,
@@ -445,12 +514,36 @@ pub fn render_miner_block(s: &MinerStatus, t: &Theme) -> Vec<String> {
         cut(&format!("  node     {node}")),
         cut(&format!("  mining   {}", s.backend)),
         cut(&rates_row(&s.rates)),
+    ]
+    .into_iter()
+    .chain(s.gpu.iter().flat_map(|g| gpu_rows(g, &s.rates, t)))
+    .chain([
         cut(&format!(
             "  blocks   {} found | {} in the chain | {} lost a race | {} refused",
             s.found, s.accepted, s.lost_race, s.refused
         )),
         cut(&format!("  up       {}", format_duration(s.uptime_secs))),
-    ]
+    ])
+    .collect()
+}
+
+/// The card in a plain line: ` | gpu 62 C 212 W 94% busy` (what is there; nothing if nothing is).
+fn gpu_plain(g: &GpuReading) -> String {
+    let mut parts = vec![];
+    if let Some(v) = g.temp_c {
+        parts.push(format!("{v} C"));
+    }
+    if let Some(v) = g.power_w {
+        parts.push(format!("{} W", v.round() as u64));
+    }
+    if let Some(why) = g.limited_by {
+        parts.push(format!("limited by {why}"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" | gpu {}", parts.join(", "))
+    }
 }
 
 pub fn render_miner_line(s: &MinerStatus) -> String {
@@ -462,7 +555,11 @@ pub fn render_miner_line(s: &MinerStatus) -> String {
         ),
         NodeLink::Down => "node not reachable".to_string(),
     };
-    let rate = format!("rate/s {}", rates_text(&s.rates));
+    let rate = format!(
+        "rate/s {}{}",
+        rates_text(&s.rates),
+        s.gpu.as_ref().map(gpu_plain).unwrap_or_default()
+    );
     format!(
         "{link} | {} | {rate} | blocks: {} found, {} in the chain, {} lost a race, {} refused | up {}",
         s.backend,

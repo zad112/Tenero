@@ -313,15 +313,31 @@ fn main() {
         let (counters, progress, tally) = (rm.counters(), rm.progress(), Arc::clone(&tally));
         let (l, screen, s) = (Arc::clone(&log), Arc::clone(&screen), Arc::clone(&shutdown));
         let (backend, every) = (args.backend.clone(), Duration::from_secs(args.status_every));
+        // the card's health for the screen (GPU only); if NVML cannot be read the miner is not affected
+        let probe = if args.backend == "gpu" {
+            match tenero_miner::gpu_stats::GpuProbe::open(args.gpu_device) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    log.info(&format!("GPU readings are not available: {e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
         std::thread::spawn(move || {
             let started = Instant::now();
             // the rates: 10 s, 60 s, 15 min and the run, over the time spent searching (see `tenero_miner::rate`)
             let mut meter = tenero_miner::rate::RateMeter::new();
+            let mut gpu = None;
             let mut last_log = Instant::now();
             while !s.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_secs(1));
                 let now = Instant::now();
                 let attempts = counters.attempts.load(Ordering::Relaxed);
+                if let Some(p) = &probe {
+                    gpu = Some(p.read());
+                }
                 meter.record(
                     now.duration_since(started).as_millis() as u64,
                     attempts,
@@ -346,6 +362,7 @@ fn main() {
                     link,
                     node_height: progress.height.load(Ordering::Relaxed),
                     rates: meter.rates(),
+                    gpu: gpu.clone(),
                     found: tally.found.load(Ordering::Relaxed),
                     accepted: tally.accepted.load(Ordering::Relaxed),
                     lost_race: tally.lost_race.load(Ordering::Relaxed),
