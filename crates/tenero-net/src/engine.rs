@@ -164,6 +164,9 @@ pub struct EngineConfig {
     /// epoch is built in the background when that many blocks from the end of an epoch), so the first block of a
     /// new epoch is not checked after a wait of several seconds.
     pub pow_prefetch_blocks: u64,
+    /// The most bytes of blocks put in one `blocks` reply; a request for blocks that are larger together is answered in
+    /// several replies (the wire's frame ceiling is 16 MiB, and a reply over it cannot be sent at all).
+    pub blocks_reply_bytes: usize,
 }
 
 impl Default for EngineConfig {
@@ -200,6 +203,7 @@ impl Default for EngineConfig {
             addr_answer_ttl_ms: 24 * 3600 * 1000,
             addr_answer_cache: 1024,
             pow_prefetch_blocks: 10,
+            blocks_reply_bytes: crate::wire::BLOCKS_REPLY_BYTES,
         }
     }
 }
@@ -960,7 +964,12 @@ impl<'a> Engine<'a> {
         for id in served {
             self.note_peer_has(peer, id);
         }
-        if !blocks.is_empty() {
+        // as many replies as it takes for each to fit a frame; a block too big for any frame is, to the peer, one we cannot serve
+        let (groups, too_big) = crate::wire::split_blocks(blocks, self.cfg.blocks_reply_bytes);
+        for b in &too_big {
+            missing.push(self.block_id_of(b));
+        }
+        for blocks in groups {
             self.send(peer, Message::Blocks { blocks }, out);
         }
         if !missing.is_empty() {

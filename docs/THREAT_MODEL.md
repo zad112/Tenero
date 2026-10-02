@@ -70,7 +70,8 @@ These come from the tests; none of it is audited.
 |---|---|---|---|
 | A1 | A malformed message crashes or hangs a node | strict decoders; vectors; proptest; the 60 invalid wire cases | **Mitigated** for the decoders; **Partly** overall (coverage-guided fuzzing and the engine's handlers are not fuzzed; cargo-fuzz is planned) |
 | A2 | A length or count field makes a decoder allocate gigabytes | counts are checked against limits before allocating; `a_huge_declared_length...` property; hostile wallet file test | **Mitigated** for the decoders (**to verify** for the store's segment-file readers: they read our own files, but a damaged file is a hostile file) |
-| A3 | A valid message sent at the wrong time or in a hostile order (before `hello`, twice, unsolicited) | `message before hello` 50 points, `second hello` 50, unsolicited address messages punished; scripted-peer tests | **Partly**: tested for the cases listed in `M8_PLAN.md`; there is no systematic fuzzing of message order |
+| A3 | A valid message sent at the wrong time or in a hostile order (before `hello`, twice, unsolicited) | `message before hello` 50 points, `second hello` 50, unsolicited address messages punished; scripted-peer tests; **and (2026-10-02) `tests/fuzz_engine.rs`**: random plausible peers (connect, disconnect, hello, every message kind with real or made-up contents, honest answers with one flaw, whole syncs, clock jumps) in three engine settings, checking after every event that the engine sends only encodable messages to connected peers, dials only `ip:port`, respects its peer limits, holds no peer at the ban score, never lowers the chain's work, keeps its state small, and (run twice) is deterministic; plus a damaged `peers.dat` never breaks loading. 150 + 60 + 120 cases; the harness is checked for reach (over 240 cases about half applied blocks, every message kind was exchanged, 149 had a ban) | **Mitigated** in the sense that 330 random sequences found no violation, and 8 injected faults (a panic, no ban, no limit, a past ban time, a clock read, ...) were all caught; **Partly** in the sense that it is random, not coverage-guided (cargo-fuzz is planned), the chain is 14 blocks (so a cap of 500 ids is never reached), the proof checks are off in it, and it does not model many peers at once |
+| A4 | **A reply that cannot be sent.** Found by reading the engine while fuzzing it: a request for blocks that together passed the 16 MiB frame (32 blocks of over 512 KiB each) failed to encode, the transport only logged it, and the requester never got an answer: a node could not serve its own chain to a new node | **Fixed 2026-10-02:** replies are split into as many `blocks` messages as it takes (`split_blocks`, 8 MiB each); a block too big for any frame is answered `not_found`. 5 tests (the old failure shown, packing at the exact boundaries, order, a block over the ceiling, and a sync from a node that answers one block per message); 4 injected faults caught | **Mitigated**; but see E10 |
 
 ### B. Making a node run out of something (denial of service)
 
@@ -120,6 +121,7 @@ These come from the tests; none of it is audited.
 | E6 | **Inflation or double-spend bug in the validator** | independent Python vectors, tests that break each rule, key-image uniqueness, balance equation, reviewed upstream proof libraries | **Partly**: this is the highest-consequence risk and exactly what an independent review is for; the signed message and the balance check are *ours* (not the libraries') and unaudited |
 | E7 | **Two implementations disagreeing**, causing a split | the Python reference and vectors | **Partly**: there is only one node implementation; the vectors make a second one possible |
 | E8 | **A consensus change forced by an exploit on a live chain** | none yet | **Open**: the emergency-fork plan is a launch gate (`M8_PLAN.md` section 7) and is not written |
+| E10 | **No absolute maximum block size.** The consensus rule is "at most twice the recent median", and the median can grow, but a frame on the wire is at most 16 MiB: a block over that can be mined but **never relayed**. Found with A4 | none: the wire ceiling and the consensus rule do not agree | **Open**: a consensus decision (an absolute cap, or a frame ceiling above any allowed block), to be made deliberately with new vectors (`CLAUDE.md` rule 1) before a real network; at the current floor (a median of 150 KB) it would take sustained very large blocks to reach |
 | E9 | **Premine or hidden allocation** | the genesis has no coinbase output (a test), and the new genesis keeps that (M11.2); every coin is mined | **Mitigated by construction**; says nothing about safety or value |
 
 ### F. Cryptography
@@ -200,15 +202,16 @@ privacy of Monero**, for these reasons:
 ## 5. The gaps that matter most, in the order I would work on them
 
 1. **B1 and B2 (memory and bandwidth under attack): DONE 2026-10-02 for the queue and the per-peer rate** (see the table; the per-kind frame caps already existed for everything but `blocks` and `txs`, so the real hole was the message-count queue, not the frame caps). *Still to do:* a measurement of a node's real memory under many hostile connections (the tests bound the gate's accounting, not the process's working set), and a total byte-rate limit across peers.
-2. **Fuzz the engine** (cargo-fuzz, planned): the handlers for each message in each peer state, and the store's file readers (A1, A2, A3, G3). *Medium.*
+2. **Fuzz the engine: first version DONE 2026-10-02 (proptest, A3, A4);** still to do: cargo-fuzz (coverage-guided) on the engine's handlers, a longer chain in the harness (so the 500-id and 32-block caps are reached), the proof checks switched on, many peers at once, and the store's file readers (A2, G3). *Medium.*
 3. **E3 and E4: difficulty and timestamps on a small network.** Simulate a handful of miners joining and leaving, with a timestamp-manipulating miner, before choosing the fresh chain's parameters (M11.2). This decides whether the first test network survives its first hours. *Medium.*
 4. **E6, F2: the independent review** of the validator, the store and `tenero-crypto`, by someone other than the author. Not something I can do; the highest-value item on this list.
 5. **G1, G5: file permissions on the data directory and the cookie** (check what Windows does; set restrictive permissions explicitly on creation; test it). *Small.*
 6. **C1: anchor peers** (keep two or three outbound peers across restarts) and a recommended multi-seed configuration. *Small to medium.*
 7. **J1, J2: `cargo audit` and `cargo deny` in CI; reproducible, checksummed releases.** *Small to medium.*
 8. **E8: the emergency-fork plan**, written down: who can decide, how a bad block or rule is handled, how testers are told. *Small, but a decision, not code.*
-9. **Verify the "to verify" items** in this document, each with a test or a changed sentence.
-10. **A test that no log line contains a secret** (G6), and one that sends an HTTP request to the control port (G2). *Small.*
+9. **Decide E10** (the absolute block size), then change the rules, vectors and wire ceiling together. *A decision first.*
+10. **Verify the "to verify" items** in this document, each with a test or a changed sentence.
+11. **A test that no log line contains a secret** (G6), and one that sends an HTTP request to the control port (G2). *Small.*
 
 ## 6. How this document is kept honest
 

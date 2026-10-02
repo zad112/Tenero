@@ -18,6 +18,43 @@ use crate::message::{
 /// The most a frame's `length` may ever be (blocks and transactions lists).
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
+/// The most bytes of blocks one `blocks` message is asked to carry (the frame ceiling is twice this, so a message always fits).
+pub const BLOCKS_REPLY_BYTES: usize = MAX_FRAME / 2;
+
+/// Splits blocks into groups whose encoded sizes add up to at most `budget` bytes (one block over it goes alone), so that
+/// every group fits in a `blocks` frame however large the blocks are; and the blocks that cannot be sent at all (one that
+/// alone is too big for a frame), returned apart. Order is kept. (A reply of thirty-two blocks that together passed
+/// [`MAX_FRAME`] used to fail to encode, and the transport only logged it: the requester never got an answer.)
+pub fn split_blocks(blocks: Vec<Block>, budget: usize) -> (Vec<Vec<Block>>, Vec<Block>) {
+    // the frame's own bytes: length 4, kind 1, count 4
+    const OVERHEAD: usize = 9;
+    let (mut groups, mut too_big): (Vec<Vec<Block>>, Vec<Block>) = (vec![], vec![]);
+    let (mut current, mut used) = (Vec::new(), 0usize);
+    for b in blocks {
+        let size = match b.to_bytes() {
+            Ok(bytes) => bytes.len(),
+            Err(_) => {
+                too_big.push(b);
+                continue;
+            }
+        };
+        if size + OVERHEAD > MAX_FRAME {
+            too_big.push(b);
+            continue;
+        }
+        if !current.is_empty() && used + size > budget {
+            groups.push(std::mem::take(&mut current));
+            used = 0;
+        }
+        used += size;
+        current.push(b);
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    (groups, too_big)
+}
+
 /// Why a frame was refused. [`WireError::as_str`] gives the names the vectors use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WireError {
