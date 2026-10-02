@@ -407,7 +407,7 @@ wallet: `create`, `restore`, `address`, `balance`, `pay`, `seed`, `info`; the pa
 `rpassword` crate, approved), the seed shown once at `create`, amounts parsed strictly (8 decimals), every bad request
 refused before a node is touched. **The control interface** (`docs/CONTROL_PROTOCOL.md`, vectors
 `tests/vectors/control.json`, an independent Python reference): the wallet reaches the node over a loopback socket with
-eleven request messages; **loopback only, and only a program that can read the node's data directory** (a new random
+thirteen request messages (eleven, then two for the miner); **loopback only, and only a program that can read the node's data directory** (a new random
 cookie at every start must be the first message); limits on connections, queue and idle time; the node's own loop does
 the work, so no locks. Decision 4 asked for "the same protocol with a few extra messages"; what was built is the same
 style (length-prefixed frames, strict decoding, golden vectors) with its own message set, for the reasons in that
@@ -435,9 +435,36 @@ wallet refuses blocks that are not the ones it asked for, or that the node appli
 given a wrong checkpoint takes nothing from a peer, a node given the right one syncs). All are caught now. **One is left
 and is not a hole:** the frame reader reserves its buffer from the announced length up to 64 KiB, which no test can
 observe (memory, not behaviour).
+*The miner in its own process (added afterwards, 2026-10):* `tenero-miner`, a third program in `tenero-app`, with two new
+control messages (`block_template`, `submit_block`; `docs/CONTROL_PROTOCOL.md`, vectors extended in both languages). The
+node builds the block (its own pool's best transactions, the coinbase paying the miner's address, never over 2 MB of
+transactions) and answers "syncing" with an error; the miner searches with the same backends as the in-process miner
+(`sha256`, `cpu`, `gpu`) on a thread of its own and hands a found block back as a **local block, which the node validates
+completely** (the full proof of work and every proof), reporting *in the chain*, *lost a race* (valid, on a side branch) or
+*refused*. It asks the node for its tip every 200 ms, replaces its job when the tip moves or the template is a minute old,
+pauses while the node is syncing, drops a template for the wrong height (the coinbase's key exchange binds the height, so a
+reward addressed for another height would be unreadable by the wallet), reconnects with a pause if the node goes away
+(including a node restart, which makes a new cookie), and starts before the node or after it. A backend that does not fit
+the node's network (gpu on the test network, sha256 on the dev network) is refused at start-up.
+*Tests (25 in `remote_miner.rs`, 4 for the program in `daemon.rs`, and the control vectors in both languages):* against a real node (a template is a block
+on the tip that pays the miner and names the target; a node that is syncing has none; a mined block is taken, a competing one
+is said to have lost the race, an invalid one is refused with a reason and the chain does not change; **a miner mines 10
+blocks the node accepts and the miner's wallet can read every reward**) and against a scripted fake node, for what a real node
+will not produce on demand (a tip that moves between two questions, a template for the wrong height, a late solution for a
+replaced job, a solution that does not meet the target, a backend that fails or cannot be built, a node that goes away and
+comes back, a node that is not up yet, a stop heard in the middle of a pause); and the real programs: `tenero-miner` mines for
+a `tenerod` in another process, refuses a wrong backend and bad settings, and waits for a node that is not up. **Fault
+injection: 37 faults; the first sweep caught 30 (two of its 7 survivors were mutations that did not compile and were redone), and the survivors found real holes (the test chain's mix is always zero so
+"the mix is copied into the block" was untested; the template's two heights were never made to disagree; a job left running
+after an unusable template; no pause between connection attempts; a stop not heard during a pause; the dev network's wrong
+backend) and all are caught now.**
+*Not measured:* the GPU miner in its own process against a node on the dev network (the real matmulhash). The test chain and
+the real programs on it are tested; **no number for the GPU in this arrangement exists yet**. (The in-process GPU miner's
+numbers, `docs/BENCHMARKS.md`, are from M8.5.)
 *Limits, stated plainly:*
-* **Mining runs inside the node's process.** A miner in its own process needs block-template and block-submit messages
-  on the control interface, which were not built.
+* **Mining can run inside the node's process or in a program of its own (`tenero-miner`, built after the first M8.7
+  commit; see below).** The separate miner is only as private and as safe as the control interface it uses: anything with the
+  node's cookie can ask for templates and submit blocks.
 * **The control interface is not encrypted** and trusts anything that holds the cookie (read the chain, send
   transactions, stop the node). The cookie file has the data directory's default permissions: protecting the directory is the
   operator's job. A node a wallet trusts can lie to it.

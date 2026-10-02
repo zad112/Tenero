@@ -11,5 +11,6 @@ pub mod config;
 pub mod control;
 pub mod daemon;
 pub mod log;
+pub mod remote_miner;
 pub mod server;
 pub mod wallet_cli;

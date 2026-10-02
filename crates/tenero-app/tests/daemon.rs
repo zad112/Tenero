@@ -692,3 +692,206 @@ fn the_assume_valid_setting_reaches_the_engine() {
         b.log()
     );
 }
+
+// ---- the miner program, a process of its own ---------------------------------------------------------------------
+
+struct Child(std::process::Child);
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn miner_cmd(node: &Running, data: &std::path::Path, extra: &[&str]) -> std::process::Command {
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_tenero-miner"));
+    c.args(["--data", data.to_str().unwrap()])
+        .args(["--control", &node.ready.control.to_string()])
+        .args(extra)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    c
+}
+
+#[test]
+fn the_miner_program_mines_for_a_node_in_another_process() {
+    let dir = Dir::new("miner-proc");
+    let node = Running::start(config(&dir.0, ""));
+    let mut alice = tenero_wallet::Wallet::from_seed(&[1; 32], 0);
+    let addr = alice.address().to_text();
+    let mut child = Child(
+        miner_cmd(
+            &node,
+            &dir.0,
+            &["--address", &addr, "--backend", "sha256", "--pace", "0"],
+        )
+        .spawn()
+        .unwrap(),
+    );
+    node.wait_height(8, 60);
+    drop(node.client());
+    // the node, which was not mining itself, has a chain made by the other process, and its rewards are Alice's
+    {
+        use tenero_wallet::ChainView;
+        let c = node.client();
+        alice.sync(&c).unwrap();
+        let tip = c.tip().unwrap().0;
+        assert_eq!(alice.owned().len() as u64, tip, "one reward in every block");
+    }
+    // stopping the miner leaves the node running and the chain where it was
+    let h = node.height();
+    let _ = child.0.kill();
+    let _ = child.0.wait();
+    thread::sleep(Duration::from_millis(500));
+    assert!(
+        node.height() <= h + 2,
+        "the node carries on without the miner"
+    );
+    assert!(node.client().info().is_ok());
+}
+
+#[test]
+fn the_miner_program_refuses_a_backend_that_does_not_fit_the_network_and_bad_settings() {
+    let dir = Dir::new("miner-bad");
+    let node = Running::start(config(&dir.0, ""));
+    let addr = tenero_wallet::Wallet::from_seed(&[1; 32], 0)
+        .address()
+        .to_text();
+    let run = |extra: &[&str]| {
+        let out = miner_cmd(&node, &dir.0, extra).output().unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    };
+    // the test network needs sha256
+    let (code, err) = run(&["--address", &addr, "--backend", "gpu"]);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("needs sha256"), "{err}");
+    let (code, err) = run(&["--address", &addr, "--backend", "cpu"]);
+    assert_eq!(code, Some(2));
+    assert!(err.contains("needs sha256"), "{err}");
+    // settings
+    for (args, expect) in [
+        (vec!["--backend", "sha256"], "--address is required"),
+        (
+            vec!["--address", "nobody", "--backend", "sha256"],
+            "--address",
+        ),
+        (vec!["--address", addr.as_str()], "--backend must be"),
+        (
+            vec!["--address", addr.as_str(), "--backend", "fast"],
+            "--backend must be",
+        ),
+        (
+            vec![
+                "--address",
+                addr.as_str(),
+                "--backend",
+                "sha256",
+                "--cores",
+                "7",
+            ],
+            "--cores must be",
+        ),
+        (
+            vec![
+                "--address",
+                addr.as_str(),
+                "--backend",
+                "sha256",
+                "--cores",
+                "x",
+            ],
+            "not a number",
+        ),
+        (
+            vec![
+                "--address",
+                addr.as_str(),
+                "--backend",
+                "sha256",
+                "--nope",
+                "1",
+            ],
+            "unknown option",
+        ),
+        (
+            vec![
+                "--address",
+                addr.as_str(),
+                "--backend",
+                "sha256",
+                "--pace",
+                "1",
+                "--pace",
+                "2",
+            ],
+            "given twice",
+        ),
+        (
+            vec![
+                "--address",
+                addr.as_str(),
+                "--backend",
+                "sha256",
+                "--gpu-batch",
+                "0",
+            ],
+            "at least 1",
+        ),
+    ] {
+        let (code, err) = run(&args);
+        assert_eq!(code, Some(2), "{args:?}: {err}");
+        assert!(err.contains(expect), "{args:?}: {err}");
+    }
+    // help works
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_tenero-miner"))
+        .arg("help")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("tenero-miner"));
+}
+
+#[test]
+fn a_miner_started_before_its_node_waits_and_does_not_give_up() {
+    let dir = Dir::new("miner-first");
+    let addr = tenero_wallet::Wallet::from_seed(&[1; 32], 0)
+        .address()
+        .to_text();
+    // the node's data directory exists but no node runs: the miner has no cookie to read yet
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_tenero-miner"));
+    c.args(["--data", dir.0.to_str().unwrap()])
+        .args(["--control", "127.0.0.1:18399"])
+        .args(["--address", &addr, "--backend", "sha256", "--pace", "0"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut child = Child(c.spawn().unwrap());
+    thread::sleep(Duration::from_secs(3));
+    assert!(
+        child.0.try_wait().unwrap().is_none(),
+        "the miner gave up instead of waiting"
+    );
+}
+
+#[test]
+fn the_miner_program_refuses_sha256_on_the_dev_network() {
+    let dir = Dir::new("miner-dev");
+    let text = format!(
+        "data = {}\nnetwork = dev\nlisten = 127.0.0.1:0\ncontrol = 127.0.0.1:0\n",
+        dir.0.display()
+    );
+    let cfg = Raw::from_file_text(&text).unwrap().into_config().unwrap();
+    let node = Running::start(cfg);
+    let addr = tenero_wallet::Wallet::from_seed(&[1; 32], 0)
+        .address()
+        .to_text();
+    let out = miner_cmd(&node, &dir.0, &["--address", &addr, "--backend", "sha256"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(2), "{err}");
+    assert!(err.contains("needs cpu or gpu"), "{err}");
+}

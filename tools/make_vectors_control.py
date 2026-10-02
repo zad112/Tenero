@@ -32,9 +32,9 @@ ANSWER = 0x80
 ERROR = 0xFF
 
 REQUESTS = {"auth": 1, "tip": 2, "block": 3, "output": 4, "output_count": 5, "key_image_spent": 6, "rules": 7,
-            "submit_tx": 8, "info": 9, "stop": 10, "blocks": 11}
+            "submit_tx": 8, "info": 9, "stop": 10, "blocks": 11, "block_template": 12, "submit_block": 13}
 RESPONSES = {"authed": 1, "tip": 2, "block": 3, "output": 4, "output_count": 5, "spent": 6, "rules": 7,
-             "tx_accepted": 8, "info": 9, "stopping": 10, "blocks": 11}
+             "tx_accepted": 8, "info": 9, "stopping": 10, "blocks": 11, "template": 12, "block_submitted": 13}
 
 
 class ControlError(Exception):
@@ -138,6 +138,12 @@ def enc_request(m):
     elif t == "blocks":
         assert 1 <= m["count"] <= MAX_BLOCKS_PER_REQUEST
         body += u64(m["from"]) + u16(m["count"])
+    elif t == "block_template":
+        pl = m["payout"]
+        body += (fixed(pl["onetime_address"], 32) + fixed(pl["view_tag"], 3) + fixed(pl["ephemeral_pubkey"], 32)
+                 + fixed(pl["anchor_enc"], 16) + u32(m["max_body_bytes"]))
+    elif t == "submit_block":
+        body += v2.enc_block(m["block"])
     return body
 
 
@@ -167,6 +173,12 @@ def dec_request(body):
             m["count"] = r.u16()
             if not 1 <= m["count"] <= MAX_BLOCKS_PER_REQUEST:
                 raise ControlError("malformed")
+        elif t == "block_template":
+            m["payout"] = {"onetime_address": r.fixed(32), "view_tag": r.fixed(3), "ephemeral_pubkey": r.fixed(32),
+                           "anchor_enc": r.fixed(16)}
+            m["max_body_bytes"] = r.u32()
+        elif t == "submit_block":
+            m["block"] = v2.dec_block(r)
     except v2.DecodeError:
         raise ControlError("malformed")
     try:
@@ -205,6 +217,10 @@ def enc_response(m):
     elif t == "blocks":
         assert len(m["blocks"]) <= MAX_BLOCKS_PER_REQUEST
         body += u32(len(m["blocks"])) + b"".join(enc_scan_block(b) for b in m["blocks"])
+    elif t == "template":
+        body += u64(m["height"]) + fixed(m["target"], 32) + v2.enc_block(m["block"])
+    elif t == "block_submitted":
+        body += fixed(m["id"], 32) + flag(m["in_chain"])
     return body
 
 
@@ -247,6 +263,13 @@ def dec_response(body):
                 m["version"] = dec_text(r, MAX_NAME)
             elif t == "blocks":
                 m["blocks"] = [dec_scan_block(r) for _ in range(r.count(0, MAX_BLOCKS_PER_REQUEST))]
+            elif t == "template":
+                m["height"] = r.u64()
+                m["target"] = r.fixed(32)
+                m["block"] = v2.dec_block(r)
+            elif t == "block_submitted":
+                m["id"] = r.fixed(32)
+                m["in_chain"] = dec_flag(r)
         else:
             raise ControlError("kind")
     except v2.DecodeError:
@@ -305,6 +328,17 @@ def genesis_scan_block():
             "coinbase": {"version": 2, "height": 0, "outputs": [], "extra": ""}, "txs": []}
 
 
+def sample_block(height=7, txs=1):
+    return {"header": {"version": 2, "prev_id": "11" * 32, "timestamp": 1700000000, "tx_root": "22" * 32,
+                       "nonce": 0, "mix": "00" * 64},
+            "coinbase": {"version": 2, "height": height, "outputs": [sample_coinbase_output()], "extra": ""},
+            "transactions": [sample_tx() for _ in range(txs)]}
+
+
+def sample_payout():
+    return {"onetime_address": h("0a"), "view_tag": h("0b", 3), "ephemeral_pubkey": h("0c"), "anchor_enc": h("0d", 16)}
+
+
 def info(**kw):
     m = {"type": "info", "height": 9, "tip_id": "05" * 32, "peers": 3, "inbound": 1, "pruned_below": 4,
          "mempool_txs": 2, "syncing": True, "kind": "pruned", "network": "test", "version": "0.0.0"}
@@ -327,6 +361,11 @@ def valid_requests():
         ("stop", {"type": "stop"}),
         ("one block", {"type": "blocks", "from": 5, "count": 1}),
         ("the most blocks at once", {"type": "blocks", "from": 0, "count": 64}),
+        ("a block template", {"type": "block_template", "payout": sample_payout(), "max_body_bytes": 1000000}),
+        ("a block template, no transactions wanted", {"type": "block_template", "payout": sample_payout(),
+                                                      "max_body_bytes": 0}),
+        ("a mined block", {"type": "submit_block", "block": sample_block(txs=0)}),
+        ("a mined block with two transactions", {"type": "submit_block", "block": sample_block(txs=2)}),
     ]
 
 
@@ -355,6 +394,11 @@ def valid_responses():
         ("no blocks", {"type": "blocks", "blocks": []}),
         ("two blocks", {"type": "blocks", "blocks": [sample_scan_block(1), sample_scan_block(2, txs=2, outputs=2)]}),
         ("genesis and the block after it", {"type": "blocks", "blocks": [genesis_scan_block(), sample_scan_block(1)]}),
+        ("a template", {"type": "template", "height": 7, "target": "00" * 4 + "ff" * 28, "block": sample_block()}),
+        ("a template with no transactions", {"type": "template", "height": 1, "target": "7f" + "ff" * 31,
+                                             "block": sample_block(1, txs=0)}),
+        ("the block is in the chain", {"type": "block_submitted", "id": "33" * 32, "in_chain": True}),
+        ("the block lost a race", {"type": "block_submitted", "id": "44" * 32, "in_chain": False}),
         ("an error", {"type": "error", "message": "no"}),
         ("an error with accents", {"type": "error", "message": "fée trop basse: пять"}),
         ("the longest error", {"type": "error", "message": "x" * MAX_TEXT}),
@@ -393,9 +437,9 @@ def invalid_cases():
     # nothing, and kinds that do not exist
     for d in ("request", "response"):
         out.append(bad(d, "an empty body", b"", "length"))
-    for k in (0, 12, 0x80, 0x8C, 0xFE):
+    for k in (0, 14, 0x80, 0x8E, 0xFE):
         out.append(bad("request", f"unknown request kind {k}", bytes([k]), "kind"))
-    for k in (0, 1, 11, 0x8C, 0xFE):
+    for k in (0, 1, 11, 12, 13, 0x8E, 0xFE):
         out.append(bad("response", f"unknown response kind {k}", bytes([k]), "kind"))
     # every message cut short and with a byte too many
     for note, m in valid_requests():
@@ -410,6 +454,7 @@ def invalid_cases():
             out.append(bad("response", f"{note}: cut in the middle", body[: len(body) // 2], "malformed"))
         out.append(bad("response", f"{note}: with a trailing byte", body + b"\0", "trailing"))
     # flags are 0 or 1
+    out.append(bad("response", "the in-chain flag is 2", bytes([13 | ANSWER]) + bytes(32) + bytes([2]), "malformed"))
     for k, name in ((3, "block"), (4, "output"), (6, "spent")):
         out.append(bad("response", f"the {name} flag is 2", bytes([k | ANSWER, 2]), "malformed"))
     # a node kind is 0 or 1

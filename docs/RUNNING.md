@@ -110,10 +110,34 @@ next epoch's dataset is built in the background); the `test` network needs almos
 your computer can read the passphrase as you type it; the wallet is only as private as the node it is pointed at (the node
 learns which blocks it reads); and nothing locks the wallet file, so two programs saving to it at once lose one's changes.
 
-## Not done in M8.7
+## The miner in its own process: `tenero-miner`
 
-* **A miner in its own process.** Mining runs inside the node. A separate miner program needs block-template and
-  block-submit messages on the control interface, which were not built.
+The node can mine by itself (`mine = ...`, above); this is the other way: a separate program that asks a running node for a
+block over the control interface, searches for it, and hands a found block back. The GPU then has a process of its own: it
+can be started, stopped and restarted without touching the node, a crash of one does not take the other down, and it needs
+no node settings.
+
+```powershell
+.\target\release\tenero-miner.exe --data $HOME\tenero-test\n1 --address tni1... --backend sha256              # the test network
+.\target\release\tenero-miner.exe --data $HOME\tenero-dev\n1 --control 127.0.0.1:28332 --address tni1... --backend gpu   # the dev network
+```
+
+* `--data` is the node's data directory (the miner reads the node's cookie from it); `--control` is the node's control address
+  (the test network's default, 127.0.0.1:18332, otherwise); `--address` is where block rewards go; `--backend` is `sha256`
+  (the test network), or `cpu` or `gpu` (the dev network's real proof of work), and a backend that does not fit the node's
+  network is refused with a message. `--cores`, `--gpu-device`, `--gpu-batch`, `--pace`, `--log-level`, `--log-file` and
+  `--status-every` work as the node's settings of the same names; `tenero-miner help` lists them.
+* **The node checks every block completely.** A found block goes to the node as a local block, so the node's own
+  proof-of-work and proof checks decide whether it joins the chain; the miner only reports what the node said (in the chain,
+  lost a race, or refused).
+* **It does not mine while the node is syncing,** replaces its job when the tip moves (or the template is a minute old), and
+  **carries on if the node restarts**: it reconnects (waiting for the node's new cookie) and starts again. Start it before or
+  after the node.
+* **Memory:** with `--backend cpu` the miner builds its own 4.3 GiB dataset, as the node's check does, so the node and the
+  miner together need about 9 GiB on the dev network. `--backend gpu` keeps its datasets in video memory instead.
+* Stop it with Ctrl-C (it prints how many blocks it found and what became of them).
+
+## Not done in M8.7
 * **A Windows service, a systemd unit, an installer.** Run it in a window, or under a scheduler you trust.
 * **Tor or I2P,** and any encryption of the control interface (it never leaves the machine).
 * **Anything on a launched network:** there is none.

@@ -41,6 +41,17 @@ pub fn read_cookie(path: &Path) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
+/// What a node made of a block it was given.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlockVerdict {
+    /// It is part of the node's chain.
+    InChain([u8; 32]),
+    /// It is valid and kept on a side branch: another block took its place first.
+    LostRace([u8; 32]),
+    /// The node would not take it (invalid), with its reason.
+    Refused(String),
+}
+
 pub struct RemoteNode {
     stream: Mutex<TcpStream>,
 }
@@ -74,19 +85,54 @@ impl RemoteNode {
 
     /// One request, one answer. An error answer from the node is an `Err` with its message.
     pub fn request(&self, req: &Request) -> Result<Response, String> {
-        let mut s = self.stream.lock().map_err(|_| "poisoned".to_string())?;
-        let body = req.to_body().map_err(|e| e.to_string())?;
-        write_frame(&mut *s, &body).map_err(|e| format!("lost the node: {e}"))?;
-        let answer = read_frame(&mut *s).map_err(|e| format!("lost the node: {e}"))?;
-        match Response::from_body(&answer).map_err(|e| e.to_string())? {
+        match self.request_raw(req)? {
             Response::Error(m) => Err(m),
             r => Ok(r),
         }
     }
 
+    /// One request, one answer, with an error answer from the node returned as a `Response::Error` and `Err` only
+    /// for trouble with the connection itself (so a caller can tell "the node said no" from "the node is gone").
+    pub fn request_raw(&self, req: &Request) -> Result<Response, String> {
+        let mut s = self.stream.lock().map_err(|_| "poisoned".to_string())?;
+        let body = req.to_body().map_err(|e| e.to_string())?;
+        write_frame(&mut *s, &body).map_err(|e| format!("lost the node: {e}"))?;
+        let answer = read_frame(&mut *s).map_err(|e| format!("lost the node: {e}"))?;
+        Response::from_body(&answer).map_err(|e| e.to_string())
+    }
+
     pub fn info(&self) -> Result<NodeInfo, String> {
         match self.request(&Request::Info)? {
             Response::Info(i) => Ok(i),
+            other => Err(format!("unexpected answer: {other:?}")),
+        }
+    }
+
+    /// A block to mine, paying `payout`.
+    pub fn block_template(
+        &self,
+        payout: tenero_node::Payout,
+        max_body_bytes: u32,
+    ) -> Result<crate::control::Template, String> {
+        match self.request(&Request::BlockTemplate {
+            payout,
+            max_body_bytes,
+        })? {
+            Response::Template(t) => Ok(t),
+            other => Err(format!("unexpected answer: {other:?}")),
+        }
+    }
+
+    /// Hands the node a mined block. `Err` means the connection failed; what the node made of the block is the
+    /// [`BlockVerdict`].
+    pub fn submit_block(&self, block: tenero_core::v2::Block) -> Result<BlockVerdict, String> {
+        match self.request_raw(&Request::SubmitBlock(block))? {
+            Response::BlockSubmitted { id, in_chain: true } => Ok(BlockVerdict::InChain(id)),
+            Response::BlockSubmitted {
+                id,
+                in_chain: false,
+            } => Ok(BlockVerdict::LostRace(id)),
+            Response::Error(why) => Ok(BlockVerdict::Refused(why)),
             other => Err(format!("unexpected answer: {other:?}")),
         }
     }

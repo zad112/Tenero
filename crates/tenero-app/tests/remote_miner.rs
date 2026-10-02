@@ -1,0 +1,1242 @@
+//! The miner in its own process: the node's new control messages (`block_template`, `submit_block`) against a real node,
+//! and `RemoteMiner` against a real node and against a scripted fake one (for the cases a real node will not produce on
+//! demand: a tip that moves between two questions, a block that loses a race, a connection that drops). The test chain
+//! (SHA-256 proof of work) with the real proof check. **Not a real chain.**
+
+use std::io::Write;
+use std::net::{SocketAddr, TcpListener};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use rand_core::OsRng;
+use tenero_app::client::{BlockVerdict, RemoteNode};
+use tenero_app::control::{frame, read_frame, NodeInfo, NodeKind, Request, Response, Template};
+use tenero_app::remote_miner::{RemoteMiner, RemoteMinerConfig};
+use tenero_app::server::{start, ControlHook, Meta};
+use tenero_chain::Sha256Pow;
+use tenero_core::u256::U256;
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v2::{Block, BlockHeader, Coinbase, CoinbaseOutput, VERSION};
+use tenero_miner::{Backend, Counters, Job, Miner, Sha256Backend, Solution, WalletPayout};
+use tenero_net::sim::{mine_test_block, test_chain_params, LABEL};
+use tenero_net::transport::Hooks;
+use tenero_net::{Engine, EngineConfig, Event, Hello, Message, PROTOCOL_VERSION};
+use tenero_node::{Node, NodeConfig, Payout};
+use tenero_store::Store;
+use tenero_wallet::{coinbase_payout_random, Address, Wallet};
+
+const T0: u64 = 1_700_000_000;
+const COOKIE: [u8; 32] = [0x42; 32];
+
+fn address() -> Address {
+    Wallet::from_seed(&[1; 32], 0).address()
+}
+
+// ------------------------------------------------------------------------------------------------
+// a real node
+// ------------------------------------------------------------------------------------------------
+
+struct Rig {
+    path: PathBuf,
+    store: Store,
+    params: tenero_chain::ChainParams,
+}
+
+impl Rig {
+    fn new(tag: &str) -> Rig {
+        let path =
+            std::env::temp_dir().join(format!("tenero-rm-{}-{tag}.redb", std::process::id()));
+        remove(&path);
+        let store = Store::open(&path, LABEL, PowKind::Sha256).unwrap();
+        let mut params = test_chain_params();
+        params.ring_size = 2;
+        params.coinbase_maturity = 1;
+        params.spend_maturity = 1;
+        Rig {
+            path,
+            store,
+            params,
+        }
+    }
+
+    fn engine(&self) -> Engine<'_> {
+        let node = Node::new(&self.store, &self.params, &Sha256Pow, NodeConfig::default()).unwrap();
+        Engine::new(node, EngineConfig::default())
+    }
+}
+
+fn remove(path: &PathBuf) {
+    let _ = std::fs::remove_file(path);
+    let mut s = path.clone().into_os_string();
+    s.push(".segments");
+    let _ = std::fs::remove_dir_all(PathBuf::from(s));
+}
+
+impl Drop for Rig {
+    fn drop(&mut self) {
+        remove(&self.path);
+    }
+}
+
+fn meta() -> Meta {
+    Meta {
+        kind: NodeKind::Archive,
+        network: "test".into(),
+        version: "0.0.0".into(),
+    }
+}
+
+/// Mines one block on the engine's tip, paying `to`, the way another miner would.
+fn mine(engine: &mut Engine<'_>, to: &Address) {
+    let h = engine.node().tip().unwrap().0 + 1;
+    let payout = coinbase_payout_random(to, h).unwrap();
+    let ts = T0 + 60 * h;
+    let block = mine_test_block(engine.node(), ts, payout);
+    engine.handle(ts * 1000 + 10_000, Event::LocalBlock(block));
+}
+
+/// Makes the engine think it is syncing from a peer with a lot of work.
+fn make_syncing(engine: &mut Engine<'_>, rig: &Rig) {
+    engine.handle(
+        T0 * 1000,
+        Event::PeerConnected {
+            peer: 77,
+            addr: "9.9.9.9:1".into(),
+            inbound: true,
+        },
+    );
+    engine.handle(
+        T0 * 1000,
+        Event::Message {
+            peer: 77,
+            msg: Message::Hello(Hello {
+                version: PROTOCOL_VERSION,
+                chain_id: rig.store.chain_id(),
+                tip_height: 5000,
+                cumulative_work: U256::pow2(200).unwrap().to_be_bytes(),
+                tip_id: [9; 32],
+                pruned_below: 0,
+                nonce: 0,
+            }),
+        },
+    );
+    assert!(engine.is_syncing());
+}
+
+fn pump(engine: &mut Engine<'_>, hook: &mut ControlHook, done: &AtomicBool) {
+    let end = Instant::now() + Duration::from_secs(60);
+    while !done.load(Ordering::SeqCst) {
+        assert!(Instant::now() < end, "the test took too long");
+        let now = (T0 + 60 * 500) * 1000;
+        for ev in hook.poll(engine, now) {
+            engine.handle(now, ev);
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Runs `client` on a thread while the main thread serves the control hook against the engine.
+fn with_client<R: Send>(
+    engine: &mut Engine<'_>,
+    hook: &mut ControlHook,
+    client: impl FnOnce() -> R + Send,
+) -> R {
+    let done = AtomicBool::new(false);
+    thread::scope(|s| {
+        let t = s.spawn(|| {
+            let r = client();
+            done.store(true, Ordering::SeqCst);
+            r
+        });
+        pump(engine, hook, &done);
+        t.join().expect("the client thread")
+    })
+}
+
+fn payout() -> Payout {
+    Payout {
+        onetime_address: [0x0a; 32],
+        view_tag: [0x0b; 3],
+        ephemeral_pubkey: [0x0c; 32],
+        anchor_enc: [0x0d; 16],
+    }
+}
+
+// ---- the node's side: templates --------------------------------------------------------------------------------
+
+#[test]
+fn a_template_is_a_block_on_the_tip_that_pays_the_miner_and_names_its_target() {
+    let rig = Rig::new("template");
+    let mut engine = rig.engine();
+    let (handle, mut hook) = start(
+        "127.0.0.1:0".parse().unwrap(),
+        COOKIE,
+        Arc::new(AtomicBool::new(false)),
+        meta(),
+    )
+    .unwrap();
+    for _ in 0..3 {
+        mine(&mut engine, &address());
+    }
+    let (tip_h, tip_id) = engine.node().tip().unwrap();
+    let want_target = engine.node().next_block().unwrap().target.to_be_bytes();
+    let addr = handle.addr;
+    let t = with_client(&mut engine, &mut hook, move || {
+        let node = RemoteNode::connect(addr, &COOKIE).unwrap();
+        node.block_template(payout(), 1_000_000).unwrap()
+    });
+    assert_eq!(t.height, tip_h + 1);
+    assert_eq!(t.block.coinbase.height, tip_h + 1);
+    assert_eq!(t.block.header.prev_id, tip_id);
+    assert_eq!(t.target, want_target);
+    // the reward goes where the miner said, in full
+    let o = &t.block.coinbase.outputs[0];
+    assert_eq!(
+        (
+            o.onetime_address,
+            o.view_tag,
+            o.ephemeral_pubkey,
+            o.anchor_enc
+        ),
+        ([0x0a; 32], [0x0b; 3], [0x0c; 32], [0x0d; 16])
+    );
+    assert!(o.amount > 0);
+    // the nonce and mix are for the miner to fill
+    assert_eq!((t.block.header.nonce, t.block.header.mix), (0, [0; 64]));
+}
+
+#[test]
+fn a_node_that_is_catching_up_has_no_template() {
+    let rig = Rig::new("tsync");
+    let mut engine = rig.engine();
+    let (handle, mut hook) = start(
+        "127.0.0.1:0".parse().unwrap(),
+        COOKIE,
+        Arc::new(AtomicBool::new(false)),
+        meta(),
+    )
+    .unwrap();
+    make_syncing(&mut engine, &rig);
+    let addr = handle.addr;
+    let e = with_client(&mut engine, &mut hook, move || {
+        let node = RemoteNode::connect(addr, &COOKIE).unwrap();
+        node.block_template(payout(), 1000).unwrap_err()
+    });
+    assert!(e.contains("syncing"), "{e}");
+}
+
+// ---- the node's side: submitted blocks ----------------------------------------------------------------------------
+
+#[test]
+fn a_mined_block_is_taken_and_a_late_one_is_said_to_have_lost_the_race() {
+    let rig = Rig::new("submit");
+    let mut engine = rig.engine();
+    let (handle, mut hook) = start(
+        "127.0.0.1:0".parse().unwrap(),
+        COOKIE,
+        Arc::new(AtomicBool::new(false)),
+        meta(),
+    )
+    .unwrap();
+    for _ in 0..2 {
+        mine(&mut engine, &address());
+    }
+    // two competing blocks on the same tip: the first extends the chain, the second is on a side branch
+    let height = engine.node().tip().unwrap().0 + 1;
+    let ts = T0 + 60 * height;
+    let first = mine_test_block(
+        engine.node(),
+        ts,
+        coinbase_payout_random(&address(), height).unwrap(),
+    );
+    let second = mine_test_block(
+        engine.node(),
+        ts + 1,
+        coinbase_payout_random(&address(), height).unwrap(),
+    );
+    assert_ne!(first.header, second.header);
+    let addr = handle.addr;
+    let (a, b) = with_client(&mut engine, &mut hook, move || {
+        let node = RemoteNode::connect(addr, &COOKIE).unwrap();
+        (
+            node.submit_block(first).unwrap(),
+            node.submit_block(second).unwrap(),
+        )
+    });
+    assert!(matches!(a, BlockVerdict::InChain(_)), "{a:?}");
+    assert!(matches!(b, BlockVerdict::LostRace(_)), "{b:?}");
+    assert_eq!(engine.node().tip().unwrap().0, height);
+}
+
+#[test]
+fn a_block_that_is_not_valid_is_refused_with_a_reason_and_the_chain_is_unchanged() {
+    let rig = Rig::new("refuse");
+    let mut engine = rig.engine();
+    let (handle, mut hook) = start(
+        "127.0.0.1:0".parse().unwrap(),
+        COOKIE,
+        Arc::new(AtomicBool::new(false)),
+        meta(),
+    )
+    .unwrap();
+    mine(&mut engine, &address());
+    let tip_before = engine.node().tip().unwrap();
+    let height = tip_before.0 + 1;
+    let good = mine_test_block(
+        engine.node(),
+        T0 + 60 * height,
+        coinbase_payout_random(&address(), height).unwrap(),
+    );
+    // the same block with a nonce that does not meet the target (the chain's target is one in four, so look for one)
+    let mut bad = good.clone();
+    let target = engine.node().next_block().unwrap().target;
+    for nonce in 0.. {
+        bad.header.nonce = nonce;
+        let id = tenero_core::v2::ids::block_id(&bad.header, PowKind::Sha256);
+        if U256::from_be_bytes(&id) >= target {
+            break;
+        }
+    }
+    // and one that pays itself too much
+    let mut greedy = good.clone();
+    greedy.coinbase.outputs[0].amount += 1;
+    let addr = handle.addr;
+    let (a, b) = with_client(&mut engine, &mut hook, move || {
+        let node = RemoteNode::connect(addr, &COOKIE).unwrap();
+        (
+            node.submit_block(bad).unwrap(),
+            node.submit_block(greedy).unwrap(),
+        )
+    });
+    assert!(
+        matches!(a, BlockVerdict::Refused(ref why) if !why.is_empty()),
+        "{a:?}"
+    );
+    assert!(matches!(b, BlockVerdict::Refused(_)), "{b:?}");
+    assert_eq!(engine.node().tip().unwrap(), tip_before);
+}
+
+// ---- the miner against a real node ---------------------------------------------------------------------------------
+
+fn cfg() -> RemoteMinerConfig {
+    RemoteMinerConfig::default()
+}
+
+fn sha_miner(cfg: RemoteMinerConfig) -> RemoteMiner {
+    RemoteMiner::new(
+        Miner::spawn(|| Ok(Sha256Backend)),
+        WalletPayout::new(address()).unwrap(),
+        PowKind::Sha256,
+        cfg,
+    )
+}
+
+#[test]
+fn a_miner_in_another_process_mines_blocks_the_node_accepts_and_the_wallet_can_see() {
+    let rig = Rig::new("e2e");
+    let mut engine = rig.engine();
+    let (handle, mut hook) = start(
+        "127.0.0.1:0".parse().unwrap(),
+        COOKIE,
+        Arc::new(AtomicBool::new(false)),
+        meta(),
+    )
+    .unwrap();
+    let addr = handle.addr;
+    let stop = Arc::new(AtomicBool::new(false));
+    let (stats, tip) = thread::scope(|s| {
+        let stop2 = Arc::clone(&stop);
+        let t = s.spawn(move || {
+            let mut rm = sha_miner(cfg());
+            rm.run(
+                || RemoteNode::connect(addr, &COOKIE),
+                &stop2,
+                Duration::from_millis(5),
+            )
+            .unwrap();
+            rm.stats
+        });
+        let end = Instant::now() + Duration::from_secs(60);
+        while engine.node().tip().unwrap().0 < 10 {
+            assert!(Instant::now() < end, "too slow");
+            let now = (T0 + 60 * 500) * 1000;
+            for ev in hook.poll(&mut engine, now) {
+                engine.handle(now, ev);
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        // let the last verdict be given
+        for _ in 0..50 {
+            let now = (T0 + 60 * 500) * 1000;
+            for ev in hook.poll(&mut engine, now) {
+                engine.handle(now, ev);
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        stop.store(true, Ordering::SeqCst);
+        // the miner's last request may be waiting for the hook: keep serving until it is done
+        let end = Instant::now() + Duration::from_secs(10);
+        while !t.is_finished() && Instant::now() < end {
+            let now = (T0 + 60 * 500) * 1000;
+            for ev in hook.poll(&mut engine, now) {
+                engine.handle(now, ev);
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        (t.join().unwrap(), engine.node().tip().unwrap())
+    });
+    assert!(tip.0 >= 10);
+    assert!(stats.blocks_found >= 10, "{stats:?}");
+    assert_eq!(stats.blocks_refused, 0, "{stats:?}");
+    assert!(stats.blocks_accepted >= 9, "{stats:?}");
+    assert_eq!(stats.bad_solutions, 0);
+    // every reward is the miner's wallet's, readable (the key exchange binds the height, so a template built for the
+    // wrong height would not show up here)
+    let mut wallet = Wallet::from_seed(&[1; 32], 0);
+    wallet.sync(engine.node()).unwrap();
+    assert_eq!(
+        wallet.owned().len() as u64,
+        tip.0,
+        "one reward in every block"
+    );
+    let _ = OsRng;
+}
+
+// ------------------------------------------------------------------------------------------------
+// a scripted fake node
+// ------------------------------------------------------------------------------------------------
+
+type Handler = Box<dyn FnMut(&Request) -> Option<Response> + Send>;
+
+struct Fake {
+    addr: SocketAddr,
+    seen: Arc<Mutex<Vec<Request>>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for Fake {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Speaks the control protocol: authenticates with `COOKIE`, then answers each request with what `handler` says (`None`
+/// closes the connection, as a node that goes away would).
+fn fake(handler: Handler) -> Fake {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let handler = Arc::new(Mutex::new(handler));
+    {
+        let (seen, stop) = (Arc::clone(&seen), Arc::clone(&stop));
+        thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let (seen, handler) = (Arc::clone(&seen), Arc::clone(&handler));
+                        thread::spawn(move || {
+                            stream.set_nonblocking(false).unwrap();
+                            let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+                            let Ok(body) = read_frame(&mut stream) else {
+                                return;
+                            };
+                            if Request::from_body(&body) != Ok(Request::Auth { cookie: COOKIE }) {
+                                return;
+                            }
+                            let _ = stream
+                                .write_all(&frame(&Response::Authed.to_body().unwrap()).unwrap());
+                            while let Ok(body) = read_frame(&mut stream) {
+                                let Ok(req) = Request::from_body(&body) else {
+                                    return;
+                                };
+                                seen.lock().unwrap().push(req.clone());
+                                let answer = (handler.lock().unwrap())(&req);
+                                let Some(answer) = answer else { return };
+                                if stream
+                                    .write_all(&frame(&answer.to_body().unwrap()).unwrap())
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                        });
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        });
+    }
+    Fake { addr, seen, stop }
+}
+
+impl Fake {
+    fn count(&self, f: impl Fn(&Request) -> bool) -> usize {
+        self.seen.lock().unwrap().iter().filter(|r| f(r)).count()
+    }
+    fn node(&self) -> RemoteNode {
+        RemoteNode::connect(self.addr, &COOKIE).unwrap()
+    }
+}
+
+fn info(height: u64, tip: u8, syncing: bool) -> Response {
+    Response::Info(NodeInfo {
+        height,
+        tip_id: [tip; 32],
+        peers: 1,
+        inbound: 0,
+        pruned_below: 0,
+        mempool_txs: 0,
+        syncing,
+        kind: NodeKind::Archive,
+        network: "test".into(),
+        version: "0".into(),
+    })
+}
+
+/// A template on `tip` for `height` with a target that almost every id meets.
+fn template(height: u64, tip: u8, target: [u8; 32]) -> Response {
+    Response::Template(Template {
+        block: Block {
+            header: BlockHeader {
+                version: VERSION,
+                prev_id: [tip; 32],
+                timestamp: T0,
+                tx_root: [0; 32],
+                nonce: 0,
+                mix: [0; 64],
+            },
+            coinbase: Coinbase {
+                version: VERSION,
+                height,
+                outputs: vec![CoinbaseOutput {
+                    onetime_address: [1; 32],
+                    amount: 1,
+                    view_tag: [2; 3],
+                    ephemeral_pubkey: [3; 32],
+                    anchor_enc: [4; 16],
+                }],
+                extra: vec![],
+            },
+            transactions: vec![],
+        },
+        height,
+        target,
+    })
+}
+
+const EASY: [u8; 32] = [0xff; 32];
+const IMPOSSIBLE: [u8; 32] = [0; 32];
+
+/// A backend that never finds anything and records the height of each job it is given and whether it was stopped.
+type JobRecord = (u64, Arc<AtomicBool>);
+
+#[derive(Clone, Default)]
+struct Jobs(Arc<Mutex<Vec<JobRecord>>>);
+
+struct Idle(Jobs);
+
+impl Backend for Idle {
+    fn name(&self) -> String {
+        "idle".into()
+    }
+    fn mine(&mut self, job: &Job, _c: &Counters) -> Result<Option<Solution>, String> {
+        (self.0)
+            .0
+            .lock()
+            .unwrap()
+            .push((job.height, Arc::clone(&job.stale)));
+        while !job.stale.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(1));
+        }
+        Ok(None)
+    }
+}
+
+/// Drives `step` until `done` or the time is up.
+fn drive(
+    rm: &mut RemoteMiner,
+    node: &RemoteNode,
+    secs: u64,
+    mut done: impl FnMut(&RemoteMiner) -> bool,
+) -> bool {
+    let end = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < end {
+        rm.step(node).unwrap();
+        if done(rm) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    false
+}
+
+fn idle_miner(jobs: &Jobs, cfg: RemoteMinerConfig) -> RemoteMiner {
+    let j = jobs.clone();
+    RemoteMiner::new(
+        Miner::spawn(move || Ok(Idle(j))),
+        WalletPayout::new(address()).unwrap(),
+        PowKind::Sha256,
+        cfg,
+    )
+}
+
+fn is_template(r: &Request) -> bool {
+    matches!(r, Request::BlockTemplate { .. })
+}
+
+fn is_submit(r: &Request) -> bool {
+    matches!(r, Request::SubmitBlock(_))
+}
+
+// ---- what a node says about a block --------------------------------------------------------------------------------
+
+fn verdict_miner(answer: Response) -> (Fake, RemoteMiner) {
+    let f = fake(Box::new(move |r| {
+        Some(match r {
+            Request::Info => info(5, 5, false),
+            Request::BlockTemplate { .. } => template(6, 5, EASY),
+            Request::SubmitBlock(_) => answer.clone(),
+            _ => return None,
+        })
+    }));
+    (f, sha_miner(cfg()))
+}
+
+#[test]
+fn a_block_in_the_chain_is_counted() {
+    let (f, mut rm) = verdict_miner(Response::BlockSubmitted {
+        id: [1; 32],
+        in_chain: true,
+    });
+    let node = f.node();
+    assert!(drive(&mut rm, &node, 20, |m| m.stats.blocks_accepted >= 1));
+    assert_eq!(
+        rm.stats.blocks_found,
+        rm.stats.blocks_accepted + rm.stats.blocks_lost_race + rm.stats.blocks_refused
+    );
+    assert_eq!((rm.stats.blocks_lost_race, rm.stats.blocks_refused), (0, 0));
+}
+
+#[test]
+fn a_block_that_lost_a_race_is_counted_as_that_and_not_as_accepted() {
+    let (f, mut rm) = verdict_miner(Response::BlockSubmitted {
+        id: [1; 32],
+        in_chain: false,
+    });
+    let node = f.node();
+    assert!(drive(&mut rm, &node, 20, |m| m.stats.blocks_lost_race >= 1));
+    assert_eq!((rm.stats.blocks_accepted, rm.stats.blocks_refused), (0, 0));
+}
+
+#[test]
+fn a_block_the_node_refuses_is_counted_and_mining_goes_on() {
+    let (f, mut rm) = verdict_miner(Response::Error(
+        "the node refused the block (it is not valid)".into(),
+    ));
+    let node = f.node();
+    assert!(
+        drive(&mut rm, &node, 20, |m| m.stats.blocks_refused >= 2),
+        "{:?}",
+        rm.stats
+    );
+    assert_eq!(
+        (rm.stats.blocks_accepted, rm.stats.blocks_lost_race),
+        (0, 0)
+    );
+    assert!(rm.failure().is_none());
+}
+
+#[test]
+fn a_found_block_has_the_nonce_the_backend_found_and_meets_the_target() {
+    let (f, mut rm) = verdict_miner(Response::BlockSubmitted {
+        id: [1; 32],
+        in_chain: true,
+    });
+    let node = f.node();
+    assert!(drive(&mut rm, &node, 20, |m| m.stats.blocks_found >= 1));
+    let seen = f.seen.lock().unwrap();
+    let Some(Request::SubmitBlock(b)) = seen.iter().find(|r| is_submit(r)) else {
+        panic!("no block was submitted")
+    };
+    let id = tenero_core::v2::ids::block_id(&b.header, PowKind::Sha256);
+    assert!(U256::from_be_bytes(&id) < U256::from_be_bytes(&EASY));
+    assert_eq!(b.coinbase.height, 6);
+    assert_eq!(b.header.prev_id, [5; 32]);
+    assert_eq!(b.header.mix, [0; 64], "the test chain's mix is zero");
+}
+
+// ---- when to start, stop and replace a job -----------------------------------------------------------------------
+
+#[test]
+fn a_node_that_is_syncing_gets_no_mining() {
+    let syncing = Arc::new(AtomicBool::new(false));
+    let s2 = Arc::clone(&syncing);
+    let f = fake(Box::new(move |r| {
+        Some(match r {
+            Request::Info => info(5, 5, s2.load(Ordering::SeqCst)),
+            Request::BlockTemplate { .. } => template(6, 5, EASY),
+            _ => return None,
+        })
+    }));
+    let jobs = Jobs::default();
+    let mut rm = idle_miner(&jobs, cfg());
+    let node = f.node();
+    // syncing from the first look: no template is even asked for
+    syncing.store(true, Ordering::SeqCst);
+    for _ in 0..10 {
+        rm.step(&node).unwrap();
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(f.count(is_template), 0);
+    assert!(jobs.0.lock().unwrap().is_empty());
+    // in sync: a job starts
+    syncing.store(false, Ordering::SeqCst);
+    assert!(drive(&mut rm, &node, 10, |_| !jobs
+        .0
+        .lock()
+        .unwrap()
+        .is_empty()));
+    // and when the node falls behind again the job is stopped
+    syncing.store(true, Ordering::SeqCst);
+    rm.step(&node).unwrap();
+    assert!(
+        jobs.0.lock().unwrap()[0].1.load(Ordering::SeqCst),
+        "the job was told to stop"
+    );
+    assert_eq!(rm.stats.paused_syncing, 1);
+    let asked = f.count(is_template);
+    for _ in 0..5 {
+        rm.step(&node).unwrap();
+    }
+    assert_eq!(f.count(is_template), asked, "no new template while syncing");
+    assert_eq!(rm.stats.paused_syncing, 1, "one pause, counted once");
+}
+
+#[test]
+fn a_moved_tip_replaces_the_job_and_the_old_one_is_stopped() {
+    let tip = Arc::new(AtomicU64::new(5));
+    let t2 = Arc::clone(&tip);
+    let f = fake(Box::new(move |r| {
+        let t = t2.load(Ordering::SeqCst);
+        Some(match r {
+            Request::Info => info(t, t as u8, false),
+            Request::BlockTemplate { .. } => template(t + 1, t as u8, EASY),
+            _ => return None,
+        })
+    }));
+    let jobs = Jobs::default();
+    let mut rm = idle_miner(&jobs, cfg());
+    let node = f.node();
+    assert!(drive(&mut rm, &node, 10, |_| jobs.0.lock().unwrap().len() == 1));
+    // while the tip stays, no new job
+    for _ in 0..10 {
+        rm.step(&node).unwrap();
+        thread::sleep(Duration::from_millis(3));
+    }
+    assert_eq!(f.count(is_template), 1, "the same job is kept");
+    tip.store(6, Ordering::SeqCst);
+    assert!(drive(&mut rm, &node, 10, |_| jobs.0.lock().unwrap().len() == 2));
+    let j = jobs.0.lock().unwrap();
+    assert_eq!(
+        (j[0].0, j[1].0),
+        (6, 7),
+        "the second job is for the next height"
+    );
+    assert!(j[0].1.load(Ordering::SeqCst), "the old job was stopped");
+    assert!(!j[1].1.load(Ordering::SeqCst));
+}
+
+#[test]
+fn an_old_template_is_replaced_even_if_the_tip_has_not_moved() {
+    let f = fake(Box::new(|r| {
+        Some(match r {
+            Request::Info => info(5, 5, false),
+            Request::BlockTemplate { .. } => template(6, 5, EASY),
+            _ => return None,
+        })
+    }));
+    let jobs = Jobs::default();
+    let mut rm = idle_miner(
+        &jobs,
+        RemoteMinerConfig {
+            refresh_every: Duration::from_millis(150),
+            ..cfg()
+        },
+    );
+    let node = f.node();
+    assert!(drive(&mut rm, &node, 10, |_| jobs.0.lock().unwrap().len() >= 3));
+    assert!(f.count(is_template) >= 3);
+}
+
+#[test]
+fn a_template_for_the_wrong_height_is_not_mined() {
+    // the node's tip moved between "what is your tip" and "give me a template": the reward would be addressed for the
+    // wrong height, so the template must be dropped
+    let f = fake(Box::new(|r| {
+        Some(match r {
+            Request::Info => info(5, 5, false),
+            Request::BlockTemplate { .. } => template(7, 6, EASY),
+            _ => return None,
+        })
+    }));
+    let jobs = Jobs::default();
+    let mut rm = idle_miner(&jobs, cfg());
+    let node = f.node();
+    assert!(drive(&mut rm, &node, 10, |m| m.stats.stale_templates >= 2));
+    assert!(
+        jobs.0.lock().unwrap().is_empty(),
+        "no job from a stale template"
+    );
+}
+
+#[test]
+fn a_miner_waits_between_blocks_when_told_to() {
+    let (f, mut rm) = {
+        let f = fake(Box::new(|r| {
+            Some(match r {
+                Request::Info => info(5, 5, false),
+                Request::BlockTemplate { .. } => template(6, 5, EASY),
+                Request::SubmitBlock(_) => Response::BlockSubmitted {
+                    id: [1; 32],
+                    in_chain: true,
+                },
+                _ => return None,
+            })
+        }));
+        let rm = sha_miner(RemoteMinerConfig {
+            min_block_interval: Duration::from_millis(600),
+            ..cfg()
+        });
+        (f, rm)
+    };
+    let node = f.node();
+    let t = Instant::now();
+    assert!(drive(&mut rm, &node, 20, |m| m.stats.blocks_found >= 3));
+    assert!(
+        t.elapsed() >= Duration::from_millis(1100),
+        "three blocks in {:?}",
+        t.elapsed()
+    );
+}
+
+// ---- what a backend may do ---------------------------------------------------------------------------------------
+
+/// A backend that returns a nonce that does not meet the target.
+struct Liar;
+
+impl Backend for Liar {
+    fn name(&self) -> String {
+        "liar".into()
+    }
+    fn mine(&mut self, job: &Job, _c: &Counters) -> Result<Option<Solution>, String> {
+        Ok(Some(Solution {
+            job_id: job.id,
+            nonce: 1,
+            mix: [0; 64],
+        }))
+    }
+}
+
+#[test]
+fn a_solution_that_does_not_meet_the_target_is_never_submitted() {
+    let f = fake(Box::new(|r| {
+        Some(match r {
+            Request::Info => info(5, 5, false),
+            Request::BlockTemplate { .. } => template(6, 5, IMPOSSIBLE),
+            _ => return None,
+        })
+    }));
+    let mut rm = RemoteMiner::new(
+        Miner::spawn(|| Ok(Liar)),
+        WalletPayout::new(address()).unwrap(),
+        PowKind::Sha256,
+        cfg(),
+    );
+    let node = f.node();
+    assert!(drive(&mut rm, &node, 10, |m| m.stats.bad_solutions >= 2));
+    assert_eq!(f.count(is_submit), 0);
+    assert_eq!(rm.stats.blocks_found, 0);
+}
+
+/// A backend that answers job 1 only after it has been replaced (a late solution for a job that is gone).
+struct Late;
+
+impl Backend for Late {
+    fn name(&self) -> String {
+        "late".into()
+    }
+    fn mine(&mut self, job: &Job, _c: &Counters) -> Result<Option<Solution>, String> {
+        while !job.stale.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(1));
+        }
+        // a perfectly good-looking answer, for a job nobody wants any more
+        Ok(Some(Solution {
+            job_id: job.id,
+            nonce: 5,
+            mix: [0; 64],
+        }))
+    }
+}
+
+#[test]
+fn a_late_solution_for_a_replaced_job_is_ignored() {
+    let tip = Arc::new(AtomicU64::new(5));
+    let t2 = Arc::clone(&tip);
+    let f = fake(Box::new(move |r| {
+        let t = t2.load(Ordering::SeqCst);
+        Some(match r {
+            Request::Info => info(t, t as u8, false),
+            Request::BlockTemplate { .. } => template(t + 1, t as u8, EASY),
+            _ => return None,
+        })
+    }));
+    let mut rm = RemoteMiner::new(
+        Miner::spawn(|| Ok(Late)),
+        WalletPayout::new(address()).unwrap(),
+        PowKind::Sha256,
+        cfg(),
+    );
+    let node = f.node();
+    assert!(drive(&mut rm, &node, 10, |_| f.count(is_template) == 1));
+    tip.store(6, Ordering::SeqCst);
+    assert!(drive(&mut rm, &node, 10, |_| f.count(is_template) == 2));
+    // let the first job's late answer arrive and be looked at
+    for _ in 0..40 {
+        rm.step(&node).unwrap();
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        f.count(is_submit),
+        0,
+        "a block for a job that was replaced must not be submitted"
+    );
+    assert_eq!(rm.stats.blocks_found, 0);
+}
+
+struct Broken;
+
+impl Backend for Broken {
+    fn name(&self) -> String {
+        "broken".into()
+    }
+    fn mine(&mut self, _job: &Job, _c: &Counters) -> Result<Option<Solution>, String> {
+        Err("no GPU".into())
+    }
+}
+
+#[test]
+fn a_backend_that_fails_stops_the_miner_with_its_reason() {
+    let f = fake(Box::new(|r| {
+        Some(match r {
+            Request::Info => info(5, 5, false),
+            Request::BlockTemplate { .. } => template(6, 5, EASY),
+            _ => return None,
+        })
+    }));
+    let mut rm = RemoteMiner::new(
+        Miner::spawn(|| Ok(Broken)),
+        WalletPayout::new(address()).unwrap(),
+        PowKind::Sha256,
+        cfg(),
+    );
+    let addr = f.addr;
+    let stop = AtomicBool::new(false);
+    let r = rm.run(
+        || RemoteNode::connect(addr, &COOKIE),
+        &stop,
+        Duration::from_millis(5),
+    );
+    let e = r.unwrap_err();
+    assert!(e.contains("no GPU"), "{e}");
+    // and one that cannot even be built
+    let mut rm = RemoteMiner::new(
+        Miner::spawn(|| -> Result<Broken, String> { Err("no device".into()) }),
+        WalletPayout::new(address()).unwrap(),
+        PowKind::Sha256,
+        cfg(),
+    );
+    let e = rm
+        .run(
+            || RemoteNode::connect(addr, &COOKIE),
+            &stop,
+            Duration::from_millis(5),
+        )
+        .unwrap_err();
+    assert!(e.contains("no device"), "{e}");
+}
+
+// ---- the connection ----------------------------------------------------------------------------------------------
+
+#[test]
+fn a_miner_whose_node_goes_away_reconnects_and_carries_on() {
+    let n = Arc::new(AtomicU64::new(0));
+    let n2 = Arc::clone(&n);
+    let f = fake(Box::new(move |r| {
+        let k = n2.fetch_add(1, Ordering::SeqCst);
+        // the third request of the first connection is never answered: the node goes away
+        if k == 2 {
+            return None;
+        }
+        Some(match r {
+            Request::Info => info(5, 5, false),
+            Request::BlockTemplate { .. } => template(6, 5, EASY),
+            Request::SubmitBlock(_) => Response::BlockSubmitted {
+                id: [1; 32],
+                in_chain: true,
+            },
+            _ => return None,
+        })
+    }));
+    let addr = f.addr;
+    let stop = Arc::new(AtomicBool::new(false));
+    let connects = Arc::new(AtomicU64::new(0));
+    let (stats, ()) = thread::scope(|s| {
+        let (stop2, c2) = (Arc::clone(&stop), Arc::clone(&connects));
+        let t = s.spawn(move || {
+            let mut rm = sha_miner(cfg());
+            rm.run(
+                || {
+                    c2.fetch_add(1, Ordering::SeqCst);
+                    RemoteNode::connect(addr, &COOKIE)
+                },
+                &stop2,
+                Duration::from_millis(5),
+            )
+            .unwrap();
+            rm.stats
+        });
+        let end = Instant::now() + Duration::from_secs(20);
+        while connects.load(Ordering::SeqCst) < 2 || f.count(is_submit) < 1 {
+            assert!(
+                Instant::now() < end,
+                "never reconnected: {} connections",
+                connects.load(Ordering::SeqCst)
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        // (the verdict on that block comes back a moment after it is submitted)
+        thread::sleep(Duration::from_millis(300));
+        stop.store(true, Ordering::SeqCst);
+        (t.join().unwrap(), ())
+    });
+    assert_eq!(stats.connections_lost, 1, "{stats:?}");
+    assert!(
+        stats.blocks_accepted >= 1,
+        "mining resumed after the reconnect: {stats:?}"
+    );
+}
+
+#[test]
+fn a_miner_started_before_its_node_waits_for_it() {
+    let f = fake(Box::new(|r| {
+        Some(match r {
+            Request::Info => info(5, 5, false),
+            Request::BlockTemplate { .. } => template(6, 5, EASY),
+            Request::SubmitBlock(_) => Response::BlockSubmitted {
+                id: [1; 32],
+                in_chain: true,
+            },
+            _ => return None,
+        })
+    }));
+    let addr = f.addr;
+    let stop = Arc::new(AtomicBool::new(false));
+    let attempts = Arc::new(AtomicU64::new(0));
+    thread::scope(|s| {
+        let (stop2, a2) = (Arc::clone(&stop), Arc::clone(&attempts));
+        let t = s.spawn(move || {
+            let mut rm = sha_miner(cfg());
+            rm.run(
+                || {
+                    // the node is "not up" for the first two tries
+                    if a2.fetch_add(1, Ordering::SeqCst) < 2 {
+                        Err("cannot reach the node".to_string())
+                    } else {
+                        RemoteNode::connect(addr, &COOKIE)
+                    }
+                },
+                &stop2,
+                Duration::from_millis(5),
+            )
+            .unwrap();
+        });
+        let end = Instant::now() + Duration::from_secs(20);
+        while f.count(is_submit) < 1 {
+            assert!(
+                Instant::now() < end,
+                "no block after {} connection attempts",
+                attempts.load(Ordering::SeqCst)
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        stop.store(true, Ordering::SeqCst);
+        t.join().unwrap();
+    });
+    assert!(attempts.load(Ordering::SeqCst) >= 3);
+}
+
+#[test]
+fn the_miner_stops_promptly_when_told_to_even_while_waiting_for_its_node() {
+    let stop = Arc::new(AtomicBool::new(false));
+    let s2 = Arc::clone(&stop);
+    let t = thread::spawn(move || {
+        let mut rm = sha_miner(cfg());
+        let started = Instant::now();
+        rm.run(|| Err("never".to_string()), &s2, Duration::from_millis(5))
+            .unwrap();
+        started.elapsed()
+    });
+    thread::sleep(Duration::from_millis(700));
+    stop.store(true, Ordering::SeqCst);
+    let took = t.join().unwrap();
+    assert!(took < Duration::from_secs(3), "{took:?}");
+}
+
+/// A backend that finds a nonce at once and says the mix is something other than zero (as the real proof of work does).
+struct Mixer;
+
+impl Backend for Mixer {
+    fn name(&self) -> String {
+        "mixer".into()
+    }
+    fn mine(&mut self, job: &Job, _c: &Counters) -> Result<Option<Solution>, String> {
+        Ok(Some(Solution {
+            job_id: job.id,
+            nonce: 12345,
+            mix: [7; 64],
+        }))
+    }
+}
+
+#[test]
+fn the_nonce_and_the_mix_the_backend_found_are_what_is_submitted() {
+    let f = fake(Box::new(|r| {
+        Some(match r {
+            Request::Info => info(5, 5, false),
+            Request::BlockTemplate { .. } => template(6, 5, EASY),
+            Request::SubmitBlock(_) => Response::BlockSubmitted {
+                id: [1; 32],
+                in_chain: true,
+            },
+            _ => return None,
+        })
+    }));
+    let mut rm = RemoteMiner::new(
+        Miner::spawn(|| Ok(Mixer)),
+        WalletPayout::new(address()).unwrap(),
+        PowKind::Sha256,
+        cfg(),
+    );
+    let node = f.node();
+    assert!(drive(&mut rm, &node, 10, |m| m.stats.blocks_found >= 1));
+    let seen = f.seen.lock().unwrap();
+    let Some(Request::SubmitBlock(b)) = seen.iter().find(|r| is_submit(r)) else {
+        panic!("no block was submitted")
+    };
+    assert_eq!((b.header.nonce, b.header.mix), (12345, [7; 64]));
+}
+
+#[test]
+fn a_template_whose_coinbase_is_for_another_height_is_not_mined_either() {
+    // the template says it is for the height asked, but the coinbase inside is for the next one
+    let f = fake(Box::new(|r| {
+        Some(match r {
+            Request::Info => info(5, 5, false),
+            Request::BlockTemplate { .. } => {
+                let Response::Template(mut t) = template(6, 5, EASY) else {
+                    unreachable!()
+                };
+                t.block.coinbase.height = 7;
+                Response::Template(t)
+            }
+            _ => return None,
+        })
+    }));
+    let jobs = Jobs::default();
+    let mut rm = idle_miner(&jobs, cfg());
+    let node = f.node();
+    assert!(drive(&mut rm, &node, 10, |m| m.stats.stale_templates >= 2));
+    assert!(jobs.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_job_is_stopped_even_when_the_template_that_should_replace_it_is_unusable() {
+    let tip = Arc::new(AtomicU64::new(5));
+    let wrong = Arc::new(AtomicBool::new(false));
+    let (t2, w2) = (Arc::clone(&tip), Arc::clone(&wrong));
+    let f = fake(Box::new(move |r| {
+        let t = t2.load(Ordering::SeqCst);
+        Some(match r {
+            Request::Info => info(t, t as u8, false),
+            // after the tip moves, the template the node gives is for the wrong height
+            Request::BlockTemplate { .. } if w2.load(Ordering::SeqCst) => {
+                template(t + 5, t as u8, EASY)
+            }
+            Request::BlockTemplate { .. } => template(t + 1, t as u8, EASY),
+            _ => return None,
+        })
+    }));
+    let jobs = Jobs::default();
+    let mut rm = idle_miner(&jobs, cfg());
+    let node = f.node();
+    assert!(drive(&mut rm, &node, 10, |_| jobs.0.lock().unwrap().len() == 1));
+    tip.store(6, Ordering::SeqCst);
+    wrong.store(true, Ordering::SeqCst);
+    assert!(drive(&mut rm, &node, 10, |m| m.stats.stale_templates >= 1));
+    assert!(
+        jobs.0.lock().unwrap()[0].1.load(Ordering::SeqCst),
+        "the job on the old tip was left running"
+    );
+}
+
+#[test]
+fn a_node_that_cannot_be_reached_is_tried_again_with_a_pause_not_in_a_tight_loop() {
+    let attempts = Arc::new(AtomicU64::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (a2, s2) = (Arc::clone(&attempts), Arc::clone(&stop));
+    let t = thread::spawn(move || {
+        let mut rm = sha_miner(cfg());
+        rm.run(
+            || {
+                a2.fetch_add(1, Ordering::SeqCst);
+                Err("down".to_string())
+            },
+            &s2,
+            Duration::from_millis(5),
+        )
+        .unwrap();
+    });
+    thread::sleep(Duration::from_millis(1300));
+    stop.store(true, Ordering::SeqCst);
+    t.join().unwrap();
+    let n = attempts.load(Ordering::SeqCst);
+    // a first try, then pauses of half a second, a second, ...: three or four tries in 1.3 s, not thousands
+    assert!((2..=5).contains(&n), "{n} attempts in 1.3 s");
+}
+
+#[test]
+fn a_stop_is_heard_in_the_middle_of_a_pause() {
+    let stop = Arc::new(AtomicBool::new(false));
+    let s2 = Arc::clone(&stop);
+    let t = thread::spawn(move || {
+        let mut rm = sha_miner(cfg());
+        rm.run(|| Err("down".to_string()), &s2, Duration::from_millis(5))
+            .unwrap();
+        Instant::now()
+    });
+    // the second pause (a second long) runs from about 0.5 s to 1.5 s: stop in the middle of it
+    thread::sleep(Duration::from_millis(900));
+    let asked = Instant::now();
+    stop.store(true, Ordering::SeqCst);
+    let ended = t.join().unwrap();
+    assert!(
+        ended.duration_since(asked) < Duration::from_millis(300),
+        "took {:?} to hear the stop",
+        ended.duration_since(asked)
+    );
+}

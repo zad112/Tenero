@@ -39,7 +39,7 @@ pub const POOL_FILE: &str = "pool.dat";
 const POOL_SAVE_EVERY: Duration = Duration::from_secs(300);
 const PRUNE_EVERY: Duration = Duration::from_secs(600);
 /// The proof-of-work epoch of the development network, in blocks.
-const DEV_EPOCH_BLOCKS: u64 = 100;
+pub const DEV_EPOCH_BLOCKS: u64 = 100;
 /// The development network starts easy (one attempt in eight meets the target): a placeholder, not a decision.
 const DEV_START_TARGET_POW2: u32 = 253;
 

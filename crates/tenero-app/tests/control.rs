@@ -80,6 +80,21 @@ fn sample_scan_block() -> ScanBlock {
     }
 }
 
+fn sample_block() -> tenero_core::v2::Block {
+    tenero_core::v2::Block {
+        header: tenero_core::v2::BlockHeader {
+            version: VERSION,
+            prev_id: [1; 32],
+            timestamp: 5,
+            tx_root: [2; 32],
+            nonce: 6,
+            mix: [7; 64],
+        },
+        coinbase: sample_scan_block().coinbase,
+        transactions: vec![sample_tx()],
+    }
+}
+
 fn sample_info() -> NodeInfo {
     NodeInfo {
         height: 9,
@@ -108,6 +123,16 @@ fn requests() -> Vec<Request> {
         Request::Info,
         Request::Stop,
         Request::Blocks { from: 5, count: 64 },
+        Request::BlockTemplate {
+            payout: tenero_node::Payout {
+                onetime_address: [1; 32],
+                view_tag: [2; 3],
+                ephemeral_pubkey: [3; 32],
+                anchor_enc: [4; 16],
+            },
+            max_body_bytes: 1_000_000,
+        },
+        Request::SubmitBlock(sample_block()),
     ]
 }
 
@@ -148,6 +173,19 @@ fn responses() -> Vec<Response> {
             ..sample_info()
         }),
         Response::Stopping,
+        Response::Template(tenero_app::control::Template {
+            block: sample_block(),
+            height: 9,
+            target: [0xaa; 32],
+        }),
+        Response::BlockSubmitted {
+            id: [8; 32],
+            in_chain: true,
+        },
+        Response::BlockSubmitted {
+            id: [9; 32],
+            in_chain: false,
+        },
         Response::Blocks(vec![]),
         Response::Blocks(vec![sample_scan_block(), sample_scan_block()]),
         Response::Error("no".into()),
@@ -202,7 +240,7 @@ fn malformed_requests_are_refused_not_guessed() {
         Request::from_body(&[]),
         Err(ControlError::BadLength(0))
     ));
-    for kind in [0u8, 12, 0x80, 0xFF] {
+    for kind in [0u8, 14, 0x80, 0xFF] {
         assert_eq!(
             Request::from_body(&[kind]),
             Err(ControlError::UnknownKind(kind))

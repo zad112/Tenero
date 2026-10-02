@@ -1,0 +1,335 @@
+//! A miner in a process of its own. It asks a node (over the control interface, `docs/CONTROL_PROTOCOL.md`) for a block
+//! to mine, searches with one of the backends of `tenero-miner` on a thread of its own, and hands a found block back.
+//!
+//! * **The node validates everything.** A block found here is submitted as a local block, so the node's own checks (the
+//!   full proof of work included) decide whether it joins the chain; the miner only reports what the node said.
+//! * **It never mines on a stale tip.** Each step asks the node for its tip and whether it is syncing: a moved tip, or a
+//!   template a minute old, makes a new job; a node that is catching up pauses it.
+//! * **It survives the node.** If the control connection is lost the job is dropped and the miner reconnects; mining
+//!   resumes when the node is back.
+//!
+//! **Experimental and unaudited.**
+
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use tenero_core::u256::U256;
+use tenero_core::v2::ids::{self, PowKind};
+use tenero_core::v2::Block;
+use tenero_miner::{meets_target, Counters, Job, Miner, Msg, PayoutSource, Solution, WalletPayout};
+
+use crate::client::{BlockVerdict, RemoteNode};
+
+pub type Logger = Arc<dyn Fn(&str) + Send + Sync>;
+
+#[derive(Clone)]
+pub struct RemoteMinerConfig {
+    /// The most transaction bytes to ask for in a block.
+    pub max_body_bytes: u32,
+    /// A template this old is replaced even if the tip has not moved (new transactions, a later timestamp).
+    pub refresh_every: Duration,
+    /// The least time between a block found and the next job (0: as fast as possible).
+    pub min_block_interval: Duration,
+    pub log: Logger,
+}
+
+impl Default for RemoteMinerConfig {
+    fn default() -> RemoteMinerConfig {
+        RemoteMinerConfig {
+            max_body_bytes: 1_000_000,
+            refresh_every: Duration::from_secs(60),
+            min_block_interval: Duration::ZERO,
+            log: Arc::new(|_| {}),
+        }
+    }
+}
+
+/// What the miner has done, for an operator and for tests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RemoteStats {
+    pub templates: u64,
+    /// A template for a height other than the one asked for (the tip moved in between): dropped.
+    pub stale_templates: u64,
+    pub blocks_found: u64,
+    pub blocks_accepted: u64,
+    /// Found and valid, but another block took its place first.
+    pub blocks_lost_race: u64,
+    /// Found and refused by the node as invalid.
+    pub blocks_refused: u64,
+    /// A solution a backend returned that does not meet the target.
+    pub bad_solutions: u64,
+    /// Looks at the node that found it catching up (mining paused).
+    pub paused_syncing: u64,
+    /// Times the connection to the node was lost.
+    pub connections_lost: u64,
+}
+
+struct Current {
+    job_id: u64,
+    block: Block,
+    /// The block it builds on.
+    tip: [u8; 32],
+    target: U256,
+    started: Instant,
+}
+
+pub struct RemoteMiner {
+    miner: Miner,
+    payout: WalletPayout,
+    pow: PowKind,
+    cfg: RemoteMinerConfig,
+    current: Option<Current>,
+    next_id: u64,
+    last_found: Option<Instant>,
+    failed: Option<String>,
+    pub stats: RemoteStats,
+}
+
+impl RemoteMiner {
+    /// `pow` is the proof of work of the node's network (to check a found block's id before submitting it).
+    pub fn new(
+        miner: Miner,
+        payout: WalletPayout,
+        pow: PowKind,
+        cfg: RemoteMinerConfig,
+    ) -> RemoteMiner {
+        RemoteMiner {
+            miner,
+            payout,
+            pow,
+            cfg,
+            current: None,
+            next_id: 1,
+            last_found: None,
+            failed: None,
+            stats: RemoteStats::default(),
+        }
+    }
+
+    pub fn counters(&self) -> Arc<Counters> {
+        Arc::clone(&self.miner.counters)
+    }
+
+    /// Why mining has stopped for good (the backend failed), if it has.
+    pub fn failure(&self) -> Option<&str> {
+        self.failed.as_deref()
+    }
+
+    fn log(&self, line: &str) {
+        (self.cfg.log)(line);
+    }
+
+    /// Drops the job in hand (the connection is gone, or the node is not ready).
+    pub fn drop_job(&mut self) {
+        self.miner.cancel();
+        self.current = None;
+    }
+
+    fn on_solution(&mut self, sol: Solution, node: &RemoteNode) -> Result<(), String> {
+        let Some(cur) = self.current.take() else {
+            self.stats.bad_solutions += 1;
+            return Ok(());
+        };
+        if cur.job_id != sol.job_id {
+            // for a job that has been replaced: late, not wrong
+            self.current = Some(cur);
+            return Ok(());
+        }
+        let mut block = cur.block;
+        block.header.nonce = sol.nonce;
+        block.header.mix = sol.mix;
+        let id = ids::block_id(&block.header, self.pow);
+        if !meets_target(&id, &cur.target) {
+            self.stats.bad_solutions += 1;
+            self.log(&format!(
+                "the backend returned nonce {} but the id does not meet the target: discarded",
+                sol.nonce
+            ));
+            return Ok(());
+        }
+        let height = block.coinbase.height;
+        self.stats.blocks_found += 1;
+        self.last_found = Some(Instant::now());
+        self.log(&format!(
+            "found a block at height {height} (nonce {}), {:.1} s after starting it",
+            sol.nonce,
+            cur.started.elapsed().as_secs_f64()
+        ));
+        match node.submit_block(block)? {
+            BlockVerdict::InChain(_) => {
+                self.stats.blocks_accepted += 1;
+                self.log(&format!("block {height} is in the chain"));
+            }
+            BlockVerdict::LostRace(_) => {
+                self.stats.blocks_lost_race += 1;
+                self.log(&format!(
+                    "block {height} lost a race: another block took its place and ours is on a side branch"
+                ));
+            }
+            BlockVerdict::Refused(why) => {
+                self.stats.blocks_refused += 1;
+                self.log(&format!(
+                    "block {height} was REFUSED by the node: {why} (the block or its proof of work is wrong)"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// One look: what the thread has to say, what the node is doing, and a new job if one is needed. `Err` means the
+    /// connection to the node failed (the caller reconnects).
+    pub fn step(&mut self, node: &RemoteNode) -> Result<(), String> {
+        while let Some(msg) = self.miner.try_msg() {
+            match msg {
+                Msg::Ready(name) => self.log(&format!("mining with {name}")),
+                Msg::Solved(sol) => self.on_solution(sol, node)?,
+                Msg::Finished(id) => {
+                    // the thread is idle: if that was our job, it needs another
+                    if self.current.as_ref().is_some_and(|c| c.job_id == id) {
+                        self.current = None;
+                    }
+                }
+                Msg::Failed(e) => {
+                    self.log(&format!(
+                        "the mining backend failed and mining has stopped: {e}"
+                    ));
+                    self.failed = Some(e);
+                }
+            }
+        }
+        if self.failed.is_some() {
+            return Ok(());
+        }
+        let info = node.info()?;
+        if info.syncing {
+            // a node that is catching up has no tip worth building on
+            if self.current.is_some() {
+                self.stats.paused_syncing += 1;
+                self.log("the node is syncing: mining paused");
+            }
+            self.drop_job();
+            return Ok(());
+        }
+        if self
+            .last_found
+            .is_some_and(|t| t.elapsed() < self.cfg.min_block_interval)
+        {
+            return Ok(()); // pacing: not yet
+        }
+        let stale = match &self.current {
+            None => true,
+            Some(c) => c.tip != info.tip_id || c.started.elapsed() >= self.cfg.refresh_every,
+        };
+        if !stale {
+            return Ok(());
+        }
+        self.miner.cancel();
+        let height = info.height + 1;
+        let payout = self.payout.payout(height);
+        let t = node.block_template(payout, self.cfg.max_body_bytes)?;
+        self.stats.templates += 1;
+        if t.height != height || t.block.coinbase.height != height {
+            // the tip moved between our two questions: the reward would not be readable by the wallet (its key
+            // exchange binds the height), so this template is not used
+            self.stats.stale_templates += 1;
+            self.current = None;
+            return Ok(());
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        let tip = t.block.header.prev_id;
+        self.miner.submit(Job {
+            id,
+            header: t.block.header.clone(),
+            height,
+            target: U256::from_be_bytes(&t.target),
+            stale: Arc::new(AtomicBool::new(false)),
+        });
+        self.current = Some(Current {
+            job_id: id,
+            block: t.block,
+            tip,
+            target: U256::from_be_bytes(&t.target),
+            started: Instant::now(),
+        });
+        Ok(())
+    }
+
+    /// Mines until `shutdown` is set or the backend fails, reconnecting to the node (with `connect`) whenever the
+    /// connection is lost. `poll` is how often the node is asked for its tip.
+    pub fn run(
+        &mut self,
+        mut connect: impl FnMut() -> Result<RemoteNode, String>,
+        shutdown: &AtomicBool,
+        poll: Duration,
+    ) -> Result<(), String> {
+        let mut node: Option<RemoteNode> = None;
+        let mut backoff = Duration::from_millis(500);
+        while !shutdown.load(Ordering::SeqCst) {
+            if let Some(why) = self.failed.clone() {
+                self.drop_job();
+                return Err(format!("the mining backend failed: {why}"));
+            }
+            if node.is_none() {
+                match connect() {
+                    Ok(n) => {
+                        self.log("connected to the node");
+                        node = Some(n);
+                        backoff = Duration::from_millis(500);
+                    }
+                    Err(e) => {
+                        self.log(&format!("cannot reach the node: {e} (trying again)"));
+                        sleep_until(shutdown, backoff);
+                        backoff = (backoff * 2).min(Duration::from_secs(10));
+                        continue;
+                    }
+                }
+            }
+            if let Some(n) = &node {
+                if let Err(e) = self.step(n) {
+                    self.stats.connections_lost += 1;
+                    self.log(&format!("lost the node: {e}"));
+                    self.drop_job();
+                    node = None;
+                    continue;
+                }
+            }
+            sleep_until(shutdown, poll);
+        }
+        self.drop_job();
+        Ok(())
+    }
+
+    /// One line for the operator: speed since `since`, and what has become of the blocks.
+    pub fn status_line(&self, attempts_before: u64, since: Duration) -> String {
+        let attempts = self.miner.counters.attempts.load(Ordering::Relaxed);
+        let rate = attempts.saturating_sub(attempts_before) as f64 / since.as_secs_f64().max(0.001);
+        let s = &self.stats;
+        format!(
+            "status: {rate:.0} attempts/s | templates {} | found {} (in chain {}, lost a race {}, refused {}) | paused while syncing {} | connections lost {}",
+            s.templates,
+            s.blocks_found,
+            s.blocks_accepted,
+            s.blocks_lost_race,
+            s.blocks_refused,
+            s.paused_syncing,
+            s.connections_lost
+        )
+    }
+}
+
+/// Sleeps for `d`, but wakes early if `shutdown` is set.
+fn sleep_until(shutdown: &AtomicBool, d: Duration) {
+    let end = Instant::now() + d;
+    while Instant::now() < end && !shutdown.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(10).min(d));
+    }
+}
+
+/// Connects to the node's control interface with the cookie from its data directory.
+pub fn connect_to(data: &std::path::Path, control: SocketAddr) -> Result<RemoteNode, String> {
+    let cookie = crate::client::read_cookie(&data.join(crate::client::COOKIE_FILE))?;
+    RemoteNode::connect(control, &cookie)
+}

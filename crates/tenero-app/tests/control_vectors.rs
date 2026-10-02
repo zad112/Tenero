@@ -4,10 +4,13 @@
 
 use serde_json::Value;
 use tenero_app::control::{
-    frame, frame_len, ControlError, NodeInfo, NodeKind, Request, Response, MAX_BLOCKS_PER_REQUEST,
-    MAX_FRAME, MAX_NAME, MAX_TEXT,
+    frame, frame_len, ControlError, NodeInfo, NodeKind, Request, Response, Template,
+    MAX_BLOCKS_PER_REQUEST, MAX_FRAME, MAX_NAME, MAX_TEXT,
 };
-use tenero_core::v2::{Coinbase, CoinbaseOutput, Input, Output, Prunable, Transaction, TxPrefix};
+use tenero_core::v2::{
+    Block, BlockHeader, Coinbase, CoinbaseOutput, Input, Output, Prunable, Transaction, TxPrefix,
+};
+use tenero_node::Payout;
 use tenero_store::StoredOutput;
 use tenero_wallet::{Rules, ScanBlock};
 
@@ -112,6 +115,38 @@ fn scan_block(v: &Value) -> ScanBlock {
     }
 }
 
+fn block(v: &Value) -> Block {
+    let h = &v["header"];
+    let cb = &v["coinbase"];
+    Block {
+        header: BlockHeader {
+            version: u(&h["version"]) as u16,
+            prev_id: arr(&h["prev_id"]),
+            timestamp: u(&h["timestamp"]),
+            tx_root: arr(&h["tx_root"]),
+            nonce: u(&h["nonce"]),
+            mix: arr(&h["mix"]),
+        },
+        coinbase: Coinbase {
+            version: u(&cb["version"]) as u16,
+            height: u(&cb["height"]),
+            outputs: cb["outputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(cb_output)
+                .collect(),
+            extra: unhex(cb["extra"].as_str().unwrap()),
+        },
+        transactions: v["transactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(tx)
+            .collect(),
+    }
+}
+
 fn request(m: &Value) -> Request {
     match m["type"].as_str().unwrap() {
         "auth" => Request::Auth {
@@ -136,6 +171,16 @@ fn request(m: &Value) -> Request {
             from: u(&m["from"]),
             count: u(&m["count"]) as u16,
         },
+        "block_template" => Request::BlockTemplate {
+            payout: Payout {
+                onetime_address: arr(&m["payout"]["onetime_address"]),
+                view_tag: arr(&m["payout"]["view_tag"]),
+                ephemeral_pubkey: arr(&m["payout"]["ephemeral_pubkey"]),
+                anchor_enc: arr(&m["payout"]["anchor_enc"]),
+            },
+            max_body_bytes: u(&m["max_body_bytes"]) as u32,
+        },
+        "submit_block" => Request::SubmitBlock(block(&m["block"])),
         other => panic!("unknown request type {other}"),
     }
 }
@@ -200,6 +245,15 @@ fn response(m: &Value) -> Response {
                 .map(scan_block)
                 .collect(),
         ),
+        "template" => Response::Template(Template {
+            block: block(&m["block"]),
+            height: u(&m["height"]),
+            target: arr(&m["target"]),
+        }),
+        "block_submitted" => Response::BlockSubmitted {
+            id: arr(&m["id"]),
+            in_chain: m["in_chain"].as_bool().unwrap(),
+        },
         "error" => Response::Error(m["message"].as_str().unwrap().to_string()),
         other => panic!("unknown response type {other}"),
     }

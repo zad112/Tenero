@@ -14,6 +14,10 @@ path = "src/bin/tenerod.rs"
 name = "tenero-wallet"
 path = "src/bin/tenero_wallet.rs"
 
+[[bin]]
+name = "tenero-miner"
+path = "src/bin/tenero_miner.rs"
+
 [dependencies]
 tenero-core = { path = "../tenero-core" }
 tenero-store = { path = "../tenero-store" }

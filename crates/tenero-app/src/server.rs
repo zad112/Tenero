@@ -29,7 +29,7 @@ use tenero_net::{Engine, Event};
 use tenero_wallet::ChainView;
 
 use crate::control::{
-    read_frame, scan_block_size, write_frame, NodeInfo, NodeKind, Request, Response,
+    read_frame, scan_block_size, write_frame, NodeInfo, NodeKind, Request, Response, Template,
     MAX_BLOCKS_BYTES,
 };
 
@@ -39,6 +39,8 @@ pub const MAX_CONNECTIONS: usize = 8;
 pub const QUEUE: usize = 64;
 /// Requests the loop answers per poll (so a flood cannot starve the network code).
 pub const PER_POLL: usize = 32;
+/// The most transaction bytes a block template carries, whatever a miner asks for.
+pub const MAX_TEMPLATE_BODY: u64 = 2_000_000;
 /// A connection that has not authenticated in this long is closed.
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 /// A connection silent for this long is closed.
@@ -86,6 +88,8 @@ pub struct ControlHook {
     blocks_bytes: usize,
     /// Transactions handed to the engine whose answer waits until the next poll shows whether the pool kept them.
     pending: Vec<([u8; 32], SyncSender<Response>)>,
+    /// Blocks handed to the engine, waiting to be seen in the chain, on a side branch, or not at all.
+    pending_blocks: Vec<([u8; 32], SyncSender<Response>)>,
     /// Requests answered, for the status line.
     pub answered: u64,
 }
@@ -180,6 +184,7 @@ pub fn start_with(
             meta,
             blocks_bytes: cfg.blocks_bytes,
             pending: Vec::new(),
+            pending_blocks: Vec::new(),
             answered: 0,
         },
     ))
@@ -249,15 +254,25 @@ fn err(m: impl Into<String>) -> Response {
     Response::Error(m.into())
 }
 
-/// What the loop did with a request.
+/// What the loop did with a request. (One answer in flight at a time, so the size of the largest, a block template, is
+/// of no consequence.)
+#[allow(clippy::large_enum_variant)]
 enum Outcome {
     Reply(Response),
     /// A transaction given to the engine: the answer waits for the next poll.
     HandedOver([u8; 32]),
+    /// A block given to the engine: the answer waits for the next poll.
+    BlockHandedOver([u8; 32]),
 }
 
 impl ControlHook {
-    fn answer(&mut self, engine: &Engine<'_>, req: Request, events: &mut Vec<Event>) -> Outcome {
+    fn answer(
+        &mut self,
+        engine: &Engine<'_>,
+        req: Request,
+        now_ms: u64,
+        events: &mut Vec<Event>,
+    ) -> Outcome {
         let node = engine.node();
         Outcome::Reply(match req {
             Request::Auth { .. } => err("already authenticated"),
@@ -340,12 +355,58 @@ impl ControlHook {
                 self.shutdown.store(true, Ordering::SeqCst);
                 Response::Stopping
             }
+            Request::BlockTemplate {
+                payout,
+                max_body_bytes,
+            } => {
+                // a node that is catching up has no tip worth building on
+                if engine.is_syncing() {
+                    return Outcome::Reply(err(
+                        "the node is syncing: it has no block to build on yet",
+                    ));
+                }
+                let next = match node.next_block() {
+                    Ok(n) => n,
+                    Err(e) => return Outcome::Reply(err(e.to_string())),
+                };
+                let max = u64::from(max_body_bytes).min(MAX_TEMPLATE_BODY);
+                match node.block_template(now_ms / 1000, max, payout) {
+                    Ok(block) => Response::Template(Template {
+                        block,
+                        height: next.height,
+                        target: next.target.to_be_bytes(),
+                    }),
+                    Err(e) => err(e.to_string()),
+                }
+            }
+            Request::SubmitBlock(block) => {
+                // handed to the engine as a local block (it validates it fully and tells the peers); the answer
+                // waits for the next look, which shows what became of it
+                let id = ids::block_id(&block.header, node.store().pow());
+                events.push(Event::LocalBlock(block));
+                return Outcome::BlockHandedOver(id);
+            }
         })
     }
 }
 
 impl Hooks for ControlHook {
-    fn poll(&mut self, engine: &mut Engine<'_>, _now_ms: u64) -> Vec<Event> {
+    fn poll(&mut self, engine: &mut Engine<'_>, now_ms: u64) -> Vec<Event> {
+        // the blocks handed over at the last poll: what became of each?
+        for (id, reply) in std::mem::take(&mut self.pending_blocks) {
+            let r = if matches!(engine.node().store().height_of(&id), Ok(Some(_))) {
+                Response::BlockSubmitted { id, in_chain: true }
+            } else if engine.node().chain().holds_block(&id) {
+                Response::BlockSubmitted {
+                    id,
+                    in_chain: false,
+                }
+            } else {
+                err("the node refused the block (it is not valid)")
+            };
+            let _ = reply.try_send(r);
+            self.answered += 1;
+        }
         // the transactions handed over at the last poll: did the pool keep them?
         for (id, reply) in std::mem::take(&mut self.pending) {
             let r = if engine.node().pool().contains(&id) {
@@ -359,12 +420,13 @@ impl Hooks for ControlHook {
         let mut events = Vec::new();
         for _ in 0..PER_POLL {
             let Ok(job) = self.rx.try_recv() else { break };
-            match self.answer(engine, job.req, &mut events) {
+            match self.answer(engine, job.req, now_ms, &mut events) {
                 Outcome::Reply(r) => {
                     let _ = job.reply.try_send(r);
                     self.answered += 1;
                 }
                 Outcome::HandedOver(id) => self.pending.push((id, job.reply)),
+                Outcome::BlockHandedOver(id) => self.pending_blocks.push((id, job.reply)),
             }
         }
         events

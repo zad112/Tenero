@@ -63,6 +63,8 @@ The answer to request `k` has kind `k | 0x80`. Any request may instead be answer
 | 9 | `info` | | `info`: height u64, tip id (32), peers u32, inbound u32, pruned-below u64, mempool transactions u32, syncing flag, node kind u8 (0 archive, 1 pruned), network (text, at most 64 bytes), version (text, at most 64 bytes) |
 | 10 | `stop` | | `stopping`: asks the node to shut down cleanly |
 | 11 | `blocks` | from u64, count u16 (1 to 64) | `blocks`: count u32 (0 to 64), then that many scan blocks |
+| 12 | `block_template` | the payout (one-time address 32, view tag 3, ephemeral key 32, anchor 16) and the most transaction bytes wanted u32 | `template`: height u64, target (32, big-endian), then a whole block with its nonce and mix empty; **an error if the node is syncing** |
+| 13 | `submit_block` | a whole block | `block_submitted`: id (32) and a flag, 1 if the block is in the node's chain, 0 if it is valid but on a side branch (it lost a race); **an error if the node refuses it** |
 
 * A **scan block** is what a wallet needs: height u64, block id (32), the global index of its first output u64, the
   coinbase (version u16, height u64, a count of coinbase outputs from **0** to 16 and the outputs, extra as a var), and a
@@ -80,6 +82,15 @@ The answer to request `k` has kind `k | 0x80`. Any request may instead be answer
   answer comes at the next look, once the pool has been seen to keep it. **"Accepted" means in this node's pool, not in a
   block.**
 
+* `block_template` is how a miner in another process gets work (`tenero-miner`, `docs/RUNNING.md`). The node builds the
+  block exactly as its own miner would (the pool's best transactions within the size asked for, never more than 2 MB, and
+  a coinbase paying the whole reward to the payout given); the coinbase's key exchange binds the block's HEIGHT, so a
+  miner must derive the payout for the height of the block it will be given and discard a template for another (the tip
+  moved between its two questions). A node that is syncing has no tip worth building on and answers with an error.
+* `submit_block`: the block is handed to the node's engine as a local block, which **validates it completely, proof of work
+  and every transaction proof included**, and tells the peers; the answer comes at the next look. The miner reports what the
+  node said and trusts nothing it found itself.
+
 ## What the answers do not say
 
 The node answers what it is asked about **its own chain**. A client that wants to know it is on the best chain asks
@@ -88,7 +99,7 @@ node it is pointed at. That is a property of this design, not something the prot
 
 ## Vectors
 
-`tests/vectors/control.json`: 36 valid messages (both directions), 90 malformed bodies with the error class a decoder
+`tests/vectors/control.json`: 44 valid messages (both directions), 111 malformed bodies with the error class a decoder
 must give (`length`, `kind`, `trailing`, `malformed`), and the frame length rule. Every valid message encodes to exactly
 the reference's bytes in Rust and decodes back. The reference also checks, over every valid message and every
 single-bit change of it, that the result is refused or decodes to a message that encodes back to the same bytes.

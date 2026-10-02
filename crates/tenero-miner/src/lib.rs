@@ -255,7 +255,8 @@ impl Backend for CpuMatmulBackend {
 
 // ---- the miner thread ---------------------------------------------------------------------------------------
 
-enum Msg {
+/// What the miner thread says.
+pub enum Msg {
     Ready(String),
     Solved(Solution),
     /// The thread has finished with this job (found something for it, or was told to stop) and is waiting for
@@ -338,7 +339,8 @@ impl Miner {
         }
     }
 
-    fn try_msg(&self) -> Option<Msg> {
+    /// The next message from the thread, if there is one.
+    pub fn try_msg(&self) -> Option<Msg> {
         self.results.try_recv().ok()
     }
 }

@@ -8,8 +8,10 @@
 
 use tenero_core::v2::codec::{DecodeError, EncodeError, Reader, Wire, Writer};
 use tenero_core::v2::{
-    Coinbase, CoinbaseOutput, Transaction, TxPrefix, MAX_BLOCK_TXS, MAX_COINBASE_OUTPUTS, MAX_EXTRA,
+    Block, Coinbase, CoinbaseOutput, Transaction, TxPrefix, MAX_BLOCK_TXS, MAX_COINBASE_OUTPUTS,
+    MAX_EXTRA,
 };
+use tenero_node::Payout;
 use tenero_store::StoredOutput;
 use tenero_wallet::{Rules, ScanBlock};
 
@@ -72,6 +74,24 @@ pub enum Request {
         from: u64,
         count: u16,
     },
+    /// An unmined block on the node's tip, with the coinbase paying `payout`, for a miner in another process to
+    /// search. `max_body_bytes` is the most transaction bytes it wants (the node may give fewer).
+    BlockTemplate {
+        payout: Payout,
+        max_body_bytes: u32,
+    },
+    /// A mined block. The answer says whether it is in the chain, or on a side branch (it lost a race); a block the
+    /// node refuses is an error answer.
+    SubmitBlock(Block),
+}
+
+/// What a miner searches: the block with an empty nonce and mix, the height, and the target its id must be below
+/// (big-endian).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Template {
+    pub block: Block,
+    pub height: u64,
+    pub target: [u8; 32],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,6 +113,13 @@ pub enum Response {
     Stopping,
     /// Blocks in order from the requested height: fewer than asked at the tip, or when they would not fit a frame.
     Blocks(Vec<ScanBlock>),
+    Template(Template),
+    /// The block was taken: `in_chain` is true when it is part of the node's chain, false when it is on a side branch
+    /// because another block took its place first.
+    BlockSubmitted {
+        id: [u8; 32],
+        in_chain: bool,
+    },
     Error(String),
 }
 
@@ -144,6 +171,8 @@ pub const K_SUBMIT_TX: u8 = 8;
 pub const K_INFO: u8 = 9;
 pub const K_STOP: u8 = 10;
 pub const K_BLOCKS: u8 = 11;
+pub const K_BLOCK_TEMPLATE: u8 = 12;
+pub const K_SUBMIT_BLOCK: u8 = 13;
 pub const K_ERROR: u8 = 0xFF;
 const ANSWER: u8 = 0x80;
 
@@ -181,6 +210,8 @@ impl Request {
             Request::Info => K_INFO,
             Request::Stop => K_STOP,
             Request::Blocks { .. } => K_BLOCKS,
+            Request::BlockTemplate { .. } => K_BLOCK_TEMPLATE,
+            Request::SubmitBlock(_) => K_SUBMIT_BLOCK,
         }
     }
 
@@ -203,6 +234,17 @@ impl Request {
                 w.u64(*from);
                 w.u16(*count);
             }
+            Request::BlockTemplate {
+                payout,
+                max_body_bytes,
+            } => {
+                w.raw(&payout.onetime_address);
+                w.raw(&payout.view_tag);
+                w.raw(&payout.ephemeral_pubkey);
+                w.raw(&payout.anchor_enc);
+                w.u32(*max_body_bytes);
+            }
+            Request::SubmitBlock(b) => b.write(&mut w)?,
         }
         Ok(w.into_bytes())
     }
@@ -231,6 +273,16 @@ impl Request {
                 }
                 Request::Blocks { from, count }
             }
+            K_BLOCK_TEMPLATE => Request::BlockTemplate {
+                payout: Payout {
+                    onetime_address: r.array()?,
+                    view_tag: r.array()?,
+                    ephemeral_pubkey: r.array()?,
+                    anchor_enc: r.array()?,
+                },
+                max_body_bytes: r.u32()?,
+            },
+            K_SUBMIT_BLOCK => Request::SubmitBlock(Block::read(&mut r)?),
             other => return Err(ControlError::UnknownKind(other)),
         };
         r.finish().map_err(|_| ControlError::Trailing)?;
@@ -288,6 +340,8 @@ impl Response {
             Response::Info(_) => K_INFO | ANSWER,
             Response::Stopping => K_STOP | ANSWER,
             Response::Blocks(_) => K_BLOCKS | ANSWER,
+            Response::Template(_) => K_BLOCK_TEMPLATE | ANSWER,
+            Response::BlockSubmitted { .. } => K_SUBMIT_BLOCK | ANSWER,
             Response::Error(_) => K_ERROR,
         }
     }
@@ -351,6 +405,15 @@ impl Response {
                     write_scan_block(&mut w, b)?;
                 }
             }
+            Response::Template(t) => {
+                w.u64(t.height);
+                w.raw(&t.target);
+                t.block.write(&mut w)?;
+            }
+            Response::BlockSubmitted { id, in_chain } => {
+                w.raw(id);
+                put_flag(&mut w, *in_chain);
+            }
             Response::Error(m) => text(&mut w, m, MAX_TEXT)?,
         }
         Ok(w.into_bytes())
@@ -407,6 +470,15 @@ impl Response {
             x if x == K_BLOCKS | ANSWER => {
                 Response::Blocks(r.list(0, usize::from(MAX_BLOCKS_PER_REQUEST), read_scan_block)?)
             }
+            x if x == K_BLOCK_TEMPLATE | ANSWER => Response::Template(Template {
+                height: r.u64()?,
+                target: r.array()?,
+                block: Block::read(&mut r)?,
+            }),
+            x if x == K_SUBMIT_BLOCK | ANSWER => Response::BlockSubmitted {
+                id: r.array()?,
+                in_chain: flag(&mut r)?,
+            },
             K_ERROR => Response::Error(read_text(&mut r, MAX_TEXT)?),
             other => return Err(ControlError::UnknownKind(other)),
         };
