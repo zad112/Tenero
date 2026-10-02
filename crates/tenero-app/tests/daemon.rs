@@ -1061,7 +1061,22 @@ fn a_node_with_no_seeds_but_a_pinned_peer_finds_it_and_finds_it_again_after_it_r
         "data = {}\nnetwork = test\nlisten = {a_p2p}\ncontrol = 127.0.0.1:0\n",
         a_cfg_dir.display()
     );
-    let a2 = Running::start(Raw::from_file_text(&again).unwrap().into_config().unwrap());
+    // (the port was given back to the system a moment ago and another test, or the dials of the pinned node itself, can hold it
+    // briefly: that, and only that, is retried)
+    let try_end = Instant::now() + Duration::from_secs(30);
+    let a2 = loop {
+        let cfg = Raw::from_file_text(&again).unwrap().into_config().unwrap();
+        match Running::try_start(cfg) {
+            Ok(r) => break r,
+            Err(e)
+                if (e.contains("in use") || e.contains("Only one usage"))
+                    && Instant::now() < try_end =>
+            {
+                thread::sleep(Duration::from_millis(500))
+            }
+            Err(e) => panic!("{e}"),
+        }
+    };
     let _keep = &a2;
     let end = Instant::now() + Duration::from_secs(90);
     while b.client().info().unwrap().peers < 1 {
