@@ -70,7 +70,7 @@ the side-branch pool, and prints `stopped at height H, tip ID`. A second Ctrl-C 
 five minutes old (the chain itself is written as each block arrives).
 
 **Files in the data directory:** `chain.redb` and `chain.redb.segments\` (the chain), `node.key` (the node's long-term
-network key; not a wallet), `peers.dat`, `pool.dat`, `control.cookie` (new at each start). The wallet's keys are **not**
+network key; not a wallet), `peers.dat` (the address book, the ban list and the **anchor peers**: up to two long-standing outbound peers that the node dials first after a restart), `pool.dat`, `control.cookie` (new at each start). The wallet's keys are **not**
 here; they are in the wallet file you choose.
 
 **Memory and disk:** the `dev` network's proof-of-work check needs about 4.3 GiB of memory per epoch (about 8.6 GiB while the

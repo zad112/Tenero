@@ -675,6 +675,17 @@ fn run_dialler(
     state: Option<&std::path::Path>,
     until: impl Fn(&Snap) -> bool,
 ) -> (Snap, Log) {
+    run_dialler_with(rig, seeds, state, |_| {}, until)
+}
+
+/// `run_dialler`, with the engine's settings adjusted by `tweak`.
+fn run_dialler_with(
+    rig: &SimRig,
+    seeds: &[SocketAddr],
+    state: Option<&std::path::Path>,
+    tweak: impl FnOnce(&mut EngineConfig) + Send,
+    until: impl Fn(&Snap) -> bool,
+) -> (Snap, Log) {
     let log = Log::new();
     let mut cfg = net_cfg(None, &log);
     cfg.state_path = state.map(|p| p.to_path_buf());
@@ -684,7 +695,9 @@ fn run_dialler(
     thread::scope(|s| {
         let (snap2, stop2) = (Arc::clone(&snap), Arc::clone(&stop));
         let node = s.spawn(move || {
-            let mut e = engine_on(rig, local_cfg(seeds));
+            let mut config = local_cfg(seeds);
+            tweak(&mut config);
+            let mut e = engine_on(rig, config);
             net.run(&mut e, stop2, &mut Publish { snap: snap2 })
                 .unwrap();
         });
@@ -733,6 +746,40 @@ fn the_address_book_is_saved_on_shutdown_and_a_restarted_node_finds_its_peer_aga
                 log3.dump()
             );
             assert_eq!(third.peers, 1);
+        },
+    );
+    let _ = std::fs::remove_file(&state);
+}
+
+#[test]
+fn a_node_that_was_connected_for_a_while_saves_that_peer_as_an_anchor_when_it_stops() {
+    let rigs = SimRig::rigs("tr-anchor", 3);
+    let state = std::env::temp_dir().join(format!("tenero-net-anchor-{}.bin", std::process::id()));
+    let _ = std::fs::remove_file(&state);
+    with_node(
+        &rigs[0],
+        local_cfg(&[]),
+        |_| {},
+        |h| {
+            // one run, long enough for the connection to count as old (the age is set to 300 ms for the test)
+            let t0 = Instant::now();
+            let (first, log) = run_dialler_with(
+                &rigs[1],
+                &[h.addr],
+                Some(&state),
+                |c| c.anchor_min_age_ms = 300,
+                |s| s.peers == 1 && t0.elapsed() > Duration::from_millis(2500),
+            );
+            assert_eq!(first.peers, 1, "{}", log.dump());
+            // what was saved at shutdown names that peer as an anchor
+            let bytes = std::fs::read(&state).expect("a state file was written");
+            let mut fresh = engine_on(&rigs[2], local_cfg(&[]));
+            fresh.import_state(&bytes).expect("the saved state loads");
+            assert_eq!(
+                fresh.pending_anchors(),
+                [h.addr.to_string()].as_slice(),
+                "the long-lived outbound peer was not saved as an anchor"
+            );
         },
     );
     let _ = std::fs::remove_file(&state);

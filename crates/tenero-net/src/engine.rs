@@ -167,6 +167,12 @@ pub struct EngineConfig {
     /// The most bytes of blocks put in one `blocks` reply; a request for blocks that are larger together is answered in
     /// several replies (the wire's frame ceiling is 16 MiB, and a reply over it cannot be sent at all).
     pub blocks_reply_bytes: usize,
+    /// How many outbound peers are remembered across a restart and dialled first when the node starts again (`anchors.rs`).
+    /// 0 turns anchors off.
+    pub anchor_count: usize,
+    /// An outbound peer must have been connected this long before it may be an anchor: a connection made a moment ago says
+    /// little about who is on the other end.
+    pub anchor_min_age_ms: u64,
 }
 
 impl Default for EngineConfig {
@@ -204,6 +210,8 @@ impl Default for EngineConfig {
             addr_answer_cache: 1024,
             pow_prefetch_blocks: 10,
             blocks_reply_bytes: crate::wire::BLOCKS_REPLY_BYTES,
+            anchor_count: 2,
+            anchor_min_age_ms: 10 * 60 * 1000,
         }
     }
 }
@@ -220,6 +228,8 @@ pub struct Stats {
     pub assumed_blocks: u64,
     /// Replies that came after the request they answered had timed out, and were forgiven ("slow is not hostile").
     pub late_replies_forgiven: u64,
+    /// Anchor peers dialled first after a restart.
+    pub anchors_dialled: u64,
 }
 
 struct Peer {
@@ -317,6 +327,8 @@ pub struct Engine<'a> {
     /// Addresses we have asked the transport to dial, and when.
     connecting: BTreeMap<String, u64>,
     syncing: Option<Sync>,
+    /// Anchor peers loaded from the saved state, still to be dialled first (`anchors.rs`); each is tried once.
+    anchors: Vec<String>,
     /// Replies that would be forgiven if they came now, and until when (see [`Late`]).
     forgivable: Vec<(PeerId, Late, u64)>,
     /// The answer last given to each requesting network group, and when it stops being reused.
@@ -349,6 +361,7 @@ impl<'a> Engine<'a> {
             book,
             connecting: BTreeMap::new(),
             syncing: None,
+            anchors: Vec::new(),
             forgivable: Vec::new(),
             addr_answers: HashMap::new(),
             cooldown: HashMap::new(),
@@ -1149,6 +1162,7 @@ impl<'a> Engine<'a> {
         }
         self.bans.expire(now);
         self.book.expire(self.secs());
+        self.dial_anchors(now, out);
 
         let regular = self.peers.values().filter(|p| !p.addr_only);
         let total = regular.clone().count() + self.connecting.len();
@@ -1202,22 +1216,90 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// The address book and the ban list, for saving. `import_state` restores them.
+    /// The outbound peers worth remembering across a restart: ready peers WE dialled (so not chosen by whoever connected to us),
+    /// connected for at least `anchor_min_age_ms`, the oldest first, at most `anchor_count`, and no two from one network group.
+    pub fn current_anchors(&self) -> Vec<String> {
+        let want = self.cfg.anchor_count.min(crate::anchors::MAX_ANCHORS);
+        if want == 0 {
+            return Vec::new();
+        }
+        let mut peers: Vec<&Peer> = self
+            .peers
+            .values()
+            .filter(|p| {
+                !p.inbound
+                    && !p.addr_only
+                    && p.hello.is_some()
+                    && self.now.saturating_sub(p.connected_at) >= self.cfg.anchor_min_age_ms
+            })
+            .collect();
+        peers.sort_by(|a, b| (a.connected_at, &a.addr).cmp(&(b.connected_at, &b.addr)));
+        let mut groups: HashSet<String> = HashSet::new();
+        let mut out = Vec::new();
+        for p in peers {
+            if out.len() >= want {
+                break;
+            }
+            if groups.insert(group_of(&p.addr)) {
+                out.push(p.addr.clone());
+            }
+        }
+        out
+    }
+
+    /// The anchors loaded from a saved state that have not been dialled yet.
+    pub fn pending_anchors(&self) -> &[String] {
+        &self.anchors
+    }
+
+    /// Dials the anchors loaded from the saved state, once each, before anything the address book or the seeds offer. One that is
+    /// banned, on a host we are already connected to, being dialled, or our own address is skipped.
+    fn dial_anchors(&mut self, now: u64, out: &mut Vec<Action>) {
+        if self.anchors.is_empty() {
+            return;
+        }
+        let anchors = std::mem::take(&mut self.anchors);
+        let hosts: HashSet<String> = self.peers.values().map(|p| host_of(&p.addr)).collect();
+        let mut chosen_hosts: HashSet<String> = HashSet::new();
+        for a in anchors {
+            let skip = hosts.contains(&host_of(&a))
+                || self.connecting.contains_key(&a)
+                || self.bans.is_banned(&a, now)
+                || self.cfg.advertise.as_deref() == Some(a.as_str())
+                || !chosen_hosts.insert(host_of(&a));
+            if skip {
+                continue;
+            }
+            self.book.mark_attempt(&a, now);
+            self.connecting.insert(a.clone(), now);
+            self.stats.anchors_dialled += 1;
+            out.push(Action::Connect { addr: a });
+        }
+    }
+
+    /// The address book, the ban list and the anchors, for saving. `import_state` restores them.
     pub fn export_state(&self) -> Vec<u8> {
         let book = self.book.to_bytes();
         let bans = self.bans.to_bytes();
-        let mut out = b"TNS1".to_vec();
-        out.extend_from_slice(&(book.len() as u32).to_le_bytes());
-        out.extend_from_slice(&book);
-        out.extend_from_slice(&(bans.len() as u32).to_le_bytes());
-        out.extend_from_slice(&bans);
+        let anchors = crate::anchors::to_bytes(&self.current_anchors());
+        let mut out = b"TNS2".to_vec();
+        for part in [&book, &bans, &anchors] {
+            out.extend_from_slice(&(part.len() as u32).to_le_bytes());
+            out.extend_from_slice(part);
+        }
         out
     }
 
     /// Loads what `export_state` saved. On any damage nothing is changed and the caller carries on with the
     /// seeds alone.
     pub fn import_state(&mut self, data: &[u8]) -> Result<(), String> {
-        if data.len() < 12 || &data[..4] != b"TNS1" {
+        // TNS1 (before anchors) is still read: it has no anchors
+        let has_anchors = match data.get(..4) {
+            Some(b"TNS2") => true,
+            Some(b"TNS1") => false,
+            _ => return Err("not a saved state".into()),
+        };
+        if data.len() < 12 {
             return Err("not a saved state".into());
         }
         let mut pos = 4;
@@ -1236,16 +1318,29 @@ impl<'a> Engine<'a> {
         };
         let book_bytes = part(&mut pos)?;
         let ban_bytes = part(&mut pos)?;
+        let anchor_bytes = if has_anchors {
+            Some(part(&mut pos)?)
+        } else {
+            None
+        };
         if pos != data.len() {
             return Err("trailing bytes".into());
         }
         let mut book = AddrBook::from_bytes(self.cfg.addrbook.clone(), book_bytes)?;
         let bans = BanList::from_bytes(ban_bytes)?;
+        let anchors = match anchor_bytes {
+            Some(b) => crate::anchors::from_bytes(b)?,
+            None => Vec::new(),
+        };
         for seed in &self.cfg.seeds {
             book.add(seed, 0, "seed", 0);
         }
         self.book = book;
         self.bans = bans;
+        self.anchors = anchors
+            .into_iter()
+            .take(self.cfg.anchor_count.min(crate::anchors::MAX_ANCHORS))
+            .collect();
         Ok(())
     }
 
