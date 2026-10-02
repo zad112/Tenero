@@ -686,6 +686,18 @@ fn run_dialler_with(
     tweak: impl FnOnce(&mut EngineConfig) + Send,
     until: impl Fn(&Snap) -> bool,
 ) -> (Snap, Log) {
+    run_dialler_for(15, rig, seeds, state, tweak, until)
+}
+
+/// `run_dialler_with`, giving up after `secs` seconds instead of 15 (for a slow machine with a busy node to sync from).
+fn run_dialler_for(
+    secs: u64,
+    rig: &SimRig,
+    seeds: &[SocketAddr],
+    state: Option<&std::path::Path>,
+    tweak: impl FnOnce(&mut EngineConfig) + Send,
+    until: impl Fn(&Snap) -> bool,
+) -> (Snap, Log) {
     let log = Log::new();
     let mut cfg = net_cfg(None, &log);
     cfg.state_path = state.map(|p| p.to_path_buf());
@@ -701,7 +713,7 @@ fn run_dialler_with(
             net.run(&mut e, stop2, &mut Publish { snap: snap2 })
                 .unwrap();
         });
-        let end = Instant::now() + Duration::from_secs(15);
+        let end = Instant::now() + Duration::from_secs(secs);
         while Instant::now() < end && !until(&snap.lock().unwrap().clone()) {
             thread::sleep(Duration::from_millis(20));
         }
@@ -931,7 +943,10 @@ fn sixty_clients_stay_connected_to_one_node_while_a_real_peer_syncs_from_it() {
             h.wait("every client connected", |s| s.inbound >= n);
             let connected_in = started.elapsed();
             // a real peer syncs the whole chain while they are all there
-            let (peer, log_peer) = run_dialler(&rigs[1], &[h.addr], None, |s| s.tip == 200);
+            // (45 s, not 15: on a shared two-core CI runner, with 60 other connections to serve, it was found 8 and 40 blocks
+            // short when the 15 s ran out; it was making progress, not stalled)
+            let (peer, log_peer) =
+                run_dialler_for(45, &rigs[1], &[h.addr], None, |_| {}, |s| s.tip == 200);
             assert_eq!(peer.tip, 200, "{}", log_peer.dump());
             let snap = h.snap();
             assert!(

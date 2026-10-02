@@ -15,8 +15,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+        # Windows runs on the owner's own machine (a self-hosted runner), not on GitHub's metered minutes
+        include:
+          - name: ubuntu
+            runner: '"ubuntu-latest"'
+          - name: windows
+            runner: '["self-hosted", "Windows", "X64"]'
+    name: test (${{ matrix.name }})
+    runs-on: ${{ fromJSON(matrix.runner) }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
