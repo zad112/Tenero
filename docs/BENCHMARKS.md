@@ -62,6 +62,37 @@ The whole 4 GiB dataset builds on the GPU in **0.116 s** (measured; the README's
   owner's RTX 5070 Ti) is roughly 130 times the 6-thread native CPU figure. CPU mining is a test-chain
   curiosity, not a competitor.
 
+## The GPU miner again, with the rate meter and NVML (measured on the owner's machine, RTX 5070 Ti, 2026-10-02, evening)
+
+Same machine and same test as below, run again after M10.2 (`how_many_attempts_per_second_the_gpu_backend_does_at_each_batch_size`, 15 s
+per batch size after 5 s of warm-up, one run each):
+
+| batch | sustained attempts/s |
+|---|---|
+| 32 | 32,353 |
+| 64 | 31,758 |
+| 128 | 33,348 |
+| 256 | 32,997 |
+
+* **This is about 6 to 7 % below the earlier run on the same card (34,058 to 35,959), and it is not faster than before.** I do not know
+  why, and have not tested the explanations. **One thing differed that I know of:** the 8 nodes of the heavy test network (run 4) were
+  mining on the CPU, one core each, at the same time, and the GPU backend does CPU work between batches. One run per batch size is
+  also too few to call a 6 % difference more than possible noise. The ordering of the batch sizes is different from the earlier run
+  too (here 128 is best, there 256), which fits noise.
+* **The card while it ran** (`nvidia-smi` once a second, 80 samples under load): 47 C on average (up to 50), 236 W on average (up to 257;
+  the average includes the warm-up and the dataset builds), graphics clock 2,985 MHz, memory clock 15,801 MHz, GPU busy 89 % on average
+  (94 % at most), memory controller busy 62 % on average (67 % at most), 6.0 GiB of video memory used. The driver reported no
+  throttling reason other than idle.
+* **The memory-bound estimate holds up roughly:** 33,000 attempts/s of 16 MiB slices is about 554 GB/s of reads, against a spec-sheet
+  bandwidth I have not looked up for this card (earlier text here used about 900 GB/s), and the memory controller was busy 62 to 67 % of the
+  time. "Busy" is a share of time, not a share of bandwidth, so these two numbers do not have to agree and I do not claim they do.
+* **The in-process miner** (`tenerod --network dev --mine gpu`, batch 128, a scratch chain on the development network, 3 minutes, the
+  node's own screen): average 34,417 attempts/s over the run (its 10 s figure moved between 33,900 and 35,300), card at 50 to 51 C and 256 to
+  264 W. Block times on that chain were not steady (the difficulty was still moving from its placeholder start), so the attempt rate
+  is the thing to read, not the blocks. One run.
+* **The `reads` row on the screen is attempts a second times 16 MiB, not a measurement of the memory bus.** NVML does not report
+  bandwidth.
+
 ## The GPU miner end to end (measured on the owner's machine, RTX 5070 Ti, 2026-10)
 
 `cargo test --release -p tenero-miner --test gpu_mining -- --ignored --nocapture --test-threads=1`. The miner
