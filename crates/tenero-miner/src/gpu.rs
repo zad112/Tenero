@@ -139,3 +139,112 @@ impl Backend for GpuBackend {
         }
     }
 }
+
+// ---- choosing a batch size ----------------------------------------------------------------------------------------------------------
+
+/// The batch sizes `auto` tries. **128 and 256 were measured on the owner's card (within noise of each other, about 33,000 to 36,000
+/// attempts/s, and above 32 and 64); 512 was not measured before this.**
+pub const AUTO_BATCHES: [usize; 3] = [128, 256, 512];
+
+/// The batch size with the highest rate; on a tie the smaller (less video memory). Rates that are not finite or not above 0 are ignored;
+/// `None` if none is left. **One short measurement varies by several per cent from run to run on the same card** (see `BENCHMARKS.md`),
+/// so this picks the best of what it saw and does not claim the winner is better by that margin.
+pub fn choose_batch(results: &[(usize, f64)]) -> Option<usize> {
+    results
+        .iter()
+        .filter(|(b, r)| *b > 0 && r.is_finite() && *r > 0.0)
+        .fold(None, |best: Option<(usize, f64)>, &(b, r)| match best {
+            Some((bb, br)) if br > r || (br == r && bb <= b) => Some((bb, br)),
+            _ => Some((b, r)),
+        })
+        .map(|(b, _)| b)
+}
+
+/// Measures each of `candidates` for `secs` seconds (after a second and a half of warming up) on a job that can never succeed, and
+/// returns the rates. A candidate that cannot start (no video memory for it, say) is left out, with the reason in `log`.
+pub fn measure_batches(
+    ordinal: usize,
+    params: Params,
+    epoch_blocks: u64,
+    candidates: &[usize],
+    secs: f64,
+    log: &dyn Fn(&str),
+) -> Vec<(usize, f64)> {
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+    use tenero_core::u256::U256;
+    use tenero_core::v2::BlockHeader;
+
+    let mut out = vec![];
+    for &batch in candidates {
+        let mut backend = match GpuBackend::new(ordinal, params, epoch_blocks, batch, 0) {
+            Ok(b) => b,
+            Err(e) => {
+                log(&format!("batch {batch}: cannot start ({e}); left out"));
+                continue;
+            }
+        };
+        let stale = Arc::new(AtomicBool::new(false));
+        let job = Job {
+            id: batch as u64,
+            header: BlockHeader {
+                version: tenero_core::v2::VERSION,
+                prev_id: [0; 32],
+                timestamp: 1,
+                tx_root: [0; 32],
+                nonce: 0,
+                mix: [0; 64],
+            },
+            height: 1,
+            target: U256::ZERO, // never met
+            stale: Arc::clone(&stale),
+        };
+        let counters = Arc::new(Counters::default());
+        let c = Arc::clone(&counters);
+        let thread = std::thread::spawn(move || backend.mine(&job, &c));
+        std::thread::sleep(Duration::from_millis(1500));
+        let (a0, t0) = (counters.attempts.load(Ordering::Relaxed), Instant::now());
+        std::thread::sleep(Duration::from_secs_f64(secs));
+        let (a1, t1) = (counters.attempts.load(Ordering::Relaxed), Instant::now());
+        stale.store(true, Ordering::SeqCst);
+        match thread.join() {
+            Ok(Ok(_)) => {
+                let rate = (a1 - a0) as f64 / t1.duration_since(t0).as_secs_f64();
+                log(&format!("batch {batch}: {rate:.0} attempts/s"));
+                out.push((batch, rate));
+            }
+            Ok(Err(e)) => log(&format!(
+                "batch {batch}: failed while measuring ({e}); left out"
+            )),
+            Err(_) => log(&format!(
+                "batch {batch}: the measuring thread panicked; left out"
+            )),
+        }
+    }
+    out
+}
+
+/// Picks the batch size for this card by measuring (`AUTO_BATCHES`, 4 s each): about 20 seconds at start-up. Falls back to `fallback`,
+/// saying so in `log`, if nothing could be measured.
+pub fn auto_batch(
+    ordinal: usize,
+    params: Params,
+    epoch_blocks: u64,
+    fallback: usize,
+    log: &dyn Fn(&str),
+) -> usize {
+    log("choosing the batch size by measuring (about 20 seconds)...");
+    let results = measure_batches(ordinal, params, epoch_blocks, &AUTO_BATCHES, 4.0, log);
+    match choose_batch(&results) {
+        Some(b) => {
+            log(&format!("batch {b} chosen"));
+            b
+        }
+        None => {
+            log(&format!(
+                "nothing could be measured; using batch {fallback}"
+            ));
+            fallback
+        }
+    }
+}

@@ -185,11 +185,17 @@ pub struct MiningShared {
     /// The card's health (GPU mining only, and only if NVML can be read): the connection, and what it said at the last look.
     pub probe: std::sync::Mutex<Option<tenero_miner::gpu_stats::GpuProbe>>,
     pub gpu: std::sync::Mutex<Option<tenero_miner::gpu_stats::GpuReading>>,
+    /// The work of the blocks that are in the chain, added up (what the effective rate is made of), and when mining began and was last
+    /// looked at (milliseconds after the node started).
+    pub accepted_work: std::sync::Mutex<f64>,
+    pub began_ms: std::sync::Mutex<Option<u64>>,
+    pub last_ms: std::sync::atomic::AtomicU64,
 }
 
 impl MiningShared {
     /// One look at the backend's counters, `now_ms` after the node started (the status block takes one a second).
     pub fn sample(&self, now_ms: u64) {
+        self.last_ms.store(now_ms, Ordering::Relaxed);
         if let Some(p) = self.probe.lock().ok().as_deref().and_then(|p| p.as_ref()) {
             let reading = p.read();
             if let Ok(mut g) = self.gpu.lock() {
@@ -199,6 +205,9 @@ impl MiningShared {
         let Some(c) = self.counters.lock().ok().and_then(|c| c.clone()) else {
             return;
         };
+        if let Ok(mut b) = self.began_ms.lock() {
+            b.get_or_insert(now_ms);
+        }
         if let Ok(mut m) = self.meter.lock() {
             m.record(now_ms, c.attempts.load(Ordering::Relaxed), c.searching());
         }
@@ -213,7 +222,10 @@ impl MiningShared {
                     *b = backend.clone();
                 }
             }
-            MinerEvent::InChain { .. } => {
+            MinerEvent::InChain { work, .. } => {
+                if let Ok(mut w) = self.accepted_work.lock() {
+                    *w += *work;
+                }
                 one(&self.found);
                 one(&self.accepted);
             }
@@ -239,6 +251,20 @@ impl MiningShared {
         self.status()
     }
 
+    /// How the blocks have gone, from the counters of the backend (`elapsed_ms` of mining so far).
+    pub fn luck_from(
+        &self,
+        c: &tenero_miner::Counters,
+        elapsed_ms: u64,
+    ) -> tenero_miner::rate::Luck {
+        tenero_miner::rate::Luck {
+            found: self.found.load(Ordering::Relaxed),
+            expected_blocks: c.expected_blocks(),
+            accepted_work: self.accepted_work.lock().map(|w| *w).unwrap_or(0.0),
+            elapsed_ms,
+        }
+    }
+
     pub fn status(&self) -> MiningStatus {
         MiningStatus {
             // (the backend names itself a moment after the miner starts)
@@ -254,6 +280,16 @@ impl MiningShared {
             paused: self.paused.load(Ordering::Relaxed),
             rates: self.meter.lock().map(|m| m.rates()).unwrap_or_default(),
             gpu: self.gpu.lock().ok().and_then(|g| g.clone()),
+            luck: {
+                let began = self.began_ms.lock().ok().and_then(|b| *b);
+                let counters = self.counters.lock().ok().and_then(|c| c.clone());
+                match (counters, began) {
+                    (Some(c), Some(b)) => {
+                        self.luck_from(&c, self.last_ms.load(Ordering::Relaxed).saturating_sub(b))
+                    }
+                    _ => Default::default(),
+                }
+            },
         }
     }
 }
@@ -526,7 +562,19 @@ fn miner_hook(
             ))
         }
         MineMode::Gpu => {
-            let (device, batch) = (cfg.gpu_device, cfg.gpu_batch);
+            let device = cfg.gpu_device;
+            let batch = if cfg.gpu_batch_auto {
+                let l = Arc::clone(log);
+                tenero_miner::gpu::auto_batch(
+                    device,
+                    Params::DEFAULT,
+                    DEV_EPOCH_BLOCKS,
+                    cfg.gpu_batch,
+                    &move |m| l.info(&format!("miner: {m}")),
+                )
+            } else {
+                cfg.gpu_batch
+            };
             // the card's health for the screen; if NVML cannot be read the miner is not affected
             match tenero_miner::gpu_stats::GpuProbe::open(device) {
                 Ok(p) => {

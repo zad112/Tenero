@@ -655,7 +655,15 @@ fn a_block_in_the_chain_is_counted() {
             height,
             secs,
             reward,
-        } => Some((*height, *secs, *reward)),
+            work,
+        } => {
+            // what the block is worth: the work of the target the node named in the template
+            assert_eq!(
+                *work,
+                tenero_miner::rate::work_of(&U256::from_be_bytes(&EASY))
+            );
+            Some((*height, *secs, *reward))
+        }
         _ => None,
     });
     let (h, secs, reward) = got.expect("an InChain event");

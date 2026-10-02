@@ -30,7 +30,7 @@ tenero-miner: mines for a Tenero node in another process (EXPERIMENTAL, UNAUDITE
   --address ADDR     the wallet address block rewards are paid to
   --backend B        sha256 (the test network), cpu or gpu (the dev network's matmulhash)
   --cores N          CPU threads for the cpu backend, 1 to 6 (default 6)
-  --gpu-device N     which GPU (default 0)       --gpu-batch N   attempts per batch (default 128)
+  --gpu-device N     which GPU (default 0)       --gpu-batch N|auto   attempts per batch (default 128; auto measures at start-up)
   --pace SECS        wait this long after a block is found before the next job (default 0)
   --log-level L      error, warn, info, debug (default info)    --log-file FILE   also log to this file
   --status-every S   seconds between status lines when the output is not a terminal (default 60)
@@ -48,6 +48,7 @@ struct Args {
     cores: usize,
     gpu_device: usize,
     gpu_batch: usize,
+    gpu_batch_auto: bool,
     pace: u64,
     level: Level,
     log_file: Option<PathBuf>,
@@ -65,6 +66,7 @@ fn parse() -> Result<Args, String> {
         cores: 6,
         gpu_device: 0,
         gpu_batch: 128,
+        gpu_batch_auto: false,
         pace: 0,
         level: Level::Info,
         log_file: None,
@@ -112,6 +114,7 @@ fn parse() -> Result<Args, String> {
             "backend" => a.backend = v.clone(),
             "cores" => a.cores = num("cores")? as usize,
             "gpu-device" => a.gpu_device = num("gpu-device")? as usize,
+            "gpu-batch" if v == "auto" => a.gpu_batch_auto = true,
             "gpu-batch" => a.gpu_batch = num("gpu-batch")? as usize,
             "pace" => a.pace = num("pace")?,
             "log-level" => {
@@ -284,7 +287,19 @@ fn main() {
             Miner::spawn(move || Ok(CpuMatmulBackend::new(pow, DEV_EPOCH_BLOCKS, cores, 10)))
         }
         _ => {
-            let (device, batch) = (args.gpu_device, args.gpu_batch);
+            let device = args.gpu_device;
+            let batch = if args.gpu_batch_auto {
+                let l = Arc::clone(&log);
+                tenero_miner::gpu::auto_batch(
+                    device,
+                    Params::DEFAULT,
+                    DEV_EPOCH_BLOCKS,
+                    args.gpu_batch,
+                    &move |m| l.info(&format!("miner: {m}")),
+                )
+            } else {
+                args.gpu_batch
+            };
             Miner::spawn(move || {
                 GpuBackend::new(device, Params::DEFAULT, DEV_EPOCH_BLOCKS, batch, 10)
             })
@@ -363,6 +378,8 @@ fn main() {
                     node_height: progress.height.load(Ordering::Relaxed),
                     rates: meter.rates(),
                     gpu: gpu.clone(),
+                    luck: tally
+                        .luck_from(&counters, now.duration_since(started).as_millis() as u64),
                     found: tally.found.load(Ordering::Relaxed),
                     accepted: tally.accepted.load(Ordering::Relaxed),
                     lost_race: tally.lost_race.load(Ordering::Relaxed),

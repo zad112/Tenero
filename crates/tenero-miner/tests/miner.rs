@@ -205,7 +205,15 @@ fn the_miner_mines_blocks_its_own_node_accepts_one_after_another() {
                 height,
                 secs,
                 reward,
-            } => Some((*height, *secs, *reward)),
+                work,
+            } => {
+                // what the block is worth: the expected attempts at its target (the test chain's target is easy, but not zero)
+                assert!(
+                    work.is_finite() && *work > 1.0,
+                    "{work}: not the 1.0 of a block that is worth nothing"
+                );
+                Some((*height, *secs, *reward))
+            }
             _ => None,
         })
         .collect();

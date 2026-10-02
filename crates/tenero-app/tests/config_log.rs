@@ -414,3 +414,27 @@ fn a_command_line_that_names_pinned_peers_means_exactly_those_and_seeds_are_sepa
     // a key that is not repeatable is still refused twice
     assert!(parse("data=d\nnetwork=dev", &["--peers", "5", "--peers", "6"]).is_err());
 }
+
+#[test]
+fn gpu_batch_can_be_a_number_or_auto() {
+    let c = ok("data = d
+network = dev
+gpu_batch = 256");
+    assert_eq!((c.gpu_batch, c.gpu_batch_auto), (256, false));
+    let c = ok("data = d
+network = dev
+gpu_batch = auto");
+    assert_eq!(
+        (c.gpu_batch, c.gpu_batch_auto),
+        (128, true),
+        "the fallback is the default"
+    );
+    let c = ok("data = d
+network = dev");
+    assert_eq!((c.gpu_batch, c.gpu_batch_auto), (128, false));
+    // anything else is still an error that names the setting
+    assert!(err("data = d
+network = dev
+gpu_batch = fast")
+    .contains("gpu_batch"));
+}

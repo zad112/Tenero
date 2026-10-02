@@ -78,9 +78,11 @@ the clocks down; a missing NVML or an unreported figure leaves rows out and neve
 CUDA and NVML card numbers are assumed to be the same (true with one GPU; not handled for several). **Measured on the owner's card
 (2026-10-02, details and caveats in `BENCHMARKS.md`):** three runs of the backend test: 31,758 to 35,566 attempts/s (at batch 128 to 256: 33,348 to 35,566; the first run was a low outlier that did not repeat;
 run-to-run variation is about 7 %; **not faster than the earlier measurement**), 34,417 average for the in-process miner over 3 minutes, the card at about 50 C and 256 to 264 W; the new
-rows and the rate figures showed on a real node under load. **Not done:** the effective rate and expected-versus-actual blocks,
-`--gpu-batch` auto-selection (the batch sizes measured within noise of each other), several GPUs, the miner program (`tenero-miner`) under
-load, and the full redraw block on a real console while mining on the GPU.
+rows and the rate figures showed on a real node under load. **Also done:** a `luck` row (blocks found against the blocks the attempts should have found, and the effective rate: the work of the
+blocks in the chain over the elapsed time, waiting included; the ratio only once 5 blocks are expected) and `gpu_batch = auto` / `--gpu-batch auto` (opt-in; measures
+128, 256 and 512 for 4 s each at start-up; on the owner's card 512 won by 1 to 2 %, inside the noise, so **it removes bad choices such as 32 and 64 and
+does not find a real winner among the larger sizes**; the default stays 128). **Not done:** several GPUs (one card here; not built or tested), the
+miner program (`tenero-miner`) under GPU load.
 
 What the owner asked for is a rate that can be compared with other GPU miners. The honest part first:
 

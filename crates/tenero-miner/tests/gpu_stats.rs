@@ -65,3 +65,75 @@ fn a_real_card_gives_a_real_reading() {
     assert!(r.mem_total_mib.unwrap() > 1024 && r.mem_total_mib.unwrap() < 1_000_000);
     assert!(r.mem_used_mib.unwrap() <= r.mem_total_mib.unwrap());
 }
+
+// ---- choosing a batch size -------------------------------------------------------------------------------------------------------
+
+use tenero_miner::gpu::{auto_batch, choose_batch, measure_batches, AUTO_BATCHES};
+
+#[test]
+fn the_fastest_batch_is_chosen_and_a_tie_goes_to_the_smaller() {
+    assert_eq!(
+        choose_batch(&[(128, 33_000.0), (256, 35_000.0), (512, 34_000.0)]),
+        Some(256)
+    );
+    assert_eq!(choose_batch(&[(128, 35_000.0), (256, 33_000.0)]), Some(128));
+    assert_eq!(
+        choose_batch(&[(256, 34_000.0), (128, 34_000.0)]),
+        Some(128),
+        "a tie: less video memory"
+    );
+    assert_eq!(choose_batch(&[(128, 34_000.0), (256, 34_000.0)]), Some(128));
+    assert_eq!(choose_batch(&[(512, 1.0)]), Some(512));
+}
+
+#[test]
+fn nothing_usable_is_nothing_chosen() {
+    assert_eq!(choose_batch(&[]), None);
+    assert_eq!(
+        choose_batch(&[
+            (128, f64::NAN),
+            (256, f64::INFINITY),
+            (512, 0.0),
+            (64, -3.0)
+        ]),
+        None
+    );
+    assert_eq!(
+        choose_batch(&[(0, 5_000.0)]),
+        None,
+        "a batch of 0 is not a batch"
+    );
+    // the usable one wins over the rubbish
+    assert_eq!(choose_batch(&[(128, f64::NAN), (256, 10.0)]), Some(256));
+}
+
+#[test]
+fn auto_tries_the_sizes_that_were_measured_and_one_more() {
+    assert_eq!(AUTO_BATCHES, [128, 256, 512]);
+}
+
+/// The owner's machine: measures for real (about 25 s) and picks.
+#[test]
+#[ignore = "needs an NVIDIA GPU, the CUDA DLLs and about 4.5 GiB of video memory"]
+fn a_real_card_is_measured_and_a_batch_is_chosen() {
+    let lines = std::sync::Mutex::new(vec![]);
+    let log = |m: &str| {
+        eprintln!("  {m}");
+        lines.lock().unwrap().push(m.to_string());
+    };
+    let rates = measure_batches(
+        0,
+        tenero_core::matmulhash::Params::DEFAULT,
+        100,
+        &AUTO_BATCHES,
+        3.0,
+        &log,
+    );
+    assert_eq!(rates.len(), 3, "{:?}", lines.lock().unwrap());
+    for (b, r) in &rates {
+        // the speed of this card is in the tens of thousands (BENCHMARKS.md); anything near 0 or absurd is a broken measurement
+        assert!(*r > 5_000.0 && *r < 200_000.0, "batch {b}: {r}");
+    }
+    let chosen = auto_batch(0, tenero_core::matmulhash::Params::DEFAULT, 100, 128, &log);
+    assert!(AUTO_BATCHES.contains(&chosen));
+}

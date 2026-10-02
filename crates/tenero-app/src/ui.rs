@@ -13,7 +13,7 @@ use std::io::Write;
 use std::sync::Mutex;
 
 use tenero_miner::gpu_stats::{implied_read_bytes_per_sec, GpuReading, SLICE_BYTES};
-use tenero_miner::rate::Rates;
+use tenero_miner::rate::{Luck, Rates};
 
 /// The coin's ticker as the screen writes it (the owner chose `TNR`), kept in this one place.
 pub const TICKER: &str = "TNR";
@@ -215,6 +215,8 @@ pub struct MiningStatus {
     pub rates: Rates,
     /// The card's health, when mining on a GPU and NVML can be read.
     pub gpu: Option<GpuReading>,
+    /// Blocks found against blocks expected, and what the blocks in the chain are worth a second.
+    pub luck: Luck,
 }
 
 /// A rate the way miners show it: `812`, `34.7k`, `1.20M` (attempts a second).
@@ -302,6 +304,43 @@ pub fn gpu_rows(g: &GpuReading, rates: &Rates, t: &Theme) -> Vec<String> {
 fn format_gib(mib: u64) -> String {
     let tenths = (mib * 10 + 512) / 1024;
     format!("{}.{}", tenths / 10, tenths % 10)
+}
+
+/// The luck row: `luck     48 found, 41.6 expected (1.15x) | effective 35.1k attempts/s`. The ratio is left out until 5 blocks are expected
+/// (a few blocks say nothing), and the effective rate until a block is in the chain. `None` when there is nothing to say yet.
+pub fn luck_row(l: &Luck) -> Option<String> {
+    if l.is_empty() {
+        return None;
+    }
+    let mut row = format!(
+        "  luck     {} found, {:.1} expected",
+        l.found, l.expected_blocks
+    );
+    if let Some(r) = l.ratio() {
+        row.push_str(&format!(" ({r:.2}x)"));
+    }
+    if let Some(e) = l.effective_rate() {
+        row.push_str(&format!(" | effective {} attempts/s", format_rate(e)));
+    }
+    Some(cut(&row))
+}
+
+/// The luck in a plain line: ` | luck 48 found, 41.6 expected` (nothing when there is nothing to say).
+fn luck_plain(l: &Luck) -> String {
+    if l.is_empty() {
+        return String::new();
+    }
+    let mut s = format!(
+        " | luck {} found, {:.1} expected",
+        l.found, l.expected_blocks
+    );
+    if let Some(r) = l.ratio() {
+        s.push_str(&format!(" ({r:.2}x)"));
+    }
+    if let Some(e) = l.effective_rate() {
+        s.push_str(&format!(", effective {} attempts/s", format_rate(e)));
+    }
+    s
 }
 
 /// The rates with their unit (`10s 34.7k | ... attempts/s`), for the plain lines.
@@ -466,6 +505,7 @@ pub fn render_status_block(s: &NodeStatus, t: &Theme) -> Vec<String> {
         )));
         lines.push(cut(&format!("  backend  {}", short_backend(&m.backend))));
         lines.push(cut(&rates_row(&m.rates)));
+        lines.extend(luck_row(&m.luck));
         if let Some(g) = &m.gpu {
             lines.extend(gpu_rows(g, &m.rates, t));
         }
@@ -504,6 +544,7 @@ pub fn render_status_line(s: &NodeStatus) -> String {
             if m.paused { " (paused)" } else { "" }
         ));
         line.push_str(&format!(" | hashrate {}", rates_text_unit(&m.rates)));
+        line.push_str(&luck_plain(&m.luck));
         if let Some(g) = &m.gpu {
             line.push_str(&gpu_plain(g));
         }
@@ -536,6 +577,7 @@ pub struct MinerStatus {
     /// Attempts a second over 10 s, 60 s, 15 min and the run.
     pub rates: Rates,
     pub gpu: Option<GpuReading>,
+    pub luck: Luck,
     pub found: u64,
     pub accepted: u64,
     pub lost_race: u64,
@@ -562,6 +604,7 @@ pub fn render_miner_block(s: &MinerStatus, t: &Theme) -> Vec<String> {
         cut(&rates_row(&s.rates)),
     ]
     .into_iter()
+    .chain(luck_row(&s.luck))
     .chain(s.gpu.iter().flat_map(|g| gpu_rows(g, &s.rates, t)))
     .chain([
         cut(&format!(
@@ -605,7 +648,7 @@ pub fn render_miner_line(s: &MinerStatus) -> String {
         "hashrate {}{}",
         rates_text_unit(&s.rates),
         s.gpu.as_ref().map(gpu_plain).unwrap_or_default()
-    );
+    ) + &luck_plain(&s.luck);
     format!(
         "{link} | {} | {rate} | blocks: {} found, {} in the chain, {} lost a race, {} refused | up {}",
         s.backend,
@@ -781,6 +824,7 @@ pub fn miner_event_to_ui(e: &tenero_miner::MinerEvent) -> Option<Event> {
             height,
             secs,
             reward,
+            ..
         } => Event::BlockMined {
             height: *height,
             secs: *secs,

@@ -69,6 +69,8 @@ pub struct Config {
     pub mine_pace: u64,
     pub gpu_device: usize,
     pub gpu_batch: usize,
+    /// `gpu_batch = auto`: measure a few batch sizes at start-up and use the fastest (`gpu_batch` is then the fallback, 128).
+    pub gpu_batch_auto: bool,
     pub log_level: Level,
     pub log_file: Option<PathBuf>,
     pub status_every: u64,
@@ -361,7 +363,12 @@ impl Raw {
         }
         let mine_pace: u64 =
             self.parse("mine_pace", if network == Network::Test { 5 } else { 0 })?;
-        let gpu_batch: usize = self.parse("gpu_batch", 128)?;
+        let gpu_batch_auto = self.one("gpu_batch") == Some("auto");
+        let gpu_batch: usize = if gpu_batch_auto {
+            128
+        } else {
+            self.parse("gpu_batch", 128)?
+        };
         if gpu_batch == 0 {
             return Err(bad("gpu_batch", "must be at least 1"));
         }
@@ -405,6 +412,7 @@ impl Raw {
             mine_pace,
             gpu_device: self.parse("gpu_device", 0)?,
             gpu_batch,
+            gpu_batch_auto,
             log_level,
             log_file: self.one("log_file").map(PathBuf::from),
             status_every,

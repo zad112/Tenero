@@ -197,6 +197,7 @@ impl RemoteMiner {
                     height,
                     secs,
                     reward,
+                    work: tenero_miner::rate::work_of(&cur.target),
                 });
             }
             BlockVerdict::LostRace(_) => {

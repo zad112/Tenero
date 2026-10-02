@@ -85,9 +85,45 @@ pub struct Counters {
     building: std::sync::atomic::AtomicU32,
     /// How many times a build has been marked (one for each dataset built, so it equals `dataset_builds` when the marks are right).
     pub build_marks: AtomicU64,
+    /// The blocks the attempts so far should have found (see [`rate::Luck`]).
+    luck: std::sync::Mutex<JobLedger>,
+}
+
+/// What the attempts at finished jobs were worth, and the job in progress.
+#[derive(Default)]
+struct JobLedger {
+    settled: f64,
+    /// (attempts at the start of the job, the work of its target)
+    job: Option<(u64, f64)>,
 }
 
 impl Counters {
+    /// A job begins at a target of this work (see [`rate::work_of`]).
+    pub fn begin_job(&self, work: f64) {
+        if let Ok(mut l) = self.luck.lock() {
+            l.job = Some((self.attempts.load(Ordering::Relaxed), work));
+        }
+    }
+
+    /// The job is over (found, replaced or dropped): what its attempts were worth is settled.
+    pub fn end_job(&self) {
+        if let Ok(mut l) = self.luck.lock() {
+            if let Some((start, work)) = l.job.take() {
+                let n = self.attempts.load(Ordering::Relaxed).saturating_sub(start);
+                l.settled += n as f64 / work;
+            }
+        }
+    }
+
+    /// The blocks the attempts so far should have found, the job in progress included.
+    pub fn expected_blocks(&self) -> f64 {
+        let Ok(l) = self.luck.lock() else { return 0.0 };
+        let live = l.job.map_or(0.0, |(start, work)| {
+            self.attempts.load(Ordering::Relaxed).saturating_sub(start) as f64 / work
+        });
+        l.settled + live
+    }
+
     /// Marks a dataset build for as long as the returned guard lives: no attempts are made meanwhile, and the rate meter leaves that
     /// time out.
     pub fn building(&self) -> BuildingGuard<'_> {
@@ -339,9 +375,11 @@ impl Miner {
                     job = newer;
                 }
                 c.jobs.fetch_add(1, Ordering::Relaxed);
+                c.begin_job(rate::work_of(&job.target));
                 c.in_job.store(true, Ordering::SeqCst);
                 let result = backend.mine(&job, &c);
                 c.in_job.store(false, Ordering::SeqCst);
+                c.end_job();
                 match result {
                     Ok(Some(sol)) => {
                         let _ = rtx.send(Msg::Solved(sol));
@@ -469,6 +507,8 @@ pub enum MinerEvent {
         height: u64,
         secs: f64,
         reward: u64,
+        /// The work (expected attempts) of the block's target: what the block is worth.
+        work: f64,
     },
     /// A block this miner found lost a race: another block took its place.
     LostRace {
@@ -561,7 +601,7 @@ pub struct MinerHook<P: PayoutSource> {
     next_id: u64,
     awaiting: Option<([u8; 32], u64)>,
     /// How long the block being waited for took to find, and what it pays.
-    awaiting_info: (f64, u64),
+    awaiting_info: (f64, u64, f64),
     paused: bool,
     last_found: Option<Instant>,
     failed: bool,
@@ -578,7 +618,7 @@ impl<P: PayoutSource> MinerHook<P> {
             current: None,
             next_id: 1,
             awaiting: None,
-            awaiting_info: (0.0, 0),
+            awaiting_info: (0.0, 0, 0.0),
             paused: false,
             last_found: None,
             failed: false,
@@ -639,7 +679,11 @@ impl<P: PayoutSource> MinerHook<P> {
             cur.started.elapsed().as_secs_f64()
         ));
         self.awaiting = Some((id, block.coinbase.height));
-        self.awaiting_info = (cur.started.elapsed().as_secs_f64(), block_reward(&block));
+        self.awaiting_info = (
+            cur.started.elapsed().as_secs_f64(),
+            block_reward(&block),
+            rate::work_of(&cur.target),
+        );
         self.last_found = Some(Instant::now());
         events.push(Event::LocalBlock(block));
     }
@@ -658,6 +702,7 @@ impl<P: PayoutSource> Hooks for MinerHook<P> {
                     height,
                     secs: self.awaiting_info.0,
                     reward: self.awaiting_info.1,
+                    work: self.awaiting_info.2,
                 });
             } else if engine.node().chain().holds_block(&id) {
                 self.stats.blocks_lost_race += 1;

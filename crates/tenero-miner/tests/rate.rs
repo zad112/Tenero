@@ -295,3 +295,196 @@ fn after_a_clock_set_back_a_window_never_mixes_the_time_before_with_the_time_aft
     run(&mut m, &mut t, &mut c, 1, 1000, true);
     assert!(near(m.rates().s10, 1000.0), "{:?}", m.rates().s10);
 }
+
+// ---- luck ----------------------------------------------------------------------------------------------------------------------
+
+use std::sync::atomic::Ordering;
+use tenero_core::u256::U256;
+use tenero_miner::rate::{work_of, Luck};
+
+#[test]
+fn the_work_of_a_target_is_the_attempts_a_block_is_expected_to_take() {
+    // 2^255 is met by half of all ids: two attempts a block
+    let half = U256::pow2(255).unwrap();
+    assert_eq!(work_of(&half), 2.0);
+    // 2^253: eight
+    assert_eq!(work_of(&U256::pow2(253).unwrap()), 8.0);
+    // 2^200: 2^56 (exact in an f64)
+    assert_eq!(work_of(&U256::pow2(200).unwrap()), 2f64.powi(56));
+    // a target nothing can meet, or the whole space: no expectation of a block
+    assert_eq!(work_of(&U256::ZERO), f64::INFINITY);
+    assert_eq!(work_of(&U256::ONE), f64::INFINITY);
+    // an easier target is less work
+    assert!(work_of(&U256::MAX) < work_of(&half) + 1.0);
+}
+
+#[test]
+fn a_job_is_worth_its_attempts_over_its_work() {
+    let c = Counters::default();
+    assert_eq!(c.expected_blocks(), 0.0);
+    c.begin_job(100.0);
+    c.attempts.store(1000, Ordering::Relaxed);
+    // the job in progress counts, too
+    assert!(
+        (c.expected_blocks() - 10.0).abs() < 1e-9,
+        "{}",
+        c.expected_blocks()
+    );
+    c.end_job();
+    assert!((c.expected_blocks() - 10.0).abs() < 1e-9);
+    // a second job at an easier target (work 10) counts from where the first left off, not from zero
+    c.begin_job(10.0);
+    c.attempts.store(1050, Ordering::Relaxed);
+    assert!(
+        (c.expected_blocks() - 15.0).abs() < 1e-9,
+        "{}",
+        c.expected_blocks()
+    );
+    c.end_job();
+    c.end_job(); // a second end is harmless
+    assert!((c.expected_blocks() - 15.0).abs() < 1e-9);
+}
+
+#[test]
+fn attempts_at_a_target_nothing_can_meet_expect_no_blocks() {
+    let c = Counters::default();
+    c.begin_job(work_of(&U256::ZERO));
+    c.attempts.store(1_000_000, Ordering::Relaxed);
+    assert_eq!(c.expected_blocks(), 0.0);
+    c.end_job();
+    assert_eq!(c.expected_blocks(), 0.0);
+}
+
+#[test]
+fn the_effective_rate_is_the_work_of_the_accepted_blocks_over_the_time() {
+    let l = Luck {
+        found: 3,
+        expected_blocks: 2.5,
+        accepted_work: 90_000.0,
+        elapsed_ms: 3_000,
+    };
+    assert_eq!(l.effective_rate(), Some(30_000.0));
+    // no block in the chain yet, or under a second: nothing to say
+    assert_eq!(
+        Luck {
+            accepted_work: 0.0,
+            ..l
+        }
+        .effective_rate(),
+        None
+    );
+    assert_eq!(
+        Luck {
+            elapsed_ms: 999,
+            ..l
+        }
+        .effective_rate(),
+        None
+    );
+    assert!(Luck {
+        elapsed_ms: 1000,
+        ..l
+    }
+    .effective_rate()
+    .is_some());
+}
+
+#[test]
+fn the_ratio_waits_until_five_blocks_are_expected() {
+    let l = Luck {
+        found: 5,
+        expected_blocks: 4.9,
+        ..Luck::default()
+    };
+    assert_eq!(l.ratio(), None, "a few blocks say nothing");
+    assert_eq!(
+        Luck {
+            expected_blocks: 5.0,
+            found: 6,
+            ..l
+        }
+        .ratio(),
+        Some(1.2)
+    );
+    assert_eq!(
+        Luck {
+            expected_blocks: 10.0,
+            found: 0,
+            ..l
+        }
+        .ratio(),
+        Some(0.0)
+    );
+    assert!(Luck::default().is_empty());
+    assert!(!Luck {
+        found: 1,
+        ..Luck::default()
+    }
+    .is_empty());
+    assert!(!Luck {
+        expected_blocks: 0.1,
+        ..Luck::default()
+    }
+    .is_empty());
+}
+
+#[test]
+fn a_real_backend_at_an_easy_target_finds_about_what_was_expected() {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use tenero_core::v2::BlockHeader;
+    use tenero_miner::{Job, Miner, Sha256Backend};
+
+    // target 2^252: one attempt in 16 finds a block, so a good many jobs find blocks and the sum of expectations is close to the count
+    let target = U256::pow2(252).unwrap();
+    assert_eq!(work_of(&target), 16.0);
+    let mut miner = Miner::spawn(|| Ok(Sha256Backend));
+    let c = Arc::clone(&miner.counters);
+    let mut found = 0u64;
+    for id in 1..=400u64 {
+        miner.submit(Job {
+            id,
+            header: BlockHeader {
+                version: tenero_core::v2::VERSION,
+                prev_id: [0; 32],
+                timestamp: id,
+                tx_root: [0; 32],
+                nonce: 0,
+                mix: [0; 64],
+            },
+            height: 1,
+            target,
+            stale: Arc::new(AtomicBool::new(false)),
+        });
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match miner.try_msg() {
+                Some(tenero_miner::Msg::Solved(_)) => {
+                    found += 1;
+                    break;
+                }
+                Some(_) => {}
+                None if std::time::Instant::now() > until => panic!("no solution"),
+                None => std::thread::sleep(std::time::Duration::from_millis(1)),
+            }
+        }
+    }
+    // let the thread settle its last job
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while c.searching() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let expected = c.expected_blocks();
+    assert_eq!(found, 400);
+    // every job ran until it found a block, so the attempts divided by 16 is the expectation: about 400 (the attempts per block vary a lot,
+    // but over 400 blocks the total is within about 10 % of 6,400 attempts)
+    let attempts = c.attempts.load(Ordering::Relaxed);
+    assert!(
+        (expected - attempts as f64 / 16.0).abs() < 1e-6,
+        "{expected} vs {attempts}/16"
+    );
+    assert!(
+        expected > 300.0 && expected < 500.0,
+        "{expected} blocks expected for 400 found"
+    );
+}

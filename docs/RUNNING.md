@@ -59,7 +59,7 @@ parse is an error that names the setting; nothing silently falls back to a defau
 | `mine_to` | the address (`tni1...`) block rewards are paid to; required when mining | |
 | `mine_pace` | seconds to wait after a block is found before starting the next | 5 on `test`, 0 on `dev` |
 | `mine_cores` | CPU threads for `mine = cpu` (1 to 6) | 6 |
-| `gpu_device`, `gpu_batch` | which GPU, and attempts per batch (`docs/BENCHMARKS.md`) | 0, 128 |
+| `gpu_device`, `gpu_batch` | which GPU, and attempts per batch (`docs/BENCHMARKS.md`); `gpu_batch = auto` measures 128, 256 and 512 for 4 s each at start-up (about 20 s) and uses the fastest (on the one card measured the three were within 1 to 2 %, which is inside the run-to-run noise) | 0, 128 |
 | `log_level` | `error`, `warn`, `info`, `debug` | info |
 | `log_file` | also write the log here (rotated to `<name>.old` at 20 MiB) | standard error only |
 | `status_every` | seconds between status lines | 60 |
@@ -92,7 +92,7 @@ time the miner was searching (not while paused for a sync or building a dataset;
 means that window is not yet full). **When mining on a GPU there are also rows for the card** (`gpu`: temperature, power, fan, core and memory clocks; `memory`: used and how
 busy the memory controller is; `limited`: only if the driver is holding the clocks down; `reads`: **the memory reads the attempt rate
 implies, worked out from the rate and not measured**: NVML does not report bandwidth). They come from NVML and are left out where the
-driver or card does not say; mining does not depend on them. **The long name of the backend is on a row of its own (`backend  GPU: NVIDIA GeForce RTX 5070 Ti, batch 128`) so that it cannot push the counts off the `mining` row.** **An attempt is one matmulhash evaluation, which is a different amount of work from a hash of any
+driver or card does not say; mining does not depend on them. **The long name of the backend is on a row of its own (`backend  GPU: NVIDIA GeForce RTX 5070 Ti, batch 128`) so that it cannot push the counts off the `mining` row.** **The `luck` row** says how many blocks this miner found and how many its attempts should have found (each attempt has a fixed chance of finding one, so the two should be close over a long run, and **over a short run they can differ a lot by chance alone**: the ratio is only shown once 5 blocks are expected), and the **effective** rate: the work of the blocks that are in the chain divided by the time, waiting and pauses included. It depends on luck and on the node's round trips, which is why it is not the hash rate. **An attempt is one matmulhash evaluation, which is a different amount of work from a hash of any
 other coin, so these numbers cannot be compared with another coin's miner.** `tenerod status` and `tenerod stop` print the same one-liners as before (scripts read them).
 
 **The status line and the alarms (in the log).** Every `status_every` seconds the node logs a line such as

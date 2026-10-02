@@ -14,7 +14,7 @@ use tenero_app::ui::{
     Verbosity, MAX_LINE,
 };
 use tenero_miner::gpu_stats::GpuReading;
-use tenero_miner::rate::Rates;
+use tenero_miner::rate::{Luck, Rates};
 
 const OFF: Theme = Theme { color: false };
 const ON: Theme = Theme { color: true };
@@ -268,6 +268,7 @@ fn the_status_block_while_syncing_mining_pruned_and_with_alarms() {
         paused: true,
         rates: Rates::default(),
         gpu: None,
+        luck: Luck::default(),
     });
     let got = render_status_block(&s, &OFF).join("\n");
     assert_eq!(
@@ -291,6 +292,7 @@ fn the_status_block_while_syncing_mining_pruned_and_with_alarms() {
         paused: false,
         rates: busy(),
         gpu: None,
+        luck: Luck::default(),
     });
     let got = render_status_block(&s, &OFF).join("\n");
     assert!(
@@ -333,6 +335,7 @@ fn every_status_line_is_ascii_and_fits_an_80_column_window() {
             searching: true,
         },
         gpu: None,
+        luck: Luck::default(),
     });
     for theme in [OFF, ON] {
         for l in render_status_block(&s, &theme) {
@@ -387,6 +390,7 @@ fn the_plain_status_line_says_the_same_on_one_line() {
         paused: true,
         rates: Rates::default(),
         gpu: None,
+        luck: Luck::default(),
     });
     assert_eq!(
         render_status_line(&s),
@@ -870,6 +874,7 @@ fn miner_status() -> MinerStatus {
         node_height: 1204,
         rates: busy(),
         gpu: None,
+        luck: Luck::default(),
         found: 4,
         accepted: 3,
         lost_race: 1,
@@ -958,7 +963,8 @@ fn a_miner_event_becomes_the_event_the_screen_shows() {
         miner_event_to_ui(&M::InChain {
             height: 9,
             secs: 0.4,
-            reward: 5
+            reward: 5,
+            work: 8.0
         }),
         Some(Event::BlockMined {
             height: 9,
@@ -1007,11 +1013,13 @@ fn the_shared_counters_count_what_the_miner_reports() {
             height: 1,
             secs: 0.1,
             reward: 1,
+            work: 8.0,
         },
         M::InChain {
             height: 2,
             secs: 0.1,
             reward: 1,
+            work: 8.0,
         },
         M::LostRace { height: 3 },
         M::Refused { height: 4 },
@@ -1264,6 +1272,7 @@ fn the_nodes_plain_status_line_carries_the_rates_of_a_miner_that_has_them() {
         paused: false,
         rates: busy(),
         gpu: None,
+        luck: Luck::default(),
     });
     let line = render_status_line(&s);
     assert!(
@@ -1396,6 +1405,7 @@ fn the_miner_block_and_both_plain_lines_carry_the_card_when_there_is_a_reading()
         paused: false,
         rates: busy(),
         gpu: Some(card()),
+        luck: Luck::default(),
     });
     let block = render_status_block(&n, &OFF);
     let at = block
@@ -1483,6 +1493,7 @@ fn a_long_gpu_name_cannot_push_the_counts_off_the_mining_row() {
             searching: true,
         },
         gpu: Some(card()),
+        luck: Luck::default(),
     });
     let block = render_status_block(&s, &OFF);
     assert!(
@@ -1506,4 +1517,135 @@ fn the_miner_program_shows_the_short_backend_name_too() {
         render_miner_block(&s, &OFF)[2],
         "  mining   GPU: NVIDIA GeForce RTX 5070 Ti, batch 128"
     );
+}
+
+// ---- luck ------------------------------------------------------------------------------------------------------------------------
+
+fn luck() -> Luck {
+    Luck {
+        found: 48,
+        expected_blocks: 41.6,
+        accepted_work: 46.0 * 2_000_000.0,
+        elapsed_ms: 2_600_000,
+    }
+}
+
+#[test]
+fn the_luck_row_says_found_against_expected_and_the_effective_rate() {
+    use tenero_app::ui::luck_row;
+    assert_eq!(
+        luck_row(&luck()).unwrap(),
+        "  luck     48 found, 41.6 expected (1.15x) | effective 35.4k attempts/s"
+    );
+    // a few blocks: no ratio; no block in the chain yet: no effective rate
+    let early = Luck {
+        found: 2,
+        expected_blocks: 1.4,
+        accepted_work: 0.0,
+        elapsed_ms: 60_000,
+    };
+    assert_eq!(
+        luck_row(&early).unwrap(),
+        "  luck     2 found, 1.4 expected"
+    );
+    // nothing to say yet: no row
+    assert_eq!(luck_row(&Luck::default()), None);
+    // a miner that has made attempts and found nothing says so
+    let none = Luck {
+        expected_blocks: 7.3,
+        ..Luck::default()
+    };
+    assert_eq!(
+        luck_row(&none).unwrap(),
+        "  luck     0 found, 7.3 expected (0.00x)"
+    );
+}
+
+#[test]
+fn the_luck_is_on_both_screens_and_in_both_plain_lines() {
+    let mut s = miner_status();
+    s.luck = luck();
+    let block = render_miner_block(&s, &OFF);
+    assert!(
+        block.contains(
+            &"  luck     48 found, 41.6 expected (1.15x) | effective 35.4k attempts/s".to_string()
+        ),
+        "{block:#?}"
+    );
+    for l in &block {
+        assert!(l.is_ascii() && l.len() <= MAX_LINE, "{l}");
+    }
+    assert!(
+        render_miner_line(&s).contains(
+            " | luck 48 found, 41.6 expected (1.15x), effective 35.4k attempts/s | blocks:"
+        ),
+        "{}",
+        render_miner_line(&s)
+    );
+    s.luck = Luck::default();
+    assert!(!render_miner_line(&s).contains("luck"));
+    assert!(render_miner_block(&s, &OFF)
+        .iter()
+        .all(|l| !l.contains("luck")));
+    // the node's
+    let mut n = status();
+    n.mining = Some(MiningStatus {
+        backend: "gpu".into(),
+        blocks_found: 48,
+        blocks_accepted: 46,
+        paused: false,
+        rates: busy(),
+        gpu: None,
+        luck: luck(),
+    });
+    let block = render_status_block(&n, &OFF);
+    let at = block
+        .iter()
+        .position(|l| l.starts_with("  hashrate"))
+        .unwrap();
+    assert!(block[at + 1].starts_with("  luck     48 found"));
+    assert!(render_status_line(&n)
+        .contains(" | luck 48 found, 41.6 expected (1.15x), effective 35.4k attempts/s"));
+}
+
+#[test]
+fn the_shared_counters_add_up_the_work_of_the_blocks_in_the_chain() {
+    use std::sync::atomic::Ordering;
+    use tenero_miner::MinerEvent;
+    let shared = MiningShared::default();
+    shared.record(&MinerEvent::InChain {
+        height: 1,
+        secs: 1.0,
+        reward: 5,
+        work: 1000.0,
+    });
+    shared.record(&MinerEvent::InChain {
+        height: 2,
+        secs: 1.0,
+        reward: 5,
+        work: 3000.0,
+    });
+    // a block that lost a race is found, but is not worth anything in the chain
+    shared.record(&MinerEvent::LostRace { height: 3 });
+    assert_eq!(*shared.accepted_work.lock().unwrap(), 4000.0);
+    assert_eq!(shared.found.load(Ordering::Relaxed), 3);
+    // with counters and a first look, the status carries the luck
+    let c = Arc::new(tenero_miner::Counters::default());
+    c.begin_job(100.0);
+    c.attempts.store(500, Ordering::Relaxed);
+    *shared.counters.lock().unwrap() = Some(Arc::clone(&c));
+    shared.status_at(10_000);
+    let l = shared.status_at(12_000).luck;
+    assert_eq!(l.found, 3);
+    assert!((l.expected_blocks - 5.0).abs() < 1e-9, "{l:?}");
+    assert_eq!(l.accepted_work, 4000.0);
+    assert_eq!(l.elapsed_ms, 2000, "from the first look");
+    assert_eq!(l.effective_rate(), Some(2000.0));
+}
+
+#[test]
+fn before_any_look_the_status_has_no_luck() {
+    let shared = MiningShared::default();
+    assert!(shared.status().luck.is_empty());
+    assert!(shared.status_at(5000).luck.is_empty(), "no counters yet");
 }

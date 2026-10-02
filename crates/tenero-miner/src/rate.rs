@@ -142,3 +142,50 @@ impl RateMeter {
         }
     }
 }
+
+// ---- luck: the blocks found against the blocks the attempts should have found ---------------------------------------------------------
+
+/// The expected number of attempts for one block at `target`: `2^256 / target` (the chain's work for a block). `INFINITY` for a target that
+/// is 0 or 1 (a search that cannot succeed, or the whole space), so that attempts at it expect no block.
+pub fn work_of(target: &tenero_core::u256::U256) -> f64 {
+    match tenero_core::u256::U256::work_of_target(target) {
+        Some(w) => w
+            .to_be_bytes()
+            .iter()
+            .fold(0.0, |v, b| v * 256.0 + f64::from(*b)),
+        None => f64::INFINITY,
+    }
+}
+
+/// How the run has gone for blocks. The attempts a miner makes find a block with a fixed chance each, so the blocks found should be near
+/// `expected_blocks`; **a run is only as informative as it is long**: a few blocks can be far from the expectation by chance alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Luck {
+    /// Blocks this miner found (valid, whatever became of them).
+    pub found: u64,
+    /// Blocks its attempts should have found: each attempt's chance (1 / the work of the target it was made at), added up.
+    pub expected_blocks: f64,
+    /// The work (attempts a block is expected to take) of the blocks that are in the chain, added up.
+    pub accepted_work: f64,
+    /// Milliseconds since the miner began, over which `accepted_work` was earned (waiting and pauses count).
+    pub elapsed_ms: u64,
+}
+
+impl Luck {
+    /// Attempts a second the accepted blocks are worth over the whole run, waiting included. It depends on luck (and on the round trips to
+    /// the node), which is why it is not the hash rate. `None` until a block is in the chain and a second has passed.
+    pub fn effective_rate(&self) -> Option<f64> {
+        (self.accepted_work > 0.0 && self.elapsed_ms >= 1000)
+            .then(|| self.accepted_work * 1000.0 / self.elapsed_ms as f64)
+    }
+
+    /// Found over expected, only once enough is expected for the ratio to mean something (5 blocks).
+    pub fn ratio(&self) -> Option<f64> {
+        (self.expected_blocks >= 5.0).then(|| self.found as f64 / self.expected_blocks)
+    }
+
+    /// Nothing to show yet.
+    pub fn is_empty(&self) -> bool {
+        self.found == 0 && self.expected_blocks == 0.0
+    }
+}
