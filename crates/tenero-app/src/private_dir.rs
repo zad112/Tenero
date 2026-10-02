@@ -85,6 +85,7 @@ pub fn open_trustees_in_sddl(sddl: &str) -> Vec<String> {
     found
 }
 
+#[cfg(windows)]
 fn describe_trustee(t: &str) -> &'static str {
     match t {
         "WD" | "S-1-1-0" => "Everyone",
@@ -177,6 +178,7 @@ fn check_impl(_dir: &Path) -> Exposure {
 }
 
 /// `icacls /save` writes UTF-16 (little-endian, with or without a byte-order mark).
+#[cfg(windows)]
 fn decode_icacls_save(bytes: &[u8]) -> Option<String> {
     let bytes = bytes.strip_prefix(&[0xFF, 0xFE]).unwrap_or(bytes);
     if !bytes.len().is_multiple_of(2) {
