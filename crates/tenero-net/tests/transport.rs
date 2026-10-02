@@ -190,6 +190,7 @@ struct Handle {
     addr: SocketAddr,
     log: Log,
     counters: Arc<tenero_net::transport::Counters>,
+    gate: Arc<tenero_net::budget::Gate>,
     snap: Arc<Mutex<Snap>>,
 }
 
@@ -233,6 +234,17 @@ fn with_node<R>(
     tweak: impl FnOnce(&mut NetConfig),
     body: impl FnOnce(&Handle) -> R,
 ) -> R {
+    with_node_hooks(rig, engine_cfg, tweak, |snap| Publish { snap }, body)
+}
+
+/// `with_node`, with hooks of the caller's choosing (they are given the place to publish the state to).
+fn with_node_hooks<R, H: Hooks + Send>(
+    rig: &SimRig,
+    engine_cfg: EngineConfig,
+    tweak: impl FnOnce(&mut NetConfig),
+    make_hooks: impl FnOnce(Arc<Mutex<Snap>>) -> H + Send,
+    body: impl FnOnce(&Handle) -> R,
+) -> R {
     let log = Log::new();
     let mut cfg = net_cfg(Some("127.0.0.1:0"), &log);
     tweak(&mut cfg);
@@ -241,6 +253,7 @@ fn with_node<R>(
         addr: net.local_addr().unwrap(),
         log,
         counters: net.counters(),
+        gate: net.gate(),
         snap: Arc::new(Mutex::new(Snap::default())),
     };
     let stop = Arc::new(AtomicBool::new(false));
@@ -249,7 +262,7 @@ fn with_node<R>(
         let stop2 = Arc::clone(&stop);
         let node = s.spawn(move || {
             let mut e = engine_on(rig, engine_cfg);
-            net.run(&mut e, stop2, &mut Publish { snap }).unwrap();
+            net.run(&mut e, stop2, &mut make_hooks(snap)).unwrap();
         });
         // the node is stopped however the body ends, a panic included (or the scope would wait for it forever)
         struct StopOnDrop(Arc<AtomicBool>);
@@ -1483,5 +1496,200 @@ fn answers_that_arrived_during_a_stall_are_read_before_the_node_decides_it_timed
         got,
         "the node gave up on its request before reading the answer that was already waiting\n{}",
         log.dump()
+    );
+}
+
+// ---- what a peer can make the node hold, and how fast (M9, threat model B1 and B2) --------------------------------------
+
+/// Blocks the node's loop for as long as `stall` is set (so messages queue up behind it, as they do when the node is busy
+/// checking a block).
+struct Stall {
+    stall: Arc<AtomicBool>,
+    snap: Arc<Mutex<Snap>>,
+}
+
+impl Hooks for Stall {
+    fn poll(&mut self, engine: &mut Engine<'_>, _now_ms: u64) -> Vec<Event> {
+        *self.snap.lock().unwrap() = Snap {
+            peers: engine.peer_count(),
+            ..Snap::default()
+        };
+        let end = Instant::now() + Duration::from_secs(60);
+        while self.stall.load(Ordering::SeqCst) && Instant::now() < end {
+            thread::sleep(Duration::from_millis(5));
+        }
+        Vec::new()
+    }
+}
+
+/// A transaction that decodes (a whole proof, the longest the format allows; no one would accept it).
+fn big_tx() -> tenero_core::v2::Transaction {
+    use tenero_core::v2::Wire;
+    let v = tenero_core::vectors::load("v2_serialization").unwrap();
+    let case = v["valid"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["note"].as_str().unwrap().contains("maximum proof length"))
+        .unwrap();
+    let bytes = tenero_core::vectors::hex(case["hex"].as_str().unwrap()).unwrap();
+    tenero_core::v2::Transaction::from_bytes(&bytes).unwrap()
+}
+
+#[test]
+fn a_flood_of_large_frames_to_a_busy_node_is_held_back_by_the_memory_budget() {
+    use std::io::Write;
+    let rigs = SimRig::rigs("tr-flood", 1);
+    mined(&rigs, 3);
+    let stall = Arc::new(AtomicBool::new(false));
+    let stall2 = Arc::clone(&stall);
+    let cfg = EngineConfig {
+        msgs_per_sec: 1_000_000,
+        burst: 1_000_000_000,
+        ..local_cfg(&[])
+    };
+    let frame = encode(&Message::Txs {
+        txs: vec![big_tx(); 64],
+    })
+    .unwrap();
+    assert!(
+        frame.len() > 2_000_000 && frame.len() < tenero_net::MAX_FRAME,
+        "{}",
+        frame.len()
+    );
+    with_node_hooks(
+        &rigs[0],
+        cfg,
+        // no byte-rate limit here: this test is about memory
+        |c| c.peer_bytes_per_sec = 0,
+        |snap| Stall {
+            stall: stall2,
+            snap,
+        },
+        |h| {
+            let mut c = Client::connect(h.addr).unwrap();
+            c.send(&c.hello());
+            assert!(matches!(
+                c.recv(Duration::from_secs(3)),
+                Some(Message::Hello(_))
+            ));
+            // the node is now busy with something else for a while
+            stall.store(true, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(700));
+            // send as many frames as it will take: the writes stop being accepted once the node stops reading
+            c.stream
+                .set_write_timeout(Some(Duration::from_millis(1500)))
+                .unwrap();
+            let mut accepted = 0usize;
+            for _ in 0..200 {
+                let sealed = c.w.seal(&frame).unwrap();
+                match c.stream.write_all(&sealed) {
+                    Ok(()) => accepted += frame.len(),
+                    Err(_) => break,
+                }
+            }
+            let cfg = h.gate.config().clone();
+            let large_peak = h.gate.stats.peak_large.load(Ordering::SeqCst);
+            println!(
+                "accepted {} MiB of a 400 MiB attempt; peak held {} MiB; reader waits {}",
+                accepted >> 20,
+                large_peak >> 20,
+                h.gate.stats.waits.load(Ordering::Relaxed)
+            );
+            // the node held no more than one connection's share, and stopped reading: the sender was slowed, not the memory
+            assert!(large_peak <= cfg.large_per_lane, "held {large_peak}");
+            assert!(
+                h.gate.stats.waits.load(Ordering::Relaxed) >= 1,
+                "the reader never had to wait"
+            );
+            assert!(
+                accepted <= 48 * 1024 * 1024,
+                "the node took {} MiB from one connection while it was busy",
+                accepted >> 20
+            );
+            // the node comes back to life and gives the memory back; a good client is served
+            stall.store(false, Ordering::SeqCst);
+            let end = Instant::now() + Duration::from_secs(20);
+            while h.gate.held() != (0, 0) && Instant::now() < end {
+                thread::sleep(Duration::from_millis(50));
+            }
+            assert_eq!(h.gate.held(), (0, 0), "{}", h.log.dump());
+            // (what it sent was unasked-for, so the engine, once it could look, dropped and banned it: that is the
+            // engine's rule, and it is why no second client from this address is tried here)
+            let end = Instant::now() + Duration::from_secs(10);
+            while h.snap().peers != 0 && Instant::now() < end {
+                thread::sleep(Duration::from_millis(50));
+            }
+            assert_eq!(h.snap().peers, 0, "{}", h.log.dump());
+        },
+    );
+}
+
+#[test]
+fn a_connection_that_reads_faster_than_its_rate_is_slowed_not_dropped() {
+    let rigs = SimRig::rigs("tr-throttle", 1);
+    mined(&rigs, 3);
+    let cfg = EngineConfig {
+        msgs_per_sec: 1_000_000,
+        burst: 1_000_000_000,
+        ..local_cfg(&[])
+    };
+    with_node(
+        &rigs[0],
+        cfg,
+        |c| {
+            c.peer_bytes_per_sec = 256 * 1024;
+            c.peer_burst_bytes = 64 * 1024;
+        },
+        |h| {
+            let mut c = Client::connect(h.addr).unwrap();
+            c.send(&c.hello());
+            assert!(matches!(
+                c.recv(Duration::from_secs(3)),
+                Some(Message::Hello(_))
+            ));
+            // 1 MiB of pings, in chunks as big as one encrypted chunk
+            let ping = encode(&Message::Ping(1)).unwrap();
+            let batch: Vec<u8> = ping
+                .iter()
+                .copied()
+                .cycle()
+                .take(ping.len() * 5000)
+                .collect();
+            let start = Instant::now();
+            let before = h.counters.bytes_in.load(Ordering::Relaxed);
+            let mut sent = 0usize;
+            while sent < 1024 * 1024 {
+                c.send_raw(&batch);
+                sent += batch.len();
+            }
+            let end = Instant::now() + Duration::from_secs(60);
+            while (h.counters.bytes_in.load(Ordering::Relaxed) - before) < sent as u64
+                && Instant::now() < end
+            {
+                thread::sleep(Duration::from_millis(20));
+            }
+            let took = start.elapsed();
+            println!(
+                "{} KiB in {took:?}; throttled for {} ms",
+                sent >> 10,
+                h.counters.throttled_ms.load(Ordering::Relaxed)
+            );
+            // (1,024 KiB - 64 KiB burst) at 256 KiB a second is about 3.7 s
+            assert!(
+                took >= Duration::from_millis(2500),
+                "took only {took:?}: not slowed"
+            );
+            assert!(h.counters.throttled_ms.load(Ordering::Relaxed) >= 2000);
+            // nobody was punished for it, and the node still talks to others meanwhile
+            assert!(!h.snap().banned_loopback);
+            let mut other = Client::connect(h.addr).unwrap();
+            other.send(&other.hello());
+            assert!(matches!(
+                other.recv(Duration::from_secs(3)),
+                Some(Message::Hello(_))
+            ));
+            assert_eq!(h.counters.bad_bytes.load(Ordering::Relaxed), 0);
+        },
     );
 }

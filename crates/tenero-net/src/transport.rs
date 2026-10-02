@@ -17,12 +17,14 @@
 //!   decrypt only close the connection, since someone on the wire could cause that without the peer's doing;
 //! * the queue of frames waiting to be written to a peer is bounded in **bytes**: a peer that does not read is
 //!   disconnected rather than allowed to make us hold 16 MiB frames without end;
-//! * readers block when the loop's channel is full, so a flood is slowed by TCP back-pressure, not by memory.
+//! * readers block when the loop's channel is full, so a flood is slowed by TCP back-pressure, not by memory;
+//! * the memory the queued frames may hold is bounded in **bytes** (`budget.rs`: a reservation made before the rest of a
+//!   frame is read, per-connection and total ceilings, large frames kept apart from small ones), and each connection is
+//!   read at no more than a set byte rate (a slower read, never a punishment).
 //!
-//! **Limits, stated plainly:** a hostile peer can still make each of its connections hold up to a couple of
-//! frames of 16 MiB (the wire's ceiling) in memory at once, so memory under attack scales with the number of
-//! connections times that; there is no byte-rate limit per peer (only the engine's message-rate limit); the
-//! handshake costs a few Curve25519 operations an attacker can ask for repeatedly, limited only by the pending
+//! **Limits, stated plainly:** real memory can be up to about twice the budget while a frame is being decoded; a peer that
+//! declares a large frame and stalls holds its reservation until the engine drops it for not answering a ping; the total
+//! byte rate over all peers is not limited (only each peer's); the handshake costs a few Curve25519 operations an attacker can ask for repeatedly, limited only by the pending
 //! caps and bans; the addresses it dials must be `ip:port` (no DNS); and it is unreviewed (M9).
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -36,6 +38,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::addrbook::host_of;
+use crate::budget::{Gate, GateConfig, Lane, Throttle, Ticket};
 use crate::engine::{Action, Engine, Event, PeerId};
 use crate::message::{Message, PROTOCOL_VERSION};
 use crate::noise::{
@@ -79,8 +82,15 @@ pub struct NetConfig {
     pub max_pending_per_host: usize,
     /// Bytes of encoded frames allowed to wait for one peer's socket; past this the peer is disconnected.
     pub max_queued_bytes: usize,
-    /// The bound of the channel into the loop (messages).
+    /// The bound of the channel into the loop (messages). The memory the messages in it may hold is bounded separately, in
+    /// bytes, by `memory` (`budget.rs`).
     pub inbound_queue: usize,
+    /// How many bytes of received frames may be held at once, in all and per connection.
+    pub memory: GateConfig,
+    /// The most bytes a second one connection is read at, and the burst it may save up (`budget.rs`; a rate of 0 is no
+    /// limit). A connection over its rate is read more slowly, not punished.
+    pub peer_bytes_per_sec: u64,
+    pub peer_burst_bytes: u64,
     /// Where the address book and ban list are kept (saved atomically), if anywhere.
     pub state_path: Option<PathBuf>,
     pub save_every: Duration,
@@ -101,6 +111,9 @@ impl NetConfig {
             max_pending_per_host: 4,
             max_queued_bytes: 32 * 1024 * 1024,
             inbound_queue: 1024,
+            memory: GateConfig::default(),
+            peer_bytes_per_sec: 8 * 1024 * 1024,
+            peer_burst_bytes: 32 * 1024 * 1024,
             state_path: None,
             save_every: Duration::from_secs(300),
             log: stderr_logger(),
@@ -125,6 +138,8 @@ pub struct Counters {
     pub bytes_out: AtomicU64,
     /// Live connection threads (readers and writers).
     pub threads: AtomicUsize,
+    /// Milliseconds readers have spent waiting because a connection was over its byte rate.
+    pub throttled_ms: AtomicU64,
 }
 
 /// The most events the loop reads in a row before it looks at the clock again.
@@ -205,6 +220,8 @@ enum Ev {
     Msg {
         peer: PeerId,
         msg: Message,
+        /// The memory reserved for this message's frame, given back when the loop has dealt with it.
+        ticket: Option<Ticket>,
     },
     Bad {
         peer: PeerId,
@@ -267,11 +284,20 @@ struct Conn {
     stream: TcpStream,
     tx: Sender<Vec<u8>>,
     queued: Arc<AtomicUsize>,
+    /// Set when the connection is closed, so a reader waiting for memory or for its byte rate stops waiting.
+    closed: Arc<AtomicBool>,
 }
 
 impl Conn {
     fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
         let _ = self.stream.shutdown(Shutdown::Both);
+    }
+}
+
+impl Drop for Conn {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::SeqCst);
     }
 }
 
@@ -281,6 +307,7 @@ pub struct Net {
     listener: Option<TcpListener>,
     local: Option<SocketAddr>,
     counters: Arc<Counters>,
+    gate: Arc<Gate>,
 }
 
 impl Net {
@@ -293,11 +320,13 @@ impl Net {
             }
             None => (None, None),
         };
+        let gate = Gate::new(cfg.memory.clone());
         Ok(Net {
             cfg,
             listener,
             local,
             counters: Arc::new(Counters::default()),
+            gate,
         })
     }
 
@@ -308,6 +337,11 @@ impl Net {
 
     pub fn counters(&self) -> Arc<Counters> {
         Arc::clone(&self.counters)
+    }
+
+    /// The memory gate (`budget.rs`): how much received data is held, and the peaks.
+    pub fn gate(&self) -> Arc<Gate> {
+        Arc::clone(&self.gate)
     }
 
     /// Runs the node until `shutdown` is set: accepts and dials, feeds the engine, carries out its actions, saves
@@ -374,6 +408,7 @@ impl Net {
             tx,
             banned,
             counters,
+            gate: Arc::clone(&self.gate),
             conns: HashMap::new(),
             next_peer: 1,
             pro,
@@ -477,6 +512,7 @@ struct Loop<'c> {
     tx: SyncSender<Ev>,
     banned: Arc<Mutex<HashMap<String, u64>>>,
     counters: Arc<Counters>,
+    gate: Arc<Gate>,
     conns: HashMap<PeerId, Conn>,
     next_peer: PeerId,
     pro: Vec<u8>,
@@ -587,10 +623,12 @@ impl Loop<'_> {
                 let actions = engine.handle(now_ms(), Event::ConnectFailed { addr });
                 self.exec(engine, actions);
             }
-            Ev::Msg { peer, msg } => {
+            Ev::Msg { peer, msg, ticket } => {
                 // (a message from a peer we have already dropped is ignored by the engine, which no longer knows it)
                 let actions = engine.handle(now_ms(), Event::Message { peer, msg });
                 self.exec(engine, actions);
+                // the memory the frame was given is free again once the engine is done with it
+                drop(ticket);
             }
             Ev::Bad { peer, why } => {
                 if self.conns.contains_key(&peer) {
@@ -631,12 +669,19 @@ impl Loop<'_> {
         let write_half = stream.try_clone()?;
         let (wtx, wrx) = channel::<Vec<u8>>();
         let queued = Arc::new(AtomicUsize::new(0));
+        let closed = Arc::new(AtomicBool::new(false));
         let Secured { reader, writer, .. } = secured;
         {
             let (tx, counters) = (self.tx.clone(), Arc::clone(&self.counters));
+            let input = ReaderInput {
+                gate: Arc::clone(&self.gate),
+                lane: Lane::new(),
+                closed: Arc::clone(&closed),
+                throttle: Throttle::new(self.cfg.peer_bytes_per_sec, self.cfg.peer_burst_bytes),
+            };
             counters.threads.fetch_add(1, Ordering::Relaxed);
             thread::spawn(move || {
-                reader_thread(peer, read_half, reader, tx, &counters);
+                reader_thread(peer, read_half, reader, tx, &counters, input);
                 counters.threads.fetch_sub(1, Ordering::Relaxed);
             });
         }
@@ -658,6 +703,7 @@ impl Loop<'_> {
                 stream,
                 tx: wtx,
                 queued,
+                closed,
             },
         );
         Ok(())
@@ -756,26 +802,61 @@ impl Loop<'_> {
     }
 }
 
+/// What a reader needs to keep its connection within bounds.
+struct ReaderInput {
+    gate: Arc<Gate>,
+    lane: Arc<Lane>,
+    closed: Arc<AtomicBool>,
+    throttle: Throttle,
+}
+
+/// Waits `d`, in short pieces, stopping early if the connection is closed.
+fn wait_unless_closed(d: Duration, closed: &AtomicBool) {
+    let end = Instant::now() + d;
+    while !closed.load(Ordering::SeqCst) {
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        thread::sleep(left.min(Duration::from_millis(50)));
+    }
+}
+
 fn reader_thread(
     peer: PeerId,
     stream: TcpStream,
     mut reader: SecureReader,
     tx: SyncSender<Ev>,
     counters: &Counters,
+    mut input: ReaderInput,
 ) {
     let mut stream = BufReader::with_capacity(70_000, stream);
     let mut decoder = FrameDecoder::new();
+    // the memory reserved for the frame being assembled (taken as soon as its size is known, before the rest of it is read)
+    let mut reserved: Option<Ticket> = None;
     loop {
+        let chunk_len: usize;
         match reader.read_chunk(&mut stream) {
             Ok(chunk) => {
+                chunk_len = chunk.len();
                 counters
                     .bytes_in
                     .fetch_add(chunk.len() as u64 + 18, Ordering::Relaxed);
                 decoder.push(&chunk);
                 loop {
+                    if reserved.is_none() {
+                        if let Some(size) = decoder.pending_frame() {
+                            match input.gate.acquire(&input.lane, size, &input.closed) {
+                                Some(t) => reserved = Some(t),
+                                // the connection was closed while we waited
+                                None => return,
+                            }
+                        }
+                    }
                     match decoder.next_message() {
                         Ok(Some(msg)) => {
-                            if tx.send(Ev::Msg { peer, msg }).is_err() {
+                            let ticket = reserved.take();
+                            if tx.send(Ev::Msg { peer, msg, ticket }).is_err() {
                                 return;
                             }
                         }
@@ -797,6 +878,14 @@ fn reader_thread(
                 });
                 return;
             }
+        }
+        // over its byte rate: read more slowly (the sender is slowed by TCP, and nobody is blamed)
+        let wait = input.throttle.take(chunk_len, Instant::now());
+        if !wait.is_zero() {
+            counters
+                .throttled_ms
+                .fetch_add(wait.as_millis() as u64, Ordering::Relaxed);
+            wait_unless_closed(wait, &input.closed);
         }
     }
 }

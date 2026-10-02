@@ -8,6 +8,7 @@
 //! **Experimental and unaudited.**
 
 pub mod addrbook;
+pub mod budget;
 pub mod engine;
 pub mod message;
 pub mod noise;

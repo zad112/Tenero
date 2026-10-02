@@ -389,6 +389,19 @@ impl FrameDecoder {
         self.buf.len()
     }
 
+    /// The size in bytes of the whole frame now being assembled (its four length bytes included), once its header is
+    /// known and acceptable (the length and kind bytes have arrived and the length is within its kind's cap). `None`
+    /// before that, after a failure, and when nothing is buffered. The transport reserves memory for exactly this many
+    /// bytes before it accepts the rest of the frame.
+    pub fn pending_frame(&self) -> Option<usize> {
+        if self.failed.is_some() || self.buf.len() < 5 || header_error(&self.buf).is_some() {
+            return None;
+        }
+        let length =
+            u32::from_le_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
+        Some(4 + length)
+    }
+
     pub fn push(&mut self, data: &[u8]) {
         if self.failed.is_none() {
             self.buf.extend_from_slice(data);
