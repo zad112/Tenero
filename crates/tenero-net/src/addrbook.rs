@@ -158,6 +158,9 @@ pub struct AddrBookConfig {
     pub stale_secs: u64,
     /// Accept private and loopback addresses (a private test network, or a simulation).
     pub accept_private: bool,
+    /// When choosing among never-tried addresses, those reported by two or more different source groups come first. Off by
+    /// default: it only helps when honest sources report overlapping lists (see `docs/SEED_POLICY.md` for the measurement).
+    pub prefer_corroborated: bool,
     pub seed: u64,
 }
 
@@ -172,18 +175,30 @@ impl Default for AddrBookConfig {
             max_failures: 10,
             stale_secs: 30 * 24 * 3600,
             accept_private: false,
+            prefer_corroborated: false,
             seed: 0x5eed_5eed_5eed_5eed,
         }
     }
 }
+
+/// How many different source groups are remembered per address.
+pub const MAX_REPORTERS: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub addr: String,
     /// When the address was last known alive, Unix seconds (as claimed by whoever told us, clamped to now).
     pub last_seen: u64,
-    /// Who told us (a network group), or `seed`.
+    /// Who FIRST told us (a network group), or `seed`.
     pub source: String,
+    /// The configured seed this address descends from: the network group of the seed itself, or, for an address learned from a
+    /// peer, that peer's own origin (an address told by a peer that a seed told us of has that seed's origin). A source can be
+    /// multiplied by an attacker at no cost (every peer of his is a new one); an origin cannot, because only the seeds start one.
+    /// Not saved to disk: after a restart it is the first source.
+    pub origin: String,
+    /// Every source group that has told us this address (the first one included), at most `MAX_REPORTERS`. Not saved to disk: after
+    /// a restart an entry has only its first source.
+    pub reporters: Vec<String>,
     /// It has connected at least once.
     pub tried: bool,
     pub failures: u32,
@@ -218,6 +233,20 @@ impl AddrBook {
         self.entries.get(addr)
     }
 
+    /// The origin of an address in the book.
+    pub fn origin_of(&self, addr: &str) -> Option<&str> {
+        self.entries.get(addr).map(|e| e.origin.as_str())
+    }
+
+    /// How many different origins the book's entries have.
+    pub fn origin_count(&self) -> usize {
+        self.entries
+            .values()
+            .map(|e| e.origin.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    }
+
     pub fn tried_count(&self) -> usize {
         self.entries.values().filter(|e| e.tried).count()
     }
@@ -248,6 +277,19 @@ impl AddrBook {
     /// Adds an address told to us by `source` (a group name, or `"seed"`). Returns whether it is in the book
     /// afterwards. An address already known keeps its record, and its `last_seen` only moves forward.
     pub fn add(&mut self, addr: &str, last_seen: u64, source: &str, now_secs: u64) -> bool {
+        self.add_from(addr, last_seen, source, source, now_secs)
+    }
+
+    /// `add`, saying also which seed the telling peer descends from (`origin`; ignored for the seeds themselves, whose origin is
+    /// their own network group).
+    pub fn add_from(
+        &mut self,
+        addr: &str,
+        last_seen: u64,
+        source: &str,
+        origin: &str,
+        now_secs: u64,
+    ) -> bool {
         // a peer cannot claim an address was seen in the future
         let last_seen = last_seen.min(now_secs);
         if now_secs.saturating_sub(last_seen) > self.cfg.stale_secs {
@@ -258,6 +300,12 @@ impl AddrBook {
         }
         if let Some(e) = self.entries.get_mut(addr) {
             e.last_seen = e.last_seen.max(last_seen);
+            if source != "seed"
+                && e.reporters.len() < MAX_REPORTERS
+                && !e.reporters.iter().any(|r| r == source)
+            {
+                e.reporters.push(source.to_string());
+            }
             return true;
         }
         if source != "seed" && self.new_from(source) >= self.cfg.max_new_per_source {
@@ -272,6 +320,12 @@ impl AddrBook {
                 addr: addr.to_string(),
                 last_seen,
                 source: source.to_string(),
+                origin: if source == "seed" {
+                    group_of(addr)
+                } else {
+                    origin.to_string()
+                },
+                reporters: vec![source.to_string()],
                 tried: false,
                 failures: 0,
                 last_attempt_ms: 0,
@@ -375,24 +429,49 @@ impl AddrBook {
         skip: &dyn Fn(&str) -> bool,
         group_full: &dyn Fn(&str) -> bool,
     ) -> Vec<String> {
+        self.candidates_with(now_ms, limit, skip, group_full, &|_| false, false)
+    }
+
+    /// `candidates`, with two more rules: `source_full` says which ORIGINS (the seed an address descends from) already have all
+    /// the outbound peers allowed (the seeds' own addresses are not limited by it), and `seeds_only`
+    /// leaves out everything but the configured seeds (a node that is still bootstrapping).
+    pub fn candidates_with(
+        &mut self,
+        now_ms: u64,
+        limit: usize,
+        skip: &dyn Fn(&str) -> bool,
+        group_full: &dyn Fn(&str) -> bool,
+        source_full: &dyn Fn(&str) -> bool,
+        seeds_only: bool,
+    ) -> Vec<String> {
         let mut tried: Vec<String> = Vec::new();
-        let mut fresh: Vec<String> = Vec::new();
+        let mut fresh: Vec<(String, bool)> = Vec::new();
         for e in self.entries.values() {
             let wait = self.backoff_ms(e.failures).max(self.cfg.min_redial_ms);
             if e.last_attempt_ms > 0 && now_ms < e.last_attempt_ms.saturating_add(wait) {
                 continue;
             }
-            if skip(&e.addr) || group_full(&group_of(&e.addr)) {
+            let is_seed = e.source == "seed";
+            if (seeds_only && !is_seed)
+                || skip(&e.addr)
+                || group_full(&group_of(&e.addr))
+                || (!is_seed && source_full(&e.origin))
+            {
                 continue;
             }
             if e.tried {
                 tried.push(e.addr.clone());
             } else {
-                fresh.push(e.addr.clone());
+                fresh.push((e.addr.clone(), e.reporters.len() >= 2));
             }
         }
         self.rng.shuffle(&mut tried);
         self.rng.shuffle(&mut fresh);
+        if self.cfg.prefer_corroborated {
+            // a stable sort: the shuffle's order is kept within each class
+            fresh.sort_by_key(|(_, corroborated)| !*corroborated);
+        }
+        let fresh: Vec<String> = fresh.into_iter().map(|(a, _)| a).collect();
         let mut out = Vec::new();
         let (mut t, mut f) = (tried.into_iter(), fresh.into_iter());
         while out.len() < limit {
@@ -476,11 +555,18 @@ impl AddrBook {
                 _ => return Err("bad flag".into()),
             };
             let failures = r.u32()?;
+            let origin = if source == "seed" {
+                group_of(&addr)
+            } else {
+                source.clone()
+            };
             book.entries.insert(
                 addr.clone(),
                 Entry {
                     addr,
                     last_seen,
+                    reporters: vec![source.clone()],
+                    origin,
                     source,
                     tried,
                     failures,

@@ -185,6 +185,16 @@ pub struct EngineConfig {
     /// never passed on to other nodes. They are still validated like any peer, and still banned if they misbehave.
     pub trusted: Vec<String>,
     pub trusted_retry_ms: u64,
+    /// A node with no tried address (a first start) dials ONLY its configured seeds until every seed group has answered its
+    /// address request, or this long has passed (a dead seed costs a first start this wait, once). Without this, whichever seed
+    /// answers first decides who the node dials first, and a hostile seed can answer first; waiting for a QUOTA of seeds does not
+    /// help, because hostile seeds fill the quota before the honest ones answer (`docs/SEED_POLICY.md` has the measurement).
+    /// 0 turns it off (threat model C1).
+    pub bootstrap_wait_ms: u64,
+    /// The most outbound connections (while the first `outbound_target` slots are being filled) to addresses that descend from ONE
+    /// seed: the least that seed may have, whatever its fair share of the slots is (`outbound_target` divided by the number of
+    /// origins the book knows). The seeds' own addresses are not limited by this. 0 turns it off.
+    pub max_outbound_per_source: usize,
 }
 
 impl Default for EngineConfig {
@@ -229,6 +239,8 @@ impl Default for EngineConfig {
             stale_retry_ms: 5 * 60 * 1000,
             trusted: Vec::new(),
             trusted_retry_ms: 30 * 1000,
+            bootstrap_wait_ms: 20 * 1000,
+            max_outbound_per_source: 2,
         }
     }
 }
@@ -252,6 +264,24 @@ pub struct Stats {
     pub stale_extra_dials: u64,
     /// Pinned peers dialled.
     pub trusted_dialled: u64,
+    /// First-start bootstrap (see `EngineConfig::bootstrap_wait_ms`): begun, finished because every seed group answered, and
+    /// finished because the wait ran out.
+    pub bootstrap_started: u64,
+    pub bootstrap_done: u64,
+    pub bootstrap_timeouts: u64,
+}
+
+/// Where a first start is in its bootstrap.
+enum Boot {
+    NotStarted,
+    Active {
+        since: u64,
+        /// How many seed groups there are to hear from.
+        needed: usize,
+        /// The seed groups that have answered.
+        answered: HashSet<String>,
+    },
+    Done,
 }
 
 struct Peer {
@@ -357,6 +387,7 @@ pub struct Engine<'a> {
     /// RETURNED, which can be much later (applying a batch of blocks takes a while), so their timeout clocks are restarted at
     /// the next event (see `restamp`).
     stamp_fresh: Option<u64>,
+    boot: Boot,
     /// Whether the tip is stale now, and when extra peers were last dialled because of it.
     stale: bool,
     last_stale_action: Option<u64>,
@@ -397,6 +428,7 @@ impl<'a> Engine<'a> {
             anchors: Vec::new(),
             tip_seen: None,
             stamp_fresh: None,
+            boot: Boot::NotStarted,
             stale: false,
             last_stale_action: None,
             trusted_last: HashMap::new(),
@@ -1214,9 +1246,24 @@ impl<'a> Engine<'a> {
             if let Some(p) = self.peers.get_mut(&peer) {
                 p.asked_addrs = false; // one answer to each request
             }
+            // the addresses descend from the same seed as the peer that told us
+            let origin = self
+                .book
+                .origin_of(&peer_addr)
+                .map_or_else(|| source.clone(), str::to_string);
             for a in &addrs {
                 if let Some(text) = peer_addr_to_string(a) {
-                    self.book.add(&text, a.last_seen, &source, secs);
+                    self.book
+                        .add_from(&text, a.last_seen, &source, &origin, secs);
+                }
+            }
+            if self
+                .book
+                .get(&peer_addr)
+                .is_some_and(|e| e.source == "seed")
+            {
+                if let Boot::Active { answered, .. } = &mut self.boot {
+                    answered.insert(source);
                 }
             }
         } else {
@@ -1244,6 +1291,7 @@ impl<'a> Engine<'a> {
         self.dial_trusted(now, out);
         self.dial_anchors(now, out);
         self.dial_for_stale_tip(now, out);
+        let seeds_only = self.update_bootstrap(now);
 
         let regular = self.peers.values().filter(|p| !p.addr_only);
         let total = regular.clone().count() + self.connecting.len();
@@ -1267,6 +1315,34 @@ impl<'a> Engine<'a> {
             *groups.entry(group_of(a)).or_default() += 1;
         }
         let per_group = self.cfg.max_outbound_per_group;
+        // the outbound peers, by the seed their address descends from (a seed's own address is not counted)
+        // each origin may have its fair share of the outbound_target slots, and never fewer than `max_outbound_per_source`
+        let per_source = if self.cfg.max_outbound_per_source == 0 {
+            0
+        } else {
+            let origins = self.book.origin_count().max(1);
+            self.cfg
+                .max_outbound_per_source
+                .max(self.cfg.outbound_target.div_ceil(origins))
+        };
+        let mut sources: HashMap<String, usize> = HashMap::new();
+        // how many outbound peers there are that the seeds did not themselves provide: the seeds are only a start (and hang up), so
+        // the slots that matter are these, and the limit holds until `outbound_target` of them are filled
+        let mut chosen = 0;
+        if per_source > 0 {
+            let dialled = self
+                .peers
+                .values()
+                .filter(|p| !p.inbound)
+                .map(|p| &p.addr)
+                .chain(self.connecting.keys());
+            for a in dialled {
+                if let Some(e) = self.book.get(a).filter(|e| e.source != "seed") {
+                    *sources.entry(e.origin.clone()).or_default() += 1;
+                    chosen += 1;
+                }
+            }
+        }
         let own = self.cfg.advertise.clone();
         let bans = &self.bans;
         let connecting = &self.connecting;
@@ -1277,7 +1353,12 @@ impl<'a> Engine<'a> {
                 || own.as_deref() == Some(a)
         };
         let full = |g: &str| groups.get(g).copied().unwrap_or(0) >= per_group;
-        let candidates = self.book.candidates(now, want * 4, &skip, &full);
+        // the per-source limit is for the outbound_target slots an eclipse has to capture; peers beyond them are extra
+        let cap_on = per_source > 0 && chosen < self.cfg.outbound_target;
+        let source_full = |s: &str| cap_on && sources.get(s).copied().unwrap_or(0) >= per_source;
+        let candidates =
+            self.book
+                .candidates_with(now, want * 4, &skip, &full, &source_full, seeds_only);
         let mut chosen_hosts: HashSet<String> = HashSet::new();
         let mut dialled = 0;
         for a in candidates {
@@ -1285,16 +1366,87 @@ impl<'a> Engine<'a> {
                 break;
             }
             let g = group_of(&a);
+            let source = self
+                .book
+                .get(&a)
+                .filter(|e| e.source != "seed")
+                .map(|e| e.origin.clone());
+            if let Some(s) = &source {
+                if per_source > 0
+                    && chosen < self.cfg.outbound_target
+                    && sources.get(s).copied().unwrap_or(0) >= per_source
+                {
+                    continue;
+                }
+            }
             let count = groups.entry(g).or_default();
             if *count >= per_group || !chosen_hosts.insert(host_of(&a)) {
                 continue;
             }
             *count += 1;
+            if let Some(s) = source {
+                *sources.entry(s).or_default() += 1;
+                chosen += 1;
+            }
             self.book.mark_attempt(&a, now);
             self.connecting.insert(a.clone(), now);
             out.push(Action::Connect { addr: a });
             dialled += 1;
         }
+    }
+
+    /// Where the first-start bootstrap is: returns true while only the configured seeds may be dialled. It starts on the first
+    /// call of a node with no tried address (the anchors of a saved state are tried addresses) and at least one seed in its book, and ends when every seed group has
+    /// answered or the wait is over.
+    fn update_bootstrap(&mut self, now: u64) -> bool {
+        match &self.boot {
+            Boot::Done => false,
+            Boot::NotStarted => {
+                let groups: HashSet<String> = self
+                    .cfg
+                    .seeds
+                    .iter()
+                    .filter(|s| self.book.get(s).is_some())
+                    .map(|s| group_of(s))
+                    .collect();
+                if self.cfg.bootstrap_wait_ms == 0
+                    || groups.is_empty()
+                    || self.book.tried_count() > 0
+                {
+                    self.boot = Boot::Done;
+                    return false;
+                }
+                self.boot = Boot::Active {
+                    since: now,
+                    needed: groups.len(),
+                    answered: HashSet::new(),
+                };
+                self.stats.bootstrap_started += 1;
+                true
+            }
+            Boot::Active {
+                since,
+                needed,
+                answered,
+            } => {
+                if answered.len() >= *needed {
+                    self.boot = Boot::Done;
+                    self.stats.bootstrap_done += 1;
+                    false
+                } else if now.saturating_sub(*since) >= self.cfg.bootstrap_wait_ms {
+                    self.boot = Boot::Done;
+                    self.stats.bootstrap_timeouts += 1;
+                    false
+                } else {
+                    true
+                }
+            }
+        }
+    }
+
+    /// Whether the first-start bootstrap is still going (only the configured seeds are being dialled).
+    pub fn is_bootstrapping(&self) -> bool {
+        matches!(self.boot, Boot::Active { .. })
     }
 
     /// The outbound peers worth remembering across a restart: ready peers WE dialled (so not chosen by whoever connected to us),
