@@ -4,7 +4,7 @@
 
 use tenero_app::log::{Level, Logger};
 use tenero_app::private_dir::{
-    check, ensure_private, fix_command, make_private, mode_is_open, open_trustees_in_sddl, Exposure,
+    check, ensure_private, fix_command, mode_is_open, open_trustees_in_sddl, Exposure,
 };
 
 /// What `icacls /save` printed for a folder inside the user's profile: SYSTEM, Administrators and the user, all inherited.
@@ -130,6 +130,7 @@ fn a_new_data_directory_is_created_private_and_stays_acceptable() {
 #[cfg(windows)]
 mod windows {
     use super::*;
+    use tenero_app::private_dir::make_private;
     use std::path::PathBuf;
 
     /// A directory made directly under `C:\`, where Windows gives every user read access (and every signed-in user the

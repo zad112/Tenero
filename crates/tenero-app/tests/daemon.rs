@@ -25,6 +25,13 @@ impl Dir {
         let d = std::env::temp_dir().join(format!("tenero-daemon-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
+        // as an operator who follows the instructions would have it: a data directory only its owner can use (on Unix a
+        // directory made the ordinary way is open to the group and others, and the node refuses it)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         Dir(d)
     }
     fn path(&self, name: &str) -> PathBuf {
