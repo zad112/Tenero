@@ -278,8 +278,9 @@ fn the_status_block_while_syncing_mining_pruned_and_with_alarms() {
   sync     syncing 1,204 of 5,000 (24%) | 41 blocks/s | 1m 33s left
   peers    5 (in 2, out 3) | outbound in 1 network group
   node     mempool 7 | up 2h 05m | disk 12.3 MiB | pruned below 1,000
-  mining   paused (cpu, 2 threads) | 3 found, 2 in the chain
-  rate/s   (idle) starting
+  mining   paused | 3 found, 2 in the chain
+  backend  cpu, 2 threads
+  hashrate (idle) starting
   alarms   stale-tip, few-outbound"
     );
     // a mining node that is running shows its rate when there is one
@@ -294,8 +295,9 @@ fn the_status_block_while_syncing_mining_pruned_and_with_alarms() {
     let got = render_status_block(&s, &OFF).join("\n");
     assert!(
         got.contains(
-            "  mining   mining (gpu) | 0 found, 0 in the chain
-  rate/s   10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000 | avg 1,150,000
+            "  mining   mining | 0 found, 0 in the chain
+  backend  gpu
+  hashrate 10s 1.23M | 60s 1.20M | 15m 1.10M | avg 1.15M attempts/s
 "
         ),
         "{got}"
@@ -388,7 +390,7 @@ fn the_plain_status_line_says_the_same_on_one_line() {
     });
     assert_eq!(
         render_status_line(&s),
-        "height 1,204 (a1b2c3d4) | syncing 10 of 20 (50%) | estimating the time left | peers 5 (in 2, out 3) | mempool 7 | up 2h 05m | mining sha256: 4 found, 3 in the chain (paused) | rate/s starting | ALARMS: stale-tip, few-groups"
+        "height 1,204 (a1b2c3d4) | syncing 10 of 20 (50%) | estimating the time left | peers 5 (in 2, out 3) | mempool 7 | up 2h 05m | mining sha256: 4 found, 3 in the chain (paused) | hashrate starting | ALARMS: stale-tip, few-groups"
     );
 }
 
@@ -887,7 +889,7 @@ fn the_miners_status_block_in_each_state_of_its_link_to_the_node() {
         "-- status ------------------------------------------------------------
   node     connected (height 1,204)
   mining   gpu: NVIDIA RTX 5070 Ti
-  rate/s   10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000 | avg 1,150,000
+  hashrate 10s 1.23M | 60s 1.20M | 15m 1.10M | avg 1.15M attempts/s
   blocks   4 found | 3 in the chain | 1 lost a race | 0 refused
   up       2h 05m"
     );
@@ -897,7 +899,7 @@ fn the_miners_status_block_in_each_state_of_its_link_to_the_node() {
     let got = render_miner_block(&s, &OFF);
     assert_eq!(got[1], "  node     syncing (height 1,204): mining waits");
     assert_eq!(got[2], "  mining   gpu: NVIDIA RTX 5070 Ti");
-    assert_eq!(got[3], "  rate/s   (idle) starting");
+    assert_eq!(got[3], "  hashrate (idle) starting");
     s.link = NodeLink::Down;
     assert_eq!(
         render_miner_block(&s, &OFF)[1],
@@ -923,13 +925,13 @@ fn the_miners_status_block_in_each_state_of_its_link_to_the_node() {
 fn the_miners_plain_status_line() {
     assert_eq!(
         render_miner_line(&miner_status()),
-        "node connected (height 1,204) | gpu: NVIDIA RTX 5070 Ti | rate/s 10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000 | avg 1,150,000 | blocks: 4 found, 3 in the chain, 1 lost a race, 0 refused | up 2h 05m"
+        "node connected (height 1,204) | gpu: NVIDIA RTX 5070 Ti | hashrate 10s 1.23M | 60s 1.20M | 15m 1.10M | avg 1.15M attempts/s | blocks: 4 found, 3 in the chain, 1 lost a race, 0 refused | up 2h 05m"
     );
     let mut s = miner_status();
     s.link = NodeLink::Syncing;
     s.rates = Rates::default();
     assert!(render_miner_line(&s).starts_with("node syncing (height 1,204), mining waits | gpu"));
-    assert!(render_miner_line(&s).contains("| rate/s starting |"));
+    assert!(render_miner_line(&s).contains("| hashrate starting |"));
     s.link = NodeLink::Down;
     assert!(render_miner_line(&s).starts_with("node not reachable | "));
 }
@@ -1175,17 +1177,17 @@ fn the_rates_in_words() {
     assert_eq!(rates_text(&part), "10s 5 | 60s - | 15m - | avg 8");
     assert_eq!(
         rates_text(&busy()),
-        "10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000 | avg 1,150,000"
+        "10s 1.23M | 60s 1.20M | 15m 1.10M | avg 1.15M"
     );
 }
 
 #[test]
 fn a_miner_that_is_not_searching_says_so_on_its_rate_row_and_one_that_is_does_not() {
     let mut s = miner_status();
-    assert!(render_miner_block(&s, &OFF)[3].starts_with("  rate/s   10s 1,234,567"));
+    assert!(render_miner_block(&s, &OFF)[3].starts_with("  hashrate 10s 1.23M"));
     s.rates.searching = false;
     assert!(render_miner_block(&s, &OFF)[3]
-        .starts_with("  rate/s   (idle) 10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000"));
+        .starts_with("  hashrate (idle) 10s 1.23M | 60s 1.20M | 15m 1.10M"));
     for l in render_miner_block(&s, &OFF) {
         assert!(l.len() <= MAX_LINE, "{l}");
     }
@@ -1265,7 +1267,7 @@ fn the_nodes_plain_status_line_carries_the_rates_of_a_miner_that_has_them() {
     });
     let line = render_status_line(&s);
     assert!(
-        line.contains("| mining gpu: 1 found, 1 in the chain | rate/s 10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000 | avg 1,150,000"),
+        line.contains("| mining gpu: 1 found, 1 in the chain | hashrate 10s 1.23M | 60s 1.20M | 15m 1.10M | avg 1.15M attempts/s"),
         "{line}"
     );
 }
@@ -1368,7 +1370,7 @@ fn the_miner_block_and_both_plain_lines_carry_the_card_when_there_is_a_reading()
     for l in &block {
         assert!(l.is_ascii() && l.len() <= MAX_LINE, "{l}");
     }
-    assert!(render_miner_line(&s).contains("| rate/s 10s 1,234,567"));
+    assert!(render_miner_line(&s).contains("| hashrate 10s 1.23M"));
     assert!(
         render_miner_line(&s).contains(" | gpu 68 C, 212 W | blocks:"),
         "{}",
@@ -1400,11 +1402,11 @@ fn the_miner_block_and_both_plain_lines_carry_the_card_when_there_is_a_reading()
         .iter()
         .position(|l| l.starts_with("  gpu "))
         .expect("a gpu row");
-    assert!(block[at - 1].starts_with("  rate/s"));
+    assert!(block[at - 1].starts_with("  hashrate"));
     assert!(block[at + 1].starts_with("  memory"));
     assert!(block[at + 2].starts_with("  reads"));
     assert!(render_status_line(&n).contains(
-        "| rate/s 10s 1,234,567 | 60s 1,200,000 | 15m 1,100,000 | avg 1,150,000 | gpu 68 C, 212 W"
+        "| hashrate 10s 1.23M | 60s 1.20M | 15m 1.10M | avg 1.15M attempts/s | gpu 68 C, 212 W"
     ));
 }
 
@@ -1429,4 +1431,79 @@ fn a_real_probe_in_the_shared_counters_gives_a_reading_with_each_look() {
     assert!(shared.status().gpu.is_none(), "nothing read yet");
     let g = shared.status_at(1000).gpu.expect("a reading");
     assert!(g.temp_c.is_some() && g.mem_total_mib.is_some());
+}
+
+#[test]
+fn rates_are_shown_the_way_miners_show_them() {
+    use tenero_app::ui::format_rate;
+    assert_eq!(format_rate(0.0), "0");
+    assert_eq!(format_rate(812.4), "812");
+    assert_eq!(format_rate(999.4), "999");
+    assert_eq!(format_rate(999.5), "1.0k");
+    assert_eq!(format_rate(34_738.0), "34.7k");
+    assert_eq!(format_rate(30_197.0), "30.2k");
+    assert_eq!(format_rate(999_949.0), "999.9k");
+    assert_eq!(format_rate(999_950.0), "1.00M");
+    assert_eq!(format_rate(1_234_567.0), "1.23M");
+    assert_eq!(format_rate(-5.0), "0", "never a negative rate");
+}
+
+#[test]
+fn a_backend_has_a_short_name_for_the_screen() {
+    use tenero_app::ui::short_backend;
+    assert_eq!(
+        short_backend("matmulhash on the GPU (NVIDIA GeForce RTX 5070 Ti, batch 128)"),
+        "GPU: NVIDIA GeForce RTX 5070 Ti, batch 128"
+    );
+    assert_eq!(
+        short_backend("matmulhash on 2 CPU thread(s)"),
+        "CPU, 2 threads"
+    );
+    assert_eq!(
+        short_backend("sha256 test chain (CPU)"),
+        "sha256 test chain (CPU)"
+    );
+    assert_eq!(short_backend("starting"), "starting");
+}
+
+#[test]
+fn a_long_gpu_name_cannot_push_the_counts_off_the_mining_row() {
+    // what the owner saw on a real console: the counts were cut off after the long backend name
+    let mut s = status();
+    s.mining = Some(MiningStatus {
+        backend: "matmulhash on the GPU (NVIDIA GeForce RTX 5070 Ti, batch 128)".into(),
+        blocks_found: 50,
+        blocks_accepted: 50,
+        paused: false,
+        rates: Rates {
+            s10: Some(34_738.0),
+            s60: Some(30_279.0),
+            m15: None,
+            average: Some(30_197.0),
+            searching: true,
+        },
+        gpu: Some(card()),
+    });
+    let block = render_status_block(&s, &OFF);
+    assert!(
+        block.contains(&"  mining   mining | 50 found, 50 in the chain".to_string()),
+        "{block:#?}"
+    );
+    assert!(block.contains(&"  backend  GPU: NVIDIA GeForce RTX 5070 Ti, batch 128".to_string()));
+    assert!(block
+        .contains(&"  hashrate 10s 34.7k | 60s 30.3k | 15m - | avg 30.2k attempts/s".to_string()));
+    for l in &block {
+        assert!(!l.ends_with("..."), "a line was cut: {l}");
+        assert!(l.len() <= MAX_LINE, "{l}");
+    }
+}
+
+#[test]
+fn the_miner_program_shows_the_short_backend_name_too() {
+    let mut s = miner_status();
+    s.backend = "matmulhash on the GPU (NVIDIA GeForce RTX 5070 Ti, batch 128)".into();
+    assert_eq!(
+        render_miner_block(&s, &OFF)[2],
+        "  mining   GPU: NVIDIA GeForce RTX 5070 Ti, batch 128"
+    );
 }

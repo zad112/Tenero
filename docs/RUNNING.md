@@ -87,12 +87,12 @@ every `status_every` seconds. **The log file is not changed by any of this:** it
 shows only warnings and errors; `--verbose` also shows each line of the log as it is written to the file. The screen is ASCII only, lines are
 at most 78 columns, colour is off with `NO_COLOR`, and `tenero-miner` has the same options and the same kind of screen (the node it
 mines for, its attempts a second, the blocks it has found). **The `TNR` after a reward is the coin's ticker (the owner chose to keep it).**
-**The `rate/s` row** shows attempts a second over the last 10 seconds, 60 seconds, 15 minutes and the whole run, counting only the
+**The `hashrate` row** (`hashrate 10s 34.7k | 60s 30.3k | 15m - | avg 30.2k attempts/s`, k meaning thousands) shows attempts a second over the last 10 seconds, 60 seconds, 15 minutes and the whole run, counting only the
 time the miner was searching (not while paused for a sync or building a dataset; `(idle)` means it is not searching at this moment; `-`
 means that window is not yet full). **When mining on a GPU there are also rows for the card** (`gpu`: temperature, power, fan, core and memory clocks; `memory`: used and how
 busy the memory controller is; `limited`: only if the driver is holding the clocks down; `reads`: **the memory reads the attempt rate
 implies, worked out from the rate and not measured**: NVML does not report bandwidth). They come from NVML and are left out where the
-driver or card does not say; mining does not depend on them. **An attempt is one matmulhash evaluation, which is a different amount of work from a hash of any
+driver or card does not say; mining does not depend on them. **The long name of the backend is on a row of its own (`backend  GPU: NVIDIA GeForce RTX 5070 Ti, batch 128`) so that it cannot push the counts off the `mining` row.** **An attempt is one matmulhash evaluation, which is a different amount of work from a hash of any
 other coin, so these numbers cannot be compared with another coin's miner.** `tenerod status` and `tenerod stop` print the same one-liners as before (scripts read them).
 
 **The status line and the alarms (in the log).** Every `status_every` seconds the node logs a line such as

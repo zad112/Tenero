@@ -67,7 +67,7 @@ turns on escape codes in the Windows console; its only dependency, `windows-sys`
 (`tenero-miner/src/rate.rs`) giving attempts a second over 10 s, 60 s, 15 min and the run, in *searching time only* (a pause, a dataset
 build, or waiting for a job is left out, and so are the attempts counted in it; a window shows `-` until the samples cover all of it; a
 clock set back restarts the windows and does not inflate anything); the backends say when they build a dataset (CPU and GPU) and the
-miner thread when it is in a job; both screens show a `rate/s` row (`(idle)` in front when not searching); the miner program's log line
+miner thread when it is in a job; both screens show a `hashrate` row (compact numbers such as `34.7k`, the unit `attempts/s` written out, `(idle)` in front when not searching); the miner program's log line
 uses the same figures. 44 screen tests, 16 meter tests; 50 injected faults, 14 got through the first time (one was a real bug, the clock
 set back), the gaps are closed, two are equivalent (how old samples are dropped). **NVML: done** (owner approved NVML; the crate is `nvml-wrapper` 0.13, MIT OR Apache-2.0, which loads NVIDIA's library at run time; it adds
 13 packages to the build: nvml-wrapper-sys, libloading (ISC), thiserror 1.0.69 and its macro, static_assertions, wrapcenum-derive and

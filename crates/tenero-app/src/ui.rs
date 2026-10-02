@@ -217,12 +217,25 @@ pub struct MiningStatus {
     pub gpu: Option<GpuReading>,
 }
 
-/// The rates in words: `10s 35,012 | 60s 34,980 | 15m - | avg 34,990` (a window with no figure yet is `-`; nothing at all is `starting`).
+/// A rate the way miners show it: `812`, `34.7k`, `1.20M` (attempts a second).
+pub fn format_rate(v: f64) -> String {
+    let v = v.max(0.0);
+    if v < 999.5 {
+        format!("{:.0}", v)
+    } else if v < 999_950.0 {
+        format!("{:.1}k", v / 1000.0)
+    } else {
+        format!("{:.2}M", v / 1e6)
+    }
+}
+
+/// The rates in words: `10s 35.0k | 60s 35.0k | 15m - | avg 35.0k` (a window with no figure yet is `-`; nothing at all is `starting`). The
+/// unit, attempts a second, is added where it is shown.
 pub fn rates_text(r: &Rates) -> String {
     if r.s10.is_none() && r.s60.is_none() && r.m15.is_none() && r.average.is_none() {
         return "starting".to_string();
     }
-    let f = |v: Option<f64>| v.map_or("-".to_string(), |v| group_digits(v.round() as u64));
+    let f = |v: Option<f64>| v.map_or("-".to_string(), format_rate);
     format!(
         "10s {} | 60s {} | 15m {} | avg {}",
         f(r.s10),
@@ -291,13 +304,45 @@ fn format_gib(mib: u64) -> String {
     format!("{}.{}", tenths / 10, tenths % 10)
 }
 
+/// The rates with their unit (`10s 34.7k | ... attempts/s`), for the plain lines.
+fn rates_text_unit(r: &Rates) -> String {
+    let t = rates_text(r);
+    if t == "starting" {
+        t
+    } else {
+        format!("{t} attempts/s")
+    }
+}
+
 /// The row of rates, with a mark when the miner is not searching at this moment (paused, building a dataset, waiting for a job).
 fn rates_row(r: &Rates) -> String {
+    let text = rates_text(r);
+    let unit = if text == "starting" {
+        ""
+    } else {
+        " attempts/s"
+    };
     format!(
-        "  rate/s   {}{}",
-        if r.searching { "" } else { "(idle) " },
-        rates_text(r)
+        "  hashrate {}{text}{unit}",
+        if r.searching { "" } else { "(idle) " }
     )
+}
+
+/// The backend's name for a row of its own: `GPU: NVIDIA GeForce RTX 5070 Ti, batch 128`, `CPU, 2 threads`; any other name as it is.
+pub fn short_backend(name: &str) -> String {
+    if let Some(inner) = name
+        .strip_prefix("matmulhash on the GPU (")
+        .and_then(|n| n.strip_suffix(')'))
+    {
+        return format!("GPU: {inner}");
+    }
+    if let Some(n) = name
+        .strip_prefix("matmulhash on ")
+        .and_then(|n| n.strip_suffix(" CPU thread(s)"))
+    {
+        return format!("CPU, {n} threads");
+    }
+    name.to_string()
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -416,9 +461,10 @@ pub fn render_status_block(s: &NodeStatus, t: &Theme) -> Vec<String> {
             t.green("mining")
         };
         lines.push(cut(&format!(
-            "  mining   {state} ({}) | {} found, {} in the chain",
-            m.backend, m.blocks_found, m.blocks_accepted
+            "  mining   {state} | {} found, {} in the chain",
+            m.blocks_found, m.blocks_accepted
         )));
+        lines.push(cut(&format!("  backend  {}", short_backend(&m.backend))));
         lines.push(cut(&rates_row(&m.rates)));
         if let Some(g) = &m.gpu {
             lines.extend(gpu_rows(g, &m.rates, t));
@@ -457,7 +503,7 @@ pub fn render_status_line(s: &NodeStatus) -> String {
             m.blocks_accepted,
             if m.paused { " (paused)" } else { "" }
         ));
-        line.push_str(&format!(" | rate/s {}", rates_text(&m.rates)));
+        line.push_str(&format!(" | hashrate {}", rates_text_unit(&m.rates)));
         if let Some(g) = &m.gpu {
             line.push_str(&gpu_plain(g));
         }
@@ -512,7 +558,7 @@ pub fn render_miner_block(s: &MinerStatus, t: &Theme) -> Vec<String> {
     vec![
         t.dim("-- status ------------------------------------------------------------"),
         cut(&format!("  node     {node}")),
-        cut(&format!("  mining   {}", s.backend)),
+        cut(&format!("  mining   {}", short_backend(&s.backend))),
         cut(&rates_row(&s.rates)),
     ]
     .into_iter()
@@ -556,8 +602,8 @@ pub fn render_miner_line(s: &MinerStatus) -> String {
         NodeLink::Down => "node not reachable".to_string(),
     };
     let rate = format!(
-        "rate/s {}{}",
-        rates_text(&s.rates),
+        "hashrate {}{}",
+        rates_text_unit(&s.rates),
         s.gpu.as_ref().map(gpu_plain).unwrap_or_default()
     );
     format!(
