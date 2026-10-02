@@ -24,7 +24,7 @@ Gaps found by reading the code, all needed before M8 is honest:
 2. **`Chain::submit_block` does not say which transactions a reorganisation undid.** A mempool must re-add them.
 3. **(Closed in M8.3.)** **The side-branch pool is in memory only** and orphans are dropped: fine for tests, poor for a network where
    blocks arrive out of order.
-4. **`RingCtProofs` is not the default** (the plan says M8). The node must refuse to start without it.
+4. ~~`RingCtProofs` is not the default~~ **Done in M8:** `Node::new` uses it and a node refuses to start without a real proof check; an end-to-end test against a real `tenerod` refuses seven tampered copies of a real transaction (2026-10-02).
 5. **No block template.** Nothing yet builds a block from the mempool with the right coinbase and Merkle root.
 6. **The GPU engine mines one dataset.** No epoch switching, no prefetch of the next epoch, no overlap of CPU and
    GPU work (`docs/REWRITE_PLAN.md`, M4).

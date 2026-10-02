@@ -895,3 +895,75 @@ fn the_miner_program_refuses_sha256_on_the_dev_network() {
     assert_eq!(out.status.code(), Some(2), "{err}");
     assert!(err.contains("needs cpu or gpu"), "{err}");
 }
+
+// ---- a real node refuses a transaction whose proofs are wrong --------------------------------------------------------
+
+#[test]
+fn a_real_node_refuses_every_tampered_copy_of_a_good_transaction_and_takes_the_good_one() {
+    use rand_core::OsRng;
+    use tenero_core::v2::Transaction;
+    use tenero_wallet::{Submitter, Wallet};
+
+    let alice = Wallet::from_seed(&[7; 32], 0);
+    let mut alice_w = Wallet::from_seed(&[7; 32], 0);
+    let bob = Wallet::from_seed(&[8; 32], 0).address();
+    let dir = Dir::new("tamper");
+    let node = Running::start(config(
+        &dir.0,
+        &format!(
+            "mine = sha256\nmine_to = {}\nmine_pace = 1\n",
+            alice.address().to_text()
+        ),
+    ));
+    node.wait_height(10, 60);
+    // the node's own mining goes on in the background, so build the payment, then try its copies, quickly
+    let mut remote = node.client();
+    alice_w.sync(&remote).unwrap();
+    let built = alice_w
+        .build_payment(&remote, &mut OsRng, &bob, 1_000_000)
+        .unwrap();
+    let good = built.tx;
+
+    type Tamper = (&'static str, Box<dyn Fn(&mut Transaction)>);
+    let n = good.prunable.proof_data.len();
+    let tampers: Vec<Tamper> = vec![
+        (
+            "first byte of the proof data",
+            Box::new(|t| t.prunable.proof_data[0] ^= 1),
+        ),
+        (
+            "middle byte of the proof data",
+            Box::new(move |t| t.prunable.proof_data[n / 2] ^= 1),
+        ),
+        (
+            "last byte of the proof data",
+            Box::new(move |t| t.prunable.proof_data[n - 1] ^= 1),
+        ),
+        ("the fee raised by one", Box::new(|t| t.prefix.fee += 1)),
+        (
+            "an output's one-time address",
+            Box::new(|t| t.prefix.outputs[0].onetime_address[0] ^= 1),
+        ),
+        (
+            "an output's amount commitment",
+            Box::new(|t| t.prefix.outputs[0].amount_commitment[0] ^= 1),
+        ),
+        ("the extra field", Box::new(|t| t.prefix.extra.push(0))),
+    ];
+    let mut accepted = vec![];
+    for (what, f) in &tampers {
+        let mut bad = good.clone();
+        f(&mut bad);
+        match remote.submit(bad) {
+            Err(why) => println!("refused ({what}): {why}"),
+            Ok(()) => accepted.push(*what),
+        }
+    }
+    assert!(
+        accepted.is_empty(),
+        "the node ACCEPTED a tampered transaction: {accepted:?}\n{}",
+        node.log()
+    );
+    // none of them got into the pool or the chain; the good one is taken
+    remote.submit(good).unwrap_or_else(|e| panic!("{e}"));
+}

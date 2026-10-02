@@ -121,7 +121,7 @@ chain must be able to run pruned (`CONSENSUS_V2.md` section 14). The original op
   signatures (`upstream_monero_clsag.json`, checked against Monero's own signature hash) verify under the pin.
   **M7 is complete except Carrot**, which is tracked as its own open item: output creation and scanning wait for
   Monero's `carrot_core` to merge so its test vectors can be imported, and the coinbase commitment convention
-  (`CONSENSUS_V2.md` 7.1) stays provisional until then. Making `RingCtProofs` the default is an M8 item.
+  (`CONSENSUS_V2.md` 7.1) stays provisional until then. `RingCtProofs` became the node's default in M8 (`Node::new`; checked end to end against a real `tenerod`, 2026-10-02).
   Nothing here is audited as used.
 - **M7. Privacy in stages.** (P1) one-time addresses, Pedersen commitments, range proofs, key images, and the
   stand-in membership proof; (P2) FCMP++ when a stable, audited implementation exists; (P3) subaddresses,

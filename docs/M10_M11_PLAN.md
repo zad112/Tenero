@@ -13,8 +13,10 @@ These are not new work; they are open items that a release to others would other
    real `RingCtProofs` check, `Node::with_proof_check` refuses a checker that does not verify unless a test flag is set
    (`tenero-node/tests/mempool.rs`, `a_node_refuses_to_run_without_real_proof_checking`), and `tenerod` uses `Node::new`.
    The chain-level tests refuse a broken proof, a spend for another chain, a raised fee and a repeated key image
-   (`tenero-crypto/tests/chain_spend.rs`). Still worth adding: one test that sends a broken-proof transaction to a real `tenerod`
-   over the control interface and sees it refused (an end-to-end check of the same thing).
+   (`tenero-crypto/tests/chain_spend.rs`). **The end-to-end test now exists** (`tenero-app/tests/daemon.rs`, `a_real_node_refuses_every_tampered_copy...`):
+   a real node, a real wallet transaction, seven tampered copies (proof bytes at three places, the fee, an output address, an
+   output commitment, the extra field), all refused with a reason, the untouched one accepted. With the node
+   switched to "proofs not checked", the test fails (the tampered proof data is accepted): it does catch the fault.
 2. **The day-long three-node run** (M8.4) finishing with matching tips and 0 bans (the lighter run 3 started 2026-10-02).
 3. **The difficulty settling** at one block a minute on a real-PoW network, watched for at least an hour (never yet seen).
 
