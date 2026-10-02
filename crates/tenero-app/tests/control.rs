@@ -1154,3 +1154,120 @@ fn a_ring_size_that_does_not_fit_is_an_error_not_a_wrong_number() {
     };
     assert!(Response::Rules(r).to_body().is_err());
 }
+
+// ---- a web page cannot talk to this port (M9, threat model G2) -----------------------------------------------------------
+
+/// What a browser sends. A web page can make a browser connect to `http://127.0.0.1:<port>/` and send HTTP, or a WebSocket
+/// handshake, or (by a form) a body of its choosing, but whatever it sends **starts with the HTTP method**.
+fn http_requests(port: u16) -> Vec<(String, Vec<u8>)> {
+    let host = format!("127.0.0.1:{port}");
+    let headers = format!(
+        "Host: {host}\r\nUser-Agent: Mozilla/5.0\r\nAccept: */*\r\nOrigin: https://example.org\r\nConnection: close\r\n"
+    );
+    let mut v: Vec<(String, Vec<u8>)> = vec![];
+    for m in [
+        "GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "CONNECT", "TRACE",
+    ] {
+        v.push((
+            format!("{m} /"),
+            format!("{m} / HTTP/1.1\r\n{headers}Content-Length: 0\r\n\r\n").into_bytes(),
+        ));
+    }
+    // a POST whose body is as hostile as a page can make it: a valid-looking frame, bytes that look like a request, zeros
+    let mut body = Vec::new();
+    body.extend_from_slice(&frame(&Request::Auth { cookie: [0; 32] }.to_body().unwrap()).unwrap());
+    body.extend_from_slice(&frame(&Request::Stop.to_body().unwrap()).unwrap());
+    let mut post = format!(
+        "POST /stop HTTP/1.1\r\n{headers}Content-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    post.extend_from_slice(&body);
+    v.push(("POST with a frame as its body".into(), post));
+    v.push((
+        "WebSocket upgrade".into(),
+        format!(
+            "GET /ws HTTP/1.1\r\n{headers}Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        )
+        .into_bytes(),
+    ));
+    v.push(("a bare newline".into(), b"\r\n\r\n".to_vec()));
+    v
+}
+
+/// Reads until the other side closes or `limit` passes; says whether it closed and what it sent.
+fn read_to_close(s: &mut TcpStream, limit: Duration) -> (bool, Vec<u8>) {
+    use std::io::ErrorKind::*;
+    s.set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let (end, mut got) = (Instant::now() + limit, Vec::new());
+    let mut buf = [0u8; 512];
+    while Instant::now() < end {
+        match s.read(&mut buf) {
+            Ok(0) => return (true, got),
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    ConnectionReset | ConnectionAborted | BrokenPipe | UnexpectedEof
+                ) =>
+            {
+                return (true, got)
+            }
+            Err(_) => {} // a timeout: still open, keep waiting
+        }
+    }
+    (false, got)
+}
+
+#[test]
+fn what_a_browser_can_send_to_the_control_port_is_refused_at_once_and_does_nothing() {
+    // every HTTP method, read as the 4-byte little-endian length that starts a frame, is far over the limit
+    for m in [
+        "GET ", "HEAD", "POST", "PUT ", "DELE", "OPTI", "PATC", "CONN", "TRAC",
+    ] {
+        let n = u32::from_le_bytes(m.as_bytes().try_into().unwrap()) as usize;
+        assert!(n > MAX_FRAME, "{m} reads as a length of {n}");
+        assert!(frame_len(m.as_bytes().try_into().unwrap()).is_err(), "{m}");
+    }
+    let rig = Rig::new("http");
+    let mut engine = rig.engine();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let (handle, mut hook) = start(
+        "127.0.0.1:0".parse().unwrap(),
+        COOKIE,
+        Arc::clone(&shutdown),
+        meta(),
+    )
+    .unwrap();
+    let addr = handle.addr;
+    with_client(&mut engine, &mut hook, move || {
+        for (what, bytes) in http_requests(addr.port()) {
+            let mut s = raw_connect(addr);
+            s.write_all(&bytes).unwrap();
+            // refused at once (well inside the 10 s a silent connection is given), with no answer of any kind
+            let (is_closed, got) = read_to_close(&mut s, Duration::from_secs(3));
+            assert!(is_closed, "{what}: the connection was held open");
+            assert!(
+                got.is_empty(),
+                "{what}: answered with {} bytes: {:?}",
+                got.len(),
+                String::from_utf8_lossy(&got)
+            );
+        }
+        // the port is not harmed: a client with the cookie is served at once, after all of that
+        let mut s = raw_connect(addr);
+        send(&mut s, &Request::Auth { cookie: COOKIE });
+        assert_eq!(recv(&mut s).unwrap(), Response::Authed);
+        send(&mut s, &Request::Tip);
+        assert!(matches!(recv(&mut s).unwrap(), Response::Tip { .. }));
+    });
+    assert_eq!(
+        hook.answered, 1,
+        "only the one request after authenticating reached the node"
+    );
+    assert!(
+        !shutdown.load(Ordering::SeqCst),
+        "a request from a web page stopped the node"
+    );
+}
