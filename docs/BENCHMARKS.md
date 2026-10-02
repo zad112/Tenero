@@ -101,6 +101,26 @@ separate programs on one machine, started by the owner, run about 6.5 minutes an
 * Not measured: the real difficulty (a block a minute) held for long enough to see the adjustment settle, a run of hours,
   a node and miner restart during mining on this arrangement, other machines. 6.5 minutes of one run.
 
+## Memory of the node and the GPU miner (measured on the owner's machine, 2026-10-02)
+
+`tenerod` on the dev network (real matmulhash) and `tenero-miner --backend gpu` (batch 128) as two processes, 62 blocks in about 7
+minutes, sampled every 5 s with `Get-Process` (working set, private bytes) and `nvidia-smi` (video memory used). The machine has 96 GiB of RAM; the
+GPU already held about 1.9 GiB for the desktop. These were the binaries built before the memory-budget change (`budget.rs`).
+
+| process | working set (resident) | private bytes (committed) | notes |
+|---|---|---|---|
+| `tenerod` | **about 4.1 GiB**, flat for the whole run | about 4.1 GiB | the CPU check's 4 GiB dataset, built when the first block arrived; 4 MB before |
+| `tenero-miner` (gpu) | **about 364 MB** | about 4.9 GB | the dataset itself is in video memory, so the resident part is small, but the process commits about 4.9 GB of address space (the CUDA context and its mappings); **the commit charge, not the resident set, is what a low-memory machine's limits count** |
+| video memory | the whole GPU went from about 1.9 GiB to about 6.4 to 6.6 GiB: **the miner adds about 4.5 GiB** | | one 4 GiB dataset plus the CUDA context and cuBLAS |
+
+* The miner's GPU rate in this run was a median of 34,100 attempts/s (the first sample, 5,700, includes the dataset build), as in
+  the first run.
+* **The 8.6 GiB peak was not observed.** The node builds the next epoch's dataset in the background 10 blocks before an epoch ends; the
+  dev network's epoch is 100 blocks and this run stopped at block 62. The documented peak (two 4.3 GiB datasets) is from the design, not this measurement.
+* The test network (SHA-256) has no dataset: its three nodes held 8 MB each over four hours (run 3's monitor log).
+* So: **a node on the real proof of work needs about 4.3 GiB of RAM, and about 8.6 GiB around an epoch boundary; a GPU miner needs
+  about 4.5 GiB of video memory and under 0.5 GiB of RAM resident.** One machine, one run, one GPU.
+
 ## Syncing a chain with the real proof of work (measured on the owner's machine, 2026-10)
 
 `cargo test --release -p tenero-chain --test real_pow_sync -- --ignored --nocapture`: 30 blocks mined on the CPU with
