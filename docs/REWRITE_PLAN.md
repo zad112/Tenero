@@ -128,6 +128,9 @@ chain must be able to run pruned (`CONSENSUS_V2.md` section 14). The original op
   view keys, integrated addresses, multisig; (P4) network privacy.
 - **M8. Networking, the node and the wallet.** *Plan with the owner's decisions recorded 2026-09-30: `docs/M8_PLAN.md` (nothing built yet; the `snow` exception awaits confirmation).*
 - **M9. Hardening.** Fuzzing, a written threat model, a review plan.
+- **M10 and M11 (added 2026-10-02): a usable program, then a first test release for Windows and Linux on a fresh chain**
+  (readable CLI, miner reporting, a wallet GUI that runs the node; then retiring the old Python, a new genesis with no
+  premine, packaging). A proposal: `docs/M10_M11_PLAN.md`.
 
 **Do not port the account-model validation** (`chains.json` and the legacy vectors): it is thrown away in M5.
 Use those chain cases as a checklist of rules the new model must also enforce in its own terms.

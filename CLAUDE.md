@@ -31,7 +31,8 @@ python tools/make_vectors_wire.py --check    # the peer-to-peer wire protocol ve
 - `docs/CONSENSUS.md` the rules, in enough detail to build another implementation from
 - `docs/KNOWN_ISSUES.md` verified flaws not to carry over; `docs/ARCHITECTURE.md` the parts;
   `docs/REWRITE_PLAN.md` the proposed plan and the open decisions; `docs/M8_PLAN.md` the proposed plan for
-  the node, network, miner and wallet
+  the node, network, miner and wallet; `docs/M10_M11_PLAN.md` the proposed plan for the usable program (CLI, miner
+  reporting, wallet GUI) and the first test release on a fresh chain
 - `docs/WIRE_PROTOCOL.md` the DRAFT byte encoding of the peer-to-peer messages;
   `docs/CONSENSUS_V2.md` the DRAFT design of the rewrite's data model (outputs, serialization, genesis,
   privacy staging); `docs/BENCHMARKS.md` measured CPU and GPU numbers; `crates/` the Rust code
