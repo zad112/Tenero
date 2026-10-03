@@ -28,6 +28,7 @@ use crate::chain::{ChainView, Submitter};
 use crate::file::{open, seal, FileError, KdfParams, MAGIC_PURSE};
 use crate::interim::{Address, TxSecret};
 use crate::proofs::{self, MessageSignature, PaymentProof, ProofError, ProofKind};
+use crate::request::{check_text, PaymentRequest, MAX_LABEL as MAX_REQUEST_LABEL, MAX_MESSAGE};
 use crate::wallet::{Balance, Built, FeeLevel, SyncReport, Wallet, WalletError};
 
 /// The most accounts one purse holds.
@@ -38,10 +39,14 @@ pub const MAX_LABEL: usize = 48;
 pub const GAP: usize = 3;
 
 /// Version 2 added the record of sent payments after the accounts; version 3 added to each record the secret of the payment
-/// output (what proves it) and its one-time address. Older files still open (with no secrets: those payments cannot be proved).
-const PURSE_VERSION: u16 = 3;
+/// output (what proves it) and its one-time address. Version 4 added a note to each sent payment (the label of the request it
+/// answered) and the list of payment requests the wallet has made. Older files still open (with no secrets: those payments cannot
+/// be proved; with no notes and no requests).
+const PURSE_VERSION: u16 = 4;
 /// The most sent-payment records a purse keeps (the oldest are dropped past this).
 pub const MAX_SENT_RECORDS: usize = 20_000;
+/// The most saved payment requests a purse keeps.
+pub const MAX_REQUESTS: usize = 1_000;
 const MAX_SPENDS: usize = 64;
 const MAX_WALLET_STATE: usize = 256 * 1024 * 1024;
 
@@ -55,6 +60,8 @@ pub enum PurseError {
     BadLabel,
     Wallet(WalletError),
     Proof(ProofError),
+    /// A payment request that cannot be made or found (why).
+    Request(String),
 }
 
 impl std::fmt::Display for PurseError {
@@ -70,6 +77,7 @@ impl std::fmt::Display for PurseError {
             ),
             PurseError::Wallet(e) => write!(f, "{e}"),
             PurseError::Proof(e) => write!(f, "{e}"),
+            PurseError::Request(e) => write!(f, "{e}"),
         }
     }
 }
@@ -129,6 +137,20 @@ pub struct SentRecord {
     /// before the wallet kept them: **that payment can never be proved by its sender.** Show the secret only on a click.
     pub tx_secret: Option<TxSecret>,
     pub payment_onetime: Option<[u8; 32]>,
+    /// What the payment was for: the label of the payment request it answered, if it answered one.
+    pub note: Option<String>,
+}
+
+/// A payment request this wallet made, kept so it can be shown again (as a link and a QR code). **It is not marked paid when a
+/// payment arrives**: the interim scheme cannot tell which payment answered which request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedRequest {
+    pub account: u32,
+    pub amount: Option<u64>,
+    pub label: Option<String>,
+    pub message: Option<String>,
+    /// Seconds since 1970 when it was made.
+    pub time: u64,
 }
 
 /// Where a sent payment stands.
@@ -169,6 +191,8 @@ pub struct Entry {
     pub global_index: Option<u64>,
     /// For a sent payment: the wallet still holds its secret, so the payment can be proved.
     pub has_secret: bool,
+    /// For a sent payment: what it was for, if it answered a request.
+    pub note: Option<String>,
 }
 
 pub struct Account {
@@ -200,6 +224,7 @@ pub struct Purse {
     birth_height: u64,
     accounts: Vec<Account>,
     sent: Vec<SentRecord>,
+    requests: Vec<SavedRequest>,
 }
 
 impl Purse {
@@ -221,6 +246,7 @@ impl Purse {
                 wallet: Wallet::from_seed(master, birth_height),
             }],
             sent: Vec::new(),
+            requests: Vec::new(),
         }
     }
 
@@ -234,6 +260,7 @@ impl Purse {
                 wallet,
             }],
             sent: Vec::new(),
+            requests: Vec::new(),
         }
     }
 
@@ -394,6 +421,7 @@ impl Purse {
             change_onetime: built.change_onetime,
             tx_secret: Some(built.payment_secret.clone()),
             payment_onetime: Some(built.payment_onetime),
+            note: None,
         });
         if self.sent.len() > MAX_SENT_RECORDS {
             self.sent.remove(0);
@@ -416,6 +444,86 @@ impl Purse {
         let built = self.build_payment(index, &*node, rng, to, amount, level)?;
         self.send(index, node, &built, to, level, now)?;
         Ok(built)
+    }
+
+    /// Makes and keeps a payment request for an account. An amount of `None` leaves the payer to choose. `now` is the time in seconds
+    /// since 1970. Returns its number in [`Purse::requests`].
+    pub fn add_request(
+        &mut self,
+        account: usize,
+        amount: Option<u64>,
+        label: Option<String>,
+        message: Option<String>,
+        now: u64,
+    ) -> Result<usize, PurseError> {
+        self.account(account)?;
+        if amount == Some(0) {
+            return Err(PurseError::Request(
+                "the amount cannot be zero (leave it out to let the payer choose)".into(),
+            ));
+        }
+        let clean = |t: Option<String>, max, what| -> Result<Option<String>, PurseError> {
+            let t = t.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+            if let Some(t) = &t {
+                check_text(t, max, what).map_err(|e| PurseError::Request(e.to_string()))?;
+            }
+            Ok(t)
+        };
+        let label = clean(label, MAX_REQUEST_LABEL, "label")?;
+        let message = clean(message, MAX_MESSAGE, "message")?;
+        if self.requests.len() >= MAX_REQUESTS {
+            return Err(PurseError::Request(format!(
+                "a wallet keeps at most {MAX_REQUESTS} requests: delete some"
+            )));
+        }
+        self.requests.push(SavedRequest {
+            account: account as u32,
+            amount,
+            label,
+            message,
+            time: now,
+        });
+        Ok(self.requests.len() - 1)
+    }
+
+    pub fn requests(&self) -> &[SavedRequest] {
+        &self.requests
+    }
+
+    pub fn remove_request(&mut self, index: usize) -> Result<(), PurseError> {
+        if index >= self.requests.len() {
+            return Err(PurseError::Request("there is no such request".into()));
+        }
+        self.requests.remove(index);
+        Ok(())
+    }
+
+    /// The request as a link, with its account's address.
+    pub fn request_of(&self, index: usize) -> Result<PaymentRequest, PurseError> {
+        let r = self
+            .requests
+            .get(index)
+            .ok_or_else(|| PurseError::Request("there is no such request".into()))?;
+        Ok(PaymentRequest {
+            address: self.account(r.account as usize)?.address(),
+            amount: r.amount,
+            label: r.label.clone(),
+            message: r.message.clone(),
+        })
+    }
+
+    /// Notes what a sent payment was for (the label of the request it answered).
+    pub fn annotate_sent(&mut self, id: &[u8; 32], note: &str) -> Result<(), PurseError> {
+        let note = note.trim();
+        check_text(note, MAX_REQUEST_LABEL, "label")
+            .map_err(|e| PurseError::Request(e.to_string()))?;
+        let rec = self
+            .sent
+            .iter_mut()
+            .find(|r| &r.id == id)
+            .ok_or(PurseError::Proof(ProofError::NoSuchOutput))?;
+        rec.note = (!note.is_empty()).then(|| note.to_string());
+        Ok(())
     }
 
     /// Signs a message with an account's spend key.
@@ -534,6 +642,7 @@ impl Purse {
                     id: None,
                     global_index: Some(o.global_index),
                     has_secret: false,
+                    note: None,
                 });
             }
         }
@@ -569,6 +678,7 @@ impl Purse {
                 id: Some(r.id),
                 global_index: None,
                 has_secret: r.tx_secret.is_some(),
+                note: r.note.clone(),
             });
         }
         out.sort_by_key(|e| std::cmp::Reverse(e.height));
@@ -631,6 +741,37 @@ impl Purse {
                     }
                     _ => w.raw(&[0]),
                 }
+            }
+            if version >= 4 {
+                w.var(
+                    r.note.as_deref().unwrap_or("").as_bytes(),
+                    MAX_REQUEST_LABEL,
+                )
+                .map_err(bad)?;
+            }
+        }
+        if version >= 4 {
+            w.count(self.requests.len(), 0, MAX_REQUESTS).map_err(bad)?;
+            for q in &self.requests {
+                w.u32(q.account);
+                match q.amount {
+                    Some(a) => {
+                        w.raw(&[1]);
+                        w.u64(a);
+                    }
+                    None => {
+                        w.raw(&[0]);
+                        w.u64(0);
+                    }
+                }
+                w.var(
+                    q.label.as_deref().unwrap_or("").as_bytes(),
+                    MAX_REQUEST_LABEL,
+                )
+                .map_err(bad)?;
+                w.var(q.message.as_deref().unwrap_or("").as_bytes(), MAX_MESSAGE)
+                    .map_err(bad)?;
+                w.u64(q.time);
             }
         }
         Ok(Zeroizing::new(w.into_bytes()))
@@ -709,6 +850,15 @@ impl Purse {
                 } else {
                     (None, None)
                 };
+                let note = if version >= 4 {
+                    let raw = String::from_utf8(r.var(MAX_REQUEST_LABEL).map_err(bad)?)
+                        .map_err(|_| FileError::Corrupt("a note is not text".into()))?;
+                    check_text(&raw, MAX_REQUEST_LABEL, "label")
+                        .map_err(|_| FileError::Corrupt("a note is not allowed".into()))?;
+                    (!raw.is_empty()).then_some(raw)
+                } else {
+                    None
+                };
                 sent.push(SentRecord {
                     account,
                     id,
@@ -722,6 +872,46 @@ impl Purse {
                     change_onetime,
                     tx_secret,
                     payment_onetime,
+                    note,
+                });
+            }
+        }
+        let mut requests = Vec::new();
+        if version >= 4 {
+            let m = r.count(0, MAX_REQUESTS).map_err(bad)?;
+            for _ in 0..m {
+                let account = r.u32().map_err(bad)?;
+                if account as usize >= accounts.len() {
+                    return Err(FileError::Corrupt(
+                        "a request names an account that is not there".into(),
+                    ));
+                }
+                let flag = r.take(1).map_err(bad)?[0];
+                let a = r.u64().map_err(bad)?;
+                let amount = match flag {
+                    0 if a == 0 => None,
+                    1 if a > 0 => Some(a),
+                    _ => return Err(FileError::Corrupt("a bad request amount".into())),
+                };
+                let mut text = |max: usize,
+                                what: &'static str|
+                 -> Result<Option<String>, FileError> {
+                    let raw = String::from_utf8(r.var(max).map_err(bad)?)
+                        .map_err(|_| FileError::Corrupt("a request's text is not text".into()))?;
+                    check_text(&raw, max, what).map_err(|_| {
+                        FileError::Corrupt("a request's text is not allowed".into())
+                    })?;
+                    Ok((!raw.is_empty()).then_some(raw))
+                };
+                let label = text(MAX_REQUEST_LABEL, "label")?;
+                let message = text(MAX_MESSAGE, "message")?;
+                let time = r.u64().map_err(bad)?;
+                requests.push(SavedRequest {
+                    account,
+                    amount,
+                    label,
+                    message,
+                    time,
                 });
             }
         }
@@ -731,6 +921,7 @@ impl Purse {
             birth_height,
             accounts,
             sent,
+            requests,
         })
     }
 
@@ -782,6 +973,7 @@ mod tests {
             change_onetime: [10; 32],
             tx_secret: secret.then(|| TxSecret::new([11; 32])),
             payment_onetime: secret.then_some([12; 32]),
+            note: secret.then(|| "Rent".to_string()),
         }
     }
 
@@ -791,7 +983,10 @@ mod tests {
         p.sent.push(record(true));
         // version 3 keeps the secret
         let v3 = Purse::from_state_bytes(&p.state_bytes_as(3).unwrap()).unwrap();
-        assert_eq!(v3.sent, p.sent);
+        let mut without_note = p.sent.clone();
+        without_note[0].note = None;
+        assert_eq!(v3.sent, without_note, "version 3 had no notes");
+        assert!(v3.requests.is_empty());
         // version 2 had the record but no secret: it reads, and the payment can never be proved by its sender
         let v2 = Purse::from_state_bytes(&p.state_bytes_as(2).unwrap()).unwrap();
         assert_eq!(v2.sent.len(), 1);
@@ -816,6 +1011,103 @@ mod tests {
             "the marker is the last byte of a record with no secret"
         );
         bytes[last] = 2;
+        assert!(Purse::from_state_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn requests_and_notes_are_kept_in_the_file_and_a_bad_one_is_refused() {
+        let mut p = Purse::from_seed(&[3; 32], 4);
+        p.add_account("Savings", 0).unwrap();
+        p.sent.push(record(true));
+        p.add_request(
+            0,
+            Some(150_000_000),
+            Some("Rent".into()),
+            Some("October rent".into()),
+            1_700_000_000,
+        )
+        .unwrap();
+        p.add_request(1, None, None, None, 1_700_000_001).unwrap();
+        let back = Purse::from_state_bytes(&p.state_bytes().unwrap()).unwrap();
+        assert_eq!(back.requests, p.requests);
+        assert_eq!(back.sent, p.sent);
+        assert_eq!(back.sent[0].note.as_deref(), Some("Rent"));
+        assert_eq!(
+            back.request_of(0).unwrap().to_uri(),
+            format!(
+                "tenero:{}?amount=1.5&label=Rent&message=October%20rent",
+                p.accounts()[0].address().to_text()
+            )
+        );
+        // what makes a request: refused amounts and texts, accounts that are not there, too many, and removing
+        assert!(p.add_request(9, None, None, None, 0).is_err());
+        assert!(p.add_request(0, Some(0), None, None, 0).is_err());
+        assert!(p
+            .add_request(
+                0,
+                None,
+                Some(
+                    "a
+b"
+                    .into()
+                ),
+                None,
+                0
+            )
+            .is_err());
+        assert!(p
+            .add_request(0, None, Some("x".repeat(65)), None, 0)
+            .is_err());
+        assert!(p
+            .add_request(0, None, None, Some("x".repeat(201)), 0)
+            .is_err());
+        assert_eq!(p.requests().len(), 2);
+        // a blank label is no label
+        let i = p
+            .add_request(0, None, Some("   ".into()), Some("".into()), 5)
+            .unwrap();
+        assert_eq!(
+            (
+                p.requests()[i].label.clone(),
+                p.requests()[i].message.clone()
+            ),
+            (None, None)
+        );
+        p.remove_request(i).unwrap();
+        assert!(p.remove_request(i).is_err());
+        // a note on a sent payment
+        p.annotate_sent(&[1; 32], "  Groceries ").unwrap();
+        assert_eq!(p.sent[0].note.as_deref(), Some("Groceries"));
+        assert!(p.annotate_sent(&[1; 32], "a	b").is_err());
+        assert!(p.annotate_sent(&[7; 32], "x").is_err());
+        p.annotate_sent(&[1; 32], "").unwrap();
+        assert_eq!(p.sent[0].note, None);
+        // a file whose request names an account that is not there is refused
+        let mut q = Purse::from_seed(&[3; 32], 4);
+        q.requests.push(SavedRequest {
+            account: 5,
+            amount: None,
+            label: None,
+            message: None,
+            time: 0,
+        });
+        assert!(Purse::from_state_bytes(&q.state_bytes().unwrap()).is_err());
+        // and so is one with an amount marker that disagrees with its number
+        let mut q = Purse::from_seed(&[3; 32], 4);
+        q.requests.push(SavedRequest {
+            account: 0,
+            amount: Some(5),
+            label: None,
+            message: None,
+            time: 0,
+        });
+        let mut bytes = q.state_bytes().unwrap().to_vec();
+        // the amount marker is the byte after the 4-byte account number of the only request, 12 + 4 + 4 + 1... find it by search
+        let pos = bytes
+            .windows(9)
+            .rposition(|w| w[0] == 1 && w[1..] == 5u64.to_le_bytes())
+            .unwrap();
+        bytes[pos] = 0;
         assert!(Purse::from_state_bytes(&bytes).is_err());
     }
 }

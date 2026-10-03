@@ -138,6 +138,8 @@ What the owner asked for is a rate that can be compared with other GPU miners. T
 
 ### M10.4 Other things that fit here (my suggestions; the owner picks)
 
+**Owner's pick, 2026-10-03: from this list only the payment requests (built 2026-10-03: `tenero-wallet/src/request.rs`, the Receive and Send screens, the label in history), plus the signing and proof tools added above (built). The rest (the block explorer, the diagnostics bundle, config and requirement checks, log rotation, the handshake's version, a faucet question, exporting the history) is NOT selected and not planned; it stays listed below as ideas. M10.3 is finished with the several-wallets switch and the icon (both the owner's requests).**
+
 * **Transaction history and a payment *request* with a label** (what the wallet needs for people to actually test paying
   each other); a way to export the history as a file.
 * **A tiny block explorer in the app** (the last blocks, a block's details, a transaction's status) from the control

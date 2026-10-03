@@ -70,6 +70,21 @@ pub struct HistoryRow {
     pub global_index: Option<u64>,
     /// Sent: the wallet still holds the payment's secret (so it can be proved).
     pub has_secret: bool,
+    /// Sent: what it was for (the label of the request it answered).
+    pub note: Option<String>,
+}
+
+/// A payment request this wallet made, with its link (which holds the account's address).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestView {
+    pub index: usize,
+    pub account: usize,
+    pub account_label: String,
+    pub amount: Option<u64>,
+    pub label: Option<String>,
+    pub message: Option<String>,
+    pub time: u64,
+    pub uri: String,
 }
 
 /// What a payment proof that checked shows, for the screen.
@@ -99,6 +114,8 @@ pub struct WalletData {
     pub accounts: Vec<AccountView>,
     pub total: Option<Balance>,
     pub history: Vec<HistoryRow>,
+    /// The payment requests made (filled in when the snapshot is taken: they need no node).
+    pub requests: Vec<RequestView>,
     /// The last block the wallet has read.
     pub scanned: Option<u64>,
     /// The node's tip, if a node is reachable.
@@ -129,6 +146,8 @@ pub struct Quote {
     pub fee: u64,
     pub change: u64,
     pub level: FeeLevel,
+    /// What it is for (the label of the request it answers).
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -202,6 +221,18 @@ pub enum Cmd {
         to: String,
         amount: String,
         level: FeeLevel,
+        /// What it is for: the label of the request being paid, if any.
+        note: Option<String>,
+    },
+    /// Makes and keeps a payment request for an account (`amount` empty = the payer chooses).
+    AddRequest {
+        account: usize,
+        amount: String,
+        label: String,
+        message: String,
+    },
+    DeleteRequest {
+        index: usize,
     },
     SendPrepared,
     CancelPrepared,

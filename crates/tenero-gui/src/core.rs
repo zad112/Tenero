@@ -87,6 +87,7 @@ struct Prepared {
     to_text: String,
     built: Built,
     level: FeeLevel,
+    note: Option<String>,
 }
 
 /// The programs this window started (`true` = the node, `false` = the miner), kept where the window can reach them even if
@@ -226,8 +227,16 @@ impl Core {
             settings: self.settings.clone(),
             wallets: self.wallets.clone(),
             wallet: match (&self.purse, &self.data) {
-                (Some(_), Some(d)) => WalletView::Unlocked(Box::new(d.clone())),
-                (Some(p), None) => WalletView::Unlocked(Box::new(self.bare_data(p))),
+                (Some(p), Some(d)) => {
+                    let mut d = d.clone();
+                    d.requests = self.request_views(p);
+                    WalletView::Unlocked(Box::new(d))
+                }
+                (Some(p), None) => {
+                    let mut d = self.bare_data(p);
+                    d.requests = self.request_views(p);
+                    WalletView::Unlocked(Box::new(d))
+                }
                 (None, _) if self.wallet_exists() => WalletView::Locked,
                 (None, _) => WalletView::NoWallet,
             },
@@ -240,9 +249,34 @@ impl Core {
                 fee: p.built.fee,
                 change: p.built.change,
                 level: p.level,
+                note: p.note.clone(),
             }),
             busy: None,
         }
+    }
+
+    /// The payment requests made, as the window shows them (they need no node).
+    fn request_views(&self, p: &Purse) -> Vec<RequestView> {
+        p.requests()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, q)| {
+                let uri = p.request_of(i).ok()?.to_uri();
+                Some(RequestView {
+                    index: i,
+                    account: q.account as usize,
+                    account_label: p
+                        .accounts()
+                        .get(q.account as usize)
+                        .map_or(String::new(), |a| a.label().to_string()),
+                    amount: q.amount,
+                    label: q.label.clone(),
+                    message: q.message.clone(),
+                    time: q.time,
+                    uri,
+                })
+            })
+            .collect()
     }
 
     /// The wallet as far as it can be shown with no node: the accounts and addresses, no balances.
@@ -261,6 +295,7 @@ impl Core {
                 .collect(),
             total: None,
             history: Vec::new(),
+            requests: Vec::new(),
             scanned: p
                 .accounts()
                 .iter()
@@ -314,7 +349,15 @@ impl Core {
                 to,
                 amount,
                 level,
-            } => self.prepare(account, &to, &amount, level),
+                note,
+            } => self.prepare(account, &to, &amount, level, note),
+            Cmd::AddRequest {
+                account,
+                amount,
+                label,
+                message,
+            } => self.add_request(account, &amount, &label, &message),
+            Cmd::DeleteRequest { index } => self.delete_request(index),
             Cmd::SendPrepared => self.send_prepared(&mut events),
             Cmd::SignMessage { account, message } => {
                 self.sign_message(account, &message, &mut events)
@@ -569,6 +612,36 @@ impl Core {
         Ok(())
     }
 
+    // ---- payment requests -------------------------------------------------------------------------------
+
+    fn add_request(
+        &mut self,
+        account: usize,
+        amount: &str,
+        label: &str,
+        message: &str,
+    ) -> Result<(), String> {
+        let amount = match amount.trim() {
+            "" => None,
+            a => Some(parse_coins(a).ok_or_else(|| {
+                format!("amount: `{a}` is not an amount (digits with up to 8 decimals), or leave it empty")
+            })?),
+        };
+        let opt = |t: &str| (!t.trim().is_empty()).then(|| t.trim().to_string());
+        self.need_purse()?
+            .add_request(account, amount, opt(label), opt(message), now_unix())
+            .map_err(purse_err)?;
+        // a request is kept in the wallet file: write it now, not at the next scan
+        self.save_wallet()
+    }
+
+    fn delete_request(&mut self, index: usize) -> Result<(), String> {
+        self.need_purse()?
+            .remove_request(index)
+            .map_err(purse_err)?;
+        self.save_wallet()
+    }
+
     // ---- paying ------------------------------------------------------------------------------------------
 
     fn ready_to_pay(&self) -> Result<&RemoteNode, String> {
@@ -633,6 +706,7 @@ impl Core {
         to: &str,
         amount: &str,
         level: FeeLevel,
+        note: Option<String>,
     ) -> Result<(), String> {
         self.prepared = None;
         let (addr, units) = self.parse_payment(to, amount)?;
@@ -648,6 +722,7 @@ impl Core {
             to_text: addr.to_text(),
             built,
             level,
+            note: note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()),
         });
         Ok(())
     }
@@ -668,6 +743,10 @@ impl Core {
         };
         self.node = Some(node);
         result?;
+        if let (Some(note), Some(purse)) = (&p.note, self.purse.as_mut()) {
+            // a note that cannot be kept (too long) must not undo a payment that has been sent
+            let _ = purse.annotate_sent(&p.built.id, note);
+        }
         // the reservation and the record must reach the file, or a restart would pick the same coins
         self.save_wallet()?;
         self.refresh_due = true;
@@ -1243,6 +1322,7 @@ impl Core {
                 id: e.id,
                 global_index: e.global_index,
                 has_secret: e.has_secret,
+                note: e.note,
             })
             .collect();
         let scanned = purse
@@ -1256,6 +1336,7 @@ impl Core {
             accounts,
             total: Some(total),
             history,
+            requests: Vec::new(),
             scanned,
             tip: Some(tip),
             synced,

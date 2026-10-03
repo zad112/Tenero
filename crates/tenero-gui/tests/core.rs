@@ -412,6 +412,7 @@ fn mine_pay_at_every_fee_level_and_read_the_history() {
     let ev = c.handle(Cmd::StartMiner);
     assert_eq!(errors(&ev).len(), 1);
     let ev = c.handle(Cmd::PreparePayment {
+        note: None,
         account: 0,
         to: saving.clone(),
         amount: "1".into(),
@@ -482,6 +483,7 @@ fn mine_pay_at_every_fee_level_and_read_the_history() {
     for (i, level) in FeeLevel::ALL.into_iter().enumerate() {
         let t0 = Instant::now();
         let ev = c.handle(Cmd::PreparePayment {
+            note: Some("  Rent  ".into()),
             account: 0,
             to: saving.clone(),
             amount: amount.clone(),
@@ -491,6 +493,11 @@ fn mine_pay_at_every_fee_level_and_read_the_history() {
         assert!(errors(&ev).is_empty(), "{level:?}: {:?}", errors(&ev));
         let q = c.snapshot().prepared.expect("a payment waits for a yes");
         assert_eq!((q.account, q.amount, q.level), (0, 50_000_000, level));
+        assert_eq!(
+            q.note.as_deref(),
+            Some("Rent"),
+            "the note is trimmed and shown before sending"
+        );
         assert_eq!(q.to, saving);
         // the fee shown is at least what the estimate said for this level (the exact build can differ by a few
         // units when the size changes)
@@ -560,6 +567,11 @@ fn mine_pay_at_every_fee_level_and_read_the_history() {
         .unwrap()
         .clone();
     assert!(sent_row.has_secret, "a payment sent now keeps its secret");
+    assert_eq!(
+        sent_row.note.as_deref(),
+        Some("Rent"),
+        "what it was for is in the history"
+    );
     let id = sent_row.id.unwrap();
     let proof_of = |c: &mut Core, req: ProofRequest| -> String {
         let ev = c.handle(Cmd::MakeProof(req));
@@ -1022,4 +1034,87 @@ fn a_wallet_file_from_before_names_is_listed_and_the_folder_cannot_change_under_
     let mut s = c.settings().clone();
     s.wallets_dir = rig.dir.join("elsewhere");
     assert_eq!(errors(&c.handle(Cmd::SetSettings(Box::new(s)))).len(), 1);
+}
+
+#[test]
+fn payment_requests_are_made_kept_in_the_wallet_file_and_removed() {
+    let rig = Rig::new("requests", 18483);
+    let mut c = rig.core();
+    c.handle(Cmd::CreateWallet {
+        name: Some("Main".into()),
+        password: Password::Set(pw("a long enough password")),
+    });
+    c.handle(Cmd::AddAccount {
+        label: "Savings".into(),
+    });
+    let d = unlocked(&c);
+    assert!(d.requests.is_empty());
+    let add = |c: &mut Core, account: usize, amount: &str, label: &str, message: &str| {
+        c.handle(Cmd::AddRequest {
+            account,
+            amount: amount.into(),
+            label: label.into(),
+            message: message.into(),
+        })
+    };
+    // a full request, and one with nothing but the address
+    assert!(errors(&add(&mut c, 0, "1.5", "Rent", "October rent")).is_empty());
+    assert!(errors(&add(&mut c, 1, "", "", "")).is_empty());
+    let d = unlocked(&c);
+    assert_eq!(d.requests.len(), 2);
+    assert_eq!(
+        d.requests[0].uri,
+        format!(
+            "tenero:{}?amount=1.5&label=Rent&message=October%20rent",
+            d.accounts[0].address
+        )
+    );
+    assert_eq!(
+        (d.requests[0].amount, d.requests[0].account_label.as_str()),
+        (Some(150_000_000), "Main")
+    );
+    assert_eq!(
+        d.requests[1].uri,
+        format!("tenero:{}", d.accounts[1].address)
+    );
+    // the link reads back as what was asked
+    let back = tenero_wallet::PaymentRequest::from_uri(&d.requests[0].uri).unwrap();
+    assert_eq!(
+        (back.amount, back.label.as_deref(), back.message.as_deref()),
+        (Some(150_000_000), Some("Rent"), Some("October rent"))
+    );
+    // refused: a bad or zero amount, a label that is too long or has a line break, an account that is not there
+    assert_eq!(errors(&add(&mut c, 0, "1.123456789", "x", "")).len(), 1);
+    assert_eq!(errors(&add(&mut c, 0, "0", "x", "")).len(), 1);
+    assert_eq!(errors(&add(&mut c, 0, "abc", "x", "")).len(), 1);
+    assert_eq!(errors(&add(&mut c, 0, "", &"x".repeat(65), "")).len(), 1);
+    assert_eq!(errors(&add(&mut c, 0, "", "a\nb", "")).len(), 1);
+    assert_eq!(errors(&add(&mut c, 9, "", "x", "")).len(), 1);
+    assert_eq!(
+        unlocked(&c).requests.len(),
+        2,
+        "a refused request is not kept"
+    );
+
+    // kept in the file: locked and opened again, they are there; and removal is kept too
+    c.handle(Cmd::Lock);
+    assert!(
+        errors(&add(&mut c, 0, "", "x", "")).len() == 1,
+        "no requests with the wallet locked"
+    );
+    assert!(errors(&c.handle(Cmd::Unlock {
+        password: pw("a long enough password")
+    }))
+    .is_empty());
+    assert_eq!(unlocked(&c).requests.len(), 2);
+    assert!(errors(&c.handle(Cmd::DeleteRequest { index: 0 })).is_empty());
+    assert_eq!(errors(&c.handle(Cmd::DeleteRequest { index: 5 })).len(), 1);
+    assert_eq!(unlocked(&c).requests.len(), 1);
+    c.handle(Cmd::Lock);
+    c.handle(Cmd::Unlock {
+        password: pw("a long enough password"),
+    });
+    let d = unlocked(&c);
+    assert_eq!(d.requests.len(), 1);
+    assert_eq!(d.requests[0].account_label, "Savings");
 }

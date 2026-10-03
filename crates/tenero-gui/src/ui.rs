@@ -104,6 +104,24 @@ struct SendForm {
     /// earlier question is still out (each one costs the node a number of round trips).
     seen: String,
     changed: Option<Instant>,
+    /// The "paste a payment request or an address" field, the text it held when last read, and what it said.
+    pasted: String,
+    pasted_seen: String,
+    paste_error: Option<String>,
+    /// What the payment is for (the label of the request pasted), and the address that label was pasted with: if the address is
+    /// changed by hand the label no longer belongs to it and is not sent.
+    note: Option<String>,
+    note_for: String,
+    request_message: Option<String>,
+}
+
+#[derive(Default)]
+struct RequestForm {
+    amount: String,
+    label: String,
+    message: String,
+    selected: Option<usize>,
+    select_newest: bool,
 }
 
 #[derive(Default)]
@@ -151,6 +169,7 @@ pub struct App {
     closing_since: Option<Instant>,
     node_tail: (Instant, String),
     prove: ProveForm,
+    request: RequestForm,
     /// A payment proof just made (its text and what it shows), in a window until closed.
     proof_window: Option<(String, String)>,
     /// The secret of a sent payment, shown on request in a window until closed.
@@ -217,6 +236,7 @@ impl App {
             closing_since: None,
             node_tail: (now, String::new()),
             prove: ProveForm::default(),
+            request: RequestForm::default(),
             proof_window: None,
             tx_key_window: None,
             miner_tail: (now, String::new()),
@@ -237,6 +257,11 @@ impl App {
         if let Some((t, _)) = Tab::ALL.iter().find(|(_, n)| *n == name) {
             self.tab = *t;
         }
+    }
+
+    /// Types into the "paste a payment request or an address" field (a test's way of pasting).
+    pub fn set_send_paste(&mut self, text: &str) {
+        self.send.pasted = text.to_string();
     }
 
     /// Types a payment into the send form (a test's way of filling it in).
@@ -964,6 +989,44 @@ impl App {
         if self.send.account >= d.accounts.len() {
             self.send.account = 0;
         }
+        ui.label("Paste a payment request or an address (optional)");
+        ui.add(
+            egui::TextEdit::singleline(&mut self.send.pasted)
+                .hint_text("tenero:… or tni1…")
+                .desired_width(f32::INFINITY)
+                .font(egui::TextStyle::Monospace),
+        );
+        if self.send.pasted != self.send.pasted_seen {
+            self.send.pasted_seen = self.send.pasted.clone();
+            self.send.paste_error = None;
+            self.send.note = None;
+            self.send.request_message = None;
+            if !self.send.pasted.trim().is_empty() {
+                match tenero_wallet::request::parse_pay_text(&self.send.pasted) {
+                    Ok(r) => {
+                        self.send.to = r.address.to_text();
+                        if let Some(a) = r.amount {
+                            self.send.amount = tenero_wallet::amount::format_coins(a);
+                        }
+                        self.send.note_for = self.send.to.clone();
+                        self.send.note = r.label;
+                        self.send.request_message = r.message;
+                    }
+                    Err(e) => self.send.paste_error = Some(e.to_string()),
+                }
+            }
+        }
+        if let Some(e) = &self.send.paste_error {
+            ui.colored_label(RED, e);
+        }
+        if self.send.note.is_some() || self.send.request_message.is_some() {
+            let what = [self.send.note.clone(), self.send.request_message.clone()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" — ");
+            ui.colored_label(GREEN, format!("Payment request: {what}"));
+        }
         egui::ComboBox::from_label("From account")
             .selected_text(account_text(&d, self.send.account))
             .show_ui(ui, |ui| {
@@ -1090,6 +1153,11 @@ impl App {
                 to: self.send.to.clone(),
                 amount: self.send.amount.clone(),
                 level: current,
+                note: self
+                    .send
+                    .note
+                    .clone()
+                    .filter(|_| self.send.to.trim() == self.send.note_for),
             });
         }
     }
@@ -1114,6 +1182,11 @@ impl App {
                 ui.label(format!("Fee ({})", q.level.name()));
                 ui.label(text::coins(q.fee));
                 ui.end_row();
+                if let Some(n) = &q.note {
+                    ui.label("For");
+                    ui.label(n);
+                    ui.end_row();
+                }
                 ui.label("Taken from the account");
                 ui.label(RichText::new(text::coins(q.amount + q.fee)).strong());
                 ui.end_row();
@@ -1208,6 +1281,141 @@ impl App {
             .small()
             .color(GREY),
         );
+        self.requests_section(ui, &d);
+    }
+
+    fn requests_section(&mut self, ui: &mut egui::Ui, d: &WalletData) {
+        ui.add_space(14.0);
+        ui.separator();
+        ui.heading("Request a payment");
+        ui.label("Makes a link and a QR code that asks to be paid to the account chosen above. Whoever opens it (Send tab, \"Paste a payment request\") gets the address, the amount and what it is for filled in. A request is not an invoice and is not marked as paid: the chain cannot tell which payment answered it.");
+        let amount_ok = self.request.amount.trim().is_empty()
+            || tenero_wallet::amount::parse_coins(self.request.amount.trim())
+                .is_some_and(|a| a > 0);
+        let label_ok = tenero_wallet::request::check_text(
+            self.request.label.trim(),
+            tenero_wallet::request::MAX_LABEL,
+            "label",
+        )
+        .is_ok();
+        let message_ok = tenero_wallet::request::check_text(
+            self.request.message.trim(),
+            tenero_wallet::request::MAX_MESSAGE,
+            "message",
+        )
+        .is_ok();
+        ui.horizontal(|ui| {
+            ui.label("Amount (empty: the payer chooses)");
+            ui.add(egui::TextEdit::singleline(&mut self.request.amount).desired_width(130.0));
+            ui.label(tenero_app::ui::TICKER);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Label (what it is for)");
+            ui.add(egui::TextEdit::singleline(&mut self.request.label).desired_width(300.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Message (optional)");
+            ui.add(egui::TextEdit::singleline(&mut self.request.message).desired_width(420.0));
+        });
+        if !amount_ok {
+            ui.colored_label(
+                AMBER,
+                "The amount must be digits with up to 8 decimals, and not zero.",
+            );
+        }
+        if !label_ok {
+            ui.colored_label(
+                AMBER,
+                "The label is too long (64 bytes at most) or has a line break.",
+            );
+        }
+        if !message_ok {
+            ui.colored_label(
+                AMBER,
+                "The message is too long (200 bytes at most) or has a line break.",
+            );
+        }
+        if ui
+            .add_enabled(
+                amount_ok && label_ok && message_ok,
+                egui::Button::new("Make request"),
+            )
+            .clicked()
+        {
+            self.backend.send(Cmd::AddRequest {
+                account: self.receive_account,
+                amount: std::mem::take(&mut self.request.amount),
+                label: std::mem::take(&mut self.request.label),
+                message: std::mem::take(&mut self.request.message),
+            });
+            self.request.select_newest = true;
+        }
+        if self.request.select_newest && !d.requests.is_empty() {
+            self.request.selected = Some(d.requests.len() - 1);
+            self.request.select_newest = false;
+        }
+        if d.requests.is_empty() {
+            return;
+        }
+        ui.add_space(8.0);
+        ui.label(RichText::new("Your requests").strong());
+        let mut delete = None;
+        for q in &d.requests {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(q.label.as_deref().unwrap_or("(no label)")).strong());
+                ui.label(match q.amount {
+                    Some(a) => text::coins(a),
+                    None => "any amount".to_string(),
+                });
+                ui.label(
+                    RichText::new(format!(
+                        "· into {} · {}",
+                        q.account_label,
+                        text::when(q.time)
+                    ))
+                    .color(GREY),
+                );
+                if ui.small_button("Show").clicked() {
+                    self.request.selected = Some(q.index);
+                }
+                if ui.small_button("Delete").clicked() {
+                    delete = Some(q.index);
+                }
+            });
+        }
+        if let Some(index) = delete {
+            self.backend.send(Cmd::DeleteRequest { index });
+            self.request.selected = None;
+        }
+        let Some(q) = self.request.selected.and_then(|i| d.requests.get(i)) else {
+            return;
+        };
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(format!(
+                "Request: {}",
+                q.label.as_deref().unwrap_or("(no label)")
+            ))
+            .strong(),
+        );
+        if let Some(m) = &q.message {
+            ui.label(m);
+        }
+        ui.add(
+            egui::Label::new(RichText::new(&q.uri).monospace().small())
+                .selectable(true)
+                .wrap(),
+        );
+        if ui.button("Copy the link").clicked() {
+            ui.ctx().copy_text(q.uri.clone());
+            self.toast("Link copied.", false);
+        }
+        draw_qr(ui, &q.uri);
+        ui.label(
+            RichText::new("The link shows the address and the amount to whoever gets it, and it is not private in Monero's sense.")
+                .small()
+                .color(GREY),
+        );
     }
 
     fn history_tab(&mut self, ui: &mut egui::Ui) {
@@ -1271,6 +1479,9 @@ impl App {
                                     own.unwrap_or_else(|| text::short_address(&to.to_text())),
                                     text::coins(*fee)
                                 ));
+                                if let Some(n) = &row.note {
+                                    ui.label(RichText::new(format!("for {n}")).color(GREY));
+                                }
                             }
                             EntryKind::Mined => {
                                 ui.label(RichText::new("block reward").color(GREY));
@@ -2183,6 +2394,36 @@ fn verify_text(address: &str, message: &str, signature: &str) -> Result<String, 
         "VALID: the holder of {} signed exactly this message.",
         text::short_address(&address.to_text())
     ))
+}
+
+/// A QR code of `text`, drawn as squares.
+fn draw_qr(ui: &mut egui::Ui, text: &str) {
+    match crate::qr::modules(text) {
+        Some((w, squares)) => {
+            let quiet = 4.0;
+            let cell = (260.0 / (w as f32 + 2.0 * quiet)).floor().max(2.0);
+            let side = cell * (w as f32 + 2.0 * quiet);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+            let p = ui.painter_at(rect);
+            p.rect_filled(rect, 0.0, Color32::WHITE);
+            for y in 0..w {
+                for x in 0..w {
+                    if squares[y * w + x] {
+                        let min = rect.min
+                            + egui::vec2((x as f32 + quiet) * cell, (y as f32 + quiet) * cell);
+                        p.rect_filled(
+                            egui::Rect::from_min_size(min, egui::vec2(cell, cell)),
+                            0.0,
+                            Color32::BLACK,
+                        );
+                    }
+                }
+            }
+        }
+        None => {
+            ui.label("(this does not fit a QR code)");
+        }
+    }
 }
 
 fn account_text(d: &WalletData, index: usize) -> String {

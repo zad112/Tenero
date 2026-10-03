@@ -15,6 +15,7 @@ pub mod interim;
 pub mod mnemonic;
 pub mod proofs;
 pub mod purse;
+pub mod request;
 pub mod wallet;
 
 use rand_core::{CryptoRng, RngCore};
@@ -24,7 +25,8 @@ pub use chain::{ChainView, Rules, ScanBlock, Submitter};
 pub use file::{FileError, KdfParams};
 pub use interim::{Address, AddressError, Keys, TxSecret, BANNER};
 pub use mnemonic::{phrase_of, seed_of, PhraseError};
-pub use purse::{Entry, EntryKind, Purse, PurseError, SentRecord, SentStatus};
+pub use purse::{Entry, EntryKind, Purse, PurseError, SavedRequest, SentRecord, SentStatus};
+pub use request::{PaymentRequest, RequestError};
 pub use wallet::{Balance, Built, FeeLevel, Owned, SyncReport, Wallet, WalletError};
 
 /// [`coinbase_payout`] with the operating system's randomness.

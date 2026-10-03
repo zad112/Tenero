@@ -10,7 +10,7 @@ use tenero_gui::backend::Backend;
 use tenero_gui::settings::Settings;
 use tenero_gui::ui::App;
 use tenero_gui::view::*;
-use tenero_wallet::{Address, Balance, EntryKind, FeeLevel, SentStatus};
+use tenero_wallet::{Address, Balance, EntryKind, FeeLevel, Keys, SentStatus};
 use zeroize::Zeroizing;
 
 fn texts(shapes: &[egui::epaint::ClippedShape]) -> String {
@@ -140,6 +140,7 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             id: Some([9; 32]),
             global_index: None,
             has_secret: true,
+            note: Some("Rent".into()),
         },
         HistoryRow {
             account: 0,
@@ -150,6 +151,7 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             id: None,
             global_index: Some(3),
             has_secret: false,
+            note: None,
         },
         HistoryRow {
             account: 1,
@@ -160,12 +162,23 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             id: None,
             global_index: Some(5),
             has_secret: false,
+            note: None,
         },
     ];
     WalletView::Unlocked(Box::new(WalletData {
         accounts,
         total: with_balances.then(|| bal(4_500_000_000, 2_000_000_000)),
         history: if with_balances { history } else { Vec::new() },
+        requests: vec![RequestView {
+            index: 0,
+            account: 0,
+            account_label: "Main".into(),
+            amount: Some(150_000_000),
+            label: Some("Rent".into()),
+            message: Some("October rent".into()),
+            time: 1_700_000_000,
+            uri: format!("tenero:{}?amount=1.5&label=Rent", addr(1)),
+        }],
         scanned: Some(if synced { 1234 } else { 600 }),
         tip: with_balances.then_some(1234),
         synced,
@@ -239,6 +252,7 @@ fn quote() -> Quote {
         fee: 602_669,
         change: 749_397_331,
         level: FeeLevel::Normal,
+        note: Some("Rent".into()),
     }
 }
 
@@ -941,4 +955,91 @@ fn the_locked_screen_lists_the_wallets_and_offers_another_and_an_open_wallet_can
         t.contains("Lock / switch wallet") && t.contains("Wallet Savings stash"),
         "{t}"
     );
+}
+
+#[test]
+fn the_receive_screen_makes_requests_and_the_send_screen_reads_them() {
+    let mut rig = Rig::new();
+    let s = snap(
+        &rig,
+        wallet(true, true),
+        NodeView::Running {
+            info: info(false, 3),
+            ours: true,
+        },
+        MinerView::Off,
+        None,
+    );
+    rig.app.set_snapshot(s);
+    rig.app.goto("Receive");
+    let (t, _) = rig.frame();
+    for needle in [
+        "Request a payment",
+        "is not marked as paid",
+        "Make request",
+        "Your requests",
+        "Rent",
+        "1.5 TNR",
+        "Show",
+        "Delete",
+    ] {
+        assert!(
+            t.contains(needle),
+            "`{needle}` missing from the receive screen:\n{t}"
+        );
+    }
+
+    // the send screen: a request is read into the form; a bad one says what is wrong; a bare address fills only the address
+    rig.app.goto("Send");
+    let to = Keys::from_seed(&[1; 32]).address();
+    let uri = format!(
+        "tenero:{}?amount=2.5&label=Rent&message=October%20rent",
+        to.to_text()
+    );
+    rig.app.set_send_paste(&uri);
+    let (t, _) = rig.frame();
+    assert!(t.contains("Paste a payment request or an address"), "{t}");
+    assert!(t.contains("Payment request: Rent — October rent"), "{t}");
+    assert!(
+        t.contains(&to.to_text()) && t.contains("2.5"),
+        "the form was not filled in:\n{t}"
+    );
+    rig.app.set_send_paste("tenero:nonsense");
+    let (t, _) = rig.frame();
+    assert!(
+        t.contains("not a payment request") || t.contains("the address in the request"),
+        "{t}"
+    );
+    assert!(
+        !t.contains("Payment request: Rent"),
+        "the old request is not kept after a bad paste"
+    );
+    rig.app.set_send_paste(&to.to_text());
+    let (t, _) = rig.frame();
+    assert!(
+        !t.contains("Payment request:"),
+        "a bare address is not a request:\n{t}"
+    );
+}
+
+#[test]
+fn the_confirmation_and_the_history_say_what_a_payment_was_for() {
+    let mut rig = Rig::new();
+    rig.app.goto("Send");
+    let s = snap(
+        &rig,
+        wallet(true, true),
+        NodeView::Running {
+            info: info(false, 3),
+            ours: true,
+        },
+        MinerView::Off,
+        Some(quote()),
+    );
+    rig.app.set_snapshot(s);
+    let (t, _) = rig.frame();
+    assert!(t.contains("For") && t.contains("Rent"), "{t}");
+    rig.app.goto("History");
+    let (t, _) = rig.frame();
+    assert!(t.contains("for Rent"), "{t}");
 }
