@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 use crate::chain::{ChainView, Submitter};
 use crate::file::{open, seal, FileError, KdfParams, MAGIC_PURSE};
 use crate::interim::Address;
-use crate::wallet::{Balance, Built, SyncReport, Wallet, WalletError};
+use crate::wallet::{Balance, Built, FeeLevel, SyncReport, Wallet, WalletError};
 
 /// The most accounts one purse holds.
 pub const MAX_ACCOUNTS: usize = 64;
@@ -36,7 +36,11 @@ pub const MAX_LABEL: usize = 48;
 /// How many unused accounts in a row end the search on a restore.
 pub const GAP: usize = 3;
 
-const PURSE_VERSION: u16 = 1;
+/// Version 2 added the record of sent payments after the accounts; version 1 files still open (with no records).
+const PURSE_VERSION: u16 = 2;
+/// The most sent-payment records a purse keeps (the oldest are dropped past this).
+pub const MAX_SENT_RECORDS: usize = 20_000;
+const MAX_SPENDS: usize = 64;
 const MAX_WALLET_STATE: usize = 256 * 1024 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -93,6 +97,62 @@ fn check_label(label: &str) -> Result<(), PurseError> {
     Ok(())
 }
 
+/// A payment this wallet sent. Nothing on the chain says to whom a payment went (the interim scheme has no outgoing
+/// view key), so the wallet writes it down when it sends; **a wallet restored from the words has no such records**,
+/// and its history shows what it received but not whom it paid.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SentRecord {
+    pub account: u32,
+    pub id: [u8; 32],
+    pub to: Address,
+    pub amount: u64,
+    pub fee: u64,
+    /// Which fee level it was sent at.
+    pub level: FeeLevel,
+    /// Seconds since 1970, as the computer's clock said when it was sent.
+    pub time: u64,
+    /// The height the next block would have had when it was sent.
+    pub height: u64,
+    pub spends: Vec<[u8; 32]>,
+    pub change_onetime: [u8; 32],
+}
+
+/// Where a sent payment stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SentStatus {
+    /// The node has it and no block has taken it yet.
+    Pending,
+    /// The coins it spent are spent on the chain: a block took it in.
+    Confirmed,
+    /// Not in the chain and no longer waiting: the node probably dropped it. The coins are free again.
+    NotConfirmed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EntryKind {
+    /// Coins that arrived from someone else.
+    Received,
+    /// A block reward.
+    Mined,
+    Sent {
+        to: Address,
+        fee: u64,
+        status: SentStatus,
+        time: u64,
+    },
+}
+
+/// One line of the history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    pub account: usize,
+    pub kind: EntryKind,
+    pub amount: u64,
+    /// The block it arrived in, or for a sent payment, the height when it was sent.
+    pub height: u64,
+    pub id: Option<[u8; 32]>,
+}
+
 pub struct Account {
     label: String,
     wallet: Wallet,
@@ -121,6 +181,7 @@ pub struct Purse {
     master: Zeroizing<[u8; 32]>,
     birth_height: u64,
     accounts: Vec<Account>,
+    sent: Vec<SentRecord>,
 }
 
 impl Purse {
@@ -141,6 +202,7 @@ impl Purse {
                 label: "Main".to_string(),
                 wallet: Wallet::from_seed(master, birth_height),
             }],
+            sent: Vec::new(),
         }
     }
 
@@ -153,6 +215,7 @@ impl Purse {
                 label: "Main".to_string(),
                 wallet,
             }],
+            sent: Vec::new(),
         }
     }
 
@@ -262,7 +325,8 @@ impl Purse {
         Ok(t)
     }
 
-    /// Builds a payment from one account (nothing is sent). The change returns to the same account.
+    /// Builds a payment from one account (nothing is sent, nothing reserved). The change returns to the same
+    /// account.
     pub fn build_payment(
         &mut self,
         index: usize,
@@ -270,28 +334,135 @@ impl Purse {
         rng: &mut (impl RngCore + CryptoRng),
         to: &Address,
         amount: u64,
+        level: FeeLevel,
     ) -> Result<Built, PurseError> {
         let a = self
             .accounts
             .get_mut(index)
             .ok_or(PurseError::NoSuchAccount(index))?;
-        Ok(a.wallet.build_payment(chain, rng, to, amount)?)
+        Ok(a.wallet.build_payment_at(chain, rng, to, amount, level)?)
     }
 
-    /// Builds, sends and reserves a payment from one account.
+    /// Sends a payment built by [`Purse::build_payment`]: hands it to the node, reserves its coins and writes it in
+    /// the record of sent payments. `now` is the time in seconds since 1970 (the caller's clock).
+    pub fn send<C: ChainView + Submitter>(
+        &mut self,
+        index: usize,
+        node: &mut C,
+        built: &Built,
+        to: &Address,
+        level: FeeLevel,
+        now: u64,
+    ) -> Result<(), PurseError> {
+        let height = node
+            .rules()
+            .map_err(|e| PurseError::Wallet(WalletError::Chain(e)))?
+            .next_height;
+        let a = self
+            .accounts
+            .get_mut(index)
+            .ok_or(PurseError::NoSuchAccount(index))?;
+        a.wallet.send_built(node, built)?;
+        self.sent.push(SentRecord {
+            account: index as u32,
+            id: built.id,
+            to: *to,
+            amount: built.amount,
+            fee: built.fee,
+            level,
+            time: now,
+            height,
+            spends: built.spends.clone(),
+            change_onetime: built.change_onetime,
+        });
+        if self.sent.len() > MAX_SENT_RECORDS {
+            self.sent.remove(0);
+        }
+        Ok(())
+    }
+
+    /// Builds, sends and records a payment from one account in one step.
+    #[allow(clippy::too_many_arguments)]
     pub fn pay<C: ChainView + Submitter>(
         &mut self,
         index: usize,
-        chain: &mut C,
+        node: &mut C,
         rng: &mut (impl RngCore + CryptoRng),
         to: &Address,
         amount: u64,
+        level: FeeLevel,
+        now: u64,
     ) -> Result<Built, PurseError> {
-        let a = self
-            .accounts
-            .get_mut(index)
-            .ok_or(PurseError::NoSuchAccount(index))?;
-        Ok(a.wallet.pay(chain, rng, to, amount)?)
+        let built = self.build_payment(index, &*node, rng, to, amount, level)?;
+        self.send(index, node, &built, to, level, now)?;
+        Ok(built)
+    }
+
+    pub fn sent_records(&self) -> &[SentRecord] {
+        &self.sent
+    }
+
+    /// Everything the wallet knows happened, newest first: what it received (block rewards marked), and what it sent
+    /// with where each payment stands. The change of a payment is not listed as received.
+    pub fn history(&self, chain: &impl ChainView) -> Result<Vec<Entry>, PurseError> {
+        let chain_err = |e: String| PurseError::Wallet(WalletError::Chain(e));
+        let mut out = Vec::new();
+        for (i, a) in self.accounts.iter().enumerate() {
+            for o in a.wallet.owned() {
+                let is_change = self
+                    .sent
+                    .iter()
+                    .any(|r| r.account as usize == i && r.change_onetime == o.onetime_address);
+                if is_change {
+                    continue;
+                }
+                out.push(Entry {
+                    account: i,
+                    kind: if o.coinbase {
+                        EntryKind::Mined
+                    } else {
+                        EntryKind::Received
+                    },
+                    amount: o.amount,
+                    height: o.height,
+                    id: None,
+                });
+            }
+        }
+        for r in &self.sent {
+            let mut spent = false;
+            for ki in &r.spends {
+                if chain.key_image_spent(ki).map_err(chain_err)? {
+                    spent = true;
+                    break;
+                }
+            }
+            let waiting = self
+                .accounts
+                .get(r.account as usize)
+                .is_some_and(|a| a.wallet.is_reserved(&r.spends));
+            let status = if spent {
+                SentStatus::Confirmed
+            } else if waiting {
+                SentStatus::Pending
+            } else {
+                SentStatus::NotConfirmed
+            };
+            out.push(Entry {
+                account: r.account as usize,
+                kind: EntryKind::Sent {
+                    to: r.to,
+                    fee: r.fee,
+                    status,
+                    time: r.time,
+                },
+                amount: r.amount,
+                height: r.height,
+                id: Some(r.id),
+            });
+        }
+        out.sort_by_key(|e| std::cmp::Reverse(e.height));
+        Ok(out)
     }
 
     // --------------------------------------------------------------------------------------------
@@ -312,13 +483,35 @@ impl Purse {
             let inner = Zeroizing::new(inner.into_bytes());
             w.var(&inner, MAX_WALLET_STATE).map_err(bad)?;
         }
+        w.count(self.sent.len(), 0, MAX_SENT_RECORDS).map_err(bad)?;
+        for r in &self.sent {
+            w.u32(r.account);
+            w.raw(&r.id);
+            w.raw(&r.to.spend);
+            w.raw(&r.to.view);
+            w.u64(r.amount);
+            w.u64(r.fee);
+            w.raw(&[match r.level {
+                FeeLevel::Low => 0,
+                FeeLevel::Normal => 1,
+                FeeLevel::High => 2,
+            }]);
+            w.u64(r.time);
+            w.u64(r.height);
+            w.count(r.spends.len(), 0, MAX_SPENDS).map_err(bad)?;
+            for ki in &r.spends {
+                w.raw(ki);
+            }
+            w.raw(&r.change_onetime);
+        }
         Ok(Zeroizing::new(w.into_bytes()))
     }
 
     fn from_state_bytes(data: &[u8]) -> Result<Purse, FileError> {
         let bad = |e: tenero_core::v2::DecodeError| FileError::Corrupt(e.as_str().to_string());
         let mut r = Reader::new(data);
-        if r.u16().map_err(bad)? != PURSE_VERSION {
+        let version = r.u16().map_err(bad)?;
+        if version != 1 && version != PURSE_VERSION {
             return Err(FileError::Corrupt("unknown purse version".into()));
         }
         let master: [u8; 32] = r.array().map_err(bad)?;
@@ -343,11 +536,57 @@ impl Purse {
             }
             accounts.push(Account { label, wallet });
         }
+        let mut sent = Vec::new();
+        if version >= 2 {
+            let m = r.count(0, MAX_SENT_RECORDS).map_err(bad)?;
+            for _ in 0..m {
+                let account = r.u32().map_err(bad)?;
+                if account as usize >= accounts.len() {
+                    return Err(FileError::Corrupt(
+                        "a sent payment names an account that is not there".into(),
+                    ));
+                }
+                let id: [u8; 32] = r.array().map_err(bad)?;
+                let to = Address {
+                    spend: r.array().map_err(bad)?,
+                    view: r.array().map_err(bad)?,
+                };
+                let amount = r.u64().map_err(bad)?;
+                let fee = r.u64().map_err(bad)?;
+                let level = match r.take(1).map_err(bad)?[0] {
+                    0 => FeeLevel::Low,
+                    1 => FeeLevel::Normal,
+                    2 => FeeLevel::High,
+                    _ => return Err(FileError::Corrupt("a bad fee level".into())),
+                };
+                let time = r.u64().map_err(bad)?;
+                let height = r.u64().map_err(bad)?;
+                let n = r.count(0, MAX_SPENDS).map_err(bad)?;
+                let mut spends = Vec::with_capacity(n);
+                for _ in 0..n {
+                    spends.push(r.array().map_err(bad)?);
+                }
+                let change_onetime: [u8; 32] = r.array().map_err(bad)?;
+                sent.push(SentRecord {
+                    account,
+                    id,
+                    to,
+                    amount,
+                    fee,
+                    level,
+                    time,
+                    height,
+                    spends,
+                    change_onetime,
+                });
+            }
+        }
         r.finish().map_err(bad)?;
         Ok(Purse {
             master,
             birth_height,
             accounts,
+            sent,
         })
     }
 

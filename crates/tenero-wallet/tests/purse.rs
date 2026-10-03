@@ -10,8 +10,8 @@ use tenero_node::{Node, NodeConfig};
 use tenero_store::Store;
 use tenero_wallet::purse::{account_seed, GAP, MAX_ACCOUNTS, MAX_LABEL};
 use tenero_wallet::{
-    coinbase_payout, phrase_of, seed_of, Address, FileError, KdfParams, PhraseError, Purse,
-    PurseError, Wallet, WalletError,
+    coinbase_payout, phrase_of, seed_of, Address, EntryKind, FeeLevel, FileError, KdfParams,
+    PhraseError, Purse, PurseError, SentStatus, Wallet, WalletError,
 };
 
 const T0: u64 = 1_700_000_000;
@@ -438,19 +438,29 @@ fn a_payment_comes_from_one_account_and_lands_in_another() {
     // account 1 has nothing, so it cannot pay even though the purse as a whole could
     assert!(p.total_balance(&node).unwrap().spendable > 0);
     assert!(matches!(
-        p.build_payment(1, &node, &mut OsRng, &a0, 1),
+        p.build_payment(1, &node, &mut OsRng, &a0, 1, FeeLevel::Low),
         Err(PurseError::Wallet(WalletError::NotEnough {
             spendable: 0,
             ..
         }))
     ));
     assert!(matches!(
-        p.pay(7, &mut node, &mut OsRng, &a0, 1),
+        p.pay(7, &mut node, &mut OsRng, &a0, 1, FeeLevel::Low, 0),
         Err(PurseError::NoSuchAccount(7))
     ));
     // account 0 pays account 1
     let amount = 1_000_000_000;
-    let built = p.pay(0, &mut node, &mut OsRng, &a1, amount).unwrap();
+    let built = p
+        .pay(
+            0,
+            &mut node,
+            &mut OsRng,
+            &a1,
+            amount,
+            FeeLevel::Low,
+            1_700_000_000,
+        )
+        .unwrap();
     mine(&mut node, &a0);
     p.sync(&node).unwrap();
     assert_eq!(p.balance(1, &node).unwrap().total, amount);
@@ -466,4 +476,185 @@ fn a_payment_comes_from_one_account_and_lands_in_another() {
         p.total_balance(&node).unwrap()
     );
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn the_three_fee_levels_pay_one_and_a_quarter_two_and_five_times_the_minimum() {
+    let rig = Rig::new("fees");
+    let mut node = rig.node();
+    let mut p = Purse::from_seed(&[14; 32], 0);
+    let to = Purse::from_seed(&[15; 32], 0).accounts()[0].address();
+    let me = p.accounts()[0].address();
+    (0..8).for_each(|_| {
+        mine(&mut node, &me);
+    });
+    p.sync(&node).unwrap();
+    let mut fees = Vec::new();
+    for level in FeeLevel::ALL {
+        let built = p
+            .build_payment(0, &node, &mut OsRng, &to, 1_000, level)
+            .unwrap();
+        let size = tenero_core::v2::Wire::to_bytes(&built.tx).unwrap().len() as u64;
+        let next = node.next_block().unwrap();
+        let min = tenero_core::fees::dynamic_min_fee(size, next.reward, next.median).unwrap();
+        let want = min * level.percent_of_minimum() / 100 + 1;
+        assert_eq!(
+            built.fee,
+            want,
+            "{}: the fee is exactly {}% of the minimum",
+            level.name(),
+            level.percent_of_minimum()
+        );
+        assert!(built.fee >= min, "never below the minimum");
+        fees.push(built.fee);
+        // the node takes it at every level
+        node.submit_tx(built.tx.clone()).unwrap();
+        // free the node's pool for the next level: the coins are not reserved by building, so a block takes it
+        mine(&mut node, &me);
+        p.sync(&node).unwrap();
+    }
+    assert!(fees[0] < fees[1] && fees[1] < fees[2], "{fees:?}");
+    println!("fees at Low, Normal, High: {fees:?}");
+}
+
+#[test]
+fn the_history_lists_what_came_in_what_went_out_and_where_each_payment_stands_and_never_the_change()
+{
+    let rig = Rig::new("history");
+    let mut node = rig.node();
+    let mut alice = Purse::from_seed(&[16; 32], 0);
+    let mut bob = Purse::from_seed(&[17; 32], 0);
+    let (a, b) = (alice.accounts()[0].address(), bob.accounts()[0].address());
+    (0..6).for_each(|_| {
+        mine(&mut node, &a);
+    });
+    alice.sync(&node).unwrap();
+    let amount = 2_500_000_000;
+    let built = alice
+        .pay(
+            0,
+            &mut node,
+            &mut OsRng,
+            &b,
+            amount,
+            FeeLevel::Normal,
+            1_700_000_123,
+        )
+        .unwrap();
+    // waiting in the pool
+    let h = alice.history(&node).unwrap();
+    let sent = h
+        .iter()
+        .find(|e| matches!(e.kind, EntryKind::Sent { .. }))
+        .unwrap();
+    assert_eq!(sent.amount, amount);
+    assert_eq!(sent.id, Some(built.id));
+    match &sent.kind {
+        EntryKind::Sent {
+            to,
+            fee,
+            status,
+            time,
+        } => {
+            assert_eq!(*to, b);
+            assert_eq!(*fee, built.fee);
+            assert_eq!(*status, SentStatus::Pending);
+            assert_eq!(*time, 1_700_000_123);
+        }
+        _ => unreachable!(),
+    }
+    // a block takes it
+    mine(&mut node, &a);
+    alice.sync(&node).unwrap();
+    bob.sync(&node).unwrap();
+    let h = alice.history(&node).unwrap();
+    let confirmed = h
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.kind,
+                EntryKind::Sent {
+                    status: SentStatus::Confirmed,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(confirmed, 1);
+    // seven block rewards, and none of them is the change that came back
+    let mined: Vec<_> = h.iter().filter(|e| e.kind == EntryKind::Mined).collect();
+    let received = h.iter().filter(|e| e.kind == EntryKind::Received).count();
+    assert_eq!(mined.len(), 7);
+    assert_eq!(received, 0, "the change is not a payment received");
+    // the change IS in the balance, though
+    let bal = alice.total_balance(&node).unwrap().total;
+    let rewards: u64 = mined.iter().map(|e| e.amount).sum();
+    assert_eq!(
+        bal + amount + built.fee,
+        rewards,
+        "nothing lost: balance + sent + fee = rewards (the fee came back in the last reward)"
+    );
+    // newest first
+    assert!(h.windows(2).all(|w| w[0].height >= w[1].height));
+    // Bob sees one payment received, from nobody in particular
+    let hb = bob.history(&node).unwrap();
+    assert_eq!(hb.len(), 1);
+    assert_eq!(hb[0].kind, EntryKind::Received);
+    assert_eq!(hb[0].amount, amount);
+
+    // the records survive the file; a purse restored from the words has the receipts but not the record of sending
+    let path = tmp("history");
+    alice
+        .save(&path, b"pw", KdfParams::TEST_ONLY_WEAK, &mut OsRng)
+        .unwrap();
+    let back = Purse::load(&path, b"pw").unwrap();
+    assert_eq!(back.sent_records(), alice.sent_records());
+    let mut restored = Purse::from_seed(alice.master_seed(), 0);
+    restored.sync(&node).unwrap();
+    let hr = restored.history(&node).unwrap();
+    assert!(hr.iter().all(|e| !matches!(e.kind, EntryKind::Sent { .. })));
+    // without the record, the change looks like something received: this is the cost of having no outgoing view key
+    assert_eq!(
+        hr.iter().filter(|e| e.kind == EntryKind::Received).count(),
+        1
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_payment_the_node_dropped_is_shown_as_not_confirmed_once_its_reservation_runs_out() {
+    let rig = Rig::new("dropped");
+    let mut node = rig.node();
+    let mut p = Purse::from_seed(&[18; 32], 0);
+    let me = p.accounts()[0].address();
+    let to = Purse::from_seed(&[19; 32], 0).accounts()[0].address();
+    (0..6).for_each(|_| {
+        mine(&mut node, &me);
+    });
+    p.sync(&node).unwrap();
+    p.pay(0, &mut node, &mut OsRng, &to, 1_000, FeeLevel::Low, 5)
+        .unwrap();
+    // the node forgets it (a restart empties the pool) and the chain moves on without it
+    let tx_id = p.sent_records()[0].id;
+    drop(node);
+    let mut node = rig.node();
+    assert!(node.pool().is_empty(), "a restart empties the pool");
+    for _ in 0..(tenero_wallet::wallet::RESERVE_BLOCKS + 2) {
+        mine(&mut node, &me);
+    }
+    p.sync(&node).unwrap();
+    let _ = p.balance(0, &node).unwrap(); // drops the lapsed reservation
+    let h = p.history(&node).unwrap();
+    let s = h.iter().find(|e| e.id == Some(tx_id)).unwrap();
+    assert!(
+        matches!(
+            s.kind,
+            EntryKind::Sent {
+                status: SentStatus::NotConfirmed,
+                ..
+            }
+        ),
+        "{:?}",
+        s.kind
+    );
 }

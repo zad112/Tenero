@@ -31,6 +31,40 @@ pub const RESERVE_BLOCKS: u64 = 20;
 /// median between sending and mining), and at least one unit more.
 pub const FEE_MARGIN_PERCENT: u64 = 25;
 
+/// How much to pay for a payment, as a multiple of the minimum fee the next block needs. The minimum is a rule of
+/// the chain; a higher fee only buys a better place when the pool is full (a full pool drops the lowest fee rate
+/// first), and nothing else. Chosen by the owner 2026-10-03.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeeLevel {
+    /// 1.25 times the minimum: what the wallet always paid (the margin covers the minimum rising before a block).
+    Low,
+    /// 2 times the minimum.
+    Normal,
+    /// 5 times the minimum.
+    High,
+}
+
+impl FeeLevel {
+    pub const ALL: [FeeLevel; 3] = [FeeLevel::Low, FeeLevel::Normal, FeeLevel::High];
+
+    /// The fee as a percentage of the minimum.
+    pub fn percent_of_minimum(self) -> u64 {
+        match self {
+            FeeLevel::Low => 100 + FEE_MARGIN_PERCENT,
+            FeeLevel::Normal => 200,
+            FeeLevel::High => 500,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FeeLevel::Low => "Low",
+            FeeLevel::Normal => "Normal",
+            FeeLevel::High => "High",
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum WalletError {
     /// The node or the store said no.
@@ -143,6 +177,9 @@ pub struct Built {
     pub change: u64,
     /// The key images of the outputs it spends (to reserve them).
     pub spends: Vec<[u8; 32]>,
+    /// The one-time address of the change output (so the wallet can tell its own change from a payment it
+    /// received: change comes back to the wallet and scanning finds it like any other output).
+    pub change_onetime: [u8; 32],
 }
 
 pub struct Wallet {
@@ -235,6 +272,13 @@ impl Wallet {
 
     pub fn owned(&self) -> &[Owned] {
         &self.owned
+    }
+
+    /// Whether any of these key images is still promised to a payment this wallet sent.
+    pub fn is_reserved(&self, key_images: &[[u8; 32]]) -> bool {
+        self.reserved
+            .iter()
+            .any(|r| key_images.contains(&r.key_image))
     }
 
     // --------------------------------------------------------------------------------------------
@@ -425,6 +469,18 @@ impl Wallet {
         to: &Address,
         amount: u64,
     ) -> Result<Built, WalletError> {
+        self.build_payment_at(chain, rng, to, amount, FeeLevel::Low)
+    }
+
+    /// [`Wallet::build_payment`] at a chosen fee level.
+    pub fn build_payment_at(
+        &mut self,
+        chain: &impl ChainView,
+        rng: &mut (impl RngCore + CryptoRng),
+        to: &Address,
+        amount: u64,
+        level: FeeLevel,
+    ) -> Result<Built, WalletError> {
         if amount == 0 {
             return Err(WalletError::ZeroAmount);
         }
@@ -435,7 +491,7 @@ impl Wallet {
         // different fee does not change the size).
         let mut fee =
             fees::dynamic_min_fee(2_000, rules.reward, rules.median).map_err(WalletError::Chain)?;
-        for _ in 0..4 {
+        for round in 0..6 {
             let built = self.build_with_fee(chain, rng, &rules, &candidates, to, amount, fee)?;
             let size = built
                 .tx
@@ -444,10 +500,11 @@ impl Wallet {
                 .len() as u64;
             let min = fees::dynamic_min_fee(size, rules.reward, rules.median)
                 .map_err(WalletError::Chain)?;
-            let wanted = min + min * FEE_MARGIN_PERCENT / 100 + 1;
-            // accept a fee that covers the minimum and the margin without being wasteful (the first guess is only
-            // a guess); otherwise take the fee the size asks for and build again
-            if fee >= wanted && fee <= wanted.saturating_mul(2) {
+            let wanted = min.saturating_mul(level.percent_of_minimum()) / 100 + 1;
+            // The fee is exactly the level's share of the minimum for the size it ended up with (the first guess is
+            // only a guess). A different fee can change which coins are chosen and so the size; if that has not
+            // settled after a few rounds, a fee that is at least the level's is taken rather than failing.
+            if fee == wanted || (round >= 3 && fee >= wanted) {
                 return Ok(built);
             }
             fee = wanted;
@@ -480,8 +537,10 @@ impl Wallet {
         // is which)
         let ctx = tx_context(&chosen[0].key_image);
         let mut slots = [(*to, amount), (self.address(), change)];
+        let mut change_slot = 1;
         if rng.next_u32() & 1 == 1 {
             slots.swap(0, 1);
+            change_slot = 0;
         }
         let mut enotes = Vec::new();
         for (i, (addr, value)) in slots.iter().enumerate() {
@@ -563,6 +622,7 @@ impl Wallet {
             amount,
             change,
             spends: chosen.iter().map(|o| o.key_image).collect(),
+            change_onetime: enotes[change_slot].onetime_address,
         })
     }
 
@@ -575,6 +635,17 @@ impl Wallet {
         amount: u64,
     ) -> Result<Built, WalletError> {
         let built = self.build_payment(&*node, rng, to, amount)?;
+        self.send_built(node, &built)?;
+        Ok(built)
+    }
+
+    /// Hands a payment built by [`Wallet::build_payment_at`] to the node and reserves the coins it spends. (Build,
+    /// show the person the fee, and then send: nothing is reserved by building.)
+    pub fn send_built<C: ChainView + Submitter>(
+        &mut self,
+        node: &mut C,
+        built: &Built,
+    ) -> Result<(), WalletError> {
         let next_height = node.rules().map_err(chain_err)?.next_height;
         node.submit(built.tx.clone()).map_err(WalletError::Submit)?;
         for ki in &built.spends {
@@ -583,7 +654,7 @@ impl Wallet {
                 until_height: next_height + RESERVE_BLOCKS,
             });
         }
-        Ok(built)
+        Ok(())
     }
 }
 
