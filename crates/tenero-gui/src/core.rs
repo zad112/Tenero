@@ -563,8 +563,14 @@ impl Core {
                 exe.display()
             ));
         }
+        // A folder this window creates is made private to its owner, as the node requires of its data folder (it holds the
+        // control cookie). One that already exists is left as it is: the node checks it and says what is wrong.
+        let existed = self.settings.data_dir.exists();
         std::fs::create_dir_all(&self.settings.data_dir)
             .map_err(|e| format!("cannot create {}: {e}", self.settings.data_dir.display()))?;
+        if !existed {
+            tenero_app::private_dir::make_private(&self.settings.data_dir)?;
+        }
         let log = self.app_dir.join("node-output.txt");
         let proc = Proc::spawn(&exe, &procs::node_args(&self.settings), &log)?;
         self.node_proc = Some(proc);

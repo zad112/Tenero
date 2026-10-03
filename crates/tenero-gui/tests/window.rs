@@ -64,7 +64,9 @@ impl Rig {
                 ..Default::default()
             };
             let app = &mut self.app;
-            let out = self.ctx.run_ui(input, |ui| app.draw(ui));
+            let mut out = self.ctx.run_ui(input, |ui| app.draw(ui));
+            // nothing paints these frames, so the texture uploads are dropped on purpose (egui checks in debug builds)
+            out.textures_delta.clear();
             let copies = out
                 .platform_output
                 .commands
