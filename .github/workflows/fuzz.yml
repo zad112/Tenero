@@ -1,0 +1,53 @@
+name: fuzz
+
+# Coverage-guided fuzzing with libFuzzer (docs/THREAT_MODEL.md, A3 and A4). Run by hand ("Run workflow", with the seconds each target may run) or
+# once a month. It needs a nightly Rust and Linux, which is why it is here and not on the owner's machine. The work of each target is in
+# crates/tenero-fuzzcases (compiled and tested everywhere); a crash is uploaded as an artifact, and becomes a case in
+# crates/tenero-fuzzcases/tests/regressions.rs.
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "seconds each target may run"
+        default: "300"
+  schedule:
+    - cron: "0 5 1 * *"
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [decode_v2, wire_stream, control_bodies, engine_messages]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+            ~/.cargo/bin/cargo-fuzz
+          key: fuzz-${{ runner.os }}-${{ hashFiles('fuzz/Cargo.lock') }}-cargo-fuzz-0.13
+      - name: install cargo-fuzz (first run)
+        run: command -v cargo-fuzz || cargo install cargo-fuzz --locked
+      - name: seeds
+        run: cargo run --release -p tenero-fuzzcases --example write_seeds -- fuzz/corpus
+      - name: fuzz ${{ matrix.target }}
+        run: |
+          mkdir -p fuzz/corpus/${{ matrix.target }}
+          cargo fuzz run ${{ matrix.target }} fuzz/corpus/${{ matrix.target }} -- -max_total_time=${{ github.event.inputs.seconds || '300' }} -max_len=65536 -rss_limit_mb=3072
+      - name: keep a crash
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}

@@ -1,0 +1,47 @@
+# Coverage-guided fuzzing (libFuzzer, through cargo-fuzz). Its own workspace, so that the normal build and `cargo test` never compile libFuzzer;
+# it needs a nightly Rust and a Linux machine (the CI workflow `fuzz` runs it; see docs/THREAT_MODEL.md). The work of each target is in
+# `crates/tenero-fuzzcases`, which compiles and is tested everywhere.
+[package]
+name = "tenero-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# libFuzzer's Rust binding: licence MIT OR Apache-2.0 OR NCSA; a dev tool, never in a shipped program (the owner approved cargo-fuzz in principle,
+# 2026-10-02: docs/M10_M11_PLAN.md). It brings `arbitrary` and `cc` (the C++ build of libFuzzer) with it.
+libfuzzer-sys = "0.4"
+tenero-fuzzcases = { path = "../crates/tenero-fuzzcases" }
+
+[workspace]
+
+[[bin]]
+name = "decode_v2"
+path = "fuzz_targets/decode_v2.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_stream"
+path = "fuzz_targets/wire_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "control_bodies"
+path = "fuzz_targets/control_bodies.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "engine_messages"
+path = "fuzz_targets/engine_messages.rs"
+test = false
+doc = false
+bench = false

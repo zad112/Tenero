@@ -1,0 +1,17 @@
+[package]
+name = "tenero-fuzzcases"
+description = "The bodies of the coverage-guided fuzz targets (fuzz/fuzz_targets), as ordinary functions that compile and are tested on every platform: a crash libFuzzer finds is reproduced by calling one with the crash file. Experimental and unaudited."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tenero-core = { path = "../tenero-core" }
+tenero-net = { path = "../tenero-net" }
+tenero-chain = { path = "../tenero-chain" }
+tenero-node = { path = "../tenero-node" }
+tenero-app = { path = "../tenero-app" }
+
+[lints]
+workspace = true

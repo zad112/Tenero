@@ -36,3 +36,8 @@ Thumbs.db
 
 # downloaded update bundles
 *.zip
+
+# fuzzing: the corpus is made from the seeds (write_seeds) and grows by itself; the build directory and the crashes are not kept here
+fuzz/corpus/
+fuzz/target/
+fuzz/artifacts/
