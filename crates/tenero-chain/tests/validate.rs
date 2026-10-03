@@ -1535,3 +1535,65 @@ fn a_block_that_fails_the_cheap_check_costs_no_dataset_and_a_lie_about_the_heigh
     let _ = v.accept_block(&forged, NOW);
     assert_eq!(pow.builds(), 1);
 }
+
+/// B8 of the threat model: the proof check is CPU a stranger can ask for, so every cheap, structural rule comes first. A transaction that
+/// breaks any of them is refused without the proof hook being called once; a structurally sound one reaches it exactly once.
+#[test]
+fn a_transaction_that_breaks_a_structural_rule_is_refused_before_any_proof_is_checked() {
+    let mut net = Net::prepared("b8", FIRST_SPEND_HEIGHT as usize - 1);
+    let good = net.spend();
+    let rec = Recorder {
+        real: true,
+        fail_on_call: None,
+        seen: Mutex::new(vec![]),
+    };
+    let v = Validator::new(&net.store, &net.params, &net.pow, &rec);
+    let calls = || rec.seen.lock().unwrap().len();
+
+    let mut cases: Vec<(&str, Transaction)> = vec![];
+    let mut t = good.clone();
+    t.prefix.version += 1;
+    cases.push(("a wrong version", t));
+    let mut t = good.clone();
+    t.prefix.fee = 0;
+    cases.push(("a fee under the minimum", t));
+    let mut t = good.clone();
+    t.prefix.inputs.reverse();
+    t.prunable.rings.reverse();
+    cases.push(("key images not in ascending order", t));
+    let mut t = good.clone();
+    t.prunable.rings.pop();
+    cases.push(("not one ring per input", t));
+    let mut t = good.clone();
+    t.prunable.rings[0].pop();
+    cases.push(("a ring of the wrong size", t));
+    let mut t = good.clone();
+    t.prunable.rings[0].reverse();
+    cases.push(("a ring not in ascending order", t));
+    let mut t = good.clone();
+    t.prunable.rings[0][15] = 9_999_999;
+    cases.push(("a ring member that does not exist", t));
+    for (what, t) in &cases {
+        assert!(v.check_pool_tx(t).is_err(), "{what} was accepted");
+        assert_eq!(
+            calls(),
+            0,
+            "{what}: the proof hook was called for a transaction that breaks a structural rule"
+        );
+    }
+    // and the sound one reaches the hook, once
+    v.check_pool_tx(&good).expect("a good spend is taken");
+    assert_eq!(calls(), 1);
+    // the proof rejects it: that is the only way to get a second call
+    let failing = Recorder {
+        real: true,
+        fail_on_call: Some(0),
+        seen: Mutex::new(vec![]),
+    };
+    let v = Validator::new(&net.store, &net.params, &net.pow, &failing);
+    assert!(matches!(
+        v.check_pool_tx(&good),
+        Err(BlockError::ProofRejected { .. })
+    ));
+    assert_eq!(failing.seen.lock().unwrap().len(), 1);
+}

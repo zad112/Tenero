@@ -15,7 +15,7 @@ at any time.
   **First run: no bug found.** Five deliberate faults (trailing bytes accepted, zero-length control frame accepted, a failed decoder not final or
   still buffering) were all caught after two properties were tightened. Not covered: the engine's message handling as a whole
   (what a peer can do with a *valid* message sent in a hostile order), the noise handshake, and the store's file readers.
-* **cargo-fuzz (libFuzzer), planned, before the first release** (approved in principle 2026-10-02): coverage-guided runs of the same
+* **cargo-fuzz (libFuzzer): BUILT 2026-10-03, run once for two minutes a target, no crash** (details and numbers in `THREAT_MODEL.md` section 5, item 2; four targets in `fuzz/`, their bodies in `crates/tenero-fuzzcases`, run by `.github/workflows/fuzz.yml` on a hosted Ubuntu runner). **Long runs are still to be done before the first release.** The original plan (approved in principle 2026-10-02): coverage-guided runs of the same
   decoders, then the engine's event handler, run under WSL or a Linux CI runner (the owner's Windows setup is the weak platform for it;
   it needs a nightly Rust). A corpus seeded from the golden vectors; crashes become regression tests. A run of hours with no
   finding is evidence, not proof.
