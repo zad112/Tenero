@@ -2,7 +2,8 @@
 //! longer holds on honest input is found without a fuzzer. A crash a fuzzer finds becomes a case in `regressions.rs`.
 
 use tenero_fuzzcases::{
-    control_bodies, decode_v2, engine_messages, fixture, op, record, seeds, wire_stream,
+    control_bodies, decode_v2, engine_messages, fixture, op, record, seeds, wallet_proofs,
+    wire_stream,
 };
 
 fn bytes(seed: u64, n: usize) -> Vec<u8> {
@@ -20,7 +21,12 @@ fn bytes(seed: u64, n: usize) -> Vec<u8> {
 #[test]
 fn every_seed_runs_through_its_target() {
     let all = seeds();
-    for target in ["decode_v2", "wire_stream", "engine_messages"] {
+    for target in [
+        "decode_v2",
+        "wire_stream",
+        "engine_messages",
+        "wallet_proofs",
+    ] {
         assert!(
             all.iter().any(|(t, _, _)| *t == target),
             "no seed for {target}"
@@ -33,6 +39,7 @@ fn every_seed_runs_through_its_target() {
                 control_bodies(data);
             }
             "wire_stream" => wire_stream(data),
+            "wallet_proofs" => wallet_proofs(data),
             "engine_messages" => {
                 engine_messages(data);
             }
@@ -49,6 +56,24 @@ fn the_decoders_and_the_stream_survive_pseudo_random_bytes() {
         decode_v2(&b);
         control_bodies(&b);
         wire_stream(&b);
+        wallet_proofs(&b);
+    }
+}
+
+#[test]
+fn the_proof_checker_survives_every_single_byte_change_of_an_honest_proof() {
+    let f = tenero_fuzzcases::proof_fixture();
+    for p in &f.proofs {
+        let good = p.to_bytes();
+        for i in 0..good.len() {
+            for flip in [1u8, 0x80, 0xff] {
+                let mut bad = good.clone();
+                bad[i] ^= flip;
+                wallet_proofs(&bad);
+            }
+        }
+        // and an honest one is checked, not just survived
+        assert!(tenero_wallet::proofs::check(p, &f.out).is_ok());
     }
 }
 

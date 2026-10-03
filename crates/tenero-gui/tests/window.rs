@@ -58,7 +58,7 @@ impl Rig {
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::pos2(0.0, 0.0),
-                    egui::vec2(1000.0, 760.0),
+                    egui::vec2(1000.0, 4000.0),
                 )),
                 ..Default::default()
             };
@@ -138,6 +138,8 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             amount: 250_000_000,
             height: 1200,
             id: Some([9; 32]),
+            global_index: None,
+            has_secret: true,
         },
         HistoryRow {
             account: 0,
@@ -146,6 +148,8 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             amount: 1_000_000_000,
             height: 1100,
             id: None,
+            global_index: Some(3),
+            has_secret: false,
         },
         HistoryRow {
             account: 1,
@@ -154,6 +158,8 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             amount: 5,
             height: 900,
             id: None,
+            global_index: Some(5),
+            has_secret: false,
         },
     ];
     WalletView::Unlocked(Box::new(WalletData {
@@ -725,6 +731,155 @@ fn a_fee_that_cannot_be_worked_out_says_why_instead_of_working_for_ever() {
     );
     assert!(
         t.contains("no price") && !t.contains("working it out"),
+        "{t}"
+    );
+}
+
+#[test]
+fn the_history_offers_proofs_and_the_transaction_key_is_not_shown_until_asked() {
+    let mut rig = Rig::new();
+    rig.app.goto("History");
+    let s = snap(
+        &rig,
+        wallet(true, true),
+        NodeView::Running {
+            info: info(false, 3),
+            ours: true,
+        },
+        MinerView::Off,
+        None,
+    );
+    rig.app.set_snapshot(s);
+    let (t, _) = rig.frame();
+    for needle in ["Prove payment", "Show transaction key", "Prove receipt"] {
+        assert!(
+            t.contains(needle),
+            "`{needle}` missing from the history:
+{t}"
+        );
+    }
+    // nothing secret is on screen yet
+    let key = "ab".repeat(32);
+    assert!(!t.contains(&key));
+    // after the click the worker answers; only then is the key drawn, in a window that says what it is, with a copy button of its own
+    rig.events
+        .send(Event::TxKey {
+            id: [9; 32],
+            key: Zeroizing::new(key.clone()),
+        })
+        .unwrap();
+    let (t, copies) = rig.frame();
+    assert!(
+        t.contains("Transaction key (secret)") && t.contains(&key),
+        "{t}"
+    );
+    assert!(t.contains("It cannot spend anything"), "{t}");
+    assert!(
+        copies.is_empty(),
+        "the key was put on the clipboard without a click"
+    );
+    // and a proof just made is shown with its warning, also not copied by itself
+    rig.events
+        .send(Event::Proof {
+            text: "tnpay1deadbeef".into(),
+            note: "Proves this payment without giving away its secret key.".into(),
+        })
+        .unwrap();
+    let (t, copies) = rig.frame();
+    assert!(
+        t.contains("Payment proof") && t.contains("tnpay1deadbeef"),
+        "{t}"
+    );
+    assert!(t.contains("does not show who sent it"), "{t}");
+    assert!(copies.is_empty());
+}
+
+#[test]
+fn the_prove_screen_signs_verifies_and_checks_and_says_what_it_does_not_show() {
+    let mut rig = Rig::new();
+    rig.app.goto("Prove");
+    // with the wallet locked and no node: verifying still works (no wallet, no node), signing and checking say what they need
+    let s = snap(
+        &rig,
+        WalletView::Locked,
+        NodeView::Stopped,
+        MinerView::Off,
+        None,
+    );
+    rig.app.set_snapshot(s);
+    let (t, _) = rig.frame();
+    for needle in [
+        "UNAUDITED",
+        "Sign a message",
+        "Unlock the wallet",
+        "Verify a signed message",
+        "Check a payment proof",
+        "start the node first",
+    ] {
+        assert!(
+            t.contains(needle),
+            "`{needle}` missing from the Prove screen:
+{t}"
+        );
+    }
+    // unlocked, with the node up: signing is offered
+    let s = snap(
+        &rig,
+        wallet(true, true),
+        NodeView::Running {
+            info: info(false, 3),
+            ours: true,
+        },
+        MinerView::Off,
+        None,
+    );
+    rig.app.set_snapshot(s);
+    let (t, _) = rig.frame();
+    assert!(
+        t.contains("Sign as") && t.contains("Check against the node"),
+        "{t}"
+    );
+    // the answers
+    rig.events
+        .send(Event::Signed {
+            signature: format!("tnsig1{}", "0".repeat(128)),
+        })
+        .unwrap();
+    let (t, _) = rig.frame();
+    assert!(
+        t.contains("Signed by") && t.contains("Copy signature"),
+        "{t}"
+    );
+    rig.events
+        .send(Event::ProofChecked(Ok(CheckedView {
+            kind: "sent",
+            address: addr(9),
+            amount: 250_000_000,
+            height: 1200,
+            global_index: 77,
+            confirmations: 3,
+            block_reward: false,
+        })))
+        .unwrap();
+    let (t, _) = rig.frame();
+    for needle in [
+        "VALID",
+        "2.5 TNR",
+        "Blocks on top",
+        "does not show who sent it",
+    ] {
+        assert!(
+            t.contains(needle),
+            "`{needle}` missing:
+{t}"
+        );
+    }
+    rig.events
+        .send(Event::ProofChecked(Err("the proof is NOT valid".into())))
+        .unwrap();
+    let (t, _) = rig.frame();
+    assert!(
+        t.contains("NOT valid: the proof is NOT valid") && !t.contains("Blocks on top"),
         "{t}"
     );
 }

@@ -154,7 +154,7 @@ What the owner asked for is a rate that can be compared with other GPU miners. T
   folder.
 * **A version number and a protocol/network id in the peer handshake**, so a tester on an old build or on another chain
   is refused with a clear message instead of a ban or a split.
-* **Sign and verify messages, and prove and check payments, as Monero's wallet does (the owner's request, 2026-10-03; size M; not started).**
+* **Sign and verify messages, and prove and check payments, as Monero's wallet does (the owner's request, 2026-10-03; size M; BUILT 2026-10-03: the owner chose to keep each payment's secret key in the wallet file behind a click to reveal, and the hand-written option with no new dependency; the definition is `docs/WALLET_PROOFS.md`, the independent reference `tools/make_vectors_proofs.py`, 4 signature and 9 proof vectors the Rust matches bit for bit, a fuzz target `wallet_proofs`; the window has a Prove tab and History buttons; still unaudited and the review is not done).** The plan as written before building:
   What each does, and what it needs:
   * **Sign a message / verify a signature:** the wallet signs a text with an account's spend key (the signature says "whoever
     holds this address's spend key wrote this", nothing about when or where); anyone checks it against the address alone. The

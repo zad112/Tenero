@@ -40,6 +40,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "wallet_proofs"
+path = "fuzz_targets/wallet_proofs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "engine_messages"
 path = "fuzz_targets/engine_messages.rs"
 test = false

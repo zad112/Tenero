@@ -540,6 +540,137 @@ fn mine_pay_at_every_fee_level_and_read_the_history() {
         .iter()
         .any(|h| h.account == 1 && h.kind == EntryKind::Received && h.amount == 50_000_000));
 
+    // ---- proofs, signatures and the transaction key, through the same screen logic -------------------------------------
+    let sent_row = d
+        .history
+        .iter()
+        .find(|h| matches!(h.kind, EntryKind::Sent { .. }))
+        .unwrap()
+        .clone();
+    assert!(sent_row.has_secret, "a payment sent now keeps its secret");
+    let id = sent_row.id.unwrap();
+    let proof_of = |c: &mut Core, req: ProofRequest| -> String {
+        let ev = c.handle(Cmd::MakeProof(req));
+        assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+        ev.iter()
+            .find_map(|e| match e {
+                Event::Proof { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("a proof")
+    };
+    let check = |c: &mut Core, text: &str| -> Result<CheckedView, String> {
+        let ev = c.handle(Cmd::CheckProof {
+            text: text.to_string(),
+        });
+        ev.into_iter()
+            .find_map(|e| match e {
+                Event::ProofChecked(r) => Some(r),
+                _ => None,
+            })
+            .expect("an answer")
+    };
+    for key in [false, true] {
+        let text = proof_of(&mut c, ProofRequest::Sent { id, key });
+        let v = check(&mut c, &text).unwrap_or_else(|e| panic!("key={key}: {e}"));
+        assert_eq!(
+            (v.amount, v.address.as_str()),
+            (50_000_000, saving.as_str())
+        );
+        assert_eq!(v.kind, if key { "key" } else { "sent" });
+        assert!(v.confirmations >= 1 && !v.block_reward);
+        // a proof with one character changed is refused, with the reason
+        let mut bad = text.clone().into_bytes();
+        let at = bad.len() / 2;
+        bad[at] = if bad[at] == b'0' { b'1' } else { b'0' };
+        assert!(check(&mut c, &String::from_utf8(bad).unwrap()).is_err());
+    }
+    // the receiving account proves its receipt from the history, and the proof names the account's address
+    let got = d
+        .history
+        .iter()
+        .find(|h| h.account == 1 && h.kind == EntryKind::Received)
+        .unwrap();
+    let text = proof_of(
+        &mut c,
+        ProofRequest::Received {
+            account: 1,
+            global_index: got.global_index.unwrap(),
+        },
+    );
+    let v = check(&mut c, &text).unwrap();
+    assert_eq!(
+        (v.amount, v.address.as_str(), v.kind),
+        (50_000_000, saving.as_str(), "received")
+    );
+    // account 0 cannot make a proof of an output that is account 1's
+    let ev = c.handle(Cmd::MakeProof(ProofRequest::Received {
+        account: 0,
+        global_index: got.global_index.unwrap(),
+    }));
+    assert_eq!(errors(&ev).len(), 1);
+
+    // the secret is shown only when asked for, and is the 64 digits of the payment's secret
+    let ev = c.handle(Cmd::RevealTxKey { id });
+    let key_hex = ev
+        .iter()
+        .find_map(|e| match e {
+            Event::TxKey { key, .. } => Some(key.to_string()),
+            _ => None,
+        })
+        .expect("the key");
+    assert_eq!(key_hex.len(), 64);
+    assert!(
+        !format!("{:?}", c.snapshot().wallet).contains(&key_hex),
+        "the key is not part of what the window holds"
+    );
+
+    // signing needs the wallet; verifying (and checking a proof) needs only the node
+    let ev = c.handle(Cmd::SignMessage {
+        account: 1,
+        message: "this is mine".into(),
+    });
+    let sig = ev
+        .iter()
+        .find_map(|e| match e {
+            Event::Signed { signature } => Some(signature.clone()),
+            _ => None,
+        })
+        .expect("a signature");
+    let sig = tenero_wallet::proofs::MessageSignature::from_text(&sig).unwrap();
+    let addr = tenero_wallet::Address::from_text(&saving).unwrap();
+    assert_eq!(
+        tenero_wallet::proofs::verify_message(&addr, b"this is mine", &sig),
+        Ok(())
+    );
+    assert!(tenero_wallet::proofs::verify_message(&addr, b"this is mine!", &sig).is_err());
+    assert_eq!(
+        errors(&c.handle(Cmd::SignMessage {
+            account: 1,
+            message: String::new()
+        }))
+        .len(),
+        1
+    );
+    c.handle(Cmd::Lock);
+    assert!(
+        errors(&c.handle(Cmd::SignMessage {
+            account: 1,
+            message: "x".into()
+        }))
+        .len()
+            == 1,
+        "no signing with the wallet locked"
+    );
+    assert!(
+        check(&mut c, &text).is_ok(),
+        "a proof is checked with the wallet locked"
+    );
+    assert!(errors(&c.handle(Cmd::MakeProof(ProofRequest::Sent { id, key: false }))).len() == 1);
+    c.handle(Cmd::Unlock {
+        password: pw("a long enough password"),
+    });
+
     // stopping the miner is immediate and leaves the node going; stopping the node stops everything
     c.handle(Cmd::StopMiner);
     assert_eq!(c.snapshot().miner, MinerView::Off);

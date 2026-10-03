@@ -299,6 +299,16 @@ impl Core {
                 level,
             } => self.prepare(account, &to, &amount, level),
             Cmd::SendPrepared => self.send_prepared(&mut events),
+            Cmd::SignMessage { account, message } => {
+                self.sign_message(account, &message, &mut events)
+            }
+            Cmd::MakeProof(req) => self.make_proof(req, &mut events),
+            Cmd::RevealTxKey { id } => self.reveal_tx_key(&id, &mut events),
+            Cmd::CheckProof { text } => {
+                let r = self.check_proof(&text);
+                events.push(Event::ProofChecked(r));
+                Ok(())
+            }
             Cmd::CancelPrepared => {
                 self.prepared = None;
                 Ok(())
@@ -573,6 +583,102 @@ impl Core {
             fee: p.built.fee,
         });
         Ok(())
+    }
+
+    // ---- signatures and proofs --------------------------------------------------------------------------
+
+    fn sign_message(
+        &mut self,
+        account: usize,
+        message: &str,
+        events: &mut Vec<Event>,
+    ) -> Result<(), String> {
+        if message.is_empty() {
+            return Err("type the message to sign".into());
+        }
+        let purse = self.purse.as_ref().ok_or("the wallet is locked")?;
+        let sig = purse
+            .sign_message(account, &mut OsRng, message.as_bytes())
+            .map_err(purse_err)?;
+        events.push(Event::Signed {
+            signature: sig.to_text(),
+        });
+        Ok(())
+    }
+
+    fn make_proof(&mut self, req: ProofRequest, events: &mut Vec<Event>) -> Result<(), String> {
+        let node = self
+            .node
+            .as_ref()
+            .ok_or("the node is not running: a proof is made against the chain (start the node on the Node tab)")?;
+        let purse = self.purse.as_ref().ok_or("the wallet is locked")?;
+        let (proof, what) = match req {
+            ProofRequest::Received {
+                account,
+                global_index,
+            } => (
+                purse
+                    .prove_received(account, global_index, node, &mut OsRng)
+                    .map_err(purse_err)?,
+                "Proves that this account received this output.",
+            ),
+            ProofRequest::Sent { id, key } => (
+                purse
+                    .prove_sent(
+                        &id,
+                        if key {
+                            tenero_wallet::proofs::ProofKind::Key
+                        } else {
+                            tenero_wallet::proofs::ProofKind::Sent
+                        },
+                        node,
+                        &mut OsRng,
+                    )
+                    .map_err(purse_err)?,
+                if key {
+                    "Contains the payment's secret key: anyone holding it can check this one output."
+                } else {
+                    "Proves this payment without giving away its secret key."
+                },
+            ),
+        };
+        events.push(Event::Proof {
+            text: proof.to_text(),
+            note: what.to_string(),
+        });
+        Ok(())
+    }
+
+    fn reveal_tx_key(&mut self, id: &[u8; 32], events: &mut Vec<Event>) -> Result<(), String> {
+        let purse = self.purse.as_ref().ok_or("the wallet is locked")?;
+        let secret = purse.tx_secret(id).map_err(purse_err)?;
+        let hex = tenero_core::hash::hex_lower(secret.expose());
+        events.push(Event::TxKey {
+            id: *id,
+            key: Zeroizing::new(hex),
+        });
+        Ok(())
+    }
+
+    /// Checks a proof against the node's chain. Needs a node, not a wallet.
+    fn check_proof(&self, text: &str) -> Result<CheckedView, String> {
+        let proof =
+            tenero_wallet::proofs::PaymentProof::from_text(text).map_err(|e| e.to_string())?;
+        let node = self
+            .node
+            .as_ref()
+            .ok_or("the node is not running: a proof is checked against the chain (start the node on the Node tab)")?;
+        let (c, confirmations) =
+            tenero_wallet::proofs::check_on_chain(node, &proof).map_err(|e| e.to_string())?;
+        Ok(CheckedView {
+            kind: c.kind.name(),
+            address: c.address.to_text(),
+            amount: c.amount,
+            height: c.height,
+            global_index: c.global_index,
+            confirmations,
+            block_reward: c.block_reward,
+        })
     }
 
     // ---- the node ---------------------------------------------------------------------------------------
@@ -1009,6 +1115,8 @@ impl Core {
                 amount: e.amount,
                 height: e.height,
                 id: e.id,
+                global_index: e.global_index,
+                has_secret: e.has_secret,
             })
             .collect();
         let scanned = purse

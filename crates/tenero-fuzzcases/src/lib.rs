@@ -11,6 +11,7 @@
 //! * [`wire_stream`]: the peer frame decoder, fed in chunks of any size, never panics, never yields a message after a failure and never holds
 //!   more than one frame's worth;
 //! * [`control_bodies`]: the control interface's requests and responses decode strictly;
+//! * [`wallet_proofs`]: a signature or a payment proof of any shape is refused or checked without a panic, and what parses writes back the same;
 //! * [`engine_messages`]: a real protocol engine, given a stream of connections, messages (valid or not, in any order), bad bytes and time,
 //!   never panics, never sends to a peer that is gone or just ordered off (the bug the proptest harness found on 2026-10-02), only sends
 //!   what the wire can carry, and keeps within its peer limits.
@@ -113,6 +114,113 @@ pub fn control_bodies(data: &[u8]) {
             .to_body()
             .unwrap_or_else(|e| panic!("a response cannot be encoded: {e}"));
         assert_eq!(back.as_slice(), data, "a second encoding of a response");
+    }
+}
+
+// ---- the wallet's signatures and payment proofs ----------------------------------------------------------------------------------
+
+/// A fixed stream of "random" bytes, so that the output and the seeds below are the same on every run (a corpus made once keeps matching).
+struct Det(u64);
+
+impl rand_core::RngCore for Det {
+    fn next_u32(&mut self) -> u32 {
+        self.next_u64() as u32
+    }
+    fn next_u64(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        for b in dest {
+            *b = (self.next_u64() >> 24) as u8;
+        }
+    }
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+impl rand_core::CryptoRng for Det {}
+
+/// One output made for a known wallet, with honest proofs about it: what the checker is run against, and the seeds.
+pub struct ProofFixture {
+    pub out: tenero_wallet::proofs::OutputFields,
+    pub proofs: Vec<tenero_wallet::proofs::PaymentProof>,
+    pub signature: tenero_wallet::proofs::MessageSignature,
+    pub address: tenero_wallet::Address,
+}
+
+pub fn proof_fixture() -> &'static ProofFixture {
+    static F: OnceLock<ProofFixture> = OnceLock::new();
+    F.get_or_init(|| {
+        use tenero_wallet::proofs::{
+            key_proof, prove_received, prove_sent, sign_message, OutputFields,
+        };
+        let mut rng = Det(0x1234_5678_9abc_def1);
+        let keys = tenero_wallet::Keys::from_seed(&[5; 32]);
+        let address = keys.address();
+        let ctx = tenero_wallet::interim::tx_context(&[6; 32]);
+        let e = tenero_wallet::interim::create_enote(&mut rng, &address, 4242, &ctx, 1, false)
+            .expect("an output");
+        let out = OutputFields {
+            onetime_address: e.onetime_address,
+            ephemeral_pubkey: e.ephemeral_pubkey,
+            amount_commitment: e.amount_commitment,
+            amount_enc: e.amount_enc,
+            ctx,
+            index: 1,
+            public_amount: None,
+        };
+        let proofs = vec![
+            prove_received(&keys.view_keys(), &mut rng, 9, 3, &out).expect("a proof"),
+            prove_sent(&e.tx_secret, &address, &mut rng, 9, 3, &out).expect("a proof"),
+            key_proof(&e.tx_secret, &address, 9, 3, &out).expect("a proof"),
+        ];
+        let signature = sign_message(&keys, &mut rng, b"fuzz");
+        ProofFixture {
+            out,
+            proofs,
+            signature,
+            address,
+        }
+    })
+}
+
+/// A signature or a payment proof, as text or bytes, of any shape.
+pub fn wallet_proofs(data: &[u8]) {
+    use tenero_wallet::proofs::{check, verify_message, MessageSignature, PaymentProof};
+    let f = proof_fixture();
+    let text = String::from_utf8_lossy(data);
+    let _ = MessageSignature::from_text(&text);
+    if let Ok(p) = PaymentProof::from_text(&text) {
+        assert_eq!(
+            PaymentProof::from_text(&p.to_text()).as_ref(),
+            Ok(&p),
+            "a proof's text did not round-trip"
+        );
+    }
+    if let Ok(p) = PaymentProof::from_bytes(data) {
+        assert_eq!(
+            p.to_bytes().as_slice(),
+            data,
+            "a proof's bytes did not round-trip"
+        );
+        let _ = check(&p, &f.out);
+    }
+    // a signature made of the first 64 bytes, over the rest as the message, for the honest address and for an address from the input
+    if data.len() >= 64 {
+        let mut sig = [0u8; 64];
+        sig.copy_from_slice(&data[..64]);
+        let _ = verify_message(&f.address, &data[64..], &MessageSignature(sig));
+        if data.len() >= 128 {
+            let a = tenero_wallet::Address {
+                spend: data[64..96].try_into().expect("32 bytes"),
+                view: data[96..128].try_into().expect("32 bytes"),
+            };
+            let _ = verify_message(&a, &data[128..], &MessageSignature(sig));
+        }
     }
 }
 
@@ -411,6 +519,25 @@ pub fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
             }
         }
     }
+    let pf = proof_fixture();
+    for (i, p) in pf.proofs.iter().enumerate() {
+        out.push(("wallet_proofs", format!("proof-bytes-{i}"), p.to_bytes()));
+        out.push((
+            "wallet_proofs",
+            format!("proof-text-{i}"),
+            p.to_text().into_bytes(),
+        ));
+    }
+    out.push((
+        "wallet_proofs",
+        "signature-text".into(),
+        pf.signature.to_text().into_bytes(),
+    ));
+    out.push((
+        "wallet_proofs",
+        "signature-bytes".into(),
+        pf.signature.0.to_vec(),
+    ));
     let fx = fixture();
     let honest: Vec<(&str, Message)> = vec![
         ("ping", Message::Ping(7)),

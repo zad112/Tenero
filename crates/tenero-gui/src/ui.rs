@@ -34,6 +34,7 @@ enum Tab {
     Send,
     Receive,
     History,
+    Prove,
     Node,
     Mining,
     Settings,
@@ -41,11 +42,12 @@ enum Tab {
 }
 
 impl Tab {
-    const ALL: [(Tab, &'static str); 8] = [
+    const ALL: [(Tab, &'static str); 9] = [
         (Tab::Wallet, "Wallet"),
         (Tab::Send, "Send"),
         (Tab::Receive, "Receive"),
         (Tab::History, "History"),
+        (Tab::Prove, "Prove"),
         (Tab::Node, "Node"),
         (Tab::Mining, "Mining"),
         (Tab::Settings, "Settings"),
@@ -103,6 +105,19 @@ struct SendForm {
 }
 
 #[derive(Default)]
+struct ProveForm {
+    sign_account: usize,
+    sign_message: String,
+    signature: Option<String>,
+    verify_address: String,
+    verify_message: String,
+    verify_signature: String,
+    verified: Option<Result<String, String>>,
+    check_text: String,
+    checked: Option<Result<CheckedView, String>>,
+}
+
+#[derive(Default)]
 struct Prompt {
     /// `Some` while the "type your password" window for showing the words is open.
     reveal: Option<Zeroizing<String>>,
@@ -128,6 +143,11 @@ pub struct App {
     /// When `Quit` was sent: if the worker has not finished 75 s later (it is stuck), the window ends what it started itself.
     closing_since: Option<Instant>,
     node_tail: (Instant, String),
+    prove: ProveForm,
+    /// A payment proof just made (its text and what it shows), in a window until closed.
+    proof_window: Option<(String, String)>,
+    /// The secret of a sent payment, shown on request in a window until closed.
+    tx_key_window: Option<Zeroizing<String>>,
     miner_tail: (Instant, String),
 }
 
@@ -187,6 +207,9 @@ impl App {
             closing: false,
             closing_since: None,
             node_tail: (now, String::new()),
+            prove: ProveForm::default(),
+            proof_window: None,
+            tx_key_window: None,
             miner_tail: (now, String::new()),
         };
         if let Some(n) = notice {
@@ -262,6 +285,10 @@ impl App {
                     );
                     self.send = SendForm::default();
                 }
+                Event::Signed { signature } => self.prove.signature = Some(signature),
+                Event::Proof { text, note } => self.proof_window = Some((text, note)),
+                Event::TxKey { key, .. } => self.tx_key_window = Some(key),
+                Event::ProofChecked(r) => self.prove.checked = Some(r),
                 Event::Notice(m) => self.toast(m, false),
                 Event::Error(m) => {
                     self.send.working = None;
@@ -1118,33 +1145,42 @@ impl App {
             ui.label("Nothing yet.");
             return;
         }
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            egui::Grid::new("history").striped(true).num_columns(6).spacing([14.0, 6.0]).show(ui, |ui| {
-                for h in ["", "Account", "Amount", "Block / time", "Details", ""] {
-                    ui.label(RichText::new(h).strong());
-                }
-                ui.end_row();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // two short lines per entry that wrap with the window (a wide table pushed the buttons off the right edge)
                 for row in &d.history {
                     let (kind, col, sign) = match &row.kind {
                         EntryKind::Received => ("Received", GREEN, "+"),
                         EntryKind::Mined => ("Mined", GREEN, "+"),
                         EntryKind::Sent { .. } => ("Sent", RED, "-"),
                     };
-                    ui.colored_label(col, kind);
-                    ui.label(&row.account_label);
-                    ui.colored_label(col, format!("{sign}{}", text::coins(row.amount)));
-                    match &row.kind {
-                        EntryKind::Sent { time, .. } => ui.label(format!("{} (block {})", text::when(*time), group_digits(row.height))),
-                        _ => ui.label(format!("block {}", group_digits(row.height))),
-                    };
-                    match &row.kind {
-                        EntryKind::Sent { to, fee, status, .. } => {
-                            let (st, c) = match status {
-                                SentStatus::Pending => ("waiting for a block", AMBER),
-                                SentStatus::Confirmed => ("taken in", GREEN),
-                                SentStatus::NotConfirmed => ("not taken in: dropped", RED),
-                            };
-                            ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.colored_label(col, RichText::new(kind).strong());
+                        ui.colored_label(
+                            col,
+                            RichText::new(format!("{sign}{}", text::coins(row.amount))).strong(),
+                        );
+                        ui.label(format!("· {}", row.account_label));
+                        match &row.kind {
+                            EntryKind::Sent { time, .. } => ui.label(format!(
+                                "· {} (block {})",
+                                text::when(*time),
+                                group_digits(row.height)
+                            )),
+                            _ => ui.label(format!("· block {}", group_digits(row.height))),
+                        };
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        match &row.kind {
+                            EntryKind::Sent {
+                                to, fee, status, ..
+                            } => {
+                                let (st, c) = match status {
+                                    SentStatus::Pending => ("waiting for a block", AMBER),
+                                    SentStatus::Confirmed => ("taken in", GREEN),
+                                    SentStatus::NotConfirmed => ("not taken in: dropped", RED),
+                                };
                                 ui.colored_label(c, st);
                                 let own = d
                                     .accounts
@@ -1156,29 +1192,49 @@ impl App {
                                     own.unwrap_or_else(|| text::short_address(&to.to_text())),
                                     text::coins(*fee)
                                 ));
-                            });
+                            }
+                            EntryKind::Mined => {
+                                ui.label(RichText::new("block reward").color(GREY));
+                            }
+                            EntryKind::Received => {
+                                ui.label(
+                                    RichText::new(
+                                        "sender unknown (the format hides it from the receiver)",
+                                    )
+                                    .color(GREY),
+                                );
+                            }
                         }
-                        EntryKind::Mined => {
-                            ui.label(RichText::new("block reward").color(GREY));
-                        }
-                        EntryKind::Received => {
-                            ui.label(RichText::new("sender unknown (the format hides it from the receiver)").color(GREY));
-                        }
-                    }
-                    match row.id {
-                        Some(id) => {
+                        if let Some(id) = row.id {
                             if ui.small_button("Copy id").clicked() {
                                 ui.ctx().copy_text(text::hex(&id));
                             }
+                            if row.has_secret {
+                                if ui.small_button("Prove payment").clicked() {
+                                    self.backend.send(Cmd::MakeProof(ProofRequest::Sent {
+                                        id,
+                                        key: false,
+                                    }));
+                                }
+                                if ui.small_button("Show transaction key").clicked() {
+                                    self.backend.send(Cmd::RevealTxKey { id });
+                                }
+                            } else {
+                                ui.label(RichText::new("no key kept").small().color(GREY));
+                            }
                         }
-                        None => {
-                            ui.label("");
+                        if let Some(global_index) = row.global_index {
+                            if ui.small_button("Prove receipt").clicked() {
+                                self.backend.send(Cmd::MakeProof(ProofRequest::Received {
+                                    account: row.account,
+                                    global_index,
+                                }));
+                            }
                         }
-                    }
-                    ui.end_row();
+                    });
+                    ui.separator();
                 }
             });
-        });
         ui.label(
             RichText::new("The history of payments you SENT is kept in the wallet file. A wallet restored from the 24 words shows what it received but not whom it paid.")
                 .small()
@@ -1715,6 +1771,279 @@ fn pending_out(d: &WalletData, account: Option<usize>) -> (usize, u64, u64) {
     out
 }
 
+impl App {
+    fn proof_windows(&mut self, ctx: &egui::Context) {
+        let mut close_proof = false;
+        if let Some((text, note)) = &self.proof_window {
+            let mut shown = text.clone();
+            egui::Window::new("Payment proof")
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(560.0)
+                .show(ctx, |ui| {
+                    ui.label(note);
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::TextEdit::multiline(&mut shown)
+                            .desired_rows(5)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                    ui.add_space(4.0);
+                    ui.colored_label(
+                        AMBER,
+                        "Whoever you give this to learns the amount and that this output went to that address. It does not show who sent it, and it is not a legal or financial proof (the scheme is interim and unaudited).",
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Copy proof").clicked() {
+                            ui.ctx().copy_text(text.clone());
+                        }
+                        if ui.button("Close").clicked() {
+                            close_proof = true;
+                        }
+                    });
+                });
+        }
+        if close_proof {
+            self.proof_window = None;
+        }
+        let mut close_key = false;
+        if let Some(key) = &self.tx_key_window {
+            egui::Window::new("Transaction key (secret)")
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.colored_label(
+                        AMBER,
+                        "Anyone who has this key can prove this one payment (its amount and that it went to that address). It cannot spend anything. Keep it to yourself unless you mean to prove the payment.",
+                    );
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(RichText::new(key.as_str()).monospace()).selectable(true).wrap());
+                    ui.horizontal(|ui| {
+                        if ui.button("Copy key").clicked() {
+                            ui.ctx().copy_text(key.to_string());
+                        }
+                        if ui.button("Hide").clicked() {
+                            close_key = true;
+                        }
+                    });
+                });
+        }
+        if close_key {
+            self.tx_key_window = None;
+        }
+    }
+
+    fn prove_tab(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        ui.heading("Sign, verify and prove");
+        ui.colored_label(
+            AMBER,
+            "UNAUDITED. These are small standard constructions put together for this project. They are not a legal or financial proof of anything, and they are tied to the interim output scheme, which will change.",
+        );
+        ui.add_space(8.0);
+
+        // ---- sign
+        ui.label(RichText::new("Sign a message").strong());
+        ui.label("Shows that whoever holds one of your accounts' keys wrote exactly this text. It says nothing about when or where.");
+        let wallet = self.wallet().cloned();
+        match &wallet {
+            None => {
+                ui.label(RichText::new("Unlock the wallet (Wallet tab) to sign.").color(GREY));
+            }
+            Some(d) => {
+                if self.prove.sign_account >= d.accounts.len() {
+                    self.prove.sign_account = 0;
+                }
+                egui::ComboBox::from_label("Sign as")
+                    .selected_text(
+                        d.accounts
+                            .get(self.prove.sign_account)
+                            .map_or(String::new(), |a| a.label.clone()),
+                    )
+                    .show_ui(ui, |ui| {
+                        for a in &d.accounts {
+                            ui.selectable_value(&mut self.prove.sign_account, a.index, &a.label);
+                        }
+                    });
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.prove.sign_message)
+                        .hint_text("the message")
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY),
+                );
+                if ui
+                    .add_enabled(
+                        !self.prove.sign_message.is_empty(),
+                        egui::Button::new("Sign"),
+                    )
+                    .clicked()
+                {
+                    self.prove.signature = None;
+                    self.backend.send(Cmd::SignMessage {
+                        account: self.prove.sign_account,
+                        message: self.prove.sign_message.clone(),
+                    });
+                }
+                if let Some(sig) = self.prove.signature.clone() {
+                    if let Some(a) = d.accounts.get(self.prove.sign_account) {
+                        ui.label(
+                            RichText::new(format!("Signed by {}", a.address))
+                                .small()
+                                .color(GREY),
+                        );
+                    }
+                    ui.add(
+                        egui::Label::new(RichText::new(&sig).monospace().small())
+                            .selectable(true)
+                            .wrap(),
+                    );
+                    if ui.button("Copy signature").clicked() {
+                        ui.ctx().copy_text(sig);
+                    }
+                }
+            }
+        }
+        ui.add_space(10.0);
+        ui.separator();
+
+        // ---- verify
+        ui.label(RichText::new("Verify a signed message").strong());
+        ui.label("Needs only the address, the message and the signature: no wallet and no node.");
+        ui.horizontal(|ui| {
+            ui.label("Address");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.prove.verify_address)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace),
+            );
+        });
+        ui.add(
+            egui::TextEdit::multiline(&mut self.prove.verify_message)
+                .hint_text("the message, exactly as it was signed")
+                .desired_rows(3)
+                .desired_width(f32::INFINITY),
+        );
+        ui.horizontal(|ui| {
+            ui.label("Signature");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.prove.verify_signature)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace),
+            );
+        });
+        if ui.button("Verify").clicked() {
+            self.prove.verified = Some(verify_text(
+                &self.prove.verify_address,
+                &self.prove.verify_message,
+                &self.prove.verify_signature,
+            ));
+        }
+        match &self.prove.verified {
+            Some(Ok(m)) => {
+                ui.colored_label(GREEN, m);
+            }
+            Some(Err(e)) => {
+                ui.colored_label(RED, e);
+            }
+            None => {}
+        }
+        ui.add_space(10.0);
+        ui.separator();
+
+        // ---- check a payment proof
+        ui.label(RichText::new("Check a payment proof").strong());
+        ui.label("Paste a proof (it starts with tnpay1). The node is asked for the output it names, so the node must be running; no wallet is needed.");
+        ui.add(
+            egui::TextEdit::multiline(&mut self.prove.check_text)
+                .hint_text("tnpay1…")
+                .desired_rows(3)
+                .desired_width(f32::INFINITY)
+                .font(egui::TextStyle::Monospace),
+        );
+        let node_up = matches!(self.snap.node, NodeView::Running { .. });
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    node_up && !self.prove.check_text.trim().is_empty(),
+                    egui::Button::new("Check against the node"),
+                )
+                .clicked()
+            {
+                self.prove.checked = None;
+                self.backend.send(Cmd::CheckProof {
+                    text: self.prove.check_text.clone(),
+                });
+            }
+            if !node_up {
+                ui.label(
+                    RichText::new("start the node first (Node tab)")
+                        .small()
+                        .color(GREY),
+                );
+            }
+        });
+        match &self.prove.checked {
+            Some(Ok(c)) => {
+                ui.colored_label(GREEN, "VALID");
+                egui::Grid::new("checked")
+                    .num_columns(2)
+                    .spacing([20.0, 4.0])
+                    .show(ui, |ui| {
+                        let mut row = |k: &str, v: String| {
+                            ui.label(RichText::new(k).color(GREY));
+                            ui.label(v);
+                            ui.end_row();
+                        };
+                        row("Kind", c.kind.to_string());
+                        row(
+                            "Amount",
+                            text::coins(c.amount)
+                                + if c.block_reward {
+                                    " (a block reward)"
+                                } else {
+                                    ""
+                                },
+                        );
+                        row("Paid to", text::short_address(&c.address));
+                        row(
+                            "In block",
+                            format!(
+                                "{} (output {})",
+                                group_digits(c.height),
+                                group_digits(c.global_index)
+                            ),
+                        );
+                        row("Blocks on top", group_digits(c.confirmations));
+                    });
+                ui.label(
+                    RichText::new("This shows the output is in the node's chain and is addressed to that address with that amount. It does not show who sent it.")
+                        .small()
+                        .color(GREY),
+                );
+            }
+            Some(Err(e)) => {
+                ui.colored_label(RED, format!("NOT valid: {e}"));
+            }
+            None => {}
+        }
+    }
+}
+
+/// Verifies a pasted signature (needs no wallet and no node).
+fn verify_text(address: &str, message: &str, signature: &str) -> Result<String, String> {
+    let address =
+        tenero_wallet::Address::from_text(address.trim()).map_err(|e| format!("address: {e}"))?;
+    let sig =
+        tenero_wallet::proofs::MessageSignature::from_text(signature).map_err(|e| e.to_string())?;
+    tenero_wallet::proofs::verify_message(&address, message.as_bytes(), &sig)
+        .map_err(|e| e.to_string())?;
+    Ok(format!(
+        "VALID: the holder of {} signed exactly this message.",
+        text::short_address(&address.to_text())
+    ))
+}
+
 fn account_text(d: &WalletData, index: usize) -> String {
     match d.accounts.get(index) {
         Some(a) => match a.balance {
@@ -1795,6 +2124,7 @@ impl App {
                     Tab::Node => self.node_tab(ui),
                     Tab::Settings => self.settings_tab(ui),
                     Tab::About => self.about_tab(ui),
+                    Tab::Prove => self.prove_tab(ui),
                     tab => {
                         if self.gate(ui) {
                             match tab {
@@ -1811,5 +2141,6 @@ impl App {
         });
         self.phrase_window(&ctx);
         self.prompts(&ctx);
+        self.proof_windows(&ctx);
     }
 }

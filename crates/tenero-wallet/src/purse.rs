@@ -167,6 +167,8 @@ pub struct Entry {
     pub id: Option<[u8; 32]>,
     /// For something received or mined: the output's global index (what a proof of receipt names).
     pub global_index: Option<u64>,
+    /// For a sent payment: the wallet still holds its secret, so the payment can be proved.
+    pub has_secret: bool,
 }
 
 pub struct Account {
@@ -531,6 +533,7 @@ impl Purse {
                     height: o.height,
                     id: None,
                     global_index: Some(o.global_index),
+                    has_secret: false,
                 });
             }
         }
@@ -565,6 +568,7 @@ impl Purse {
                 height: r.height,
                 id: Some(r.id),
                 global_index: None,
+                has_secret: r.tx_secret.is_some(),
             });
         }
         out.sort_by_key(|e| std::cmp::Reverse(e.height));

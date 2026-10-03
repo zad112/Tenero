@@ -2835,11 +2835,13 @@ dependencies = [
 name = "tenero-fuzzcases"
 version = "0.0.0"
 dependencies = [
+ "rand_core 0.6.4",
  "tenero-app",
  "tenero-chain",
  "tenero-core",
  "tenero-net",
  "tenero-node",
+ "tenero-wallet",
 ]
 
 [[package]]

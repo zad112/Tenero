@@ -12,6 +12,8 @@ tenero-net = { path = "../tenero-net" }
 tenero-chain = { path = "../tenero-chain" }
 tenero-node = { path = "../tenero-node" }
 tenero-app = { path = "../tenero-app" }
+tenero-wallet = { path = "../tenero-wallet" }
+rand_core = "0.6"
 
 [lints]
 workspace = true

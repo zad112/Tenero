@@ -65,6 +65,32 @@ pub struct HistoryRow {
     pub amount: u64,
     pub height: u64,
     pub id: Option<[u8; 32]>,
+    /// Received or mined: the output's global index (what a proof of receipt names).
+    pub global_index: Option<u64>,
+    /// Sent: the wallet still holds the payment's secret (so it can be proved).
+    pub has_secret: bool,
+}
+
+/// What a payment proof that checked shows, for the screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckedView {
+    pub kind: &'static str,
+    pub address: String,
+    pub amount: u64,
+    pub height: u64,
+    pub global_index: u64,
+    /// Blocks on top of it, counting its own (1 = it is in the newest block).
+    pub confirmations: u64,
+    pub block_reward: bool,
+}
+
+/// Which proof to make.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProofRequest {
+    /// Receipt of an output (made with the view key).
+    Received { account: usize, global_index: u64 },
+    /// A payment sent: the proof that does not give the secret away, or (`key`) the secret itself as the proof.
+    Sent { id: [u8; 32], key: bool },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -169,6 +195,20 @@ pub enum Cmd {
     },
     SendPrepared,
     CancelPrepared,
+    /// Signs a message with an account's spend key.
+    SignMessage {
+        account: usize,
+        message: String,
+    },
+    MakeProof(ProofRequest),
+    /// Shows the secret of a sent payment (the person clicked to reveal it).
+    RevealTxKey {
+        id: [u8; 32],
+    },
+    /// Checks a payment proof against the node (needs no wallet).
+    CheckProof {
+        text: String,
+    },
     StartNode,
     StopNode,
     StartMiner,
@@ -191,6 +231,21 @@ pub enum Event {
     },
     /// The fees could not be worked out, and why (shown under the fee choice, so it never says "working" for ever).
     EstimateFailed(String),
+    /// A signature, as text.
+    Signed {
+        signature: String,
+    },
+    /// A payment proof, as text, and a line saying what it shows.
+    Proof {
+        text: String,
+        note: String,
+    },
+    /// The secret of a sent payment, for a window that says what it is.
+    TxKey {
+        id: [u8; 32],
+        key: Zeroizing<String>,
+    },
+    ProofChecked(Result<CheckedView, String>),
     Sent {
         id: [u8; 32],
         fee: u64,
