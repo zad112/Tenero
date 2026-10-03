@@ -4,7 +4,15 @@ name: fuzz
 # once a month. It needs a nightly Rust and Linux, which is why it is here and not on the owner's machine. The work of each target is in
 # crates/tenero-fuzzcases (compiled and tested everywhere); a crash is uploaded as an artifact, and becomes a case in
 # crates/tenero-fuzzcases/tests/regressions.rs.
+# (GitHub only starts a workflow by hand, or on a schedule, once the file is on the default branch, which `rewrite` is not yet: until it is, a push to
+# `rewrite` that changes the fuzzing files runs it, for two minutes a target.)
 on:
+  push:
+    branches: [rewrite]
+    paths:
+      - "fuzz/**"
+      - "crates/tenero-fuzzcases/**"
+      - ".github/workflows/fuzz.yml"
   workflow_dispatch:
     inputs:
       seconds:
@@ -44,7 +52,7 @@ jobs:
       - name: fuzz ${{ matrix.target }}
         run: |
           mkdir -p fuzz/corpus/${{ matrix.target }}
-          cargo fuzz run ${{ matrix.target }} fuzz/corpus/${{ matrix.target }} -- -max_total_time=${{ github.event.inputs.seconds || '300' }} -max_len=65536 -rss_limit_mb=3072
+          cargo fuzz run ${{ matrix.target }} fuzz/corpus/${{ matrix.target }} -- -max_total_time=${{ github.event.inputs.seconds || (github.event_name == 'push' && '120') || '300' }} -max_len=65536 -rss_limit_mb=3072
       - name: keep a crash
         if: failure()
         uses: actions/upload-artifact@v4
