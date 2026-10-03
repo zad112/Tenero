@@ -410,6 +410,16 @@ fn mine_pay_at_every_fee_level_and_read_the_history() {
         "{:?}",
         errors(&ev)
     );
+    // a fee estimate that cannot be made says so with its own event (so the window never says "working" for ever)
+    let ev = c.handle(Cmd::EstimateFees {
+        account: 0,
+        to: saving.clone(),
+        amount: "1".into(),
+    });
+    assert!(errors(&ev).is_empty());
+    assert!(ev
+        .iter()
+        .any(|e| matches!(e, Event::EstimateFailed(m) if m.contains("node is not running"))));
 
     c.handle(Cmd::StartNode);
     wait(&mut c, 90, "the node", |s| {
@@ -593,4 +603,31 @@ fn settings_cannot_be_changed_under_a_running_node_or_an_open_wallet() {
     s.miner_backend = MinerBackend::Gpu;
     assert_eq!(errors(&c.handle(Cmd::SetSettings(Box::new(s)))).len(), 1);
     let _ = Path::new("");
+}
+
+#[test]
+fn the_window_can_end_what_it_started_even_when_the_worker_never_answers_quit() {
+    use tenero_gui::backend::Backend;
+    let rig = Rig::new("emergency", 18480);
+    let mut b = Backend::spawn(
+        &rig.dir,
+        rig.settings.clone(),
+        KdfParams::TEST_ONLY_WEAK,
+        std::sync::Arc::new(|| {}),
+    );
+    b.send(Cmd::StartNode);
+    let end = Instant::now() + Duration::from_secs(90);
+    while tenero_gui::procs::reach_node(&rig.settings).is_none() {
+        assert!(Instant::now() < end, "the node did not come up");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    // the window's own way out, with no help from the worker
+    b.emergency_stop(&rig.settings);
+    assert!(
+        tenero_gui::procs::reach_node(&rig.settings).is_none(),
+        "the node this window started was left running"
+    );
+    // the worker is still there and ends cleanly when asked
+    b.send(Cmd::Quit);
+    b.join();
 }

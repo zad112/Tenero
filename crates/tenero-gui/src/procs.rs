@@ -12,6 +12,7 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tenero_app::client::{read_cookie, RemoteNode, COOKIE_FILE};
@@ -19,9 +20,11 @@ use tenero_app::config::Network;
 
 use crate::settings::{MinerBackend, NodeKind, Settings};
 
-/// A child process this program started.
+/// A child process this program started. Cloning gives another handle to the same child (the window keeps one so that it
+/// can still end what it started if the worker thread is stuck).
+#[derive(Clone)]
 pub struct Proc {
-    child: Child,
+    child: Arc<Mutex<Child>>,
     /// Where its output goes.
     pub log: PathBuf,
 }
@@ -53,14 +56,15 @@ impl Proc {
             .spawn()
             .map_err(|e| format!("cannot start {}: {e}", exe.display()))?;
         Ok(Proc {
-            child,
+            child: Arc::new(Mutex::new(child)),
             log: log.to_path_buf(),
         })
     }
 
     /// `None` while it runs; its exit as words once it has stopped.
     pub fn exited(&mut self) -> Option<String> {
-        match self.child.try_wait() {
+        let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        match child.try_wait() {
             Ok(None) => None,
             Ok(Some(s)) => Some(match s.code() {
                 Some(0) => "stopped".to_string(),
@@ -69,6 +73,12 @@ impl Proc {
             }),
             Err(e) => Some(format!("cannot tell: {e}")),
         }
+    }
+
+    /// Like [`Proc::exited`] on a handle that only wants to know (`None` = still running).
+    pub fn exited_quietly(&self) -> Option<()> {
+        let mut me = self.clone();
+        me.exited().map(|_| ())
     }
 
     /// Waits up to `timeout` for it to stop by itself.
@@ -87,8 +97,9 @@ impl Proc {
 
     /// Ends this child at once (the program's own handle; nothing else is touched).
     pub fn kill(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     /// The last lines of its output, for showing why it stopped.

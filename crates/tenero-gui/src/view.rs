@@ -189,6 +189,8 @@ pub enum Event {
     Estimate {
         fees: [u64; 3],
     },
+    /// The fees could not be worked out, and why (shown under the fee choice, so it never says "working" for ever).
+    EstimateFailed(String),
     Sent {
         id: [u8; 32],
         fee: u64,

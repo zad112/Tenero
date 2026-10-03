@@ -16,6 +16,7 @@ pub struct Backend {
     tx: Sender<Cmd>,
     rx: Receiver<Event>,
     join: Option<JoinHandle<()>>,
+    registry: crate::core::Registry,
 }
 
 impl Backend {
@@ -29,8 +30,10 @@ impl Backend {
         let (tx, cmd_rx) = channel::<Cmd>();
         let (ev_tx, rx) = channel::<Event>();
         let app_dir = app_dir.to_path_buf();
+        let registry = crate::core::Registry::default();
+        let worker_registry = registry.clone();
         let join = std::thread::spawn(move || {
-            let mut core = Core::new(&app_dir, settings, kdf);
+            let mut core = Core::with_registry(&app_dir, settings, kdf, worker_registry);
             let _ = ev_tx.send(Event::Snapshot(Box::new(core.snapshot())));
             notify();
             loop {
@@ -57,6 +60,7 @@ impl Backend {
             tx,
             rx,
             join: Some(join),
+            registry,
         }
     }
 
@@ -64,7 +68,39 @@ impl Backend {
     pub fn detached() -> (Backend, Sender<Event>, Receiver<Cmd>) {
         let (tx, cmd_rx) = channel::<Cmd>();
         let (ev_tx, rx) = channel::<Event>();
-        (Backend { tx, rx, join: None }, ev_tx, cmd_rx)
+        (
+            Backend {
+                tx,
+                rx,
+                join: None,
+                registry: Default::default(),
+            },
+            ev_tx,
+            cmd_rx,
+        )
+    }
+
+    /// For when the worker does not answer `Quit`: ends what this window started without it. The miner is ended; the node is
+    /// asked to stop through a connection of its own and given a short time before its handle is ended too. Only programs
+    /// this window started are touched (they are the handles it kept).
+    pub fn emergency_stop(&self, settings: &Settings) {
+        let procs: Vec<(bool, crate::procs::Proc)> =
+            self.registry.lock().map(|r| r.clone()).unwrap_or_default();
+        for (is_node, mut p) in procs {
+            if p.exited().is_some() {
+                continue;
+            }
+            if is_node {
+                if let Some(n) = crate::procs::reach_node(settings) {
+                    let _ = n.stop();
+                }
+                if !p.wait(Duration::from_secs(20)) {
+                    p.kill();
+                }
+            } else {
+                p.kill();
+            }
+        }
     }
 
     pub fn send(&self, cmd: Cmd) {

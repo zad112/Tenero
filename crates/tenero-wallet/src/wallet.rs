@@ -103,9 +103,10 @@ impl std::fmt::Display for WalletError {
             WalletError::TooManyInputs => {
                 write!(f, "that payment needs more than {MAX_INPUTS} outputs")
             }
-            WalletError::NotEnoughDecoys => {
-                write!(f, "the chain has too few mature outputs to hide among")
-            }
+            WalletError::NotEnoughDecoys => write!(
+                f,
+                "the chain does not have enough matured outputs yet to hide a payment among (block rewards need time to mature): try again after more blocks"
+            ),
             WalletError::BadAddress => write!(f, "invalid recipient address"),
             WalletError::Prove => write!(f, "could not build the proofs"),
             WalletError::SelfCheck(e) => {
@@ -194,6 +195,9 @@ pub struct Wallet {
     pub(crate) recent: Vec<(u64, [u8; 32])>,
     pub(crate) owned: Vec<Owned>,
     pub(crate) reserved: Vec<Reserved>,
+    /// Key images the chain has said are spent (a spent output stays spent, so it is asked once). In memory only; forgotten
+    /// when a reorganisation is seen, which is the only way a spend can undo.
+    spent_cache: std::collections::HashSet<[u8; 32]>,
 }
 
 fn is_mature(rules: &Rules, height: u64, coinbase: bool) -> bool {
@@ -249,6 +253,7 @@ impl Wallet {
             recent: Vec::new(),
             owned: Vec::new(),
             reserved: Vec::new(),
+            spent_cache: std::collections::HashSet::new(),
         }
     }
 
@@ -318,6 +323,9 @@ impl Wallet {
                 None => self.owned.clear(),
             }
             self.scanned = keep;
+        }
+        if report.blocks_rolled_back > 0 || report.rescanned {
+            self.spent_cache.clear();
         }
         // 2. new blocks
         let (tip, _) = chain.tip().map_err(chain_err)?;
@@ -403,6 +411,18 @@ impl Wallet {
     // balances
     // --------------------------------------------------------------------------------------------
 
+    /// Whether the chain has this key image, asking only if it has not already said yes.
+    fn is_spent(&mut self, chain: &impl ChainView, ki: &[u8; 32]) -> Result<bool, WalletError> {
+        if self.spent_cache.contains(ki) {
+            return Ok(true);
+        }
+        let spent = chain.key_image_spent(ki).map_err(chain_err)?;
+        if spent {
+            self.spent_cache.insert(*ki);
+        }
+        Ok(spent)
+    }
+
     /// Which outputs can go into a transaction sent now: unspent, mature, not promised elsewhere. Also forgets
     /// reservations that have run out or whose coins have been spent.
     fn spendable(
@@ -411,9 +431,10 @@ impl Wallet {
         rules: &Rules,
     ) -> Result<Vec<Owned>, WalletError> {
         let mut spent = Vec::new();
-        for o in &self.owned {
-            if chain.key_image_spent(&o.key_image).map_err(chain_err)? {
-                spent.push(o.key_image);
+        let images: Vec<[u8; 32]> = self.owned.iter().map(|o| o.key_image).collect();
+        for ki in images {
+            if self.is_spent(chain, &ki)? {
+                spent.push(ki);
             }
         }
         self.reserved
@@ -434,9 +455,10 @@ impl Wallet {
         let rules = chain.rules().map_err(chain_err)?;
         let mut b = Balance::default();
         let mut unspent = Vec::new();
-        for o in &self.owned {
-            if !chain.key_image_spent(&o.key_image).map_err(chain_err)? {
-                unspent.push(o.clone());
+        let owned = self.owned.clone();
+        for o in owned {
+            if !self.is_spent(chain, &o.key_image)? {
+                unspent.push(o);
             }
         }
         self.reserved.retain(|r| {
@@ -715,6 +737,11 @@ fn pick_decoys(
     if total < rules.ring_size as u64 {
         return Err(WalletError::NotEnoughDecoys);
     }
+    // Say so at once if the chain cannot supply a ring: looking for mature outputs one request at a time on a chain that has
+    // too few of them costs thousands of round trips to a node before it gives up.
+    if count_mature(chain, rules, real, total, want as u64)? < want as u64 {
+        return Err(WalletError::NotEnoughDecoys);
+    }
     let ln_total = (total as f64).ln();
     let mut tries = 0;
     while picked.len() < want {
@@ -737,6 +764,52 @@ fn pick_decoys(
         }
     }
     Ok(picked)
+}
+
+/// How many outputs other than `real` could be in a ring (are mature), counted only as far as `enough`, in about
+/// `log2(total)` requests plus a short walk over the outputs that are old enough to be spend-mature but not
+/// coinbase-mature. Heights never decrease with the output index, which is what makes the search work.
+fn count_mature(
+    chain: &impl ChainView,
+    rules: &Rules,
+    real: u64,
+    total: u64,
+    enough: u64,
+) -> Result<u64, WalletError> {
+    let max_wait = rules.coinbase_maturity.max(rules.spend_maturity);
+    let min_wait = rules.coinbase_maturity.min(rules.spend_maturity);
+    // outputs at or below this height are mature whatever kind they are
+    let safe_height = rules.next_height.checked_sub(max_wait);
+    let mut prefix = 0;
+    if let Some(safe) = safe_height {
+        let (mut lo, mut hi) = (0u64, total);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            match chain.output(mid).map_err(chain_err)? {
+                Some(o) if o.height <= safe => lo = mid + 1,
+                _ => hi = mid,
+            }
+        }
+        prefix = lo;
+    }
+    let mut count = prefix - u64::from(real < prefix);
+    // the outputs between: mature only if they are not coinbases
+    let mut walked = 0;
+    let mut index = prefix;
+    while count < enough && index < total && walked < 5_000 {
+        let Some(o) = chain.output(index).map_err(chain_err)? else {
+            break;
+        };
+        if o.height.saturating_add(min_wait) > rules.next_height {
+            break;
+        }
+        if index != real && is_mature(rules, o.height, o.coinbase) {
+            count += 1;
+        }
+        index += 1;
+        walked += 1;
+    }
+    Ok(count)
 }
 
 /// The fallback of [`pick_decoys`]: walk every output from a random start until enough mature ones are found.

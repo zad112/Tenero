@@ -15,7 +15,8 @@ use tenero_app::control::NodeInfo;
 use tenero_app::miner_report::MinerReport;
 use tenero_wallet::amount::parse_coins;
 use tenero_wallet::{
-    Address, Built, ChainView, FeeLevel, FileError, KdfParams, Purse, PurseError, Rules, ScanBlock,
+    Address, Balance, Built, ChainView, FeeLevel, FileError, KdfParams, Purse, PurseError, Rules,
+    ScanBlock,
 };
 use zeroize::Zeroizing;
 
@@ -87,7 +88,12 @@ struct Prepared {
     level: FeeLevel,
 }
 
+/// The programs this window started (`true` = the node, `false` = the miner), kept where the window can reach them even if
+/// the worker thread is stuck, so that closing the window can always end what it started.
+pub type Registry = std::sync::Arc<std::sync::Mutex<Vec<(bool, Proc)>>>;
+
 pub struct Core {
+    registry: Registry,
     app_dir: PathBuf,
     settings: Settings,
     kdf: KdfParams,
@@ -142,7 +148,17 @@ fn purse_err(e: PurseError) -> String {
 
 impl Core {
     pub fn new(app_dir: &Path, settings: Settings, kdf: KdfParams) -> Core {
+        Core::with_registry(app_dir, settings, kdf, Registry::default())
+    }
+
+    pub fn with_registry(
+        app_dir: &Path,
+        settings: Settings,
+        kdf: KdfParams,
+        registry: Registry,
+    ) -> Core {
         let mut c = Core {
+            registry,
             app_dir: app_dir.to_path_buf(),
             settings,
             kdf,
@@ -170,6 +186,13 @@ impl Core {
         // a node an earlier run (or the owner) left going is picked up, not started a second time
         c.poll_node(true);
         c
+    }
+
+    fn register(&self, is_node: bool, p: &Proc) {
+        if let Ok(mut r) = self.registry.lock() {
+            r.retain(|(_, q)| q.exited_quietly().is_none());
+            r.push((is_node, p.clone()));
+        }
     }
 
     pub fn settings(&self) -> &Settings {
@@ -262,7 +285,13 @@ impl Core {
                 account,
                 to,
                 amount,
-            } => self.estimate(account, &to, &amount, &mut events),
+            } => match self.estimate(account, &to, &amount, &mut events) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    events.push(Event::EstimateFailed(e));
+                    Ok(())
+                }
+            },
             Cmd::PreparePayment {
                 account,
                 to,
@@ -573,6 +602,7 @@ impl Core {
         }
         let log = self.app_dir.join("node-output.txt");
         let proc = Proc::spawn(&exe, &procs::node_args(&self.settings), &log)?;
+        self.register(true, &proc);
         self.node_proc = Some(proc);
         self.node_started = Some(Instant::now());
         self.node_view = NodeView::Starting;
@@ -750,6 +780,7 @@ impl Core {
             &procs::miner_args(&self.settings, &address, &status),
             &log,
         )?;
+        self.register(false, &proc);
         self.miner_proc = Some(proc);
         self.miner_started = Some(Instant::now());
         self.miner_view = MinerView::Starting;
@@ -924,10 +955,12 @@ impl Core {
             self.dirty = true;
             self.refresh_due = true;
         }
-        let stale = self
-            .last_refresh
-            .is_none_or(|t| t.elapsed() > Duration::from_secs(10));
-        if self.refresh_due || stale {
+        // Rebuilding asks the node about every coin the wallet holds, so it is not done more than every few seconds (a
+        // miner on an easy chain finds blocks faster than that), and not at all when nothing has changed for a while.
+        let age = self.last_refresh.map(|t| t.elapsed());
+        let due = self.refresh_due && age.is_none_or(|a| a > Duration::from_secs(3));
+        let stale = age.is_none_or(|a| a > Duration::from_secs(30));
+        if due || stale {
             self.rebuild_data()?;
         }
         Ok(())
@@ -955,7 +988,16 @@ impl Core {
                 balance: Some(balance),
             });
         }
-        let total = purse.total_balance(node).map_err(purse_err)?;
+        // the total is the accounts added up (asking the node again for every coin would double the work)
+        let mut total = Balance::default();
+        for a in &accounts {
+            if let Some(b) = a.balance {
+                total.total += b.total;
+                total.spendable += b.spendable;
+                total.immature += b.immature;
+                total.reserved += b.reserved;
+            }
+        }
         let history = purse
             .history(node)
             .map_err(purse_err)?

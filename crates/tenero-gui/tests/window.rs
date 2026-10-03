@@ -35,7 +35,6 @@ struct Rig {
     ctx: egui::Context,
     app: App,
     events: std::sync::mpsc::Sender<Event>,
-    #[allow(dead_code)]
     commands: std::sync::mpsc::Receiver<Cmd>,
 }
 
@@ -677,4 +676,55 @@ fn the_receive_screen_shows_the_address_and_a_code_and_the_settings_screen_its_f
             "`{needle}` missing from settings:\n{t}"
         );
     }
+}
+
+#[test]
+fn a_fee_that_cannot_be_worked_out_says_why_instead_of_working_for_ever() {
+    let mut rig = Rig::new();
+    rig.app.goto("Send");
+    let s = snap(
+        &rig,
+        wallet(true, true),
+        NodeView::Running {
+            info: info(false, 3),
+            ours: true,
+        },
+        MinerView::Off,
+        None,
+    );
+    rig.app.set_snapshot(s);
+    rig.app.set_send_inputs(&addr(9), "1");
+    // fees are asked for once typing has paused, not on every key
+    rig.frame();
+    assert!(
+        rig.commands.try_recv().is_err(),
+        "asked for the fees while still typing"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    let (t, _) = rig.frame();
+    assert!(t.contains("working it out"), "{t}");
+    assert!(matches!(
+        rig.commands.try_recv(),
+        Ok(Cmd::EstimateFees { .. })
+    ));
+    // and only once, however many frames are drawn while the answer is awaited
+    rig.frame();
+    rig.frame();
+    assert!(rig.commands.try_recv().is_err());
+    rig.events
+        .send(Event::EstimateFailed(
+            "the chain does not have enough matured outputs yet".into(),
+        ))
+        .unwrap();
+    let (t, _) = rig.frame();
+    assert!(
+        t.contains(
+            "This payment cannot be made yet: the chain does not have enough matured outputs yet"
+        ),
+        "{t}"
+    );
+    assert!(
+        t.contains("no price") && !t.contains("working it out"),
+        "{t}"
+    );
 }

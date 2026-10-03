@@ -890,3 +890,124 @@ fn a_node_that_sends_the_wrong_blocks_is_not_believed() {
         "nothing was taken from the wrong blocks"
     );
 }
+
+/// Counts the questions put to the chain, to show that giving up is cheap.
+struct Counting<'a, 'b> {
+    node: &'a Node<'b>,
+    outputs_asked: std::cell::Cell<u64>,
+}
+
+impl ChainView for Counting<'_, '_> {
+    fn tip(&self) -> Result<(u64, [u8; 32]), String> {
+        ChainView::tip(self.node)
+    }
+    fn block(&self, h: u64) -> Result<Option<tenero_wallet::ScanBlock>, String> {
+        ChainView::block(self.node, h)
+    }
+    fn blocks(&self, from: u64, max: u64) -> Result<Vec<tenero_wallet::ScanBlock>, String> {
+        ChainView::blocks(self.node, from, max)
+    }
+    fn output(&self, i: u64) -> Result<Option<tenero_store::StoredOutput>, String> {
+        self.outputs_asked.set(self.outputs_asked.get() + 1);
+        ChainView::output(self.node, i)
+    }
+    fn output_count(&self) -> Result<u64, String> {
+        ChainView::output_count(self.node)
+    }
+    fn key_image_spent(&self, k: &[u8; 32]) -> Result<bool, String> {
+        ChainView::key_image_spent(self.node, k)
+    }
+    fn rules(&self) -> Result<tenero_wallet::Rules, String> {
+        ChainView::rules(self.node)
+    }
+}
+
+#[test]
+fn a_chain_with_too_few_matured_outputs_is_refused_at_once_not_after_thousands_of_questions() {
+    // 20 outputs on the chain (more than a ring of 16) but only about 10 of them matured: the owner's young chain. Before the
+    // check, the wallet asked the node for outputs one by one thousands of times (and then walked the whole chain) before saying so.
+    let rig = Rig::new("young", 16, 10);
+    let mut node = rig.node();
+    let (mut alice, bob) = (wallet(1), wallet(2));
+    mine_n(&mut node, &alice.address(), 20);
+    alice.sync(&node).unwrap();
+    assert!(
+        alice.balance(&node).unwrap().spendable > 0,
+        "her own old coins are spendable"
+    );
+    let view = Counting {
+        node: &node,
+        outputs_asked: std::cell::Cell::new(0),
+    };
+    let r = alice.build_payment(&view, &mut OsRng, &bob.address(), 1_000);
+    assert!(matches!(r, Err(WalletError::NotEnoughDecoys)), "{r:?}");
+    assert!(
+        view.outputs_asked.get() < 40,
+        "{} questions to give up",
+        view.outputs_asked.get()
+    );
+    // and once enough have matured it works, with the same wallet
+    mine_n(&mut node, &alice.address(), 15);
+    alice.sync(&node).unwrap();
+    assert!(alice
+        .build_payment(&node, &mut OsRng, &bob.address(), 1_000)
+        .is_ok());
+}
+
+#[test]
+fn a_spent_output_is_asked_about_once() {
+    let rig = Rig::new("spentcache", 2, 1);
+    let mut node = rig.node();
+    let (mut alice, bob) = (wallet(1), wallet(2));
+    mine_n(&mut node, &alice.address(), 6);
+    alice.sync(&node).unwrap();
+    alice
+        .pay(&mut node, &mut OsRng, &bob.address(), 1_000)
+        .unwrap();
+    mine(&mut node, &alice.address(), 0);
+    alice.sync(&node).unwrap();
+    struct Spent<'a, 'b>(Counting<'a, 'b>, std::cell::Cell<u64>);
+    impl ChainView for Spent<'_, '_> {
+        fn tip(&self) -> Result<(u64, [u8; 32]), String> {
+            self.0.tip()
+        }
+        fn block(&self, h: u64) -> Result<Option<tenero_wallet::ScanBlock>, String> {
+            self.0.block(h)
+        }
+        fn blocks(&self, f: u64, m: u64) -> Result<Vec<tenero_wallet::ScanBlock>, String> {
+            self.0.blocks(f, m)
+        }
+        fn output(&self, i: u64) -> Result<Option<tenero_store::StoredOutput>, String> {
+            self.0.output(i)
+        }
+        fn output_count(&self) -> Result<u64, String> {
+            self.0.output_count()
+        }
+        fn key_image_spent(&self, k: &[u8; 32]) -> Result<bool, String> {
+            self.1.set(self.1.get() + 1);
+            self.0.key_image_spent(k)
+        }
+        fn rules(&self) -> Result<tenero_wallet::Rules, String> {
+            self.0.rules()
+        }
+    }
+    let view = Spent(
+        Counting {
+            node: &node,
+            outputs_asked: std::cell::Cell::new(0),
+        },
+        std::cell::Cell::new(0),
+    );
+    let first = alice.balance(&view).unwrap();
+    let asked_first = view.1.get();
+    view.1.set(0);
+    let second = alice.balance(&view).unwrap();
+    assert_eq!(first, second);
+    // the second time the spent coins are not asked about again (and the unspent ones are, because they may be spent now)
+    assert!(
+        view.1.get() < asked_first,
+        "{} then {}",
+        asked_first,
+        view.1.get()
+    );
+}

@@ -92,6 +92,14 @@ struct SendForm {
     estimate: Option<[u64; 3]>,
     /// What the estimate was asked for, so it is asked once per change.
     asked: String,
+    /// Why the fees (or the payment) could not be worked out, if they could not: shown instead of "working".
+    error: Option<String>,
+    /// A request to the worker is out (the fees, building the payment, sending it) and when it went.
+    working: Option<Instant>,
+    /// The payment as last typed and when it last changed: fees are asked for once typing has paused, and never while an
+    /// earlier question is still out (each one costs the node a number of round trips).
+    seen: String,
+    changed: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -117,6 +125,8 @@ pub struct App {
     prompt: Prompt,
     draft: Option<(Settings, String)>,
     closing: bool,
+    /// When `Quit` was sent: if the worker has not finished 75 s later (it is stuck), the window ends what it started itself.
+    closing_since: Option<Instant>,
     node_tail: (Instant, String),
     miner_tail: (Instant, String),
 }
@@ -175,6 +185,7 @@ impl App {
             prompt: Prompt::default(),
             draft: None,
             closing: false,
+            closing_since: None,
             node_tail: (now, String::new()),
             miner_tail: (now, String::new()),
         };
@@ -196,6 +207,12 @@ impl App {
         }
     }
 
+    /// Types a payment into the send form (a test's way of filling it in).
+    pub fn set_send_inputs(&mut self, to: &str, amount: &str) {
+        self.send.to = to.to_string();
+        self.send.amount = amount.to_string();
+    }
+
     pub fn tab_names() -> Vec<&'static str> {
         Tab::ALL.iter().map(|(_, n)| *n).collect()
     }
@@ -212,7 +229,12 @@ impl App {
     fn drain(&mut self) {
         while let Some(ev) = self.backend.try_recv() {
             match ev {
-                Event::Snapshot(s) => self.snap = *s,
+                Event::Snapshot(s) => {
+                    self.snap = *s;
+                    if self.snap.prepared.is_some() {
+                        self.send.working = None;
+                    }
+                }
                 Event::Phrase { words, new } => {
                     self.phrase = Some(PhraseModal {
                         words,
@@ -220,7 +242,16 @@ impl App {
                         stage: PhraseStage::Show,
                     });
                 }
-                Event::Estimate { fees } => self.send.estimate = Some(fees),
+                Event::Estimate { fees } => {
+                    self.send.estimate = Some(fees);
+                    self.send.error = None;
+                    self.send.working = None;
+                }
+                Event::EstimateFailed(m) => {
+                    self.send.estimate = None;
+                    self.send.error = Some(m);
+                    self.send.working = None;
+                }
                 Event::Sent { fee, .. } => {
                     self.toast(
                         format!(
@@ -232,7 +263,10 @@ impl App {
                     self.send = SendForm::default();
                 }
                 Event::Notice(m) => self.toast(m, false),
-                Event::Error(m) => self.toast(m, true),
+                Event::Error(m) => {
+                    self.send.working = None;
+                    self.toast(m, true);
+                }
                 Event::Quit => {
                     self.closing = false;
                     self.backend.join();
@@ -850,9 +884,19 @@ impl App {
             self.send.amount.trim()
         );
         let filled = !self.send.to.trim().is_empty() && !self.send.amount.trim().is_empty();
-        if filled && d.synced && self.send.asked != key {
+        if self.send.seen != key {
+            self.send.seen = key.clone();
+            self.send.changed = Some(Instant::now());
+        }
+        let paused = self
+            .send
+            .changed
+            .is_none_or(|t| t.elapsed() > Duration::from_millis(600));
+        if filled && d.synced && self.send.asked != key && paused && self.send.working.is_none() {
             self.send.asked = key.clone();
             self.send.estimate = None;
+            self.send.error = None;
+            self.send.working = Some(Instant::now());
             self.backend.send(Cmd::EstimateFees {
                 account: self.send.account,
                 to: self.send.to.clone(),
@@ -861,6 +905,7 @@ impl App {
         }
         if !filled {
             self.send.estimate = None;
+            self.send.error = None;
             self.send.asked.clear();
         }
         ui.add_space(6.0);
@@ -869,6 +914,7 @@ impl App {
         for (i, level) in FeeLevel::ALL.into_iter().enumerate() {
             let price = match self.send.estimate {
                 Some(f) => text::coins(f[i]),
+                None if self.send.error.is_some() => "no price".to_string(),
                 None if filled => "working it out…".to_string(),
                 None => "fill in the payment to see the price".to_string(),
             };
@@ -889,6 +935,19 @@ impl App {
                 ui.label(RichText::new(blurb).small().color(GREY));
             });
         }
+        if let Some(e) = &self.send.error {
+            ui.colored_label(RED, format!("This payment cannot be made yet: {e}"));
+        } else if self
+            .send
+            .working
+            .is_some_and(|t| t.elapsed() > Duration::from_secs(15))
+        {
+            ui.label(
+                RichText::new("Still working. The node answers slowly while it is busy (a miner using the GPU slows it down).")
+                    .small()
+                    .color(AMBER),
+            );
+        }
         ui.label(
             RichText::new("The fee goes to whoever mines the block. A higher fee only buys a better place in a full pool; it never makes a block come sooner.")
                 .small()
@@ -896,9 +955,13 @@ impl App {
         );
         ui.add_space(8.0);
         if ui
-            .add_enabled(filled && d.synced, egui::Button::new("Review payment…"))
+            .add_enabled(
+                filled && d.synced && self.send.error.is_none() && self.send.working.is_none(),
+                egui::Button::new("Review payment…"),
+            )
             .clicked()
         {
+            self.send.working = Some(Instant::now());
             self.backend.send(Cmd::PreparePayment {
                 account: self.send.account,
                 to: self.send.to.clone(),
@@ -939,7 +1002,11 @@ impl App {
         ui.colored_label(AMBER, "Payments cannot be taken back. Check the address: a wrong address loses the coins (they have no value, but the habit matters).");
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui.button("Send").clicked() {
+            if ui
+                .add_enabled(self.send.working.is_none(), egui::Button::new("Send"))
+                .clicked()
+            {
+                self.send.working = Some(Instant::now());
                 self.backend.send(Cmd::SendPrepared);
             }
             if ui.button("Back").clicked() {
@@ -1635,8 +1702,26 @@ impl App {
         // closing: ask the worker to stop what this window started, and close when it says it has
         if ctx.input(|i| i.viewport().close_requested()) && !self.closing {
             self.closing = true;
+            self.closing_since = Some(Instant::now());
             self.backend.send(Cmd::Quit);
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+        if self
+            .closing_since
+            .is_some_and(|t| t.elapsed() > Duration::from_secs(75))
+        {
+            self.backend.emergency_stop(&self.snap.settings);
+            std::process::exit(0);
+        }
+        // a request that has had no answer for two minutes does not keep the buttons off for ever
+        if self
+            .send
+            .working
+            .is_some_and(|t| t.elapsed() > Duration::from_secs(120))
+        {
+            self.send.working = None;
+            self.send.error =
+                Some("the node did not answer in two minutes: look at the Node tab".into());
         }
         ctx.request_repaint_after(Duration::from_millis(500));
 
