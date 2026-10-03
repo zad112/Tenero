@@ -13,3 +13,4 @@ pub mod settings;
 pub mod text;
 pub mod ui;
 pub mod view;
+pub mod wallets;

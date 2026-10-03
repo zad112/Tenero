@@ -23,6 +23,7 @@ use zeroize::Zeroizing;
 use crate::procs::{self, Proc};
 use crate::settings::{MinerBackend, Settings};
 use crate::view::*;
+use crate::wallets::{self, WalletEntry};
 
 /// How many blocks one pass of scanning reads (so the window stays responsive during a long first scan).
 const SCAN_SLICE: u64 = 400;
@@ -94,6 +95,7 @@ pub type Registry = std::sync::Arc<std::sync::Mutex<Vec<(bool, Proc)>>>;
 
 pub struct Core {
     registry: Registry,
+    wallets: Vec<WalletEntry>,
     app_dir: PathBuf,
     settings: Settings,
     kdf: KdfParams,
@@ -159,6 +161,7 @@ impl Core {
     ) -> Core {
         let mut c = Core {
             registry,
+            wallets: Vec::new(),
             app_dir: app_dir.to_path_buf(),
             settings,
             kdf,
@@ -183,6 +186,7 @@ impl Core {
             last_refresh: None,
             last_tip: None,
         };
+        c.refresh_wallets();
         // a node an earlier run (or the owner) left going is picked up, not started a second time
         c.poll_node(true);
         c
@@ -199,6 +203,16 @@ impl Core {
         &self.settings
     }
 
+    /// Reads the list of wallets again, and if the selected file is not there but others are, selects the first of them.
+    fn refresh_wallets(&mut self) {
+        self.wallets = wallets::list(&self.settings);
+        if !self.settings.wallet_file.is_file() {
+            if let Some(first) = self.wallets.first() {
+                self.settings.wallet_file = first.path.clone();
+            }
+        }
+    }
+
     fn wallet_exists(&self) -> bool {
         self.settings.wallet_file.exists()
     }
@@ -210,6 +224,7 @@ impl Core {
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             settings: self.settings.clone(),
+            wallets: self.wallets.clone(),
             wallet: match (&self.purse, &self.data) {
                 (Some(_), Some(d)) => WalletView::Unlocked(Box::new(d.clone())),
                 (Some(p), None) => WalletView::Unlocked(Box::new(self.bare_data(p))),
@@ -269,12 +284,14 @@ impl Core {
     pub fn handle(&mut self, cmd: Cmd) -> Vec<Event> {
         let mut events = Vec::new();
         let result = match cmd {
-            Cmd::CreateWallet { password } => self.create_wallet(password, &mut events),
+            Cmd::CreateWallet { password, name } => self.create_wallet(password, name, &mut events),
+            Cmd::SelectWallet { path } => self.select_wallet(&path),
             Cmd::RestoreWallet {
                 phrase,
                 password,
                 birth,
-            } => self.restore_wallet(&phrase, password, birth),
+                name,
+            } => self.restore_wallet(&phrase, password, birth, name),
             Cmd::Unlock { password } => self.unlock(&password),
             Cmd::Lock => self.lock(),
             Cmd::RevealPhrase { password } => self.reveal(&password, &mut events),
@@ -382,15 +399,55 @@ impl Core {
         self.refresh_due = true;
     }
 
-    fn create_wallet(&mut self, password: Password, events: &mut Vec<Event>) -> Result<(), String> {
-        if self.wallet_exists() {
-            return Err("a wallet file already exists here; unlock it, or choose another file in the settings".into());
+    /// Where a new wallet goes: a named one in the wallets folder (which becomes the selected one), or, with no name, the
+    /// selected file's own place (a wallet from before names).
+    fn target_for_new(&mut self, name: Option<String>) -> Result<(), String> {
+        if self.purse.is_some() {
+            return Err("lock the open wallet first (\"Lock / switch wallet\"), then make or restore another".into());
         }
+        match name {
+            Some(n) => {
+                let (_, path) = wallets::new_path(&self.settings, &n)?;
+                std::fs::create_dir_all(&self.settings.wallets_dir).map_err(|e| {
+                    format!("cannot create {}: {e}", self.settings.wallets_dir.display())
+                })?;
+                self.settings.wallet_file = path;
+            }
+            None => {
+                if self.wallet_exists() {
+                    return Err("a wallet file already exists here; unlock it, or give the new wallet a name".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// After a wallet was written: remember it as the selected one and list it.
+    fn remember_new_wallet(&mut self) {
+        let _ = self.settings.save(&self.app_dir);
+        self.wallets = wallets::list(&self.settings);
+    }
+
+    fn create_wallet(
+        &mut self,
+        password: Password,
+        name: Option<String>,
+        events: &mut Vec<Event>,
+    ) -> Result<(), String> {
         let pw = pass_ok(&password)?;
+        let before = self.settings.wallet_file.clone();
+        self.target_for_new(name)?;
         let purse = Purse::create(&mut OsRng, self.birth_now());
         let words = purse.phrase();
         self.open(purse, pw);
-        self.save_wallet()?;
+        if let Err(e) = self.save_wallet() {
+            // nothing was written: go back to what was selected
+            self.purse = None;
+            self.pass = None;
+            self.settings.wallet_file = before;
+            return Err(e);
+        }
+        self.remember_new_wallet();
         events.push(Event::Phrase { words, new: true });
         Ok(())
     }
@@ -400,17 +457,38 @@ impl Core {
         phrase: &str,
         password: Password,
         birth: Option<u64>,
+        name: Option<String>,
     ) -> Result<(), String> {
-        if self.wallet_exists() {
-            return Err("a wallet file already exists here; it is not overwritten".into());
-        }
         let pw = pass_ok(&password)?;
         let seed = tenero_wallet::seed_of(phrase).map_err(|e| e.to_string())?;
+        let before = self.settings.wallet_file.clone();
+        self.target_for_new(name)?;
         let purse = Purse::from_seed(&seed, birth.unwrap_or(0));
         self.open(purse, pw);
         // the number of accounts is not in the words: look for them once the node can be read
         self.needs_discovery = true;
-        self.save_wallet()
+        if let Err(e) = self.save_wallet() {
+            self.purse = None;
+            self.pass = None;
+            self.needs_discovery = false;
+            self.settings.wallet_file = before;
+            return Err(e);
+        }
+        self.remember_new_wallet();
+        Ok(())
+    }
+
+    fn select_wallet(&mut self, path: &std::path::Path) -> Result<(), String> {
+        if self.purse.is_some() {
+            return Err("lock the open wallet first".into());
+        }
+        if !self.wallets.iter().any(|w| w.path == path) {
+            return Err("that wallet is not in the list".into());
+        }
+        self.settings.wallet_file = path.to_path_buf();
+        self.settings.save(&self.app_dir)?;
+        self.data = None;
+        Ok(())
     }
 
     fn unlock(&mut self, password: &str) -> Result<(), String> {
@@ -432,6 +510,12 @@ impl Core {
         self.pass = None;
         self.data = None;
         self.prepared = None;
+        // what was learned about one wallet's scanning is not true of the next
+        self.needs_discovery = false;
+        self.last_tip = None;
+        self.dirty = false;
+        self.last_refresh = None;
+        self.wallets = wallets::list(&self.settings);
         // mining pays a wallet address: with the wallet locked the miner is stopped, so the screen never shows a
         // miner working for a wallet that is not open
         self.stop_miner();
@@ -995,7 +1079,9 @@ impl Core {
         if miner_changed && self.miner_proc.is_some() {
             return Err("stop the miner before changing its settings".into());
         }
-        if new.wallet_file != old.wallet_file && self.purse.is_some() {
+        if (new.wallet_file != old.wallet_file || new.wallets_dir != old.wallets_dir)
+            && self.purse.is_some()
+        {
             return Err("lock the wallet before choosing another wallet file".into());
         }
         if !MinerBackend::for_network(new.network).contains(&new.miner_backend) {
@@ -1007,6 +1093,7 @@ impl Core {
         }
         new.save(&self.app_dir)?;
         self.settings = new;
+        self.refresh_wallets();
         self.data = None;
         self.refresh_due = true;
         // look again at once: a node may already be running at the new place

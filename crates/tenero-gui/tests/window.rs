@@ -213,6 +213,7 @@ fn snap(
 ) -> Snapshot {
     Snapshot {
         settings: rig.app_settings(),
+        wallets: Vec::new(),
         wallet,
         node,
         miner,
@@ -882,6 +883,62 @@ fn the_prove_screen_signs_verifies_and_checks_and_says_what_it_does_not_show() {
     let (t, _) = rig.frame();
     assert!(
         t.contains("NOT valid: the proof is NOT valid") && !t.contains("Blocks on top"),
+        "{t}"
+    );
+}
+
+#[test]
+fn the_locked_screen_lists_the_wallets_and_offers_another_and_an_open_wallet_can_be_switched() {
+    use tenero_gui::wallets::WalletEntry;
+    let mut rig = Rig::new();
+    let dir = std::env::temp_dir().join("tenero-gui-window-test");
+    let mut s = snap(
+        &rig,
+        WalletView::Locked,
+        NodeView::Stopped,
+        MinerView::Off,
+        None,
+    );
+    s.wallets = vec![
+        WalletEntry {
+            name: "Main wallet".into(),
+            path: dir.join("Main wallet.twl"),
+        },
+        WalletEntry {
+            name: "Savings stash".into(),
+            path: dir.join("Savings stash.twl"),
+        },
+    ];
+    s.settings.wallet_file = dir.join("Savings stash.twl");
+    rig.app.set_snapshot(s);
+    rig.app.goto("Wallet");
+    let (t, _) = rig.frame();
+    for needle in [
+        "Your wallets",
+        "Main wallet",
+        "Savings stash",
+        "Unlock \"Savings stash\"",
+        "Create another wallet",
+        "Restore another wallet from 24 words",
+    ] {
+        assert!(
+            t.contains(needle),
+            "`{needle}` missing from the chooser:\n{t}"
+        );
+    }
+    // open: the way back to the list is on every screen, and says which wallet is open
+    let mut s = snap(
+        &rig,
+        wallet(true, true),
+        NodeView::Stopped,
+        MinerView::Off,
+        None,
+    );
+    s.settings.wallet_file = dir.join("Savings stash.twl");
+    rig.app.set_snapshot(s);
+    let (t, _) = rig.frame();
+    assert!(
+        t.contains("Lock / switch wallet") && t.contains("Wallet Savings stash"),
         "{t}"
     );
 }

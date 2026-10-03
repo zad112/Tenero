@@ -143,12 +143,14 @@ fn the_wallet_opens_with_no_node_and_never_shows_a_balance_it_cannot_know() {
 
     // a password that is too short is refused, and nothing is written
     let ev = c.handle(Cmd::CreateWallet {
+        name: None,
         password: Password::Set(pw("short")),
     });
     assert_eq!(errors(&ev).len(), 1);
     assert!(!rig.settings.wallet_file.exists());
 
     let ev = c.handle(Cmd::CreateWallet {
+        name: None,
         password: Password::Set(pw("correct horse battery")),
     });
     assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
@@ -168,6 +170,7 @@ fn the_wallet_opens_with_no_node_and_never_shows_a_balance_it_cannot_know() {
 
     // a second wallet is not made on top of the first
     let ev = c.handle(Cmd::CreateWallet {
+        name: None,
         password: Password::None,
     });
     assert_eq!(errors(&ev).len(), 1);
@@ -203,6 +206,7 @@ fn the_words_restore_the_same_wallet_with_a_different_password_and_accounts_can_
     let rig = Rig::new("restore", 18472);
     let mut c = rig.core();
     let ev = c.handle(Cmd::CreateWallet {
+        name: None,
         password: Password::Set(pw("first password")),
     });
     let (words, _) = words_of(&ev).unwrap();
@@ -228,9 +232,12 @@ fn the_words_restore_the_same_wallet_with_a_different_password_and_accounts_can_
 
     // another computer: a different file, the words, another password
     let mut other = rig.settings.clone();
-    other.wallet_file = rig.dir.join("restored.twl");
+    other.wallets_dir = rig.dir.join("other-computer");
+    other.wallet_file = other.wallets_dir.join("Restored.twl");
+    other.legacy_wallet_file = rig.dir.join("not-here.twl");
     let mut c2 = Core::new(&rig.dir, other, KdfParams::TEST_ONLY_WEAK);
     let ev = c2.handle(Cmd::RestoreWallet {
+        name: Some("Restored".into()),
         phrase: pw(&words.to_uppercase()),
         password: Password::Set(pw("a different one")),
         birth: None,
@@ -246,11 +253,14 @@ fn the_words_restore_the_same_wallet_with_a_different_password_and_accounts_can_
 
     // a bad phrase says what is wrong and writes nothing
     let mut other2 = rig.settings.clone();
-    other2.wallet_file = rig.dir.join("never.twl");
+    other2.wallets_dir = rig.dir.join("third-computer");
+    other2.wallet_file = other2.wallets_dir.join("Never.twl");
+    other2.legacy_wallet_file = rig.dir.join("not-here.twl");
     let mut c3 = Core::new(&rig.dir, other2.clone(), KdfParams::TEST_ONLY_WEAK);
     let mut bad: Vec<&str> = words.split(' ').collect();
     bad[3] = "tenero";
     let ev = c3.handle(Cmd::RestoreWallet {
+        name: Some("Never".into()),
         phrase: pw(&bad.join(" ")),
         password: Password::None,
         birth: None,
@@ -265,6 +275,7 @@ fn a_wallet_with_no_password_is_allowed_only_when_chosen_and_is_said_so() {
     let rig = Rig::new("nopw", 18473);
     let mut c = rig.core();
     let ev = c.handle(Cmd::CreateWallet {
+        name: None,
         password: Password::None,
     });
     assert!(errors(&ev).is_empty());
@@ -389,6 +400,7 @@ fn mine_pay_at_every_fee_level_and_read_the_history() {
     let rig = Rig::new("whole", 18477);
     let mut c = rig.core();
     c.handle(Cmd::CreateWallet {
+        name: None,
         password: Password::Set(pw("a long enough password")),
     });
     c.handle(Cmd::AddAccount {
@@ -756,6 +768,7 @@ fn settings_cannot_be_changed_under_a_running_node_or_an_open_wallet() {
     let rig = Rig::new("settings", 18479);
     let mut c = rig.core();
     c.handle(Cmd::CreateWallet {
+        name: None,
         password: Password::None,
     });
     let mut s = rig.settings.clone();
@@ -806,4 +819,207 @@ fn the_window_can_end_what_it_started_even_when_the_worker_never_answers_quit() 
     // the worker is still there and ends cleanly when asked
     b.send(Cmd::Quit);
     b.join();
+}
+
+#[test]
+fn several_wallets_are_made_listed_and_switched_and_none_overwrites_another() {
+    let rig = Rig::new("many", 18481);
+    let mut c = rig.core();
+    let created = |ev: &[Event]| words_of(ev).expect("the words, once").0;
+
+    // the first wallet, by name
+    let ev = c.handle(Cmd::CreateWallet {
+        name: Some("Main wallet".into()),
+        password: Password::Set(pw("first password")),
+    });
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    let words_main = created(&ev);
+    let main_addr = unlocked(&c).accounts[0].address.clone();
+    assert!(rig.settings.wallets_dir.join("Main wallet.twl").is_file());
+
+    // another cannot be made or restored while this one is open
+    let ev = c.handle(Cmd::CreateWallet {
+        name: Some("Second".into()),
+        password: Password::None,
+    });
+    assert_eq!(errors(&ev).len(), 1);
+    assert!(errors(&ev)[0].contains("lock the open wallet"));
+    assert!(!rig.settings.wallets_dir.join("Second.twl").exists());
+
+    // lock, and make a second one with another password
+    c.handle(Cmd::Lock);
+    let ev = c.handle(Cmd::CreateWallet {
+        name: Some("Savings stash".into()),
+        password: Password::Set(pw("second password")),
+    });
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    let other_addr = unlocked(&c).accounts[0].address.clone();
+    assert_ne!(main_addr, other_addr, "a different seed");
+    let names: Vec<String> = c
+        .snapshot()
+        .wallets
+        .iter()
+        .map(|w| w.name.clone())
+        .collect();
+    assert_eq!(names, ["Main wallet", "Savings stash"]);
+
+    // names that are not safe, or already used (without regard to case), are refused and nothing is written
+    c.handle(Cmd::Lock);
+    for bad in [
+        "",
+        "   ",
+        "../evil",
+        "a/b",
+        "a\\b",
+        "con",
+        "NUL",
+        "name.twl",
+        "MAIN WALLET",
+        "main wallet ",
+        &"x".repeat(41),
+    ] {
+        let ev = c.handle(Cmd::CreateWallet {
+            name: Some(bad.to_string()),
+            password: Password::None,
+        });
+        assert_eq!(errors(&ev).len(), 1, "`{bad}` was accepted");
+    }
+    assert_eq!(
+        c.snapshot().wallets.len(),
+        2,
+        "no file was made by a refused name"
+    );
+    assert_eq!(
+        std::fs::read_dir(&rig.settings.wallets_dir)
+            .unwrap()
+            .count(),
+        2
+    );
+
+    // switching: select, unlock with THAT wallet's password
+    let list = c.snapshot().wallets.clone();
+    let (main, stash) = (&list[0], &list[1]);
+    assert!(errors(&c.handle(Cmd::SelectWallet {
+        path: main.path.clone()
+    }))
+    .is_empty());
+    assert_eq!(c.snapshot().settings.wallet_file, main.path);
+    assert_eq!(
+        errors(&c.handle(Cmd::Unlock {
+            password: pw("second password")
+        }))
+        .len(),
+        1,
+        "the other wallet's password"
+    );
+    assert!(errors(&c.handle(Cmd::Unlock {
+        password: pw("first password")
+    }))
+    .is_empty());
+    assert_eq!(unlocked(&c).accounts[0].address, main_addr);
+    // a wallet cannot be selected while another is open, nor a file that is not in the list
+    assert_eq!(
+        errors(&c.handle(Cmd::SelectWallet {
+            path: stash.path.clone()
+        }))
+        .len(),
+        1
+    );
+    c.handle(Cmd::Lock);
+    assert_eq!(
+        errors(&c.handle(Cmd::SelectWallet {
+            path: rig.dir.join("elsewhere.twl")
+        }))
+        .len(),
+        1
+    );
+    c.handle(Cmd::SelectWallet {
+        path: stash.path.clone(),
+    });
+    assert!(errors(&c.handle(Cmd::Unlock {
+        password: pw("second password")
+    }))
+    .is_empty());
+    assert_eq!(unlocked(&c).accounts[0].address, other_addr);
+
+    // the selection is remembered by the next run, which opens on the chooser
+    c.handle(Cmd::Lock);
+    drop(c);
+    let again = Core::new(
+        &rig.dir,
+        Settings::load(&rig.dir).unwrap(),
+        KdfParams::TEST_ONLY_WEAK,
+    );
+    assert_eq!(again.snapshot().settings.wallet_file, stash.path);
+    assert_eq!(again.snapshot().wallets.len(), 2);
+    assert_eq!(again.snapshot().wallet, WalletView::Locked);
+    let mut c = again;
+
+    // restoring into a new name from the first wallet's words gives that wallet's address; the file is a new one
+    let ev = c.handle(Cmd::RestoreWallet {
+        phrase: pw(&words_main),
+        password: Password::Set(pw("third password")),
+        birth: None,
+        name: Some("Copy of main".into()),
+    });
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    assert_eq!(unlocked(&c).accounts[0].address, main_addr);
+    assert_eq!(c.snapshot().wallets.len(), 3);
+    // and restoring onto a name that is taken is refused, leaving the wallet that was there alone
+    c.handle(Cmd::Lock);
+    let ev = c.handle(Cmd::RestoreWallet {
+        phrase: pw(&words_main),
+        password: Password::None,
+        birth: None,
+        name: Some("Savings stash".into()),
+    });
+    assert_eq!(errors(&ev).len(), 1);
+    c.handle(Cmd::SelectWallet {
+        path: stash.path.clone(),
+    });
+    assert!(
+        errors(&c.handle(Cmd::Unlock {
+            password: pw("second password")
+        }))
+        .is_empty(),
+        "the wallet was not overwritten"
+    );
+    assert_eq!(unlocked(&c).accounts[0].address, other_addr);
+}
+
+#[test]
+fn a_wallet_file_from_before_names_is_listed_and_the_folder_cannot_change_under_an_open_wallet() {
+    let rig = Rig::new("legacy", 18482);
+    let mut c = rig.core();
+    // no name: the selected file's own place (what the older app did)
+    let ev = c.handle(Cmd::CreateWallet {
+        name: None,
+        password: Password::None,
+    });
+    assert!(errors(&ev).is_empty());
+    assert!(rig.settings.wallet_file.is_file());
+    let names: Vec<String> = c
+        .snapshot()
+        .wallets
+        .iter()
+        .map(|w| w.name.clone())
+        .collect();
+    assert_eq!(names, ["wallet-test"]);
+    // an old wallet is still there when a named one is added
+    c.handle(Cmd::Lock);
+    c.handle(Cmd::CreateWallet {
+        name: Some("Newer".into()),
+        password: Password::None,
+    });
+    let names: Vec<String> = c
+        .snapshot()
+        .wallets
+        .iter()
+        .map(|w| w.name.clone())
+        .collect();
+    assert_eq!(names, ["Newer", "wallet-test"]);
+    // the folder cannot move under an open wallet
+    let mut s = c.settings().clone();
+    s.wallets_dir = rig.dir.join("elsewhere");
+    assert_eq!(errors(&c.handle(Cmd::SetSettings(Box::new(s)))).len(), 1);
 }

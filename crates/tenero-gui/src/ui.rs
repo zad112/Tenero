@@ -63,6 +63,8 @@ struct Toast {
 
 #[derive(Default)]
 struct Welcome {
+    /// The new wallet's name (empty: the suggestion is used).
+    name: String,
     restoring: bool,
     pw1: Zeroizing<String>,
     pw2: Zeroizing<String>,
@@ -142,6 +144,8 @@ pub struct App {
     renaming: Option<(usize, String)>,
     prompt: Prompt,
     draft: Option<(Settings, String)>,
+    /// The wallet chooser is showing the form for another wallet (not the list).
+    adding: bool,
     closing: bool,
     /// When `Quit` was sent: if the worker has not finished 75 s later (it is stuck), the window ends what it started itself.
     closing_since: Option<Instant>,
@@ -188,6 +192,7 @@ impl App {
         let mut app = App {
             backend,
             snap: Snapshot {
+                wallets: Vec::new(),
                 settings,
                 wallet: WalletView::NoWallet,
                 node: NodeView::Stopped,
@@ -207,6 +212,7 @@ impl App {
             renaming: None,
             prompt: Prompt::default(),
             draft: None,
+            adding: false,
             closing: false,
             closing_since: None,
             node_tail: (now, String::new()),
@@ -369,6 +375,16 @@ impl App {
                     }
                 }
             };
+            if self.wallet().is_some() {
+                ui.separator();
+                let name = self
+                    .snap
+                    .settings
+                    .wallet_file
+                    .file_stem()
+                    .map_or(String::new(), |s| s.to_string_lossy().into_owned());
+                ui.label(format!("Wallet {name}"));
+            }
             if let Some(d) = self.wallet() {
                 ui.separator();
                 if d.synced {
@@ -387,7 +403,7 @@ impl App {
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.wallet().is_some() && ui.button("Lock").clicked() {
+                if self.wallet().is_some() && ui.button("Lock / switch wallet").clicked() {
                     self.backend.send(Cmd::Lock);
                 }
             });
@@ -412,14 +428,42 @@ impl App {
     fn gate(&mut self, ui: &mut egui::Ui) -> bool {
         match self.snap.wallet.clone() {
             WalletView::Unlocked(_) => true,
+            WalletView::Locked if self.adding => {
+                if ui.button("Back to my wallets").clicked() {
+                    self.adding = false;
+                }
+                self.welcome_ui(ui);
+                false
+            }
             WalletView::Locked => {
                 ui.add_space(20.0);
-                ui.heading("Unlock your wallet");
-                ui.label(format!(
-                    "Wallet file: {}",
-                    self.snap.settings.wallet_file.display()
-                ));
+                ui.heading("Your wallets");
+                let current = self.snap.settings.wallet_file.clone();
+                for w in self.snap.wallets.clone() {
+                    let selected = w.path == current;
+                    ui.horizontal(|ui| {
+                        if ui
+                            .radio(selected, RichText::new(&w.name).strong())
+                            .clicked()
+                            && !selected
+                        {
+                            self.unlock_pw = Zeroizing::default();
+                            self.backend.send(Cmd::SelectWallet {
+                                path: w.path.clone(),
+                            });
+                        }
+                        ui.label(
+                            RichText::new(w.path.display().to_string())
+                                .small()
+                                .color(GREY),
+                        );
+                    });
+                }
                 ui.add_space(8.0);
+                let name = current
+                    .file_stem()
+                    .map_or(String::new(), |s| s.to_string_lossy().into_owned());
+                ui.label(format!("Unlock \"{name}\":"));
                 let mut go = false;
                 ui.horizontal(|ui| {
                     ui.label("Password");
@@ -441,6 +485,18 @@ impl App {
                         .small()
                         .color(GREY),
                 );
+                ui.add_space(14.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Create another wallet").clicked() {
+                        self.welcome.restoring = false;
+                        self.adding = true;
+                    }
+                    if ui.button("Restore another wallet from 24 words").clicked() {
+                        self.welcome.restoring = true;
+                        self.adding = true;
+                    }
+                });
                 false
             }
             WalletView::NoWallet => {
@@ -452,7 +508,22 @@ impl App {
 
     fn welcome_ui(&mut self, ui: &mut egui::Ui) {
         ui.add_space(12.0);
-        ui.heading("Welcome");
+        ui.heading(if self.snap.wallets.is_empty() {
+            "Welcome"
+        } else {
+            "Another wallet"
+        });
+        if self.welcome.name.is_empty() {
+            self.welcome.name = crate::wallets::suggest_name(&self.snap.settings);
+        }
+        ui.horizontal(|ui| {
+            ui.label("Wallet name");
+            ui.add(egui::TextEdit::singleline(&mut self.welcome.name).desired_width(240.0));
+        });
+        let name_problem = crate::wallets::new_path(&self.snap.settings, &self.welcome.name).err();
+        if let Some(p) = &name_problem {
+            ui.colored_label(AMBER, p);
+        }
         ui.label("This wallet keeps coins of an experimental test network. They have no value, and nothing here is audited.");
         ui.add_space(6.0);
         ui.horizontal(|ui| {
@@ -537,7 +608,7 @@ impl App {
         };
         if ui
             .add_enabled(
-                pw_problem.is_none() && birth_ok && phrase_ok,
+                pw_problem.is_none() && birth_ok && phrase_ok && name_problem.is_none(),
                 egui::Button::new(label),
             )
             .clicked()
@@ -554,11 +625,16 @@ impl App {
                     phrase,
                     password,
                     birth,
+                    name: Some(self.welcome.name.clone()),
                 });
             } else {
-                self.backend.send(Cmd::CreateWallet { password });
+                self.backend.send(Cmd::CreateWallet {
+                    password,
+                    name: Some(self.welcome.name.clone()),
+                });
             }
             self.welcome = Welcome::default();
+            self.adding = false;
         }
     }
 
@@ -1645,12 +1721,13 @@ impl App {
                 }
                 ui.add_space(8.0);
                 ui.label(RichText::new("Wallet").strong());
+                ui.label(format!("Selected wallet file: {}", draft.wallet_file.display()));
                 ui.add_enabled_ui(!unlocked, |ui| {
-                    path_row(ui, "Wallet file", &mut draft.wallet_file)
+                    path_row(ui, "Wallets folder", &mut draft.wallets_dir)
                 });
                 if unlocked {
                     ui.label(
-                        RichText::new("Lock the wallet to choose another file.")
+                        RichText::new("Lock the wallet (\"Lock / switch wallet\") to choose or add another, or to change the folder.")
                             .small()
                             .color(GREY),
                     );

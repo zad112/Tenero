@@ -8,6 +8,7 @@ use tenero_wallet::{Balance, EntryKind, FeeLevel};
 use zeroize::Zeroizing;
 
 use crate::settings::Settings;
+use crate::wallets::WalletEntry;
 
 /// Text shown on every screen, at all times (the owner's rule: nothing in the app may say or imply that the coins are
 /// money or that payments are anonymous).
@@ -133,6 +134,8 @@ pub struct Quote {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub settings: Settings,
+    /// The wallet files there are (the selected one is `settings.wallet_file`).
+    pub wallets: Vec<WalletEntry>,
     pub wallet: WalletView,
     pub node: NodeView,
     pub miner: MinerView,
@@ -155,12 +158,19 @@ pub const MIN_PASSWORD: usize = 8;
 pub enum Cmd {
     CreateWallet {
         password: Password,
+        /// The new wallet's name (its file is `NAME.twl` in the wallets folder). `None`: at the selected file's place.
+        name: Option<String>,
     },
     RestoreWallet {
         phrase: Zeroizing<String>,
         password: Password,
         /// The height of the first block that could hold the wallet's coins, if known (default: the start).
         birth: Option<u64>,
+        name: Option<String>,
+    },
+    /// Selects another wallet file to open (the wallet must be locked).
+    SelectWallet {
+        path: std::path::PathBuf,
     },
     Unlock {
         password: Zeroizing<String>,

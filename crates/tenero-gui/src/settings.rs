@@ -86,7 +86,13 @@ pub struct Settings {
     pub program_dir: Option<PathBuf>,
     /// Overrides for where things are; empty = the defaults under the app folder.
     pub data_dir: PathBuf,
+    /// The wallet that is selected (opened next): one of the files in `wallets_dir`, or an older file elsewhere.
     pub wallet_file: PathBuf,
+    /// Where the wallets are: one `NAME.twl` file each.
+    pub wallets_dir: PathBuf,
+    /// Where the single wallet of the first versions of the app lived (`wallet-<network>.twl` in the app folder): still listed if
+    /// it is there, whichever wallet is selected. Not a setting; worked out from the app folder.
+    pub legacy_wallet_file: PathBuf,
 }
 
 /// The app folder, from the environment: `%LOCALAPPDATA%\Tenero`, else `$HOME/.tenero`.
@@ -127,6 +133,8 @@ impl Settings {
             program_dir: None,
             data_dir: app_dir.join(network.name()).join("node"),
             wallet_file: app_dir.join(format!("wallet-{}.twl", network.name())),
+            wallets_dir: app_dir.join(format!("wallets-{}", network.name())),
+            legacy_wallet_file: app_dir.join(format!("wallet-{}.twl", network.name())),
         }
     }
 
@@ -216,6 +224,7 @@ impl Settings {
                 "program_dir" => s.program_dir = (!v.is_empty()).then(|| PathBuf::from(&v)),
                 "data_dir" => s.data_dir = PathBuf::from(&v),
                 "wallet_file" => s.wallet_file = PathBuf::from(&v),
+                "wallets_dir" => s.wallets_dir = PathBuf::from(&v),
                 other => return Err(format!("unknown setting `{other}`")),
             }
         }
@@ -262,6 +271,7 @@ impl Settings {
         }
         t.push_str(&format!("data_dir = {}\n", self.data_dir.display()));
         t.push_str(&format!("wallet_file = {}\n", self.wallet_file.display()));
+        t.push_str(&format!("wallets_dir = {}\n", self.wallets_dir.display()));
         t
     }
 
