@@ -69,13 +69,22 @@ impl Running {
     }
 
     fn try_start(cfg: Config) -> Result<Running, String> {
+        Running::try_start_at(cfg, Level::Info)
+    }
+
+    /// Like `start`, with the log at `level` (`Debug` writes every line there is).
+    fn start_at(cfg: Config, level: Level) -> Running {
+        Running::try_start_at(cfg, level).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    fn try_start_at(cfg: Config, level: Level) -> Result<Running, String> {
         // beside the data directory when that does not exist yet (the node makes it, and has to be the one to)
         let log_file = if cfg.data.exists() {
             cfg.data.join("node.log")
         } else {
             cfg.data.with_extension("log")
         };
-        let log = Arc::new(Logger::new(Level::Info, Some(&log_file), false).unwrap());
+        let log = Arc::new(Logger::new(level, Some(&log_file), false).unwrap());
         let shutdown = Arc::new(AtomicBool::new(false));
         let (tx, rx) = channel();
         let sd = Arc::clone(&shutdown);
@@ -1152,5 +1161,199 @@ fn a_node_with_no_seeds_but_a_pinned_peer_finds_it_and_finds_it_again_after_it_r
             b.log()
         );
         thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// G6: a real run at the most verbose level, with the things that touch secrets (a wallet, a payment, a control connection with a wrong
+/// cookie, junk on both ports), and then the logs are searched for the secrets themselves: the cookies, the node keys, the wallet's seed
+/// and passphrase, in the forms a careless line would write them (as they are, in hex, and the first 16 digits of a longer one).
+#[test]
+fn no_secret_reaches_the_log_at_the_most_verbose_level() {
+    use std::io::Write as _;
+    let (wa, da, db) = (
+        Dir::new("g6-wallet"),
+        Dir::new("g6-node-a"),
+        Dir::new("g6-node-b"),
+    );
+    let (alice_file, bob_file) = (wa.path("alice.wallet"), wa.path("bob.wallet"));
+    let pass = wa.path("pass.txt");
+    let passphrase = "correct horse battery";
+    std::fs::write(
+        &pass,
+        format!(
+            "{passphrase}
+"
+        ),
+    )
+    .unwrap();
+    let pass_s = pass.to_str().unwrap();
+    let make = |file: &std::path::Path| {
+        let (r, said) = cli(
+            &[
+                "create",
+                "--wallet",
+                file.to_str().unwrap(),
+                "--birth",
+                "0",
+                "--passphrase-file",
+                pass_s,
+            ],
+            &[],
+        );
+        r.unwrap();
+        let seed = said
+            .iter()
+            .find(|l| l.trim().len() == 64 && l.trim().bytes().all(|b| b.is_ascii_hexdigit()))
+            .expect("the seed is shown once")
+            .trim()
+            .to_string();
+        (find(&said, "address:"), seed)
+    };
+    let ((alice_addr, alice_seed), (bob_addr, bob_seed)) = (make(&alice_file), make(&bob_file));
+
+    let a = Running::start_at(
+        config(
+            &da.0,
+            &format!(
+                "mine = sha256
+mine_to = {alice_addr}
+mine_pace = 1
+log_level = debug
+"
+            ),
+        ),
+        Level::Debug,
+    );
+    let b = Running::start_at(
+        config(
+            &db.0,
+            &format!(
+                "seed = {}
+log_level = debug
+",
+                a.ready.p2p.unwrap()
+            ),
+        ),
+        Level::Debug,
+    );
+    a.wait_height(8, 60);
+    let (control, data_a) = (
+        a.ready.control.to_string(),
+        da.0.to_str().unwrap().to_string(),
+    );
+    // the wallet works through the control interface: a balance, then a payment
+    let wallet_args = |c: &str, extra: &[&str]| -> Vec<String> {
+        let mut v: Vec<String> = [
+            c,
+            "--wallet",
+            alice_file.to_str().unwrap(),
+            "--data",
+            &data_a,
+            "--control",
+            &control,
+            "--passphrase-file",
+            pass_s,
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        v.extend(extra.iter().map(|s| s.to_string()));
+        v
+    };
+    let run = |args: Vec<String>| {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        cli(&refs, &[])
+    };
+    run(wallet_args("balance", &[])).0.unwrap();
+    run(wallet_args("pay", &["--to", &bob_addr, "--amount", "1.5"]))
+        .0
+        .unwrap_or_else(|e| {
+            panic!(
+                "{e}
+{}",
+                a.log()
+            )
+        });
+
+    // the cookies, the node keys: read now, while the files are there
+    let cookie_a = std::fs::read_to_string(da.0.join(COOKIE_FILE))
+        .unwrap()
+        .trim()
+        .to_string();
+    let cookie_b = std::fs::read_to_string(db.0.join(COOKIE_FILE))
+        .unwrap()
+        .trim()
+        .to_string();
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let key_a = hex(&std::fs::read(da.0.join("node.key")).unwrap());
+    let key_b = hex(&std::fs::read(db.0.join("node.key")).unwrap());
+
+    // hostile things that go through the code that logs: a wrong cookie, an HTTP request and junk on the control port, junk on the peer port
+    assert!(RemoteNode::connect(a.ready.control, &[7u8; 32]).is_err());
+    for target in [a.ready.control, a.ready.p2p.unwrap()] {
+        if let Ok(mut s) = std::net::TcpStream::connect(target) {
+            let _ = s.set_write_timeout(Some(Duration::from_secs(2)));
+            let _ = s.write_all(
+                b"GET / HTTP/1.1
+Host: x
+
+",
+            );
+            let _ = s.write_all(&[0xA5; 300]);
+        }
+    }
+    thread::sleep(Duration::from_millis(500));
+    let (file_a, file_b) = (a.log_file.clone(), b.log_file.clone());
+    a.stop();
+    b.stop();
+    // the whole logs, shutdown included
+    let read = |f: &std::path::Path| std::fs::read_to_string(f).unwrap_or_default();
+    let (log_a, log_b) = (read(&file_a), read(&file_b));
+
+    // the logs are real (this is not a search of nothing). Note: at "debug" this code writes few lines beyond the "info" ones, so the check is
+    // as strong as the lines there are; the scan of the call sites (log_secrets.rs) covers the ones this run does not reach
+    assert!(
+        log_a.lines().count() > 20,
+        "{} lines
+{log_a}",
+        log_a.lines().count()
+    );
+    assert!(
+        log_b.lines().count() > 5,
+        "{} lines
+{log_b}",
+        log_b.lines().count()
+    );
+    assert!(log_a.contains("peer 1 connected") && log_a.contains("miner: found a block"));
+    assert!(
+        log_a.contains("handshake with") && log_a.contains("failed"),
+        "the junk on the peer port is in the log"
+    );
+    let secrets: Vec<(&str, String)> = vec![
+        ("cookie of node A", cookie_a),
+        ("cookie of node B", cookie_b),
+        ("key of node A", key_a),
+        ("key of node B", key_b),
+        ("Alice's seed", alice_seed),
+        ("Bob's seed", bob_seed),
+        ("the passphrase", passphrase.to_string()),
+        ("the wrong cookie", hex(&[7u8; 32])),
+    ];
+    for (what, secret) in &secrets {
+        assert!(secret.len() >= 16, "{what} is too short to search for");
+        let forms = [
+            secret.clone(),
+            secret.to_uppercase(),
+            secret[..16].to_string(),
+            secret[..16].to_uppercase(),
+        ];
+        for (name, log) in [("A", &log_a), ("B", &log_b)] {
+            for f in &forms {
+                assert!(
+                    !log.contains(f.as_str()),
+                    "{what} ({f}) is in the log of node {name}"
+                );
+            }
+        }
     }
 }

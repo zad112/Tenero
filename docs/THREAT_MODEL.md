@@ -144,7 +144,7 @@ These come from the tests; none of it is audited.
 | G3 | Tampered `chain.redb`, segment files, `peers.dat`, `pool.dat`, `node.key` | `pool.dat` and `peers.dat` are checksummed and re-validated; the store is crash-safe and tested against damaged files; a chain from another network is refused | **Partly**: **the node trusts its own chain database**; someone who can edit it can feed the node an invalid chain. Accepted: whoever can write the data directory owns the node. |
 | G4 | Two nodes on one data directory | an exclusive open (`only_one_node_may_use_a_data_directory`) | **Mitigated** |
 | G5 | `node.key` and the data directory readable by others | the same check covers everything inside the data directory by inheritance (new files take the directory's permissions); `node.key`, `chain.redb`, `peers.dat`, `pool.dat` and the cookie live there | **Mitigated** for new and checked directories; **Accepted** gaps: a file copied into an already-private directory with its own open permissions is not noticed; a wallet file kept elsewhere is not covered (it is encrypted, but the location is the user's choice) |
-| G6 | The log leaking secrets | logs carry addresses, ids and IPs, never seeds or keys (**to verify** with a grep test over all log call sites) | **Partly** |
+| G6 | The log leaking secrets | logs carry addresses, ids and IPs, never seeds or keys. **Two tests (2026-10-02):** `tenero-app/tests/log_secrets.rs` reads every call that writes a line or prints in the ten crates and refuses one whose arguments name a secret (cookie, passphrase, node key, spend or view key, mnemonic, master, wallet seed; the scanner is itself tested to fail); `daemon.rs`, `no_secret_reaches_the_log_at_the_most_verbose_level`, runs two real nodes at debug level through a wallet, a payment, a wrong cookie, an HTTP request and junk on both ports and searches both logs for the cookies, the node keys, both wallets' seeds and the passphrase (whole, in upper case, and the first 16 digits). 4 faults injected (the cookie logged by name, under an innocent name, its first 16 digits, the node key under an innocent name): all caught | **Mitigated** for what these two see. **Limits:** at "debug" the code writes few lines beyond "info" (there are almost no debug lines), so the end-to-end check is as strong as the lines that exist; the scan looks at names, so a secret passed under an unrelated name is for the end-to-end run to find; `tenero-wallet` prints the seed once on purpose (to the terminal, never to a log) |
 
 ### H. The wallet
 
@@ -211,7 +211,7 @@ privacy of Monero**, for these reasons:
 8. **E8: the emergency-fork plan**, written down: who can decide, how a bad block or rule is handled, how testers are told. *Small, but a decision, not code.*
 9. ~~Decide E10~~ **Done 2026-10-02:** 4 MiB ceiling (`CONSENSUS_V2.md` 8.4).
 10. **Verify the "to verify" items** in this document, each with a test or a changed sentence.
-11. **A test that no log line contains a secret** (G6), and one that sends an HTTP request to the control port (G2). *Small.*
+11. ~~A test that no log line contains a secret (G6), and one that sends an HTTP request to the control port (G2).~~ **Done 2026-10-02** (both).
 
 ## 6. How this document is kept honest
 
