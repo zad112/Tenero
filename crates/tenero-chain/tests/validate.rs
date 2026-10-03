@@ -1439,3 +1439,99 @@ fn a_pool_transaction_is_always_proof_checked_whatever_is_assumed() {
         Err(BlockError::ProofRejected { .. })
     ));
 }
+
+/// B5 of the threat model: a stranger cannot make a node build a dataset for free. The cheap check (the id is below the target) comes before
+/// anything that needs a dataset, and the epoch whose dataset the full check uses comes from the block's PARENT, not from anything the block
+/// claims about itself.
+#[test]
+fn a_block_that_fails_the_cheap_check_costs_no_dataset_and_a_lie_about_the_height_chooses_no_epoch()
+{
+    let small = Params {
+        m: 8,
+        k: 64,
+        nb: 64,
+        num_blocks: 8,
+    };
+    let pow = MatmulPow::new(small, 3, 1).unwrap();
+    let params = ChainParams::version_2(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
+    let db = TempDb::new("matmul-b5");
+    let store = Store::open(&db.0, LABEL, PowKind::Matmul).unwrap();
+    let proofs = ProofsNotChecked;
+    let v = Validator::new(&store, &params, &pow, &proofs);
+    let next = v.next_block().unwrap();
+    let mut rng = Rng(0xb5b5_b5b5_b5b5_b5b5);
+
+    let block = |height: u64, mix: [u8; 64], nonce: u64| {
+        let coinbase = Coinbase {
+            version: VERSION,
+            height,
+            outputs: vec![CoinbaseOutput {
+                onetime_address: [5; 32],
+                amount: next.reward,
+                view_tag: [0; 3],
+                ephemeral_pubkey: [6; 32],
+                anchor_enc: [0; 16],
+            }],
+            extra: vec![],
+        };
+        Block {
+            header: BlockHeader {
+                version: VERSION,
+                prev_id: next.prev_id,
+                timestamp: T0,
+                tx_root: ids::block_tx_root(&coinbase, &[]).unwrap(),
+                nonce,
+                mix,
+            },
+            coinbase,
+            transactions: vec![],
+        }
+    };
+
+    // 1. a block that misses the target is refused and builds nothing: not for its own epoch, not for any other
+    let mut refused = 0;
+    for nonce in 0..300u64 {
+        let b = block(1, rng.bytes(), nonce);
+        if pow.check_cheap(&b.header, &next.target) {
+            continue;
+        }
+        assert_eq!(
+            v.accept_block(&b, NOW).unwrap_err(),
+            BlockError::PowTargetNotMet
+        );
+        refused += 1;
+    }
+    assert!(
+        refused > 200,
+        "most blocks miss a target that one in eight meets"
+    );
+    assert_eq!(
+        pow.builds(),
+        0,
+        "{refused} blocks that miss the target built a dataset"
+    );
+
+    // 2. a block that meets the cheap check with a made-up mix gets the full check, once, and it is the dataset of the epoch of its PARENT
+    // that is built, whatever height the block claims for itself (height 99 is epoch 33)
+    let mut forged = block(99, [0; 64], 7);
+    for _ in 0..100_000 {
+        forged.header.mix = rng.bytes();
+        if pow.check_cheap(&forged.header, &next.target) {
+            break;
+        }
+    }
+    assert!(pow.check_cheap(&forged.header, &next.target));
+    assert!(matches!(
+        v.accept_block(&forged, NOW),
+        Err(BlockError::PowInvalid(_))
+    ));
+    assert_eq!(pow.builds(), 1, "the full check builds one dataset");
+    assert!(pow.has_dataset(1), "the dataset of the block's real height");
+    assert!(
+        !pow.has_dataset(99),
+        "the dataset of the height the block CLAIMED was built"
+    );
+    // and the same forgery again costs no second build
+    let _ = v.accept_block(&forged, NOW);
+    assert_eq!(pow.builds(), 1);
+}
