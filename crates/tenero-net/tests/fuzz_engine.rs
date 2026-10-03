@@ -1033,3 +1033,31 @@ fn a_found_case_a_block_ids_request_to_a_peer_that_is_gone() {
     ];
     run_case(&steps, &cfg_variant(2)).unwrap();
 }
+
+/// Found by the overnight fuzz run of 2026-10-03 (41 failures in 276 passes, all this one): a peer that is honest, then asks for headers with
+/// a locator that shares nothing with our chain. The engine penalised it first (which can order it off) and then sent it the empty
+/// `Headers` answer: a message to a peer that had just been ordered off. The fix is the one `on_get_block_ids` already had: send, then penalise.
+#[test]
+fn a_found_case_a_headers_answer_to_a_peer_that_was_just_ordered_off() {
+    let steps = vec![
+        Step::Connect {
+            inbound: false,
+            addr: 0,
+        },
+        Step::HonestHello { slot: 0 },
+        Step::Msg {
+            slot: 0,
+            spec: MsgSpec::NotFound(vec![]),
+        },
+        Step::Sync {
+            slot: 0,
+            at: 0,
+            flaw: Flaw::None,
+        },
+        Step::Msg {
+            slot: 0,
+            spec: MsgSpec::GetHeaders(vec![IdSpec::Real(1)]),
+        },
+    ];
+    run_case(&steps, &cfg_variant(0)).unwrap();
+}

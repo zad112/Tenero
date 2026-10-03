@@ -1183,7 +1183,8 @@ impl<'a> Engine<'a> {
             .iter()
             .find_map(|id| store.height_of(id).ok().flatten());
         let Some(common) = common else {
-            self.penalize(peer, 20, "locator shares nothing with our chain", out);
+            // answer first, then penalise: the penalty can order the peer off (a ban), and nothing may be sent to a peer that has
+            // just been ordered off (the same mistake as in `on_get_block_ids`, found by the overnight fuzz run of 2026-10-03)
             self.send(
                 peer,
                 Message::Headers {
@@ -1192,6 +1193,7 @@ impl<'a> Engine<'a> {
                 },
                 out,
             );
+            self.penalize(peer, 20, "locator shares nothing with our chain", out);
             return;
         };
         let (tip_h, _, _) = self.tip();
