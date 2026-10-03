@@ -1,0 +1,37 @@
+name: supply-chain
+
+# What is in the dependency tree (docs/THREAT_MODEL.md, J1 and J2): known vulnerabilities (cargo audit and cargo deny's advisories), licences,
+# banned or unknown sources (deny.toml). It also runs every Monday, because a new advisory can turn a tree that was fine red with no change
+# of ours: that is the point of it.
+on:
+  push:
+    branches: [main, rewrite]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deny-and-audit:
+    name: cargo deny and cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # The two tools take several minutes to build; they are kept between runs (the key names their versions, so a new version is a new build).
+      - uses: actions/cache@v4
+        id: tools
+        with:
+          path: |
+            ~/.cargo/bin/cargo-deny
+            ~/.cargo/bin/cargo-audit
+          key: supply-chain-tools-deny-0.20.2-audit-0.22.2
+      - name: build the tools (first run, or a new version)
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: cargo install cargo-deny --version 0.20.2 --locked && cargo install cargo-audit --version 0.22.2 --locked
+      - run: cargo deny check
+      - run: cargo audit
