@@ -103,6 +103,14 @@ per batch size after 5 s of warm-up, one run each):
   node's own screen): average 34,417 attempts/s over the run (its 10 s figure moved between 33,900 and 35,300), card at 50 to 51 C and 256 to
   264 W. Block times on that chain were not steady (the difficulty was still moving from its placeholder start), so the attempt rate
   is the thing to read, not the blocks. One run.
+* **The separate miner program under load** (`tenero-miner --backend gpu --gpu-batch auto` against a scratch `tenerod` on the development network, about
+  90 s, one run): connected, found and submitted 44 blocks, every one in the chain (none lost to a race, none refused); the rate was 30.0 to 32.6k
+  attempts/s in the 10 s window once blocks slowed down (the first 12 s read 15.6k because blocks came every 0.2 s at the placeholder
+  difficulty and the round trip to the node dominates); the card 44 to 47 C and 170 to 245 W. `auto` measured 34.9k, 34.9k and 36.2k for batch 128,
+  256 and 512 and chose 512 (a 3.7 % lead in one run: noise). **This run showed the `luck` row reading 0.2x** (40 found, 184 expected):
+  on that easy target a batch of 512 holds dozens of solutions and only the first becomes a block. Fixed (the attempts after a batch's first
+  solution are left out of the expectation); on the real card at an easy target, 300 blocks found against 320.4 expected (1.07x; the same
+  test before the fix would have expected about 19,200).
 * **The `reads` row on the screen is attempts a second times 16 MiB, not a measurement of the memory bus.** NVML does not report
   bandwidth.
 

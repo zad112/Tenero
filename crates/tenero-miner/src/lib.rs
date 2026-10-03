@@ -85,6 +85,9 @@ pub struct Counters {
     building: std::sync::atomic::AtomicU32,
     /// How many times a build has been marked (one for each dataset built, so it equals `dataset_builds` when the marks are right).
     pub build_marks: AtomicU64,
+    /// Attempts made after the first solution of a batch: the GPU did the work, but a job needs one block and no more can come of them. They
+    /// are left out of the blocks the attempts should have found (an easy target has several solutions in one batch).
+    pub discarded: AtomicU64,
     /// The blocks the attempts so far should have found (see [`rate::Luck`]).
     luck: std::sync::Mutex<JobLedger>,
 }
@@ -98,10 +101,17 @@ struct JobLedger {
 }
 
 impl Counters {
+    /// The attempts that count toward blocks: all of them, less those made after a batch's first solution.
+    fn counted(&self) -> u64 {
+        self.attempts
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.discarded.load(Ordering::Relaxed))
+    }
+
     /// A job begins at a target of this work (see [`rate::work_of`]).
     pub fn begin_job(&self, work: f64) {
         if let Ok(mut l) = self.luck.lock() {
-            l.job = Some((self.attempts.load(Ordering::Relaxed), work));
+            l.job = Some((self.counted(), work));
         }
     }
 
@@ -109,7 +119,7 @@ impl Counters {
     pub fn end_job(&self) {
         if let Ok(mut l) = self.luck.lock() {
             if let Some((start, work)) = l.job.take() {
-                let n = self.attempts.load(Ordering::Relaxed).saturating_sub(start);
+                let n = self.counted().saturating_sub(start);
                 l.settled += n as f64 / work;
             }
         }
@@ -119,7 +129,7 @@ impl Counters {
     pub fn expected_blocks(&self) -> f64 {
         let Ok(l) = self.luck.lock() else { return 0.0 };
         let live = l.job.map_or(0.0, |(start, work)| {
-            self.attempts.load(Ordering::Relaxed).saturating_sub(start) as f64 / work
+            self.counted().saturating_sub(start) as f64 / work
         });
         l.settled + live
     }

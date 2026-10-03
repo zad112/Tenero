@@ -137,3 +137,78 @@ fn a_real_card_is_measured_and_a_batch_is_chosen() {
     let chosen = auto_batch(0, tenero_core::matmulhash::Params::DEFAULT, 100, 128, &log);
     assert!(AUTO_BATCHES.contains(&chosen));
 }
+
+/// The owner's machine. What the separate miner showed on 2026-10-02 at the chain's easy starting difficulty (one attempt in eight): 40
+/// blocks found against 184 expected, because a batch of 512 attempts holds dozens of solutions and only the first becomes a block.
+/// With the attempts after the first solution left out, the blocks found and the blocks expected agree.
+#[test]
+#[ignore = "needs an NVIDIA GPU, the CUDA DLLs and about 4.5 GiB of video memory"]
+fn on_a_real_card_at_an_easy_target_the_blocks_found_match_the_blocks_expected() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use tenero_core::u256::U256;
+    use tenero_core::v2::BlockHeader;
+    use tenero_miner::gpu::GpuBackend;
+    use tenero_miner::rate::work_of;
+    use tenero_miner::{Job, Miner, Msg};
+
+    let target = U256::pow2(253).unwrap(); // one attempt in eight
+    assert_eq!(work_of(&target), 8.0);
+    let mut miner =
+        Miner::spawn(|| GpuBackend::new(0, tenero_core::matmulhash::Params::DEFAULT, 100, 512, 0));
+    let c = Arc::clone(&miner.counters);
+    let jobs = 300u64;
+    let mut found = 0u64;
+    let mut last_counted = 0u64;
+    for id in 1..=jobs {
+        miner.submit(Job {
+            id,
+            header: BlockHeader {
+                version: tenero_core::v2::VERSION,
+                prev_id: [0; 32],
+                timestamp: id,
+                tx_root: [0; 32],
+                nonce: 0,
+                mix: [0; 64],
+            },
+            height: 1,
+            target,
+            stale: Arc::new(AtomicBool::new(false)),
+        });
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            match miner.try_msg() {
+                Some(Msg::Solved(_)) => {
+                    found += 1;
+                    // exactly: the solution is itself an attempt that counts, so every job counts at least one
+                    let counted =
+                        c.attempts.load(Ordering::Relaxed) - c.discarded.load(Ordering::Relaxed);
+                    assert!(counted > last_counted, "job {id} counted no attempt");
+                    last_counted = counted;
+                    break;
+                }
+                Some(Msg::Failed(e)) => panic!("the GPU backend failed: {e}"),
+                Some(_) => {}
+                None if std::time::Instant::now() > until => panic!("no solution in 60 s"),
+                None => std::thread::sleep(std::time::Duration::from_millis(1)),
+            }
+        }
+    }
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while c.searching() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let (expected, attempts, discarded) = (
+        c.expected_blocks(),
+        c.attempts.load(Ordering::Relaxed),
+        c.discarded.load(Ordering::Relaxed),
+    );
+    eprintln!("{found} blocks found, {expected:.1} expected, {attempts} attempts made, {discarded} of them after a first solution");
+    assert_eq!(found, jobs);
+    // (without the fix: about 300 * 512 / 8 = 19,200 expected. The number of attempts to a first solution varies by about 5 % over 300
+    // jobs, so the bounds are 15 %.)
+    assert!(
+        expected > 0.85 * jobs as f64 && expected < 1.15 * jobs as f64,
+        "{expected} expected for {found} found"
+    );
+}

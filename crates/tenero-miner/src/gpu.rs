@@ -125,8 +125,12 @@ impl Backend for GpuBackend {
             counters
                 .attempts
                 .fetch_add(*batch as u64, Ordering::Relaxed);
-            for (n, a) in nonces.iter().zip(&attempts) {
+            for (i, (n, a)) in nonces.iter().zip(&attempts).enumerate() {
                 if mh::meets_target(&a.digest, &job.target) {
+                    // the rest of the batch was made, but cannot make another block of this job
+                    counters
+                        .discarded
+                        .fetch_add((*batch - 1 - i) as u64, Ordering::Relaxed);
                     counters.found.fetch_add(1, Ordering::Relaxed);
                     return Ok(Some(Solution {
                         job_id: job.id,

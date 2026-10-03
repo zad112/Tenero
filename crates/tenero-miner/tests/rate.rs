@@ -488,3 +488,33 @@ fn a_real_backend_at_an_easy_target_finds_about_what_was_expected() {
         "{expected} blocks expected for 400 found"
     );
 }
+
+#[test]
+fn attempts_after_the_first_solution_of_a_batch_are_not_blocks_that_could_have_been() {
+    let c = Counters::default();
+    c.begin_job(8.0);
+    c.attempts.store(512, Ordering::Relaxed);
+    // the first solution was 12th in the batch: 500 attempts after it
+    c.discarded.store(500, Ordering::Relaxed);
+    assert!(
+        (c.expected_blocks() - 12.0 / 8.0).abs() < 1e-9,
+        "{}",
+        c.expected_blocks()
+    );
+    c.end_job();
+    assert!((c.expected_blocks() - 1.5).abs() < 1e-9);
+    // the next job counts from where this one left off (the discarded are taken off both ends)
+    c.begin_job(8.0);
+    c.attempts.store(1024, Ordering::Relaxed);
+    c.discarded.store(500 + 504, Ordering::Relaxed);
+    assert!(
+        (c.expected_blocks() - (1.5 + 8.0 / 8.0)).abs() < 1e-9,
+        "{}",
+        c.expected_blocks()
+    );
+    // and a count that would go below zero is zero, not a wrapped number
+    c.end_job();
+    c.discarded.store(10_000_000, Ordering::Relaxed);
+    c.begin_job(8.0);
+    assert!(c.expected_blocks() < 3.0);
+}

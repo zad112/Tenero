@@ -82,7 +82,7 @@ rows and the rate figures showed on a real node under load. **Also done:** a `lu
 blocks in the chain over the elapsed time, waiting included; the ratio only once 5 blocks are expected) and `gpu_batch = auto` / `--gpu-batch auto` (opt-in; measures
 128, 256 and 512 for 4 s each at start-up; on the owner's card 512 won by 1 to 2 %, inside the noise, so **it removes bad choices such as 32 and 64 and
 does not find a real winner among the larger sizes**; the default stays 128). **Not done:** several GPUs (one card here; not built or tested), the
-miner program (`tenero-miner`) under GPU load.
+(`tenero-miner` itself was run under GPU load once, 44 blocks, all accepted; see `BENCHMARKS.md`, which also records the `luck` accounting fault that run found and its fix).
 
 What the owner asked for is a rate that can be compared with other GPU miners. The honest part first:
 
