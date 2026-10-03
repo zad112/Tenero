@@ -633,11 +633,22 @@ impl App {
                 ui.label(RichText::new(title).color(if d.synced { GREY } else { AMBER }));
                 ui.label(RichText::new(text::coins(t.total)).size(30.0).strong());
                 ui.label(format!(
-                    "Spendable {}   ·   waiting to mature {}   ·   promised to a payment {}",
+                    "Spendable {}   ·   waiting to mature {}   ·   tied up in a payment waiting for a block {}",
                     text::coins(t.spendable),
                     text::coins(t.immature),
                     text::coins(t.reserved)
                 ));
+                let (n, amount, fee) = pending_out(&d, None);
+                if n > 0 {
+                    ui.colored_label(
+                        AMBER,
+                        format!(
+                            "{n} payment(s) waiting for a block: {} going out (fee {}). Whole coins are tied up until a block takes the payment in; the change comes back then, and a payment to another of your accounts shows there then. Nothing moves while no block is mined (start mining on the Mining tab, or wait for another miner).",
+                            text::coins(amount),
+                            text::coins(fee)
+                        ),
+                    );
+                }
             }
             None => {
                 ui.label(RichText::new("Balance unknown").size(26.0).strong());
@@ -685,7 +696,7 @@ impl App {
                 if let Some(b) = a.balance {
                     ui.label(
                         RichText::new(format!(
-                            "spendable {} · maturing {} · promised {}",
+                            "spendable {} · maturing {} · tied up in a waiting payment {}",
                             text::coins(b.spendable),
                             text::coins(b.immature),
                             text::coins(b.reserved)
@@ -1135,7 +1146,16 @@ impl App {
                             };
                             ui.horizontal(|ui| {
                                 ui.colored_label(c, st);
-                                ui.label(format!("to {} · fee {}", text::short_address(&to.to_text()), text::coins(*fee)));
+                                let own = d
+                                    .accounts
+                                    .iter()
+                                    .find(|a| a.address == to.to_text())
+                                    .map(|a| format!("your account {}", a.label));
+                                ui.label(format!(
+                                    "to {} · fee {}",
+                                    own.unwrap_or_else(|| text::short_address(&to.to_text())),
+                                    text::coins(*fee)
+                                ));
                             });
                         }
                         EntryKind::Mined => {
@@ -1673,6 +1693,26 @@ impl App {
                 .color(GREY),
         );
     }
+}
+
+/// Payments sent and not yet taken in by a block: how many, the amount going out and the fees (all accounts, or one).
+fn pending_out(d: &WalletData, account: Option<usize>) -> (usize, u64, u64) {
+    let mut out = (0, 0u64, 0u64);
+    for h in &d.history {
+        if let EntryKind::Sent {
+            fee,
+            status: SentStatus::Pending,
+            ..
+        } = &h.kind
+        {
+            if account.is_none_or(|a| a == h.account) {
+                out.0 += 1;
+                out.1 += h.amount;
+                out.2 += fee;
+            }
+        }
+    }
+    out
 }
 
 fn account_text(d: &WalletData, index: usize) -> String {

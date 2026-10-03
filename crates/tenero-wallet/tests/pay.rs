@@ -1003,13 +1003,26 @@ fn a_spent_output_is_asked_about_once() {
     view.1.set(0);
     let second = alice.balance(&view).unwrap();
     assert_eq!(first, second);
-    // the second time the spent coins are not asked about again (and the unspent ones are, because they may be spent now)
-    assert!(
-        view.1.get() < asked_first,
-        "{} then {}",
+    // the second time nothing is asked: neither the spent coins (a spend stays) nor the unspent ones (the tip has not moved)
+    assert!(asked_first > 0);
+    assert_eq!(
+        view.1.get(),
+        0,
+        "{} the first time, then {}",
         asked_first,
         view.1.get()
     );
+    // a new block may have spent something: then the coins are asked about again
+    mine(&mut node, &alice.address(), 0);
+    let view = Spent(
+        Counting {
+            node: &node,
+            outputs_asked: std::cell::Cell::new(0),
+        },
+        std::cell::Cell::new(0),
+    );
+    alice.balance(&view).unwrap();
+    assert!(view.1.get() > 0, "asked again after the tip moved");
 }
 
 #[test]

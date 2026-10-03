@@ -198,6 +198,11 @@ pub struct Wallet {
     /// Key images the chain has said are spent (a spent output stays spent, so it is asked once). In memory only; forgotten
     /// when a reorganisation is seen, which is the only way a spend can undo.
     spent_cache: std::collections::HashSet<[u8; 32]>,
+    /// Key images the chain said were NOT spent, and the tip they were asked at: the answer only changes when the tip does,
+    /// so on an unchanged tip a coin is not asked about again (a wallet with hundreds of coins asked hundreds of questions
+    /// for every balance and every payment).
+    unspent_cache: std::collections::HashSet<[u8; 32]>,
+    unspent_tip: Option<[u8; 32]>,
 }
 
 fn is_mature(rules: &Rules, height: u64, coinbase: bool) -> bool {
@@ -254,6 +259,8 @@ impl Wallet {
             owned: Vec::new(),
             reserved: Vec::new(),
             spent_cache: std::collections::HashSet::new(),
+            unspent_cache: std::collections::HashSet::new(),
+            unspent_tip: None,
         }
     }
 
@@ -326,6 +333,8 @@ impl Wallet {
         }
         if report.blocks_rolled_back > 0 || report.rescanned {
             self.spent_cache.clear();
+            self.unspent_cache.clear();
+            self.unspent_tip = None;
         }
         // 2. new blocks
         let (tip, _) = chain.tip().map_err(chain_err)?;
@@ -416,11 +425,26 @@ impl Wallet {
         if self.spent_cache.contains(ki) {
             return Ok(true);
         }
+        if self.unspent_cache.contains(ki) {
+            return Ok(false);
+        }
         let spent = chain.key_image_spent(ki).map_err(chain_err)?;
         if spent {
             self.spent_cache.insert(*ki);
+        } else {
+            self.unspent_cache.insert(*ki);
         }
         Ok(spent)
+    }
+
+    /// Forgets the "not spent" answers if the chain has moved since they were given.
+    fn note_tip(&mut self, chain: &impl ChainView) -> Result<(), WalletError> {
+        let (_, id) = chain.tip().map_err(chain_err)?;
+        if self.unspent_tip != Some(id) {
+            self.unspent_cache.clear();
+            self.unspent_tip = Some(id);
+        }
+        Ok(())
     }
 
     /// Which outputs can go into a transaction sent now: unspent, mature, not promised elsewhere. Also forgets
@@ -430,6 +454,7 @@ impl Wallet {
         chain: &impl ChainView,
         rules: &Rules,
     ) -> Result<Vec<Owned>, WalletError> {
+        self.note_tip(chain)?;
         let mut spent = Vec::new();
         let images: Vec<[u8; 32]> = self.owned.iter().map(|o| o.key_image).collect();
         for ki in images {
@@ -453,6 +478,7 @@ impl Wallet {
 
     pub fn balance(&mut self, chain: &impl ChainView) -> Result<Balance, WalletError> {
         let rules = chain.rules().map_err(chain_err)?;
+        self.note_tip(chain)?;
         let mut b = Balance::default();
         let mut unspent = Vec::new();
         let owned = self.owned.clone();

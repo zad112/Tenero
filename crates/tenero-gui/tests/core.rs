@@ -451,11 +451,13 @@ fn mine_pay_at_every_fee_level_and_read_the_history() {
 
     // the three fee levels, quoted before anything is sent
     let amount = "0.5".to_string();
+    let t0 = Instant::now();
     let ev = c.handle(Cmd::EstimateFees {
         account: 0,
         to: saving.clone(),
         amount: amount.clone(),
     });
+    println!("estimate took {:?}", t0.elapsed());
     let fees = ev
         .iter()
         .find_map(|e| match e {
@@ -466,12 +468,14 @@ fn mine_pay_at_every_fee_level_and_read_the_history() {
     assert!(fees[0] < fees[1] && fees[1] < fees[2], "{fees:?}");
 
     for (i, level) in FeeLevel::ALL.into_iter().enumerate() {
+        let t0 = Instant::now();
         let ev = c.handle(Cmd::PreparePayment {
             account: 0,
             to: saving.clone(),
             amount: amount.clone(),
             level,
         });
+        println!("prepare ({level:?}) took {:?}", t0.elapsed());
         assert!(errors(&ev).is_empty(), "{level:?}: {:?}", errors(&ev));
         let q = c.snapshot().prepared.expect("a payment waits for a yes");
         assert_eq!((q.account, q.amount, q.level), (0, 50_000_000, level));
