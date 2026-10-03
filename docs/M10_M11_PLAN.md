@@ -268,6 +268,41 @@ send some on, **by following only what is on screen**, and the owner has confirm
 
 ### M11.4 What testers need (my suggestions; the owner picks)
 
+* **A full rewrite of `README.md` (the owner's request, 2026-10-03; not started).** More professional, and **the banner image stays at the
+  top, unaltered** (`assets/banner.webp`; the circular logo `assets/logo-circle.webp` may sit beside it). Today's README describes the
+  Python prototype (one node, a secp256k1 wallet, "no networking yet") and is out of date. It should read as a project front page, and
+  it must cover:
+  1. **What Tenero is, in a paragraph, and what it is not:** an experimental proof-of-work coin, a learning project, **unaudited, no
+     value, a test network that will be reset**: the labels in `CLAUDE.md` stay in the first screen, not at the bottom.
+  2. **How it works,** at the level of someone who knows what a blockchain is: the chain and its rules (60-second blocks, the difficulty
+     adjustment, emission, the flexible block size), the privacy design (ring signatures, hidden amounts, and **what the interim output scheme
+     does not give**: it is not Carrot and not private in Monero's sense), the programs (`tenerod`, the miner, the wallet app, the command-line
+     wallet), and how the pieces talk (peer network, the loopback control interface).
+  3. **How the proof of work resists ASICs, explained honestly.** The design argument: each attempt multiplies a ChaCha20-generated matrix by a
+     16 MiB slice of a dataset of about 4.3 GiB that is rebuilt every epoch (each slice depends on earlier ones, so keeping part of it does not
+     help), so an attempt is limited by how fast memory can be read, which is what a GPU's memory system is built for and a dedicated chip would
+     need to match with the same memory. **Say what is measured and what is argued, as `CLAUDE.md` rule 5 requires:** measured = the rate on the
+     owner's card (33 to 36 thousand attempts per second, the miner's own "reads" estimate of memory traffic, the CPU numbers in
+     `docs/BENCHMARKS.md`); argued = that no ASIC advantage is possible, which **nobody has shown and the README must not claim**. It is "designed
+     to be ASIC-resistant, by making memory bandwidth the bottleneck; unreviewed; resistance is an economic argument, not a proof, and the
+     design has had no independent cryptographic or hardware review." Also say what resistance does NOT protect against (a large GPU
+     owner or rental, a small network's 51 % risk, the timestamp issue and its fix). Every number in this section is checked against
+     `docs/CONSENSUS.md` and `docs/BENCHMARKS.md` before it is published (the facts check below).
+  4. **How to set it up:** requirements (OS, RAM for the 4.3 GiB dataset, GPU and driver, disk), building from source and running the packaged
+     build (M11.3), first run of the wallet app, starting the node, mining, a payment, what the labels mean, where things are stored.
+  5. **The test network plan:** what the first test release is for and not for, who it is for (the small group first), how to connect (seed
+     nodes, adding a peer by address), the fresh chain with no premine, the parameters (starting difficulty, epoch length, the timestamp
+     rule), the reset policy and `docs/EMERGENCY_PLAN.md`, how to report a problem, and the roadmap (Carrot, the independent review, the long
+     public test). Honest about dates: none is promised.
+  6. **Links** to `docs/` for the details (consensus, wire protocol, threat model, known issues, running, benchmarks), the licence (once the
+     owner chooses one), and the security contact.
+  * **Written last, after M11.2 and M11.3**, because the setup and test-network sections state the final parameters and the real way to install;
+    sections 1 to 3 can be drafted before. **A facts check before it is merged:** each number and claim in the README is traced to a document, a
+    test or a measurement (the test counts, the emission schedule, the block time, the dataset size, the speeds); anything that cannot be traced
+    is removed or marked as an estimate. The text must pass the same rules as the app's screens: never describe it as money, as private in
+    Monero's sense, as audited, or as ASIC-proof. **The Python prototype's quick-start moves to `docs/PYTHON_LEGACY.md`** until M11.1 retires it,
+    so nothing is lost.
+
 * **A TESTING.md for testers:** requirements (a GPU, RAM, disk, what happens without a GPU), how to start, how to find
   peers, how to report a problem and what to attach (the diagnostics bundle), what is expected to break, and the labels:
   unaudited, no value, may be reset.
