@@ -154,6 +154,43 @@ What the owner asked for is a rate that can be compared with other GPU miners. T
   folder.
 * **A version number and a protocol/network id in the peer handshake**, so a tester on an old build or on another chain
   is refused with a clear message instead of a ban or a split.
+* **Sign and verify messages, and prove and check payments, as Monero's wallet does (the owner's request, 2026-10-03; size M; not started).**
+  What each does, and what it needs:
+  * **Sign a message / verify a signature:** the wallet signs a text with an account's spend key (the signature says "whoever
+    holds this address's spend key wrote this", nothing about when or where); anyone checks it against the address alone. The
+    signature is bound to a fixed label ("tenero message v1") so it cannot be replayed as anything else (a transaction, a
+    block). One account signs; the app shows which. *Needs:* a signature scheme on the Ed25519 curve the keys already live on.
+  * **Prove a payment you SENT ("outgoing proof"):** shows that a given transaction paid at least this amount to this address.
+    Monero does it with the transaction's secret key `r`. **Our wallet does not keep `r` today** (it is drawn at random while the
+    output is made and thrown away), so this can work only **for payments sent after the wallet starts keeping it** (a new field
+    in the sent-payment record in the wallet file); **payments already sent cannot be proved by the sender, ever** (the key is
+    gone). *Needs:* `r` stored per sent payment; a proof string of the transaction id, the address and the proof.
+  * **Prove a payment you RECEIVED ("incoming proof"):** the receiver shows that an output in a given transaction is theirs and
+    holds this amount, without giving away the view key, by a zero-knowledge proof about the shared secret. Works for any past
+    receipt, with nothing stored. *Needs:* a proof that two points share the same secret scalar (a DLEQ / Chaum-Pedersen proof).
+  * **Check a proof:** anyone with the transaction id (looked up through a node) and the proof gets "valid: this transaction paid
+    at least X to this address" or "not valid", and why. The check reads the chain through the node; it needs no wallet.
+  * **Optional, later: a reserve proof** (prove the wallet holds at least X without moving it, Monero's `get_reserve_proof`):
+    harder, because it must show the coins are unspent without linking them; leave out of the first version unless the owner
+    asks.
+  * **What these proofs do NOT show, and the screen says so:** who sent a payment (the interim scheme has no sender identity);
+    that a payment is "final" (only that it is in the chain, and how deep); anything about other outputs of the transaction. With
+    the interim scheme's missing Janus protection (`interim.rs`), a proof says the OUTPUT is addressed to this address, not that
+    the sender meant it for this wallet. A proof reveals the amount and the link between the transaction and the address to
+    whoever is given it, **so the app warns before it makes one and never puts one on the clipboard without a click.**
+  * **Cryptography and rule 3:** a message signature and a DLEQ proof are small, standard constructions, but **composing them from
+    `curve25519-dalek` is home-made cryptography in the sense of rule 3.** Options, for the owner to choose before any code:
+    (a) an audited signature crate (the `ed25519-dalek` family has had an audit; it would be a new dependency and its hazmat
+    interface is needed to sign with a bare scalar) for messages, and a hand-written, heavily tested DLEQ proof for payments,
+    labelled unaudited like the rest of the interim scheme; (b) hand-write both, with known-answer vectors from an independent
+    implementation and tamper tests, labelled unaudited. **Either way these proofs are unaudited, and nothing may call them proof
+    in a legal or financial sense.** Recommendation: (b) without a new dependency, because the scheme is already ours, plus
+    vectors made by a separate Python reference (as the other vectors are) so a second implementation agrees.
+  * **Tests:** a reference in `tools/` and golden vectors; a signature fails if one bit of the message, the address or the label
+    changes; a proof fails for another transaction, another address, a lower amount claimed as higher, and for an output that is
+    not the receiver's; the sender's proof is refused when `r` was not kept (with the reason); every proof is rejected when
+    truncated, extended or of the wrong length; fuzz the proof and signature parsers. In the window: a **Prove** area under
+    History (a button on each sent and received row) and a **Sign / Verify** screen, drawn headlessly in tests as the others are.
 * **Localisation is NOT planned** (English only).
 
 ### M10 done when

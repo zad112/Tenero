@@ -894,10 +894,18 @@ fn the_fuzzer_reaches_the_deep_states_it_is_meant_to() {
     let mut total = std::collections::BTreeMap::<String, u64>::new();
     let mut cases_with_blocks = 0;
     let mut cases_with_bans = 0;
-    let n = 240;
+    // 240 cases by default; TENERO_FUZZ_CASES runs more (the cases are random each run, so a rare failure needs many)
+    let n: u64 = std::env::var("TENERO_FUZZ_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(240);
     for i in 0..n {
         let steps = strat.new_tree(&mut runner).unwrap().current();
-        let (_, st) = run_case_stats(&steps, &cfg_variant((i % 3) as u8)).unwrap();
+        let (_, st) = match run_case_stats(&steps, &cfg_variant((i % 3) as u8)) {
+            Ok(r) => r,
+            Err(e) => panic!("case {i} failed: {e:?}
+steps: {steps:#?}"),
+        };
         for (k, v) in st.sent.iter().chain(st.received.iter()) {
             *total.entry(format!("msg {k}")).or_default() += v;
         }
