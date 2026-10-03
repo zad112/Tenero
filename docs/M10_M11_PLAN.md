@@ -108,6 +108,9 @@ What the owner asked for is a rate that can be compared with other GPU miners. T
 
 ### M10.3 The wallet app: a GUI that can run the node (size L)
 
+**Decisions, owner, 2026-10-03:** a local desktop program (not a browser); the seed is written as **24 BIP-39 words** (the `bip39` crate, CC0, with 6 small dependencies; BIP-39 is used only as the spelling of our 32-byte seed, not its PBKDF2 step, so the words are not valid in a Bitcoin wallet and vice versa); the **password and the words are separate** (the words are the wallet, the password only encrypts the file on this computer); **several accounts per wallet**, each a separate one-account wallet derived from the master seed (account 0 is the master seed, so older wallet files still open), a payment spends from one account only.
+**Step 1 DONE 2026-10-03 (library, no window): `tenero-wallet` `mnemonic.rs`, `purse.rs`, file format `TWL2`; 12 tests** (the BIP-39 reference vectors; a wrong word is caught 7,387 times of 7,413 = it slips through about 1 in 285, which is the 8-bit checksum; restoring from the words finds used accounts, stopping after 3 unused in a row; an account after a longer gap is missed and must be added by hand; the file refuses every changed byte tested). **Still to do:** the app itself (window, node child process, miner toggle, history, settings), a QR crate (needs the owner's approval), the history records.
+
 * **A desktop program with the wallet and, inside it, the node:** it starts `tenerod` as a child process of its own (a
   separate process, over the control interface that exists; the app never links the node into its own memory), stops it
   cleanly on exit, and shows its state. An "external node" option for a node already running.

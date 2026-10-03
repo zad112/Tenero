@@ -25,6 +25,7 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-1-Clause",
     "BSD-3-Clause",
+    "CC0-1.0", # a public-domain dedication; the bip39 crate and its small hash and hex dependencies (owner-approved 2026-10-03)
     "ISC",
     "Unicode-3.0",
     "Unlicense",

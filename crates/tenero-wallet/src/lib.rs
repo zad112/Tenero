@@ -6,11 +6,14 @@
 //! * [`chain`]: what the wallet needs from a node (two small traits; `Node` implements them).
 //! * [`wallet`]: scanning (with reorganisations), balances, building and sending a payment.
 //! * [`file`]: the encrypted wallet file.
+//! * [`mnemonic`]: the seed as 24 words. [`purse`]: several accounts from one seed, in one file.
 
 pub mod amount;
 pub mod chain;
 pub mod file;
 pub mod interim;
+pub mod mnemonic;
+pub mod purse;
 pub mod wallet;
 
 use rand_core::{CryptoRng, RngCore};
@@ -19,6 +22,8 @@ use tenero_node::Payout;
 pub use chain::{ChainView, Rules, ScanBlock, Submitter};
 pub use file::{FileError, KdfParams};
 pub use interim::{Address, AddressError, Keys, BANNER};
+pub use mnemonic::{phrase_of, seed_of, PhraseError};
+pub use purse::{Purse, PurseError};
 pub use wallet::{Balance, Built, Owned, SyncReport, Wallet, WalletError};
 
 /// [`coinbase_payout`] with the operating system's randomness.

@@ -27,7 +27,10 @@ use zeroize::Zeroizing;
 use crate::interim::Keys;
 use crate::wallet::{Owned, Reserved, Wallet, RECENT_BLOCKS};
 
+/// One wallet (one account), the first format.
 const MAGIC: &[u8; 4] = b"TWL1";
+/// A purse: several accounts of one master seed (`purse.rs`).
+pub(crate) const MAGIC_PURSE: &[u8; 4] = b"TWL2";
 const HEADER: usize = 4 + 12 + 16;
 const STATE_VERSION: u16 = 1;
 const MAX_OWNED: usize = 1_000_000;
@@ -120,6 +123,11 @@ fn dec_err(e: DecodeError) -> FileError {
 impl Wallet {
     fn state_bytes(&self) -> Result<Zeroizing<Vec<u8>>, FileError> {
         let mut w = Writer::new();
+        self.write_state(&mut w)?;
+        Ok(Zeroizing::new(w.into_bytes()))
+    }
+
+    pub(crate) fn write_state(&self, w: &mut Writer) -> Result<(), FileError> {
         w.u16(STATE_VERSION);
         w.raw(self.seed());
         w.u64(self.birth_height);
@@ -156,11 +164,17 @@ impl Wallet {
             w.raw(&r.key_image);
             w.u64(r.until_height);
         }
-        Ok(Zeroizing::new(w.into_bytes()))
+        Ok(())
     }
 
     fn from_state_bytes(data: &[u8]) -> Result<Wallet, FileError> {
         let mut r = Reader::new(data);
+        let w = Wallet::read_state(&mut r)?;
+        r.finish().map_err(dec_err)?;
+        Ok(w)
+    }
+
+    pub(crate) fn read_state(r: &mut Reader) -> Result<Wallet, FileError> {
         if r.u16().map_err(dec_err)? != STATE_VERSION {
             return Err(FileError::Corrupt("unknown state version".into()));
         }
@@ -205,7 +219,6 @@ impl Wallet {
                 })
             })
             .map_err(dec_err)?;
-        r.finish().map_err(dec_err)?;
         // the records must belong to this seed (a corrupted or swapped state is refused, not trusted)
         let keys = Keys::from_seed(&seed);
         for o in &owned {
@@ -243,77 +256,101 @@ impl Wallet {
         kdf: KdfParams,
         rng: &mut (impl RngCore + CryptoRng),
     ) -> Result<(), FileError> {
-        let mut salt = [0u8; 16];
-        let mut nonce = [0u8; 12];
-        rng.fill_bytes(&mut salt);
-        rng.fill_bytes(&mut nonce);
-        let key = derive(passphrase, &salt, &kdf)?;
-        let mut header = Vec::with_capacity(HEADER);
-        header.extend_from_slice(MAGIC);
-        header.extend_from_slice(&kdf.memory_kib.to_le_bytes());
-        header.extend_from_slice(&kdf.iterations.to_le_bytes());
-        header.extend_from_slice(&kdf.lanes.to_le_bytes());
-        header.extend_from_slice(&salt);
         let state = self.state_bytes()?;
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(&*key));
-        let sealed = cipher
-            .encrypt(
-                Nonce::from_slice(&nonce),
-                Payload {
-                    msg: &state,
-                    aad: &header,
-                },
-            )
-            .map_err(|_| FileError::Corrupt("encryption failed".into()))?;
-        let mut out = header;
-        out.extend_from_slice(&nonce);
-        out.extend_from_slice(&sealed);
-        let mut tmp = path.as_os_str().to_owned();
-        tmp.push(".tmp");
-        let tmp = std::path::PathBuf::from(tmp);
-        let io = |e: std::io::Error| FileError::Io(e.to_string());
-        {
-            let mut f = std::fs::File::create(&tmp).map_err(io)?;
-            f.write_all(&out).map_err(io)?;
-            f.sync_all().map_err(io)?;
-        }
-        std::fs::rename(&tmp, path).map_err(io)
+        seal(path, MAGIC, &state, passphrase, kdf, rng)
     }
 
     /// Reads a wallet file.
     pub fn load(path: &Path, passphrase: &[u8]) -> Result<Wallet, FileError> {
-        let data = std::fs::read(path).map_err(|e| FileError::Io(e.to_string()))?;
-        if data.len() < HEADER + 12 + 16 || &data[..4] != MAGIC {
+        let (magic, plain) = open(path, passphrase)?;
+        if &magic != MAGIC {
             return Err(FileError::NotAWalletFile);
         }
-        let u32_at = |i: usize| u32::from_le_bytes(data[i..i + 4].try_into().expect("4 bytes"));
-        let kdf = KdfParams {
-            memory_kib: u32_at(4),
-            iterations: u32_at(8),
-            lanes: u32_at(12),
-        };
-        if kdf.memory_kib > KdfParams::MAX_MEMORY_KIB
-            || kdf.iterations > KdfParams::MAX_ITERATIONS
-            || kdf.lanes > KdfParams::MAX_LANES
-        {
-            return Err(FileError::BadParams);
-        }
-        let salt: [u8; 16] = data[16..32].try_into().expect("16 bytes");
-        let nonce = &data[32..44];
-        let key = derive(passphrase, &salt, &kdf)?;
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(&*key));
-        let plain = cipher
-            .decrypt(
-                Nonce::from_slice(nonce),
-                Payload {
-                    msg: &data[44..],
-                    aad: &data[..32],
-                },
-            )
-            .map_err(|_| FileError::WrongPassphraseOrCorrupt)?;
-        let plain = Zeroizing::new(plain);
         Wallet::from_state_bytes(&plain)
     }
+}
+
+/// Encrypts `state` under `magic` and writes it to `path`, atomically.
+pub(crate) fn seal(
+    path: &Path,
+    magic: &[u8; 4],
+    state: &[u8],
+    passphrase: &[u8],
+    kdf: KdfParams,
+    rng: &mut (impl RngCore + CryptoRng),
+) -> Result<(), FileError> {
+    let mut salt = [0u8; 16];
+    let mut nonce = [0u8; 12];
+    rng.fill_bytes(&mut salt);
+    rng.fill_bytes(&mut nonce);
+    let key = derive(passphrase, &salt, &kdf)?;
+    let mut header = Vec::with_capacity(HEADER);
+    header.extend_from_slice(magic);
+    header.extend_from_slice(&kdf.memory_kib.to_le_bytes());
+    header.extend_from_slice(&kdf.iterations.to_le_bytes());
+    header.extend_from_slice(&kdf.lanes.to_le_bytes());
+    header.extend_from_slice(&salt);
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(&*key));
+    let sealed = cipher
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: state,
+                aad: &header,
+            },
+        )
+        .map_err(|_| FileError::Corrupt("encryption failed".into()))?;
+    let mut out = header;
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&sealed);
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    let io = |e: std::io::Error| FileError::Io(e.to_string());
+    {
+        let mut f = std::fs::File::create(&tmp).map_err(io)?;
+        f.write_all(&out).map_err(io)?;
+        f.sync_all().map_err(io)?;
+    }
+    std::fs::rename(&tmp, path).map_err(io)
+}
+
+/// Reads and decrypts a wallet file of either format: which one it is (the magic) and the plaintext.
+pub(crate) fn open(
+    path: &Path,
+    passphrase: &[u8],
+) -> Result<([u8; 4], Zeroizing<Vec<u8>>), FileError> {
+    let data = std::fs::read(path).map_err(|e| FileError::Io(e.to_string()))?;
+    if data.len() < HEADER + 12 + 16 || (&data[..4] != MAGIC && &data[..4] != MAGIC_PURSE) {
+        return Err(FileError::NotAWalletFile);
+    }
+    let u32_at = |i: usize| u32::from_le_bytes(data[i..i + 4].try_into().expect("4 bytes"));
+    let kdf = KdfParams {
+        memory_kib: u32_at(4),
+        iterations: u32_at(8),
+        lanes: u32_at(12),
+    };
+    if kdf.memory_kib > KdfParams::MAX_MEMORY_KIB
+        || kdf.iterations > KdfParams::MAX_ITERATIONS
+        || kdf.lanes > KdfParams::MAX_LANES
+    {
+        return Err(FileError::BadParams);
+    }
+    let salt: [u8; 16] = data[16..32].try_into().expect("16 bytes");
+    let nonce = &data[32..44];
+    let key = derive(passphrase, &salt, &kdf)?;
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(&*key));
+    let plain = cipher
+        .decrypt(
+            Nonce::from_slice(nonce),
+            Payload {
+                msg: &data[44..],
+                aad: &data[..32],
+            },
+        )
+        .map_err(|_| FileError::WrongPassphraseOrCorrupt)?;
+    let magic: [u8; 4] = data[..4].try_into().expect("4 bytes");
+    Ok((magic, Zeroizing::new(plain)))
 }
 
 #[cfg(test)]
