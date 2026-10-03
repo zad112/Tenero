@@ -60,6 +60,13 @@ impl Backend {
         }
     }
 
+    /// A backend with no worker behind it: commands go nowhere and nothing comes back. For drawing the window in a test.
+    pub fn detached() -> (Backend, Sender<Event>, Receiver<Cmd>) {
+        let (tx, cmd_rx) = channel::<Cmd>();
+        let (ev_tx, rx) = channel::<Event>();
+        (Backend { tx, rx, join: None }, ev_tx, cmd_rx)
+    }
+
     pub fn send(&self, cmd: Cmd) {
         let _ = self.tx.send(cmd);
     }

@@ -180,6 +180,26 @@ no node settings.
   miner together need about 9 GiB on the dev network. `--backend gpu` keeps its datasets in video memory instead.
 * Stop it with Ctrl-C (it prints how many blocks it found and what became of them).
 
+## The wallet app: `tenero-wallet-gui` (M10.3)
+
+A desktop window (not a web page) for the wallet that also starts and stops the node and the miner. **Experimental, unaudited; nothing on the networks it uses has value.** The banner "TEST NETWORK. NO VALUE. UNAUDITED." is on every screen.
+
+```powershell
+cargo build --release -p tenero-gui -p tenero-app --bins      # the app and the programs it starts
+.	argetelease	enero-wallet-gui.exe                        # tenerod and tenero-miner are looked for next to it
+```
+
+* **The wallet opens first; the node is started from it** (Node tab). No terminal window opens: the node and the miner run hidden and write what they print to `node-output.txt` and `miner-output.txt` in the app folder (the Node and Mining tabs show the last lines).
+* **Closing the window stops the miner and a node this window started** (cleanly: it waits up to a minute for the node to finish writing, then ends its own handle to it). A node it only found already running is left running. The app never stops a process it did not start itself and never looks one up by name.
+* **First run:** create a wallet (a password, or none after a warning), write down the **24 words**, and type three of them back; or restore from 24 words. The words are the wallet; the password only locks the file on this computer. A password can be changed later; the words are shown again only after the password is typed again, and are never put on the clipboard.
+* **Accounts:** several per wallet, each with its own address and balance, all from the same 24 words. A payment comes from one account. Restoring finds the accounts that were used (it stops after 3 unused ones in a row; add a later one by hand). Account names and the record of payments *sent* are kept only in the wallet file.
+* **Send:** an address, an amount, and one of three fee levels shown with their price: **Low** (1.25 times the minimum fee), **Normal** (2 times), **High** (5 times). A higher fee only buys a better place when the pool is full. A confirmation screen shows everything before anything is sent.
+* **Receive:** the address, a Copy button and a QR code. **History:** what was received, mined and sent, and where each sent payment stands (waiting, taken in, dropped).
+* **Mining:** off until you press Start; says what it uses (the GPU at full load, or CPU cores); shows the rate over 10 s, 60 s, 15 min and the run, the card's temperature, power and clocks, and the blocks found. It stops when you lock the wallet or stop the node.
+* **A balance is never shown as final** while the wallet is reading the chain or no node is running (without a node there is no number at all).
+* **Settings** are in `settings.conf` in the app folder (`%LOCALAPPDATA%\Tenero`, or `TENERO_APP_DIR`): no secrets in it. One node folder and one wallet file per network.
+* **What is not built yet:** a tiny block explorer, a payment *request* with a label, exporting the history, a transaction detail view, and a wallet-file folder permission warning. The window has been drawn and read in automated tests (all screens, all states) but **how it looks and feels is checked by hand**.
+
 ## The seed check: `tenero-seedcheck`
 
 Connects to each seed the way a new node would and says which are fit to be on a list (`SEED_POLICY.md` says why that matters). It reads nothing
