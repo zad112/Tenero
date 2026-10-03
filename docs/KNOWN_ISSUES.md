@@ -68,7 +68,7 @@ keeping only part of the dataset is an estimate built from that and from one GPU
 and fold construction (a ChaCha20 core with feed-forward and XORs, used as a compression function) is
 original to this project and has had no cryptanalysis or independent review.
 
-**12. A minority miner can lower the difficulty with its timestamps (verified by simulation of the real rules, 2026-10-02; NOT fixed).**
+**12. A minority miner can lower the difficulty with its timestamps (verified by simulation of the real rules, 2026-10-02; NOT fixed; the owner decided on 2026-10-03 that the fix, "a block's timestamp must be later than its parent's", goes into the fresh chain at M11.2).**
 LWMA with a window of 30, a solve time floored at 1 s and capped at 6 block times, and a median-of-11 timestamp rule. A miner with 30 %
 of the hash rate that backdates its blocks to the median gets 0.40x the honest difficulty (blocks every 25 s instead of 60); with 10 %, 0.69x.
 The same attackers leave it at 1.00x if a block's timestamp must be later than its parent's. `tenero-core/tests/difficulty_sim.rs` keeps

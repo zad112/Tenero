@@ -230,6 +230,13 @@ send some on, **by following only what is on screen**, and the owner has confirm
   CPU, can both find blocks in the first hours), the **epoch length** (the dev network uses 100 blocks; the real value is
   a consensus decision to make with the dataset build time in mind), and the **difficulty window**. These are consensus
   choices: made deliberately, in the reference first, with new vectors (rule 1).
+* **The timestamp rule (DECIDED by the owner, 2026-10-03): a block's timestamp must be later than its parent's** (in place of "not below the
+  median of the last 11"). Why: the simulation (`tenero-core/tests/difficulty_sim.rs`, `THREAT_MODEL.md` E3) showed that with the median rule a
+  miner holding only 30 % of the hash rate can pull the difficulty to 0.40x by backdating its blocks, and that this rule leaves it at 1.00x.
+  **To do, together, for the fresh chain (rule 1):** the reference (`tools/make_vectors.py` and `tools/make_vectors_v2.py`), `CONSENSUS.md`
+  section 7 and `CONSENSUS_V2.md` 5.5, the validator in `tenero-chain`, new vectors, a test per edge (equal to the parent, one second later, earlier,
+  and the future limit still held), the simulation rerun against the real rule instead of a stand-in, and a line in the release notes. It
+  changes what a block must satisfy, so it is a new chain (there is no activation mechanism, `EMERGENCY_PLAN.md` section 8). Not changed yet.
 * **What "no premine" does and does not mean here:** it is about how the chain starts, and it is true by construction
   and checkable by anyone. It says **nothing about value or safety**: the network has no value, a small chain can be rewritten
   by anyone with a GPU, and the chain can restart again (the testnet will be reset when Carrot replaces the interim scheme).
