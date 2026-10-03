@@ -61,7 +61,7 @@ const DOMAIN: &[u8] = b"tenero interim v1";
 pub const ADDRESS_PREFIX: &str = "tni1";
 
 /// Hash to a scalar: two SHA-256 blocks, reduced modulo the group order.
-fn hs(tag: &[u8], parts: &[&[u8]]) -> Scalar {
+pub(crate) fn hs(tag: &[u8], parts: &[&[u8]]) -> Scalar {
     let mut wide = [0u8; 64];
     for (i, half) in wide.chunks_mut(32).enumerate() {
         let counter = [i as u8];
@@ -72,25 +72,25 @@ fn hs(tag: &[u8], parts: &[&[u8]]) -> Scalar {
     Scalar::from_bytes_mod_order_wide(&wide)
 }
 
-fn digest(tag: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+pub(crate) fn digest(tag: &[u8], parts: &[&[u8]]) -> [u8; 32] {
     let mut all: Vec<&[u8]> = vec![DOMAIN, tag];
     all.extend_from_slice(parts);
     sha256(&all)
 }
 
 /// A point that must be canonical, of prime order and not the identity.
-fn strict_point(bytes: &[u8; 32]) -> Option<EdwardsPoint> {
+pub(crate) fn strict_point(bytes: &[u8; 32]) -> Option<EdwardsPoint> {
     let p = CompressedEdwardsY(*bytes).decompress()?;
     (p.is_torsion_free() && !p.is_identity()).then_some(p)
 }
 
-fn compress(p: &EdwardsPoint) -> [u8; 32] {
+pub(crate) fn compress(p: &EdwardsPoint) -> [u8; 32] {
     p.compress().to_bytes()
 }
 
 /// The shared secret as bytes: the Diffie-Hellman point multiplied by the cofactor, so a small-order component
 /// in a sender-chosen `De` cannot change what the receiver computes.
-fn shared_bytes(dh: &EdwardsPoint) -> [u8; 32] {
+pub(crate) fn shared_bytes(dh: &EdwardsPoint) -> [u8; 32] {
     compress(&dh.mul_by_cofactor())
 }
 
@@ -206,6 +206,11 @@ impl Keys {
         Keys { spend, view }
     }
 
+    /// The spend scalar, for signing (`proofs.rs`).
+    pub(crate) fn spend_scalar(&self) -> &Scalar {
+        &self.spend
+    }
+
     pub fn address(&self) -> Address {
         Address {
             spend: compress(&(ED25519_BASEPOINT_POINT * self.spend)),
@@ -250,13 +255,41 @@ impl ViewKeys {
     pub fn address(&self) -> Address {
         self.address
     }
+
+    /// The view scalar, for proving receipt (`proofs.rs`).
+    pub(crate) fn view_scalar(&self) -> &Scalar {
+        &self.view
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
 // Making an output
 // ------------------------------------------------------------------------------------------------
 
-/// An output being made for a recipient: the fields of the output and what the SENDER keeps (the mask).
+/// The secret `r` of one output (the sender's half of its key exchange: `De = r*G`). It is what proves a payment (`proofs.rs`).
+/// Whoever holds it can show that THIS output paid this address and how much, and nothing else. Zeroed when dropped; its `Debug`
+/// never prints it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TxSecret(zeroize::Zeroizing<[u8; 32]>);
+
+impl TxSecret {
+    pub fn new(bytes: [u8; 32]) -> TxSecret {
+        TxSecret(zeroize::Zeroizing::new(bytes))
+    }
+
+    /// The bytes. Show them only when the person asks.
+    pub fn expose(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for TxSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TxSecret(..)")
+    }
+}
+
+/// An output being made for a recipient: the fields of the output and what the SENDER keeps (the mask and the secret).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Enote {
     pub onetime_address: [u8; 32],
@@ -268,6 +301,8 @@ pub struct Enote {
     pub anchor_enc: [u8; 16],
     /// The commitment's mask (1 for a coinbase output). The range proof needs it.
     pub mask: [u8; 32],
+    /// The secret `r` that made this output's ephemeral key: kept so that a payment can be proved later.
+    pub tx_secret: TxSecret,
 }
 
 impl Enote {
@@ -293,7 +328,7 @@ impl Enote {
     }
 }
 
-fn xor<const N: usize>(a: &[u8; N], key: &[u8; 32]) -> [u8; N] {
+pub(crate) fn xor<const N: usize>(a: &[u8; N], key: &[u8; 32]) -> [u8; N] {
     let mut out = [0u8; N];
     for i in 0..N {
         out[i] = a[i] ^ key[i];
@@ -319,6 +354,7 @@ pub fn create_enote(
     rng.fill_bytes(&mut wide);
     let r = Scalar::from_bytes_mod_order_wide(&wide);
     wide.zeroize();
+    let tx_secret = TxSecret::new(r.to_bytes());
     let mut anchor = [0u8; 16];
     rng.fill_bytes(&mut anchor);
     let de = ED25519_BASEPOINT_POINT * r;
@@ -351,6 +387,7 @@ pub fn create_enote(
         ephemeral_pubkey: compress(&de),
         anchor_enc,
         mask,
+        tx_secret,
     })
 }
 

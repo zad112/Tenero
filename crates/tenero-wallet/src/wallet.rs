@@ -181,6 +181,9 @@ pub struct Built {
     /// The one-time address of the change output (so the wallet can tell its own change from a payment it
     /// received: change comes back to the wallet and scanning finds it like any other output).
     pub change_onetime: [u8; 32],
+    /// The secret of the PAYMENT output (not the change) and its one-time address: what proves the payment later.
+    pub payment_secret: crate::interim::TxSecret,
+    pub payment_onetime: [u8; 32],
 }
 
 pub struct Wallet {
@@ -266,6 +269,14 @@ impl Wallet {
 
     pub fn address(&self) -> Address {
         self.keys.address()
+    }
+
+    pub(crate) fn keys(&self) -> &Keys {
+        &self.keys
+    }
+
+    pub(crate) fn view_keys(&self) -> &ViewKeys {
+        &self.view
     }
 
     /// The seed: the wallet's whole secret. Handle with care; never log it.
@@ -671,6 +682,8 @@ impl Wallet {
             change,
             spends: chosen.iter().map(|o| o.key_image).collect(),
             change_onetime: enotes[change_slot].onetime_address,
+            payment_secret: enotes[1 - change_slot].tx_secret.clone(),
+            payment_onetime: enotes[1 - change_slot].onetime_address,
         })
     }
 

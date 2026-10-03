@@ -13,6 +13,7 @@ pub mod chain;
 pub mod file;
 pub mod interim;
 pub mod mnemonic;
+pub mod proofs;
 pub mod purse;
 pub mod wallet;
 
@@ -21,7 +22,7 @@ use tenero_node::Payout;
 
 pub use chain::{ChainView, Rules, ScanBlock, Submitter};
 pub use file::{FileError, KdfParams};
-pub use interim::{Address, AddressError, Keys, BANNER};
+pub use interim::{Address, AddressError, Keys, TxSecret, BANNER};
 pub use mnemonic::{phrase_of, seed_of, PhraseError};
 pub use purse::{Entry, EntryKind, Purse, PurseError, SentRecord, SentStatus};
 pub use wallet::{Balance, Built, FeeLevel, Owned, SyncReport, Wallet, WalletError};

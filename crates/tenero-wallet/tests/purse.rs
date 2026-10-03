@@ -658,3 +658,152 @@ fn a_payment_the_node_dropped_is_shown_as_not_confirmed_once_its_reservation_run
         s.kind
     );
 }
+
+#[test]
+fn a_sent_payment_is_proved_three_ways_and_a_received_one_and_a_block_reward_and_the_secret_stays_hidden(
+) {
+    use tenero_wallet::proofs::{check_on_chain, PaymentProof, ProofError, ProofKind};
+    let rig = Rig::new("proofs");
+    let mut node = rig.node();
+    let mut p = Purse::from_seed(&[21; 32], 0);
+    p.add_account("Savings", 0).unwrap();
+    let (a0, a1) = (p.accounts()[0].address(), p.accounts()[1].address());
+    (0..6).for_each(|_| {
+        mine(&mut node, &a0);
+    });
+    p.sync(&node).unwrap();
+    let amount = 1_234_567_890;
+    let built = p
+        .pay(
+            0,
+            &mut node,
+            &mut OsRng,
+            &a1,
+            amount,
+            FeeLevel::Low,
+            1_700_000_000,
+        )
+        .unwrap();
+    let id = built.id;
+
+    // not in a block yet: there is nothing on the chain to prove
+    let early = p.prove_sent(&id, ProofKind::Sent, &node, &mut OsRng);
+    assert!(
+        matches!(early, Err(PurseError::Proof(ProofError::NotInChain))),
+        "{:?}",
+        early.err()
+    );
+
+    mine(&mut node, &a0);
+    p.sync(&node).unwrap();
+    for kind in [ProofKind::Sent, ProofKind::Key] {
+        let proof = p.prove_sent(&id, kind, &node, &mut OsRng).unwrap();
+        // anyone with the text and a node can check it: no wallet is involved
+        let again = PaymentProof::from_text(&proof.to_text()).unwrap();
+        let (checked, confirmations) = check_on_chain(&node, &again).unwrap();
+        assert_eq!(
+            (checked.amount, checked.address, checked.kind),
+            (amount, a1, kind)
+        );
+        assert!(confirmations >= 1);
+        assert!(!checked.block_reward);
+    }
+    // the proof names a place on the chain: the same proof one block over is about nothing
+    let proof = p
+        .prove_sent(&id, ProofKind::Sent, &node, &mut OsRng)
+        .unwrap();
+    let mut moved = proof.to_bytes();
+    moved[1] ^= 1;
+    let moved = PaymentProof::from_bytes(&moved).unwrap();
+    assert!(check_on_chain(&node, &moved).is_err());
+    let mut elsewhere = proof.to_bytes();
+    elsewhere[9] ^= 2;
+    assert!(check_on_chain(&node, &PaymentProof::from_bytes(&elsewhere).unwrap()).is_err());
+
+    // the receiving account proves its receipt from the history, with no record of the sending
+    bob_side(&mut p, &node, amount, a1);
+
+    // the secret is kept, shown only when asked for, and never printed by Debug
+    let secret = p.tx_secret(&id).unwrap();
+    assert_eq!(format!("{secret:?}"), "TxSecret(..)");
+    assert!(!format!("{:?}", p.sent_records()[0]).contains(
+        &secret
+            .expose()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    ));
+    // it survives the file
+    let path = tmp("proofs");
+    p.save(&path, b"pw", KdfParams::TEST_ONLY_WEAK, &mut OsRng)
+        .unwrap();
+    let back = Purse::load(&path, b"pw").unwrap();
+    assert_eq!(back.tx_secret(&id).unwrap(), secret);
+    assert_eq!(back.sent_records(), p.sent_records());
+    let _ = std::fs::remove_file(&path);
+
+    // after the person deletes it, this wallet can never prove that payment (the history still lists it)
+    p.forget_tx_secret(&id).unwrap();
+    assert!(matches!(
+        p.tx_secret(&id),
+        Err(PurseError::Proof(ProofError::NoTxSecret))
+    ));
+    let gone = p.prove_sent(&id, ProofKind::Sent, &node, &mut OsRng);
+    assert!(matches!(
+        gone,
+        Err(PurseError::Proof(ProofError::NoTxSecret))
+    ));
+    // and an id that was never sent
+    assert!(p.tx_secret(&[0; 32]).is_err());
+
+    // a block reward is proved with its public amount
+    let reward = p
+        .history(&node)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.kind == EntryKind::Mined)
+        .unwrap();
+    let proof = p
+        .prove_received(0, reward.global_index.unwrap(), &node, &mut OsRng)
+        .unwrap();
+    let (c, _) = check_on_chain(&node, &proof).unwrap();
+    assert_eq!((c.amount, c.block_reward), (reward.amount, true));
+}
+
+fn bob_side(p: &mut Purse, node: &Node<'_>, amount: u64, a1: Address) {
+    use tenero_wallet::proofs::check_on_chain;
+    let h = p.history(node).unwrap();
+    let got = h
+        .iter()
+        .find(|e| e.account == 1 && e.kind == EntryKind::Received)
+        .expect("the savings account received it");
+    let proof = p
+        .prove_received(1, got.global_index.unwrap(), node, &mut OsRng)
+        .unwrap();
+    let (c, _) = check_on_chain(node, &proof).unwrap();
+    assert_eq!((c.amount, c.address), (amount, a1));
+    // account 0 cannot prove receipt of an output that is account 1's
+    assert!(p
+        .prove_received(0, got.global_index.unwrap(), node, &mut OsRng)
+        .is_err());
+}
+
+#[test]
+fn a_message_signed_by_an_account_verifies_for_its_address_and_no_other() {
+    use tenero_wallet::proofs::{verify_message, MessageSignature};
+    let mut p = Purse::from_seed(&[22; 32], 0);
+    p.add_account("Savings", 0).unwrap();
+    let msg = b"this account is mine";
+    let sig = p.sign_message(1, &mut OsRng, msg).unwrap();
+    let text = sig.to_text();
+    let sig = MessageSignature::from_text(&text).unwrap();
+    assert_eq!(
+        verify_message(&p.accounts()[1].address(), msg, &sig),
+        Ok(())
+    );
+    assert!(
+        verify_message(&p.accounts()[0].address(), msg, &sig).is_err(),
+        "another account's address"
+    );
+    assert!(p.sign_message(9, &mut OsRng, msg).is_err());
+}

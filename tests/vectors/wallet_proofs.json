@@ -1,0 +1,248 @@
+{
+ "description": "Message signatures and payment proofs of the INTERIM wallet scheme (crates/tenero-wallet/src/proofs.rs, docs/WALLET_PROOFS.md). UNAUDITED. An independent Python reference (tools/make_vectors_proofs.py).",
+ "messages": [
+  {
+   "address": "tni118e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c655451cbff2c52",
+   "message": "68656c6c6f",
+   "note": "a short message",
+   "rnd": "d6344361efa24de67578d70f693dff95ff98288fbe09e650df2113db1a026fb4",
+   "seed": "5146df5c793ab5844e52466fdf05da253779033cfdce74c390b1d20d8a967ada",
+   "signature": "d81f171960cae2a7fc758907dc87c885f3267d44419e18c36d06bd3ec2cbc31cfa6f66df6fbab9c538aa57dec09cff748738cefde4db1305a9bd433d9ca99109"
+  },
+  {
+   "address": "tni118e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c655451cbff2c52",
+   "message": "",
+   "note": "the empty message",
+   "rnd": "98d3b746930857f4389658cb0b3eea02d3c2e5cec99b6595b04277054bd5c2a7",
+   "seed": "5146df5c793ab5844e52466fdf05da253779033cfdce74c390b1d20d8a967ada",
+   "signature": "287398ff1f758e722894737a01d86ad093e1e43235c4f0646e4a85d6deb96a255c2cc01086c0e187d2e5b18ca19ad7404d87cca43b756ca1d1f3cc36f04cc905"
+  },
+  {
+   "address": "tni14dfa3acd9698b6ce5c0cdc40842abe4b93057f725e9b776e3762f25cd671956760fd1bdc7b4359baef5f5fc520c5c00ded7b535f699ac55a1b5538bb25ff764b5db229fd",
+   "message": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+   "note": "a message with every byte value",
+   "rnd": "9441737917c3ddc4303b5cdbe7fc0886fe595bd5bece956ee97204e3168275f8",
+   "seed": "69ebef5fc6663e25a7f7a7fce73732cf0b7cead8b8dd7e0fbf78e138bf936cf3",
+   "signature": "607cb60916146d9854004e7bea1b7460e98bee0ae5750df280f3d0f091f9e2a2d809bfae45cec6fb3df2ea44fa6e24cffcbc85f4e618d953ff23c30d76128b0b"
+  },
+  {
+   "address": "tni114cc9f8aeeb417683a167387356c72e6a8e21da5e90dd8a620e4e0e581baea12d333a24bf0bb55df259ff0e40386b557fb13b047c6c52948bf18e280e20a26d42e15041a",
+   "message": "54656e65726f3a20e8a9a6e9a89320e29c93",
+   "note": "non-ASCII text",
+   "rnd": "913baa2ec42d5fcddd46a3e5d65d4d34188e7470fb2c35f0646b14ac02a8e5f1",
+   "seed": "6fba12ff954853c92ac94bd57d0cdaabc5cf393378848db2ede82c41c14b1154",
+   "signature": "02412a774a0c4bbd5fb49fa809a8ec26fb90ccb2b40e8a365473a59cb932fd42668eba261a019b22b79faea15560715ed92b5b30f56c515d65ec6e204cce510d"
+  }
+ ],
+ "name": "wallet_proofs",
+ "proofs": [
+  {
+   "address": "tni118e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c655451cbff2c52",
+   "amount": 123456789,
+   "global_index": 17,
+   "height": 5000,
+   "kind": 1,
+   "note": "an ordinary output: received",
+   "output": {
+    "amount_commitment": "2f6eec2829a22b0ba0fd8f21eb934016992bc2c375c347083922f9ef2ce188cf",
+    "amount_enc": "99d1620b6e875411",
+    "coinbase": false,
+    "context": "d81ed7219bd83b38f29cb82868f19c826f1535a4d98baddbdf98f2a1112a28e3",
+    "ephemeral_pubkey": "89f98464bc39920d005a5ecf711df22b85dafc705dbe6dd9ae54c5c572bae707",
+    "index": 0,
+    "onetime_address": "7694d6223badc9f8f26d6d3526a227ee8f3167292d3922ae5feb4c7fa30b5e89",
+    "public_amount": 0,
+    "view_tag": "c387cd"
+   },
+   "proof": "018813000000000000110000000000000018e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c65545120b15bbc1928407d94efb85dec51a7978e68d4e6702e5b0d9d7cfabbe3082f34cb8cb187e54be6dace5c388e1a6e9c4944300082fd926666c1da02179924060307db92a325376d10e966b45007c40d795feb8268c99f135d01add08b66c12602",
+   "receiver_seed": "5146df5c793ab5844e52466fdf05da253779033cfdce74c390b1d20d8a967ada",
+   "rnd": "9bb78122304e76acf4561911837734b696d6edb53c8235f6430fa1c4b0bdd3e9",
+   "tx_secret": "42d1f194426be99611415f7ef0827e1c69940fac73a3244125ac9aa418703a06"
+  },
+  {
+   "address": "tni118e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c655451cbff2c52",
+   "amount": 123456789,
+   "global_index": 17,
+   "height": 5000,
+   "kind": 2,
+   "note": "an ordinary output: sent",
+   "output": {
+    "amount_commitment": "2f6eec2829a22b0ba0fd8f21eb934016992bc2c375c347083922f9ef2ce188cf",
+    "amount_enc": "99d1620b6e875411",
+    "coinbase": false,
+    "context": "d81ed7219bd83b38f29cb82868f19c826f1535a4d98baddbdf98f2a1112a28e3",
+    "ephemeral_pubkey": "89f98464bc39920d005a5ecf711df22b85dafc705dbe6dd9ae54c5c572bae707",
+    "index": 0,
+    "onetime_address": "7694d6223badc9f8f26d6d3526a227ee8f3167292d3922ae5feb4c7fa30b5e89",
+    "public_amount": 0,
+    "view_tag": "c387cd"
+   },
+   "proof": "028813000000000000110000000000000018e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c65545120b15bbc1928407d94efb85dec51a7978e68d4e6702e5b0d9d7cfabbe3082f341d359e9381758b2966f133e9426e835e2c40ee0a4ee47257d1ea8f7bc89347070b0ef4d58820f85d71e73473ba0061d5895f63238ab62b86791e52a3f6f9a40f",
+   "receiver_seed": "5146df5c793ab5844e52466fdf05da253779033cfdce74c390b1d20d8a967ada",
+   "rnd": "8f3e3de5eeb28ec0a1e2b2c63383e0fc5beadba7454e8a27deca867d5e46efba",
+   "tx_secret": "42d1f194426be99611415f7ef0827e1c69940fac73a3244125ac9aa418703a06"
+  },
+  {
+   "address": "tni118e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c655451cbff2c52",
+   "amount": 123456789,
+   "global_index": 17,
+   "height": 5000,
+   "kind": 3,
+   "note": "an ordinary output: key",
+   "output": {
+    "amount_commitment": "2f6eec2829a22b0ba0fd8f21eb934016992bc2c375c347083922f9ef2ce188cf",
+    "amount_enc": "99d1620b6e875411",
+    "coinbase": false,
+    "context": "d81ed7219bd83b38f29cb82868f19c826f1535a4d98baddbdf98f2a1112a28e3",
+    "ephemeral_pubkey": "89f98464bc39920d005a5ecf711df22b85dafc705dbe6dd9ae54c5c572bae707",
+    "index": 0,
+    "onetime_address": "7694d6223badc9f8f26d6d3526a227ee8f3167292d3922ae5feb4c7fa30b5e89",
+    "public_amount": 0,
+    "view_tag": "c387cd"
+   },
+   "proof": "038813000000000000110000000000000018e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c65545142d1f194426be99611415f7ef0827e1c69940fac73a3244125ac9aa418703a06",
+   "receiver_seed": "5146df5c793ab5844e52466fdf05da253779033cfdce74c390b1d20d8a967ada",
+   "rnd": "582f5e4661bd43735e4963a12fcceee37ae945e936fb9373a50fa42fc410f793",
+   "tx_secret": "42d1f194426be99611415f7ef0827e1c69940fac73a3244125ac9aa418703a06"
+  },
+  {
+   "address": "tni14dfa3acd9698b6ce5c0cdc40842abe4b93057f725e9b776e3762f25cd671956760fd1bdc7b4359baef5f5fc520c5c00ded7b535f699ac55a1b5538bb25ff764b5db229fd",
+   "amount": 7,
+   "global_index": 18,
+   "height": 5001,
+   "kind": 1,
+   "note": "the second output of a transaction: received",
+   "output": {
+    "amount_commitment": "ffb2d01e5bc3cc3342aa74b27552efc31901502f1b4c5175726ddd54bebc6b41",
+    "amount_enc": "929d1f47e5856b09",
+    "coinbase": false,
+    "context": "f93ff6053c4a17bf5d889e7fc51d34743dcc9902a1722fbcbf8d79075ae8b6b6",
+    "ephemeral_pubkey": "b62469b8dc75650266a1032b7f14b8ad789c9cf77bc2fcf4ae0f4e291effbd69",
+    "index": 1,
+    "onetime_address": "b0069e7e6807f3bc71d01db0fa6a08d6895faac3e8992cd8e28dfb7992ca2667",
+    "public_amount": 0,
+    "view_tag": "a3b9ea"
+   },
+   "proof": "01891300000000000012000000000000004dfa3acd9698b6ce5c0cdc40842abe4b93057f725e9b776e3762f25cd671956760fd1bdc7b4359baef5f5fc520c5c00ded7b535f699ac55a1b5538bb25ff764b99b5a22983b2f64bcdf2f4e7ce633fd73a1d21e4eb8f6a4c99d8e510aeeaed264b956be6ab3a53d50d05b06b1c2f4b13ec5828af7322fb8d2f4d4f11e6e4ba0de4bcb1e21a8401ac2a4261a8024ac6eb621600156c99d286e139b4b153b72204",
+   "receiver_seed": "69ebef5fc6663e25a7f7a7fce73732cf0b7cead8b8dd7e0fbf78e138bf936cf3",
+   "rnd": "0ba5356160f04da9715ae33b2d73fcd7e319d4f308a612244feb13ccec4e38c0",
+   "tx_secret": "1b68e288b2ea89cf7edac1d80c4fe76b2276f7351eeced40c9ab9a33a0f2c001"
+  },
+  {
+   "address": "tni14dfa3acd9698b6ce5c0cdc40842abe4b93057f725e9b776e3762f25cd671956760fd1bdc7b4359baef5f5fc520c5c00ded7b535f699ac55a1b5538bb25ff764b5db229fd",
+   "amount": 7,
+   "global_index": 18,
+   "height": 5001,
+   "kind": 2,
+   "note": "the second output of a transaction: sent",
+   "output": {
+    "amount_commitment": "ffb2d01e5bc3cc3342aa74b27552efc31901502f1b4c5175726ddd54bebc6b41",
+    "amount_enc": "929d1f47e5856b09",
+    "coinbase": false,
+    "context": "f93ff6053c4a17bf5d889e7fc51d34743dcc9902a1722fbcbf8d79075ae8b6b6",
+    "ephemeral_pubkey": "b62469b8dc75650266a1032b7f14b8ad789c9cf77bc2fcf4ae0f4e291effbd69",
+    "index": 1,
+    "onetime_address": "b0069e7e6807f3bc71d01db0fa6a08d6895faac3e8992cd8e28dfb7992ca2667",
+    "public_amount": 0,
+    "view_tag": "a3b9ea"
+   },
+   "proof": "02891300000000000012000000000000004dfa3acd9698b6ce5c0cdc40842abe4b93057f725e9b776e3762f25cd671956760fd1bdc7b4359baef5f5fc520c5c00ded7b535f699ac55a1b5538bb25ff764b99b5a22983b2f64bcdf2f4e7ce633fd73a1d21e4eb8f6a4c99d8e510aeeaed26096ab41a8d9e9e632968a13f8c1305aa82252dab1abc4438c3a2fa40c925c6098392e88a5d674f807829f8075572f86f5cd9a619b0d52da0f9c009b923f20e04",
+   "receiver_seed": "69ebef5fc6663e25a7f7a7fce73732cf0b7cead8b8dd7e0fbf78e138bf936cf3",
+   "rnd": "54f24136245210d181ad1217f28005ddcbab01fdb2d95daca68d73bb28dc735a",
+   "tx_secret": "1b68e288b2ea89cf7edac1d80c4fe76b2276f7351eeced40c9ab9a33a0f2c001"
+  },
+  {
+   "address": "tni14dfa3acd9698b6ce5c0cdc40842abe4b93057f725e9b776e3762f25cd671956760fd1bdc7b4359baef5f5fc520c5c00ded7b535f699ac55a1b5538bb25ff764b5db229fd",
+   "amount": 7,
+   "global_index": 18,
+   "height": 5001,
+   "kind": 3,
+   "note": "the second output of a transaction: key",
+   "output": {
+    "amount_commitment": "ffb2d01e5bc3cc3342aa74b27552efc31901502f1b4c5175726ddd54bebc6b41",
+    "amount_enc": "929d1f47e5856b09",
+    "coinbase": false,
+    "context": "f93ff6053c4a17bf5d889e7fc51d34743dcc9902a1722fbcbf8d79075ae8b6b6",
+    "ephemeral_pubkey": "b62469b8dc75650266a1032b7f14b8ad789c9cf77bc2fcf4ae0f4e291effbd69",
+    "index": 1,
+    "onetime_address": "b0069e7e6807f3bc71d01db0fa6a08d6895faac3e8992cd8e28dfb7992ca2667",
+    "public_amount": 0,
+    "view_tag": "a3b9ea"
+   },
+   "proof": "03891300000000000012000000000000004dfa3acd9698b6ce5c0cdc40842abe4b93057f725e9b776e3762f25cd671956760fd1bdc7b4359baef5f5fc520c5c00ded7b535f699ac55a1b5538bb25ff764b1b68e288b2ea89cf7edac1d80c4fe76b2276f7351eeced40c9ab9a33a0f2c001",
+   "receiver_seed": "69ebef5fc6663e25a7f7a7fce73732cf0b7cead8b8dd7e0fbf78e138bf936cf3",
+   "rnd": "5e545f7c133c5f6db2fe2eb7c895e03fad36b807dfb6541fe2ec18a9445bd036",
+   "tx_secret": "1b68e288b2ea89cf7edac1d80c4fe76b2276f7351eeced40c9ab9a33a0f2c001"
+  },
+  {
+   "address": "tni118e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c655451cbff2c52",
+   "amount": 4000000000,
+   "global_index": 3,
+   "height": 1000,
+   "kind": 1,
+   "note": "a block reward: received",
+   "output": {
+    "amount_commitment": "da3acb00ab2d8dccacec8f775921c40e26b1ffbeca9eb7e657256f5968f2341c",
+    "amount_enc": "0000000000000000",
+    "coinbase": true,
+    "context": "77308e88fc3ca7ef3169a1ba9240fd324031436e7092d7880bf4da4843d19f0e",
+    "ephemeral_pubkey": "89f98464bc39920d005a5ecf711df22b85dafc705dbe6dd9ae54c5c572bae707",
+    "index": 0,
+    "onetime_address": "ee3f67571728223bf772b679ec1ff4d5c3cb372d93635c2874620b771b4b7156",
+    "public_amount": 4000000000,
+    "view_tag": "056eab"
+   },
+   "proof": "01e803000000000000030000000000000018e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c65545120b15bbc1928407d94efb85dec51a7978e68d4e6702e5b0d9d7cfabbe3082f341352754c0ae10992f213e7363de5ac9cf151ee27fef3dc391741d1f7ae27cc009f0a141fa38b59822f197b32a16aded7513864d31c3aaf2e2a2536c53c1b8800",
+   "receiver_seed": "5146df5c793ab5844e52466fdf05da253779033cfdce74c390b1d20d8a967ada",
+   "rnd": "3432eddf15ac59bfd335730cffebeacf67a563720f5ec39d9913bd228f3f603a",
+   "tx_secret": "42d1f194426be99611415f7ef0827e1c69940fac73a3244125ac9aa418703a06"
+  },
+  {
+   "address": "tni118e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c655451cbff2c52",
+   "amount": 4000000000,
+   "global_index": 3,
+   "height": 1000,
+   "kind": 2,
+   "note": "a block reward: sent",
+   "output": {
+    "amount_commitment": "da3acb00ab2d8dccacec8f775921c40e26b1ffbeca9eb7e657256f5968f2341c",
+    "amount_enc": "0000000000000000",
+    "coinbase": true,
+    "context": "77308e88fc3ca7ef3169a1ba9240fd324031436e7092d7880bf4da4843d19f0e",
+    "ephemeral_pubkey": "89f98464bc39920d005a5ecf711df22b85dafc705dbe6dd9ae54c5c572bae707",
+    "index": 0,
+    "onetime_address": "ee3f67571728223bf772b679ec1ff4d5c3cb372d93635c2874620b771b4b7156",
+    "public_amount": 4000000000,
+    "view_tag": "056eab"
+   },
+   "proof": "02e803000000000000030000000000000018e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c65545120b15bbc1928407d94efb85dec51a7978e68d4e6702e5b0d9d7cfabbe3082f34ccf82a48166207340b02880642a3a3c259dd188f1b0532b12157c7677f07ba0ae7ac4353cbdb22e3fbfe84232a8e0ce0e00da1970c1678643eb4abd9864ccf03",
+   "receiver_seed": "5146df5c793ab5844e52466fdf05da253779033cfdce74c390b1d20d8a967ada",
+   "rnd": "90494cfbfba00abc749b5d22b2f69a230209973423e9a410db4ebe3e577d5f17",
+   "tx_secret": "42d1f194426be99611415f7ef0827e1c69940fac73a3244125ac9aa418703a06"
+  },
+  {
+   "address": "tni118e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c655451cbff2c52",
+   "amount": 4000000000,
+   "global_index": 3,
+   "height": 1000,
+   "kind": 3,
+   "note": "a block reward: key",
+   "output": {
+    "amount_commitment": "da3acb00ab2d8dccacec8f775921c40e26b1ffbeca9eb7e657256f5968f2341c",
+    "amount_enc": "0000000000000000",
+    "coinbase": true,
+    "context": "77308e88fc3ca7ef3169a1ba9240fd324031436e7092d7880bf4da4843d19f0e",
+    "ephemeral_pubkey": "89f98464bc39920d005a5ecf711df22b85dafc705dbe6dd9ae54c5c572bae707",
+    "index": 0,
+    "onetime_address": "ee3f67571728223bf772b679ec1ff4d5c3cb372d93635c2874620b771b4b7156",
+    "public_amount": 4000000000,
+    "view_tag": "056eab"
+   },
+   "proof": "03e803000000000000030000000000000018e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c65545142d1f194426be99611415f7ef0827e1c69940fac73a3244125ac9aa418703a06",
+   "receiver_seed": "5146df5c793ab5844e52466fdf05da253779033cfdce74c390b1d20d8a967ada",
+   "rnd": "ac9e03a63c798147d10d4a09a9ae6c2fb937fc8dcbce4479bcf121a32331a0a6",
+   "tx_secret": "42d1f194426be99611415f7ef0827e1c69940fac73a3244125ac9aa418703a06"
+  }
+ ],
+ "schema": 1
+}
