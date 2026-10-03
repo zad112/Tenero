@@ -58,6 +58,8 @@ pub enum ProofError {
     NoTxSecret,
     /// The payment is not in the chain yet.
     NotInChain,
+    /// No output made with this key was found in the blocks searched (they are named).
+    NotFound { from: u64, to: u64 },
     /// The node said no.
     Chain(String),
 }
@@ -75,6 +77,10 @@ impl std::fmt::Display for ProofError {
             ProofError::NoTxSecret => write!(
                 f,
                 "the secret of this payment was not kept (it was sent before the wallet kept them), so the sender cannot prove it"
+            ),
+            ProofError::NotFound { from, to } => write!(
+                f,
+                "no output made with that key was found in blocks {from} to {to}: check the key, or search from an earlier block (an output can only be in a block after the payment was sent)"
             ),
             ProofError::NotInChain => write!(f, "the payment is not in the chain yet: wait until a block takes it in"),
             ProofError::Chain(e) => write!(f, "the node said: {e}"),
@@ -599,4 +605,72 @@ pub fn find_output(
         }
     }
     Ok(None)
+}
+
+/// The most blocks one search for a key reads (a key does not say where its output is, so the chain is read from a starting height
+/// until the output is found).
+pub const MAX_KEY_SEARCH_BLOCKS: u64 = 50_000;
+
+/// Checks a transaction key (the secret `r` of one output) and an address against the chain, the way Monero's `check_tx_key` does:
+/// the output made with `r` is found by its ephemeral key `r*G`, in the blocks from `from_height` on, and then checked like a key
+/// proof. Returns what it shows and how many blocks lie on top of it.
+pub fn check_key(
+    chain: &impl ChainView,
+    key: &[u8; 32],
+    address: &Address,
+    from_height: u64,
+) -> Result<(Checked, u64), ProofError> {
+    let r = canonical(key).ok_or(ProofError::Format(
+        "a transaction key is 64 hexadecimal digits below the group order",
+    ))?;
+    strict_point(&address.spend).ok_or(ProofError::BadAddress)?;
+    strict_point(&address.view).ok_or(ProofError::BadAddress)?;
+    let de = compress(&(G * r));
+    let (tip, _) = chain.tip().map_err(chain_err)?;
+    let end = tip.min(from_height.saturating_add(MAX_KEY_SEARCH_BLOCKS - 1));
+    let mut h = from_height;
+    let mut found: Option<(u64, u64)> = None;
+    'search: while h <= end {
+        let batch = chain.blocks(h, 64).map_err(chain_err)?;
+        if batch.is_empty() {
+            break;
+        }
+        for block in &batch {
+            if block.height > end {
+                break 'search;
+            }
+            let mut index = block.first_output_index;
+            for o in &block.coinbase.outputs {
+                if o.ephemeral_pubkey == de {
+                    found = Some((block.height, index));
+                    break 'search;
+                }
+                index += 1;
+            }
+            for t in &block.txs {
+                for o in &t.outputs {
+                    if o.ephemeral_pubkey == de {
+                        found = Some((block.height, index));
+                        break 'search;
+                    }
+                    index += 1;
+                }
+            }
+            h = block.height + 1;
+        }
+    }
+    let (height, gi) = found.ok_or(ProofError::NotFound {
+        from: from_height,
+        to: end,
+    })?;
+    let out = output_at(chain, height, gi)?;
+    let proof = PaymentProof {
+        kind: ProofKind::Key,
+        height,
+        global_index: gi,
+        address: *address,
+        body: key.to_vec(),
+    };
+    let checked = check(&proof, &out)?;
+    Ok((checked, tip.saturating_sub(height) + 1))
 }

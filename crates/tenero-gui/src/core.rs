@@ -304,6 +304,15 @@ impl Core {
             }
             Cmd::MakeProof(req) => self.make_proof(req, &mut events),
             Cmd::RevealTxKey { id } => self.reveal_tx_key(&id, &mut events),
+            Cmd::CheckKey {
+                key,
+                address,
+                from_height,
+            } => {
+                let r = self.check_key(&key, &address, from_height.unwrap_or(0));
+                events.push(Event::ProofChecked(r));
+                Ok(())
+            }
             Cmd::CheckProof { text } => {
                 let r = self.check_proof(&text);
                 events.push(Event::ProofChecked(r));
@@ -658,6 +667,36 @@ impl Core {
             key: Zeroizing::new(hex),
         });
         Ok(())
+    }
+
+    /// Checks a transaction key and an address against the node's chain. Needs a node, not a wallet.
+    fn check_key(&self, key: &str, address: &str, from_height: u64) -> Result<CheckedView, String> {
+        let k = key.trim();
+        if k.len() != 64 || !k.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err("a transaction key is 64 lower-case hexadecimal digits".into());
+        }
+        let mut bytes = [0u8; 32];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&k[2 * i..2 * i + 2], 16).map_err(|e| e.to_string())?;
+        }
+        let address = tenero_wallet::Address::from_text(address.trim())
+            .map_err(|e| format!("address: {e}"))?;
+        let node = self
+            .node
+            .as_ref()
+            .ok_or("the node is not running: a key is checked against the chain (start the node on the Node tab)")?;
+        let (c, confirmations) =
+            tenero_wallet::proofs::check_key(node, &bytes, &address, from_height)
+                .map_err(|e| e.to_string())?;
+        Ok(CheckedView {
+            kind: c.kind.name(),
+            address: c.address.to_text(),
+            amount: c.amount,
+            height: c.height,
+            global_index: c.global_index,
+            confirmations,
+            block_reward: c.block_reward,
+        })
     }
 
     /// Checks a proof against the node's chain. Needs a node, not a wallet.

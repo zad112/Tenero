@@ -67,6 +67,13 @@ Then what `S` says about the output is recomputed, as the receiver's scan does:
 reward's amount is public. Any other output's amount is `amount_enc XOR digest("amount", S || ctx || i)[..8]`, and the commitment
 `mask*G + amount*H` with `mask = Hs("mask", S || ctx || i)` must equal the output's commitment.
 
+## Checking a bare transaction key
+
+A key alone does not say which output it made. `proofs::check_key(chain, key, address, from_height)` computes `De = r*G`, reads blocks from
+`from_height` on (at most `MAX_KEY_SEARCH_BLOCKS` = 50,000) until an output with that ephemeral key is found, and checks it as a key proof
+(kind 3). It says "not found" with the blocks it read if there is none (the key is wrong, or the start is after the payment's block), and
+"not addressed" if the output was not paid to the address given.
+
 ## Where it is used
 
 `tenero-wallet`: `proofs.rs` (the functions), `Purse::sign_message`, `prove_received`, `prove_sent`, `tx_secret`,

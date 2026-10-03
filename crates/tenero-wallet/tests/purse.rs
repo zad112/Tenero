@@ -807,3 +807,69 @@ fn a_message_signed_by_an_account_verifies_for_its_address_and_no_other() {
     );
     assert!(p.sign_message(9, &mut OsRng, msg).is_err());
 }
+
+#[test]
+fn a_transaction_key_and_an_address_are_checked_by_finding_the_output_the_key_made() {
+    use tenero_wallet::proofs::{check_key, ProofError, ProofKind};
+    let rig = Rig::new("checkkey");
+    let mut node = rig.node();
+    let mut p = Purse::from_seed(&[24; 32], 0);
+    p.add_account("Savings", 0).unwrap();
+    let (a0, a1) = (p.accounts()[0].address(), p.accounts()[1].address());
+    (0..6).for_each(|_| {
+        mine(&mut node, &a0);
+    });
+    p.sync(&node).unwrap();
+    let amount = 777_000_000;
+    let built = p
+        .pay(0, &mut node, &mut OsRng, &a1, amount, FeeLevel::Low, 1)
+        .unwrap();
+    mine(&mut node, &a0);
+    mine(&mut node, &a0);
+    p.sync(&node).unwrap();
+    let key = *p.tx_secret(&built.id).unwrap().expose();
+
+    // the key and the address it paid: found from the start of the chain, and from a block at or before the payment
+    let (c, conf) = check_key(&node, &key, &a1, 0).unwrap();
+    assert_eq!((c.amount, c.address, c.kind), (amount, a1, ProofKind::Key));
+    assert!(conf >= 1);
+    let at = c.height;
+    assert!(
+        check_key(&node, &key, &a1, at).is_ok(),
+        "from the block it is in"
+    );
+    // a start after the output's block does not find it (and says which blocks were read)
+    let after = check_key(&node, &key, &a1, at + 1);
+    assert!(
+        matches!(after, Err(ProofError::NotFound { from, .. }) if from == at + 1),
+        "{after:?}"
+    );
+    // another address: the output is found but is not addressed to it
+    assert_eq!(
+        check_key(&node, &key, &a0, 0).err(),
+        Some(ProofError::NotAddressed)
+    );
+    // a key that made nothing, and one that is not a key at all
+    assert!(matches!(
+        check_key(&node, &[7; 32], &a1, 0),
+        Err(ProofError::NotFound { .. })
+    ));
+    assert!(matches!(
+        check_key(&node, &[0xff; 32], &a1, 0),
+        Err(ProofError::Format(_))
+    ));
+    // an address with an invalid key
+    let bad = Address {
+        spend: [0; 32],
+        view: a1.view,
+    };
+    assert_eq!(
+        check_key(&node, &key, &bad, 0).err(),
+        Some(ProofError::BadAddress)
+    );
+    // a start past the tip finds nothing and does not loop
+    assert!(matches!(
+        check_key(&node, &key, &a1, 1_000_000),
+        Err(ProofError::NotFound { .. })
+    ));
+}

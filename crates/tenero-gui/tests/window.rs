@@ -814,6 +814,8 @@ fn the_prove_screen_signs_verifies_and_checks_and_says_what_it_does_not_show() {
         "Unlock the wallet",
         "Verify a signed message",
         "Check a payment proof",
+        "Check a transaction key",
+        "Search from block",
         "start the node first",
     ] {
         assert!(

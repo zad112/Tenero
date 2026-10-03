@@ -115,6 +115,9 @@ struct ProveForm {
     verified: Option<Result<String, String>>,
     check_text: String,
     checked: Option<Result<CheckedView, String>>,
+    key_text: String,
+    key_address: String,
+    key_from: String,
 }
 
 #[derive(Default)]
@@ -1983,6 +1986,67 @@ impl App {
                 );
             }
         });
+        ui.add_space(10.0);
+        ui.separator();
+
+        // ---- check a transaction key
+        ui.label(RichText::new("Check a transaction key").strong());
+        ui.label("A transaction key (shown in History, \"Show transaction key\") and the address it paid. The node's chain is read from the block you give until the output that key made is found, so give a block at or before the payment: a vague start is a slower check.");
+        ui.horizontal(|ui| {
+            ui.label("Key");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.prove.key_text)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("Address");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.prove.key_address)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("Search from block");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.prove.key_from)
+                    .hint_text("0")
+                    .desired_width(100.0),
+            );
+        });
+        let from_ok = self.prove.key_from.trim().is_empty()
+            || self.prove.key_from.trim().parse::<u64>().is_ok();
+        if !from_ok {
+            ui.colored_label(AMBER, "The block number must be digits only.");
+        }
+        ui.horizontal(|ui| {
+            let ready = node_up
+                && from_ok
+                && !self.prove.key_text.trim().is_empty()
+                && !self.prove.key_address.trim().is_empty();
+            if ui
+                .add_enabled(ready, egui::Button::new("Check the key against the node"))
+                .clicked()
+            {
+                self.prove.checked = None;
+                self.backend.send(Cmd::CheckKey {
+                    key: self.prove.key_text.clone(),
+                    address: self.prove.key_address.clone(),
+                    from_height: self.prove.key_from.trim().parse().ok(),
+                });
+            }
+            if !node_up {
+                ui.label(
+                    RichText::new("start the node first (Node tab)")
+                        .small()
+                        .color(GREY),
+                );
+            }
+        });
+        ui.add_space(8.0);
+        ui.label(RichText::new("Result").strong());
         match &self.prove.checked {
             Some(Ok(c)) => {
                 ui.colored_label(GREEN, "VALID");

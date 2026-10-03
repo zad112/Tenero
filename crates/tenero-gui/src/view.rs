@@ -209,6 +209,13 @@ pub enum Cmd {
     CheckProof {
         text: String,
     },
+    /// Checks a transaction key and an address against the node (needs no wallet): the output the key made is searched for from
+    /// `from_height` on.
+    CheckKey {
+        key: String,
+        address: String,
+        from_height: Option<u64>,
+    },
     StartNode,
     StopNode,
     StartMiner,

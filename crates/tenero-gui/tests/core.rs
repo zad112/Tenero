@@ -625,6 +625,47 @@ fn mine_pay_at_every_fee_level_and_read_the_history() {
         "the key is not part of what the window holds"
     );
 
+    // the key and the address, checked the way Monero's check_tx_key does: the output the key made is searched for
+    let run_key = |c: &mut Core,
+                   key: &str,
+                   address: &str,
+                   from: Option<u64>|
+     -> Result<CheckedView, String> {
+        let ev = c.handle(Cmd::CheckKey {
+            key: key.to_string(),
+            address: address.to_string(),
+            from_height: from,
+        });
+        ev.into_iter()
+            .find_map(|e| match e {
+                Event::ProofChecked(r) => Some(r),
+                _ => None,
+            })
+            .expect("an answer")
+    };
+    let v = run_key(&mut c, &key_hex, &saving, None).unwrap();
+    assert_eq!(
+        (v.amount, v.address.as_str(), v.kind),
+        (50_000_000, saving.as_str(), "key")
+    );
+    assert!(run_key(&mut c, &key_hex, &saving, Some(v.height)).is_ok());
+    assert!(run_key(&mut c, &key_hex, &saving, Some(v.height + 1))
+        .unwrap_err()
+        .contains("no output made with that key"));
+    assert!(run_key(&mut c, &key_hex, &d.accounts[0].address, None)
+        .unwrap_err()
+        .contains("not addressed"));
+    assert!(run_key(&mut c, "xyz", &saving, None)
+        .unwrap_err()
+        .contains("64"));
+    assert!(
+        run_key(&mut c, &key_hex.to_uppercase(), &saving, None).is_err(),
+        "lower-case digits only"
+    );
+    assert!(run_key(&mut c, &key_hex, "tni1nonsense", None)
+        .unwrap_err()
+        .contains("address"));
+
     // signing needs the wallet; verifying (and checking a proof) needs only the node
     let ev = c.handle(Cmd::SignMessage {
         account: 1,
