@@ -25,6 +25,9 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-1-Clause",
     "BSD-3-Clause",
+    "BSL-1.0", # Boost: permissive; clipboard-win and error-code, in the wallet app's window library (owner-approved 2026-10-03)
+    "OFL-1.1", # the SIL Open Font License, for the fonts the wallet app's window library embeds: they may be shipped with a program but not sold alone, so a release must carry their notices
+    "Ubuntu-font-1.0", # the same, for the Ubuntu font
     "CC0-1.0", # a public-domain dedication; the bip39 crate and its small hash and hex dependencies (owner-approved 2026-10-03)
     "ISC",
     "Unicode-3.0",

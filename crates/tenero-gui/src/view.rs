@@ -1,0 +1,201 @@
+//! What the window shows and what it can ask for. The window holds a [`Snapshot`] (a copy of everything it draws) and sends
+//! [`Cmd`]s; it never touches the wallet, the node or a process itself. That is what lets the logic be tested without a
+//! window.
+
+use tenero_app::control::NodeInfo;
+use tenero_app::miner_report::MinerReport;
+use tenero_wallet::{Balance, EntryKind, FeeLevel};
+use zeroize::Zeroizing;
+
+use crate::settings::Settings;
+
+/// Text shown on every screen, at all times (the owner's rule: nothing in the app may say or imply that the coins are
+/// money or that payments are anonymous).
+pub const BANNER: &str = "TEST NETWORK. NO VALUE. UNAUDITED.";
+/// Said wherever an address or a balance is shown.
+pub const SCHEME_NOTE: &str =
+    "Interim output scheme: not private in Monero's sense (not Carrot). One address per account.";
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum NodeView {
+    Stopped,
+    Starting,
+    Running {
+        info: NodeInfo,
+        /// Started by this window (or one of its earlier runs) rather than by the owner on the command line.
+        ours: bool,
+    },
+    Stopping,
+    /// Stopped by itself or never came up: why, and the last lines of what it printed.
+    Failed {
+        why: String,
+        output: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum MinerView {
+    Off,
+    Starting,
+    Running {
+        report: Box<MinerReport>,
+        /// The miner has not written its state lately.
+        stale: bool,
+    },
+    Failed {
+        why: String,
+        output: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccountView {
+    pub index: usize,
+    pub label: String,
+    pub address: String,
+    /// `None` while no node can be asked (a balance needs the chain to say what is spent).
+    pub balance: Option<Balance>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HistoryRow {
+    pub account: usize,
+    pub account_label: String,
+    pub kind: EntryKind,
+    pub amount: u64,
+    pub height: u64,
+    pub id: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WalletData {
+    pub accounts: Vec<AccountView>,
+    pub total: Option<Balance>,
+    pub history: Vec<HistoryRow>,
+    /// The last block the wallet has read.
+    pub scanned: Option<u64>,
+    /// The node's tip, if a node is reachable.
+    pub tip: Option<u64>,
+    /// The wallet has read every block the node has and the node is not catching up: balances are as final as this
+    /// computer can tell. **While this is false the window must not present a balance as final.**
+    pub synced: bool,
+    /// The wallet file has a password (an empty one is allowed on purpose and is said so on screen).
+    pub has_password: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum WalletView {
+    /// No wallet file yet: create one or restore one.
+    NoWallet,
+    /// A wallet file, not opened.
+    Locked,
+    Unlocked(Box<WalletData>),
+}
+
+/// A payment, built and checked but not sent: what the confirmation screen shows. Nothing is reserved or sent until
+/// the person confirms.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Quote {
+    pub account: usize,
+    pub to: String,
+    pub amount: u64,
+    pub fee: u64,
+    pub change: u64,
+    pub level: FeeLevel,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Snapshot {
+    pub settings: Settings,
+    pub wallet: WalletView,
+    pub node: NodeView,
+    pub miner: MinerView,
+    /// The payment waiting for a yes.
+    pub prepared: Option<Quote>,
+    /// What the worker is busy with, for a "please wait" (a long scan, building a payment).
+    pub busy: Option<String>,
+}
+
+/// How the person wants the wallet file locked.
+pub enum Password {
+    /// At least [`MIN_PASSWORD`] characters.
+    Set(Zeroizing<String>),
+    /// No password: anyone who can read the file can spend. Allowed only as an explicit choice.
+    None,
+}
+
+pub const MIN_PASSWORD: usize = 8;
+
+pub enum Cmd {
+    CreateWallet {
+        password: Password,
+    },
+    RestoreWallet {
+        phrase: Zeroizing<String>,
+        password: Password,
+        /// The height of the first block that could hold the wallet's coins, if known (default: the start).
+        birth: Option<u64>,
+    },
+    Unlock {
+        password: Zeroizing<String>,
+    },
+    Lock,
+    /// Shows the words again after asking for the password.
+    RevealPhrase {
+        password: Zeroizing<String>,
+    },
+    ChangePassword {
+        old: Zeroizing<String>,
+        new: Password,
+    },
+    AddAccount {
+        label: String,
+    },
+    RenameAccount {
+        index: usize,
+        label: String,
+    },
+    /// What the three fee levels would cost for this payment.
+    EstimateFees {
+        account: usize,
+        to: String,
+        amount: String,
+    },
+    PreparePayment {
+        account: usize,
+        to: String,
+        amount: String,
+        level: FeeLevel,
+    },
+    SendPrepared,
+    CancelPrepared,
+    StartNode,
+    StopNode,
+    StartMiner,
+    StopMiner,
+    SetSettings(Box<Settings>),
+    /// Stop what this window started and end.
+    Quit,
+}
+
+pub enum Event {
+    /// Everything the window draws, after any change.
+    Snapshot(Box<Snapshot>),
+    /// The 24 words, to show now and then forget. `new` is true right after a wallet was created.
+    Phrase {
+        words: Zeroizing<String>,
+        new: bool,
+    },
+    Estimate {
+        fees: [u64; 3],
+    },
+    Sent {
+        id: [u8; 32],
+        fee: u64,
+    },
+    /// Something happened that the person should read (not an error).
+    Notice(String),
+    Error(String),
+    /// The worker is finished; the window may close.
+    Quit,
+}

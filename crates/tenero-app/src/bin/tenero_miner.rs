@@ -33,6 +33,7 @@ tenero-miner: mines for a Tenero node in another process (EXPERIMENTAL, UNAUDITE
   --gpu-device N     which GPU (default 0)       --gpu-batch N|auto   attempts per batch (default 128; auto measures at start-up)
   --pace SECS        wait this long after a block is found before the next job (default 0)
   --log-level L      error, warn, info, debug (default info)    --log-file FILE   also log to this file
+  --status-file FILE rewrite this file every second with the miner's state, for a program that started it
   --status-every S   seconds between status lines when the output is not a terminal (default 60)
   --quiet            show only warnings and errors     --verbose   also show every line of the log
   --color C          auto, always or never (colour is off with NO_COLOR and when the output is not a terminal)
@@ -53,6 +54,7 @@ struct Args {
     level: Level,
     log_file: Option<PathBuf>,
     status_every: u64,
+    status_file: Option<PathBuf>,
     verbosity: Verbosity,
     color: ColorChoice,
 }
@@ -71,6 +73,7 @@ fn parse() -> Result<Args, String> {
         level: Level::Info,
         log_file: None,
         status_every: 60,
+        status_file: None,
         verbosity: Verbosity::Normal,
         color: ColorChoice::Auto,
     };
@@ -123,6 +126,7 @@ fn parse() -> Result<Args, String> {
                 })?
             }
             "log-file" => a.log_file = Some(PathBuf::from(&v)),
+            "status-file" => a.status_file = Some(PathBuf::from(&v)),
             "status-every" => a.status_every = num("status-every")?.max(1),
             "color" => {
                 a.color = ColorChoice::parse(&v)
@@ -328,6 +332,7 @@ fn main() {
         let (counters, progress, tally) = (rm.counters(), rm.progress(), Arc::clone(&tally));
         let (l, screen, s) = (Arc::clone(&log), Arc::clone(&screen), Arc::clone(&shutdown));
         let (backend, every) = (args.backend.clone(), Duration::from_secs(args.status_every));
+        let status_file = args.status_file.clone();
         // the card's health for the screen (GPU only); if NVML cannot be read the miner is not affected
         let probe = if args.backend == "gpu" {
             match tenero_miner::gpu_stats::GpuProbe::open(args.gpu_device) {
@@ -372,7 +377,7 @@ fn main() {
                     .ok()
                     .filter(|b| !b.is_empty())
                     .unwrap_or_else(|| backend.clone());
-                screen.miner_status(&MinerStatus {
+                let status = MinerStatus {
                     backend: name,
                     link,
                     node_height: progress.height.load(Ordering::Relaxed),
@@ -385,7 +390,17 @@ fn main() {
                     lost_race: tally.lost_race.load(Ordering::Relaxed),
                     refused: tally.refused.load(Ordering::Relaxed),
                     uptime_secs: now.duration_since(started).as_secs(),
-                });
+                };
+                screen.miner_status(&status);
+                if let Some(path) = &status_file {
+                    let unix = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs());
+                    let text =
+                        tenero_app::miner_report::MinerReport::from_status(&status, unix).to_text();
+                    // best effort: a screen file that cannot be written must never stop the miner
+                    let _ = tenero_net::transport::write_atomic(path, text.as_bytes());
+                }
                 if now.duration_since(last_log) >= every {
                     l.info(&format!(
                         "status: attempts/s {} | jobs {} | solutions {}",

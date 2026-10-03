@@ -1,0 +1,12 @@
+//! Tenero's wallet app (milestone M10.3): a desktop window for the wallet that starts and stops the node and the miner.
+//! **Experimental and unaudited. Nothing on any network it uses has value.**
+//!
+//! * [`settings`]: the app's settings file. [`procs`]: starting and stopping the node and miner as processes.
+//! * [`view`]: what the window shows and asks for. [`core`]: the logic behind it, tested without a window.
+//! * [`backend`]: runs the logic on a thread of its own so the window never waits.
+
+pub mod backend;
+pub mod core;
+pub mod procs;
+pub mod settings;
+pub mod view;

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/tenero-core", "crates/tenero-gpu", "crates/tenero-store", "crates/tenero-chain", "crates/tenero-crypto", "crates/tenero-node", "crates/tenero-net", "crates/tenero-miner", "crates/tenero-wallet", "crates/tenero-app", "crates/tenero-fuzzcases"]
+members = ["crates/tenero-core", "crates/tenero-gpu", "crates/tenero-store", "crates/tenero-chain", "crates/tenero-crypto", "crates/tenero-node", "crates/tenero-net", "crates/tenero-miner", "crates/tenero-wallet", "crates/tenero-app", "crates/tenero-fuzzcases", "crates/tenero-gui"]
 
 [workspace.package]
 version = "0.0.0"
