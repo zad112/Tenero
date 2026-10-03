@@ -1085,3 +1085,102 @@ fn a_random_history_of_appends_reorganisations_and_pruning_matches_the_model() {
         "the random walk did not exercise every operation: {ops:?}"
     );
 }
+
+/// A2 and G3 of the threat model: a damaged segment file is a hostile file. Bytes of it are flipped, replaced with garbage, or given a huge
+/// count, in many random ways, and the store is asked for everything it can read from it. The rule is that it never panics and never
+/// allocates wildly (a test that hangs or runs out of memory is a failure too); what it MAY do is hand back a block that differs from the
+/// one written, because **the segment files carry no checksum of their own**, and this test says how often that happens (see the last
+/// assertion: it is a finding, kept as a number, and it changes only if a check is added on purpose).
+#[test]
+fn a_damaged_segment_file_never_panics_and_the_store_says_how_often_it_cannot_tell() {
+    let db = TempDb::new("damaged-segments");
+    let mut c = Chain::new(&db, 21);
+    c.push_n(6);
+    let original: Vec<_> = c.blocks.clone();
+    let store_path = db.0.clone();
+    drop(c.store);
+    let file = db.segment_file(0);
+    let clean = std::fs::read(&file).unwrap();
+    assert!(clean.len() > 200, "the segment holds something to damage");
+
+    let mut x = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let (mut errors, mut same, mut different) = (0u32, 0u32, 0u32);
+    let rounds = 150;
+    for round in 0..rounds {
+        let mut bytes = clean.clone();
+        match round % 5 {
+            0 => {
+                // one flipped bit
+                let i = next() as usize % bytes.len();
+                bytes[i] ^= 1 << (next() % 8);
+            }
+            1 => {
+                // a run of garbage
+                let (i, n) = (next() as usize % bytes.len(), 1 + next() as usize % 64);
+                for b in bytes.iter_mut().skip(i).take(n) {
+                    *b = next() as u8;
+                }
+            }
+            2 => {
+                // four bytes made a huge count or length
+                let i = next() as usize % (bytes.len() - 4);
+                bytes[i..i + 4].copy_from_slice(&[0xFF, 0xFF, 0xFF, 0x7F]);
+            }
+            3 => {
+                // cut short at a random place
+                let n = next() as usize % bytes.len();
+                bytes.truncate(n);
+            }
+            _ => {
+                // zeros over a block of it
+                let (i, n) = (next() as usize % bytes.len(), 1 + next() as usize % 200);
+                for b in bytes.iter_mut().skip(i).take(n) {
+                    *b = 0;
+                }
+            }
+        }
+        std::fs::write(&file, &bytes).unwrap();
+        let s = Store::open_with(&store_path, LABEL, POW, Some(SEGMENT_BLOCKS)).unwrap();
+        for (h, original_block) in original.iter().enumerate() {
+            let h = h as u64 + 1;
+            match s.get_block(h) {
+                Err(_) => errors += 1,
+                Ok(Some(b)) => match b.into_full() {
+                    Some(b) if &b == original_block => same += 1,
+                    Some(_) => different += 1,
+                    None => errors += 1,
+                },
+                Ok(None) => errors += 1,
+            }
+            let _ = s.recompute_tx_root(h);
+            let _ = s.tx(&ids::tx_id(&original_block.transactions[0]).unwrap());
+        }
+        // a rollback of a damaged tip either works or changes nothing
+        let before = (s.state_digest().unwrap(), s.tip().unwrap().0);
+        if s.pop_block().is_err() {
+            assert_eq!(
+                (s.state_digest().unwrap(), s.tip().unwrap().0),
+                before,
+                "a failed rollback changed something"
+            );
+        }
+    }
+    std::fs::write(&file, &clean).unwrap();
+    eprintln!("{rounds} damaged copies, {} reads: {errors} refused as corrupt, {same} the right block, {different} a DIFFERENT block returned without complaint", errors + same + different);
+    assert!(
+        errors > 0 && same > 0,
+        "damage should sometimes be seen, and a read of an undamaged part should work"
+    );
+    // The finding: there is no checksum, so some damage returns a different block. If a check is ever added this number becomes 0 and this
+    // assertion is the one to change, on purpose.
+    assert!(
+        different > 0,
+        "the store now notices every change: change this test and THREAT_MODEL.md G3"
+    );
+}
