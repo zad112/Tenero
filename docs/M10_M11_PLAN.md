@@ -203,6 +203,29 @@ send some on, **by following only what is on screen**, and the owner has confirm
 
 ## M11: tidy the repository and ship a first test release
 
+**The order (the owner's, 2026-10-03):** M11.0 (the stored-block checksum and the emergency plan), M11.1 (retire the Python), M11.2 (the fresh chain,
+with the timestamp rule), **M11.25 (open `main`)**, M11.3 (packaging, with the icon inside the program), M11.4 (what testers need, with the README
+rewrite). Nothing is pushed to `main` before M11.25, and then only when the owner says so.
+
+### M11.0 Two things to settle before anything else (the owner's pick, 2026-10-03; not started)
+
+* **A checksum on every stored record (`THREAT_MODEL.md` G3, A2; a storage-format change, NOT a consensus change).** Measured on 2026-10-03: of 900
+  damaged reads of a segment file, 3 returned a *different, valid-looking block* with no error, because the damage landed where a block still
+  decodes. The fix: each record in a segment file carries a checksum (a SHA-256 prefix of the record, from a hash the project already uses; no
+  new dependency) checked on every read, so a damaged record is an error that names the segment and the record, never a wrong block. **To do:**
+  the format and its version marker; the reader refuses (with a clear message) a store written without checksums rather than guessing, and the
+  development networks' old data is throwaway, so no migration is written unless the owner wants one; the existing damage test
+  (`tenero-store/tests/store.rs`, "a damaged segment file never panics and the store says how often it cannot tell") becomes "0 of 900 returned the
+  wrong block, and every damaged read is an error"; a mutation check (remove the check, the test must fail); a note in `KNOWN_ISSUES.md`/`THREAT_MODEL.md`
+  that G3 is closed, with the numbers. Cost: a few bytes and one hash per record read.
+* **The emergency plan, finished (`EMERGENCY_PLAN.md`; the owner's decisions are marked DECIDE in it).** **The owner decides and writes in:** who
+  besides the owner may say "stop mining" (a named second person, and how they are reached), and where testers are told (the channel, which must
+  exist before the first tester does). **Then:** the plan is changed from DRAFT; the two gaps that are code are decided one way or the other and
+  written down: a `rewind` command (the plan's default for a recent bad block depends on it) and an activation mechanism for planned rule changes
+  (or the plan says that a rule change is a reset). **A drill, which is the plan's gap 4:** a deliberately broken build on a scratch network, run through
+  sections 3 to 6 of the plan by the people named in it, timed, and written up with what did not work. The plan is not called finished until the drill has
+  been done once.
+
 ### M11.1 Retire the old Python (size M, deliberate, in steps)
 
 * **What goes:** the Python *node, miner, wallet and account-model chain* (`miner.py`, the old node and wallet code, the
@@ -245,7 +268,22 @@ send some on, **by following only what is on screen**, and the owner has confirm
 * The old test and dev networks are *kept* as development networks; the release network gets a new, distinct name, and
   a peer on another chain is refused at the handshake (M10.4).
 
+### M11.25 Open `main` (the owner's, 2026-10-03; only when the owner says so)
+
+`main` still holds the Python prototype and `rewrite` holds the Rust program; nothing has been pushed to `main`. When M11.0 to M11.2 are done and the
+owner gives the word: tag the last Python state (`python-final`, M11.1), make `main` the Rust program (a merge or a replacement, whichever keeps the
+history the owner wants; **a replacement of `main` is the owner's explicit decision, not mine**), check that CI is green on `main` on both systems, and
+move the things that only work from the default branch: the **long fuzz run** (`fuzz.yml`'s manual start and its monthly schedule), the supply-chain
+schedule, and any branch protection. Then the first long fuzz runs start (hours, not the two-minute smoke run), with the engine target made faster and
+the noise handshake and the proofs targets included. The old Python tests and tools that are kept (the vector references) move with it.
+
 ### M11.3 Packaging for Windows and Linux (size L)
+
+* **The program's icon inside the `.exe` (the owner's, 2026-10-03):** the circular logo (`assets/tenero.ico`, made by `tools/make_icons.py`) is today only
+  the window icon and a shortcut's icon, so a copied `tenero-wallet-gui.exe` shows the default one. Embedding it needs a Windows resource compiled into the
+  program at build time: **a build dependency (the `embed-resource` crate, MIT, or the older `winres`) or the platform's resource compiler. Rule 3: ask the
+  owner before adding it, with its licence and tree listed.** The Linux build gets its icon through the `.desktop` file instead. The release notes say that
+  the file is still not code-signed.
 
 * **Artifacts:** `tenerod`, `tenero-miner`, `tenero-wallet` (CLI) and the wallet app, as a **zip (and for Linux a tar.gz) with the
   executables, a README, the LICENCE and THIRD-PARTY-LICENCES, and a checksum file (SHA-256)**. An installer only if it is
@@ -321,7 +359,7 @@ send some on, **by following only what is on screen**, and the owner has confirm
 
 ### M11 done when
 
-The repository contains only the Rust code, the independent references, the vectors, the docs and the packaging; the build
+The stored-record checksum is in and the emergency plan is finished and drilled (M11.0); `main` is the Rust program with CI green and the long fuzz runs started (M11.25). The repository contains only the Rust code, the independent references, the vectors, the docs and the packaging; the build
 from a tagged commit gives the Windows and Linux archives with checksums; a clean Windows machine and a clean Linux machine
 (Linux **untested until then**) each install it from the archive, sync from the owner's seed node, and mine or receive a
 block; the new chain has the genesis stated in the docs and the owner has verified the no-premine check for themselves

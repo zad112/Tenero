@@ -1,6 +1,6 @@
 # Emergency plan: what happens when a rule is wrong (a DRAFT, E8 of `THREAT_MODEL.md`)
 
-**Status: a draft written by the author (2026-10-03), with the decisions that are the owner's marked DECIDE. Nothing here has been rehearsed.**
+**Status: a draft written by the author (2026-10-03), with the decisions that are the owner's marked DECIDE. Nothing here has been rehearsed. Finishing it (the decisions, the channel, the two code gaps decided, and one drill) is M11.0 in `M10_M11_PLAN.md`.**
 It exists because of `M8_PLAN.md` section 7: a consensus bug on a live chain cannot be fixed quietly, and the time to decide who does what is
 before it happens, not during. The project is still an unaudited test network with no value; this plan is for that network, and is written so
 that it can grow into the plan for a network that matters.
