@@ -915,7 +915,13 @@ impl App {
             let price = match self.send.estimate {
                 Some(f) => text::coins(f[i]),
                 None if self.send.error.is_some() => "no price".to_string(),
-                None if filled => "working it out…".to_string(),
+                None if filled && !d.synced => {
+                    "waiting for the wallet to finish reading the chain".to_string()
+                }
+                None if filled => match self.send.working {
+                    Some(t) => format!("working it out… ({} s)", t.elapsed().as_secs()),
+                    None => "working it out…".to_string(),
+                },
                 None => "fill in the payment to see the price".to_string(),
             };
             let blurb = match level {

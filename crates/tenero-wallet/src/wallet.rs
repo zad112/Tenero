@@ -718,10 +718,12 @@ fn select_coins(candidates: &[Owned], needed: u64) -> Result<Vec<Owned>, WalletE
 /// `ring_size - 1` other outputs to hide `real` among: distinct, existing and mature (the rules refuse an
 /// immature ring member).
 ///
-/// **The policy, and its limit:** an output is picked by how far it is from the newest one, with the distance
-/// log-uniform (`exp(U * ln N)`), so recent outputs are far more likely than old ones, as real spends are. This
-/// is a simplification of Monero's gamma distribution of output ages and has not been checked against how
-/// real spends behave on this chain (which has none yet).
+/// **The policy, and its limit:** an output is picked by how far it is from the newest *usable* one, with the distance
+/// log-uniform (`exp(U * ln N)`), so newer outputs are far more likely than old ones, as real spends are. This is a
+/// simplification of Monero's gamma distribution of output ages and has not been checked against how real spends behave
+/// on this chain (which has none yet). The usable ones are found first (see [`Eligible`]) so that no pick is wasted on an
+/// output that has not matured: on a young chain most of the newest ones have not, and picking among all of them and
+/// throwing most away cost hundreds of round trips to the node for every payment.
 fn pick_decoys(
     chain: &impl ChainView,
     rules: &Rules,
@@ -729,59 +731,77 @@ fn pick_decoys(
     real: u64,
 ) -> Result<Vec<u64>, WalletError> {
     let want = rules.ring_size.saturating_sub(1);
-    let total = chain.output_count().map_err(chain_err)?;
     let mut picked: Vec<u64> = Vec::new();
     if want == 0 {
         return Ok(picked);
     }
+    let total = chain.output_count().map_err(chain_err)?;
     if total < rules.ring_size as u64 {
         return Err(WalletError::NotEnoughDecoys);
     }
-    // Say so at once if the chain cannot supply a ring: looking for mature outputs one request at a time on a chain that has
-    // too few of them costs thousands of round trips to a node before it gives up.
-    if count_mature(chain, rules, real, total, want as u64)? < want as u64 {
-        return Err(WalletError::NotEnoughDecoys);
+    match eligible(chain, rules, real, total, want as u64)? {
+        Eligible::Prefix(p) => {
+            // every index below `p` is mature: no question to the node is needed to know it
+            let ln = (p as f64).ln();
+            let mut tries = 0;
+            while picked.len() < want && tries < 200 * rules.ring_size {
+                tries += 1;
+                let u = (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+                let distance = ((u * ln).exp() as u64).clamp(1, p);
+                let index = p - distance;
+                if index != real && !picked.contains(&index) {
+                    picked.push(index);
+                }
+            }
+            // the distribution can keep landing on the same few: fill the rest from a random start, in order
+            let start = below(rng, p);
+            let mut k = 0;
+            while picked.len() < want && k < p {
+                let index = (start + k) % p;
+                if index != real && !picked.contains(&index) {
+                    picked.push(index);
+                }
+                k += 1;
+            }
+        }
+        Eligible::List(mut all) => {
+            // few usable outputs: choose among them at random
+            while picked.len() < want && !all.is_empty() {
+                let i = below(rng, all.len() as u64) as usize;
+                picked.push(all.swap_remove(i));
+            }
+        }
     }
-    let ln_total = (total as f64).ln();
-    let mut tries = 0;
-    while picked.len() < want {
-        tries += 1;
-        if tries > 200 * rules.ring_size {
-            // the chain may have enough mature outputs but the distribution keeps missing them: take any
-            return pick_any(chain, rules, rng, real, total, picked);
-        }
-        let u = (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-        let distance = ((u * ln_total).exp() as u64).clamp(1, total);
-        let index = total - distance;
-        if index == real || picked.contains(&index) {
-            continue;
-        }
-        let Some(o) = chain.output(index).map_err(chain_err)? else {
-            continue;
-        };
-        if is_mature(rules, o.height, o.coinbase) {
-            picked.push(index);
-        }
+    if picked.len() == want {
+        Ok(picked)
+    } else {
+        Err(WalletError::NotEnoughDecoys)
     }
-    Ok(picked)
 }
 
-/// How many outputs other than `real` could be in a ring (are mature), counted only as far as `enough`, in about
-/// `log2(total)` requests plus a short walk over the outputs that are old enough to be spend-mature but not
-/// coinbase-mature. Heights never decrease with the output index, which is what makes the search work.
-fn count_mature(
+/// The outputs a ring may use besides the real one.
+enum Eligible {
+    /// Every output below this index is mature (and the real one, if below, is not to be used): at least `enough` of them.
+    Prefix(u64),
+    /// The usable indexes, when there are few (at least `enough`).
+    List(Vec<u64>),
+}
+
+/// Finds the outputs that are mature, in about `log2(total)` requests plus a short walk, or says there are too few.
+/// Heights never decrease with the output index, which is what makes the search work: outputs at or below
+/// `next_height - max(maturities)` are mature whatever they are; between that and `next_height - min(maturities)` only
+/// the ones that are not block rewards are.
+fn eligible(
     chain: &impl ChainView,
     rules: &Rules,
     real: u64,
     total: u64,
     enough: u64,
-) -> Result<u64, WalletError> {
+) -> Result<Eligible, WalletError> {
     let max_wait = rules.coinbase_maturity.max(rules.spend_maturity);
     let min_wait = rules.coinbase_maturity.min(rules.spend_maturity);
-    // outputs at or below this height are mature whatever kind they are
-    let safe_height = rules.next_height.checked_sub(max_wait);
     let mut prefix = 0;
-    if let Some(safe) = safe_height {
+    if let Some(safe) = rules.next_height.checked_sub(max_wait) {
         let (mut lo, mut hi) = (0u64, total);
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
@@ -792,11 +812,13 @@ fn count_mature(
         }
         prefix = lo;
     }
-    let mut count = prefix - u64::from(real < prefix);
-    // the outputs between: mature only if they are not coinbases
-    let mut walked = 0;
-    let mut index = prefix;
-    while count < enough && index < total && walked < 5_000 {
+    if prefix - u64::from(real < prefix) >= enough {
+        return Ok(Eligible::Prefix(prefix));
+    }
+    // too few for certain: the usable ones are the prefix and the mature ones just after it; list them
+    let mut all: Vec<u64> = (0..prefix).filter(|&i| i != real).collect();
+    let (mut index, mut walked) = (prefix, 0);
+    while (all.len() as u64) < enough && index < total && walked < 5_000 {
         let Some(o) = chain.output(index).map_err(chain_err)? else {
             break;
         };
@@ -804,41 +826,13 @@ fn count_mature(
             break;
         }
         if index != real && is_mature(rules, o.height, o.coinbase) {
-            count += 1;
+            all.push(index);
         }
         index += 1;
         walked += 1;
     }
-    Ok(count)
-}
-
-/// The fallback of [`pick_decoys`]: walk every output from a random start until enough mature ones are found.
-fn pick_any(
-    chain: &impl ChainView,
-    rules: &Rules,
-    rng: &mut impl RngCore,
-    real: u64,
-    total: u64,
-    mut picked: Vec<u64>,
-) -> Result<Vec<u64>, WalletError> {
-    let want = rules.ring_size - 1;
-    let start = below(rng, total);
-    for k in 0..total {
-        if picked.len() == want {
-            break;
-        }
-        let index = (start + k) % total;
-        if index == real || picked.contains(&index) {
-            continue;
-        }
-        if let Some(o) = chain.output(index).map_err(chain_err)? {
-            if is_mature(rules, o.height, o.coinbase) {
-                picked.push(index);
-            }
-        }
-    }
-    if picked.len() == want {
-        Ok(picked)
+    if (all.len() as u64) >= enough {
+        Ok(Eligible::List(all))
     } else {
         Err(WalletError::NotEnoughDecoys)
     }

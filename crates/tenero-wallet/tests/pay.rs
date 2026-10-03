@@ -1011,3 +1011,34 @@ fn a_spent_output_is_asked_about_once() {
         view.1.get()
     );
 }
+
+#[test]
+fn building_a_payment_on_a_chain_that_has_just_enough_matured_outputs_asks_the_node_little() {
+    // the owner's chain: 80 blocks, rewards mature after 60, rings of 16: only 21 of the 80 outputs can be used
+    let rig = Rig::new("justenough", 16, 60);
+    let mut node = rig.node();
+    let (mut alice, bob) = (wallet(1), wallet(2));
+    mine_n(&mut node, &alice.address(), 80);
+    alice.sync(&node).unwrap();
+    assert!(alice.balance(&node).unwrap().spendable > 0);
+    let view = Counting {
+        node: &node,
+        outputs_asked: std::cell::Cell::new(0),
+    };
+    let t = std::time::Instant::now();
+    let built = alice
+        .build_payment(&view, &mut OsRng, &bob.address(), 1_000)
+        .unwrap();
+    println!(
+        "built in {:?} with {} questions about outputs (fee {})",
+        t.elapsed(),
+        view.outputs_asked.get(),
+        built.fee
+    );
+    // a ring of 16 needs 16 members fetched per input, and the rounds that settle the fee repeat that: tens, not thousands
+    assert!(
+        view.outputs_asked.get() < 300,
+        "{} questions about outputs",
+        view.outputs_asked.get()
+    );
+}
