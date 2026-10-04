@@ -1,6 +1,6 @@
 # Emergency plan: what happens when a rule is wrong (a DRAFT, E8 of `THREAT_MODEL.md`)
 
-**Status: a draft written by the author (2026-10-03), with the decisions that are the owner's marked DECIDE. Nothing here has been rehearsed. Finishing it (the decisions, the channel, the two code gaps decided, and one drill) is M11.0 in `M10_M11_PLAN.md`.**
+**Status: the owner's decisions are in (2026-10-04) and the rewind command is built; the plan is still NOT finished until the drill (section 8, gap 4) has been done once. A draft written by the author (2026-10-03). Nothing here has been rehearsed.** Finishing it is M11.0 in `M10_M11_PLAN.md`.
 It exists because of `M8_PLAN.md` section 7: a consensus bug on a live chain cannot be fixed quietly, and the time to decide who does what is
 before it happens, not during. The project is still an unaudited test network with no value; this plan is for that network, and is written so
 that it can grow into the plan for a network that matters.
@@ -18,19 +18,20 @@ Any of these, found by anyone (a tester, the owner, a fuzzer run, a reviewer):
 
 A bug that only affects one user (a wallet that will not open) is not an emergency; it is an issue.
 
-## 2. Who decides (DECIDE)
+## 2. Who decides (DECIDED by the owner, 2026-10-04)
 
-Today the owner is the only maintainer, so the owner decides everything below. **DECIDE:** whether anyone else may (a named second person who can
-say "stop mining" without the owner), and how that person is reached. A plan with one person who may be asleep, on holiday or unreachable is
-the plan's weakest point.
+**The owner is the only maintainer and the only person who can say "stop mining"; nobody else is named.** That is the plan's weakest point, stated plainly: one
+person who may be asleep, on holiday or unreachable. While the network is a handful of testers with nothing of value on it, that is accepted. **It must be
+reopened before anyone else's money is on the network, or before the owner will be away for days with testers running** (then: name someone, or tell testers the
+network is paused).
 
 ## 3. The first hour: stop the damage
 
 In this order, the first two before anything is understood:
 
 1. **Stop your own node and miner** (`tenerod stop`; for a miner process, its own stop). A node that keeps running keeps spreading a bad block.
-2. **Say so, in the channel testers watch** (DECIDE the channel: a pinned issue on the repository, a mailing list, a chat room; none exists
-   today), in plain words: what is known, what is not, and "stop mining and stop your nodes until told". No theories, no blame.
+2. **Say so, in the channel testers watch** (DECIDED 2026-10-04: **a pinned issue on the project's repository**; it does not exist yet, and the owner creates it
+   before the first tester joins; its link goes in the README and the release notes), in plain words: what is known, what is not, and "stop mining and stop your nodes until told". No theories, no blame.
 3. **Keep the evidence**: the logs (they carry no secrets: `THREAT_MODEL.md` G6), the data directory (copy it, do not repair it), the exact
    build (`--version`: the commit), the block id and height where it went wrong.
 4. **Do not patch in public before the fix is understood**, for a bug that lets someone steal or inflate; do announce that there is a bug.
@@ -46,7 +47,7 @@ In this order, the first two before anything is understood:
 
 | the situation | default |
 |---|---|
-| the bad block is recent and nobody has spent from it | a **fix and a coordinated rewind**: a new build that refuses the bad block; testers rewind to the last good block (a `rewind` command is NOT built: **a gap**) |
+| the bad block is recent and nobody has spent from it | a **fix and a coordinated rewind**: a new build that refuses the bad block; testers rewind to the last good block with **`tenerod rewind`** (built 2026-10-04: the node stopped, a copy of the data directory first, `--to HEIGHT`; `docs/RUNNING.md`) |
 | the chain split but both sides are valid under different readings of a rule | decide which reading is the rule (the document, then the reference), **fix the other build**, and let the shorter side re-sync |
 | inflation or a forged spend already happened and was spent on | **reset the network**: a new genesis (a new chain id), announced, with the reason. This is acceptable ONLY because the network has no value; **on a network with value this choice is the hardest one and this plan must be rewritten first** |
 | a key-handling bug | **a new build first**; testers move their coins (they have none of value) to a new wallet made with it; the old wallets are called compromised |
@@ -68,10 +69,8 @@ and for a reset: delete the data directory, the new chain id and where the seed 
 
 ## 8. What this plan does not have (gaps, in order of importance)
 
-1. **No second person** (section 2) and **no channel** (section 3). Both are the owner's to set up.
-2. **No rewind tool**: a coordinated rewind is described but there is no command that does it; a reset is the only thing that works today.
-3. **No upgrade mechanism**: a rule change reaches nodes by everyone installing a new build; there is no activation height or version signalling
-   (`CONSENSUS_V2.md` section 10 has a rules version, not an activation schedule). A planned rule change (such as the timestamp rule of E3) needs
-   one, or a reset.
+1. **No second person** (decided 2026-10-04: the owner alone, section 2) and **the channel does not exist yet** (decided: a pinned issue; the owner creates it before the first tester).
+2. ~~No rewind tool~~ **Built 2026-10-04: `tenerod rewind`** (an offline command with a dry run by default; tested on real node data). Its limit: it removes blocks on THIS node only; a peer that still has them offers them again, so a rewind is always paired with a build that refuses the bad block, and every tester runs it.
+3. **No upgrade mechanism, DECIDED 2026-10-04: none will be built; a rule change is a reset** (a new genesis and chain id, announced as in sections 5 and 6). A planned rule change, such as the timestamp rule of E3, goes in with the fresh chain of M11.2. This is acceptable only while the network has nothing of value; the plan must be rewritten before it has.
 4. **Nothing has been rehearsed.** The first time any of this is done should not be a real emergency: a drill (a deliberately broken build on a
    scratch network, run through sections 3 to 6) is the cheapest test of the plan.

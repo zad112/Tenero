@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -100,6 +101,109 @@ pub fn chain_id_of(network: Network) -> Result<[u8; 32], String> {
         .map_err(|e| e.to_string());
     let _ = std::fs::remove_dir_all(&dir);
     id
+}
+
+/// What `rewind` found, or did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RewindReport {
+    /// The chain as it was: its height and the id of its tip.
+    pub tip_height: u64,
+    pub tip_id: [u8; 32],
+    /// The chain as it is after the rewind (or would be, for a dry run).
+    pub new_height: u64,
+    pub new_tip_id: [u8; 32],
+    /// The blocks taken off, newest first: height and id.
+    pub removed: Vec<(u64, [u8; 32])>,
+    /// Whether anything was changed (`false`: a dry run).
+    pub applied: bool,
+    /// The file that lists the removed blocks, when `applied`.
+    pub record: Option<PathBuf>,
+}
+
+/// The emergency rewind (`docs/EMERGENCY_PLAN.md` section 5): takes the newest blocks off a node's chain, down to `to_height`, **with the
+/// node stopped**. A dry run (`apply == false`) only says what it would remove. When it acts it first writes the ids of the blocks it removes to
+/// `rewind-<time>.txt` in the data directory, takes the side-branch pool aside (`pool.dat` to `pool.dat.before-rewind`, so a removed block
+/// is not put back from it), and then removes the blocks one at a time with the store's own rollback, each one a complete database
+/// transaction: a stop in the middle leaves a shorter chain that is whole, never a broken one. It does NOT stop the node from taking the
+/// same blocks again from a peer that still has them: the plan's step is a build that refuses the bad block, then every node rewinds.
+pub fn rewind(
+    data: &std::path::Path,
+    network: Network,
+    to_height: u64,
+    apply: bool,
+) -> Result<RewindReport, String> {
+    let chain = chain_of(network)?;
+    let db = data.join("chain.redb");
+    if !db.exists() {
+        return Err(format!("there is no chain in {}", data.display()));
+    }
+    let store = Store::open(&db, &chain.label, chain.kind).map_err(|e| {
+        format!(
+            "cannot open the chain in {}: {e} (is the node still running? stop it first)",
+            data.display()
+        )
+    })?;
+    let (tip_height, tip) = store.tip().map_err(|e| e.to_string())?;
+    if to_height >= tip_height {
+        return Err(format!(
+            "nothing to do: the chain is at height {tip_height} and --to {to_height} is not below it"
+        ));
+    }
+    let mut removed = Vec::new();
+    for h in (to_height + 1..=tip_height).rev() {
+        let index = store
+            .get_block(h)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("block {h} is missing"))?
+            .index;
+        removed.push((h, index.block_id));
+    }
+    let new_tip_id = match store.get_block(to_height).map_err(|e| e.to_string())? {
+        Some(b) => b.index.block_id,
+        None if to_height == 0 => store.chain_id(),
+        None => return Err(format!("block {to_height} is missing")),
+    };
+    let mut report = RewindReport {
+        tip_height,
+        tip_id: tip.block_id,
+        new_height: to_height,
+        new_tip_id,
+        removed,
+        applied: false,
+        record: None,
+    };
+    if !apply {
+        return Ok(report);
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let record = data.join(format!("rewind-{stamp}.txt"));
+    let mut text = format!(
+        "rewind from height {tip_height} (tip {}) to height {to_height} (tip {}); newest first, height and block id\n",
+        hex_id(&tip.block_id),
+        hex_id(&new_tip_id)
+    );
+    for (h, id) in &report.removed {
+        text.push_str(&format!("{h} {}\n", hex_id(id)));
+    }
+    std::fs::write(&record, text).map_err(|e| format!("cannot write {}: {e}", record.display()))?;
+    let pool = data.join(POOL_FILE);
+    if pool.exists() {
+        std::fs::rename(&pool, data.join(format!("{POOL_FILE}.before-rewind")))
+            .map_err(|e| format!("cannot set the side-branch pool aside: {e}"))?;
+    }
+    for _ in to_height..tip_height {
+        store.pop_block().map_err(|e| e.to_string())?;
+    }
+    report.applied = true;
+    report.record = Some(record);
+    Ok(report)
+}
+
+fn hex_id(id: &[u8; 32]) -> String {
+    id.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Where a running node says it is listening (for tests, which ask for port 0).

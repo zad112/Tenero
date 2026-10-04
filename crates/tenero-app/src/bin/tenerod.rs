@@ -19,6 +19,9 @@ tenerod: the Tenero node (EXPERIMENTAL, UNAUDITED; no launched network exists)
   tenerod --data DIR --network test|dev [...]   run a node with settings on the command line
   tenerod status --data DIR [--control IP:PORT] ask a running node about itself
   tenerod stop   --data DIR [--control IP:PORT] ask a running node to shut down cleanly
+  tenerod rewind --data DIR --network test|dev --to HEIGHT [--yes]
+                                                emergency: with the node STOPPED, take the newest blocks off its chain down to HEIGHT.
+                                                Without --yes it only says what it would remove. See docs/EMERGENCY_PLAN.md
 
 Settings (the same keys in the file as `key = value` and on the command line as `--key value`):
   data, network (test|dev), listen, seed (repeatable), peers, max_inbound, allow_private_peers, control,
@@ -50,6 +53,79 @@ fn control_client(args: &[String]) -> Result<RemoteNode, String> {
     )
 }
 
+/// `tenerod rewind`: see `daemon::rewind`. Returns the exit code.
+fn rewind_command(args: &[String]) -> i32 {
+    let (mut data, mut network, mut to, mut yes) = (None, None, None, false);
+    let mut it = args.iter();
+    while let Some(f) = it.next() {
+        if f == "--yes" {
+            yes = true;
+            continue;
+        }
+        let Some(v) = it.next() else {
+            eprintln!("error: {f} needs a value");
+            return 2;
+        };
+        match f.as_str() {
+            "--data" => data = Some(PathBuf::from(v)),
+            "--network" => network = Some(v.clone()),
+            "--to" => match v.parse::<u64>() {
+                Ok(h) => to = Some(h),
+                Err(_) => {
+                    eprintln!("error: --to: `{v}` is not a block height");
+                    return 2;
+                }
+            },
+            other => {
+                eprintln!("error: unknown option {other}");
+                return 2;
+            }
+        }
+    }
+    let (Some(data), Some(network), Some(to)) = (data, network, to) else {
+        eprintln!("error: rewind needs --data, --network and --to\n\n{USAGE}");
+        return 2;
+    };
+    let network = match network.as_str() {
+        "test" => tenero_app::config::Network::Test,
+        "dev" => tenero_app::config::Network::Dev,
+        other => {
+            eprintln!("error: --network: `{other}` is not test or dev");
+            return 2;
+        }
+    };
+    match daemon::rewind(&data, network, to, yes) {
+        Ok(r) => {
+            println!(
+                "the chain is at height {} (tip {}); to height {} (tip {}) it would lose {} block(s), newest {} down to {}",
+                r.tip_height,
+                daemon::short_id(&r.tip_id),
+                r.new_height,
+                daemon::short_id(&r.new_tip_id),
+                r.removed.len(),
+                r.tip_height,
+                r.new_height + 1
+            );
+            if r.applied {
+                println!(
+                    "DONE: the chain is now at height {} (tip {}). The removed blocks are listed in {}. The side-branch pool was set aside.",
+                    r.new_height,
+                    daemon::short_id(&r.new_tip_id),
+                    r.record.map(|p| p.display().to_string()).unwrap_or_default()
+                );
+                println!("Start the node again ONLY with a build that refuses the bad block; a peer that still has it will send it again.");
+            } else {
+                println!("nothing was changed (a dry run). Make a copy of the data directory, then run the same command again with --yes.");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if matches!(
@@ -70,6 +146,10 @@ fn main() {
                 }
             }
             return;
+        }
+        Some("rewind") => {
+            let code = rewind_command(&args[1..]);
+            std::process::exit(code);
         }
         Some("status") => {
             match control_client(&args[1..]).and_then(|c| c.info()) {

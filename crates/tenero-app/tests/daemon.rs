@@ -1357,3 +1357,70 @@ Host: x
         }
     }
 }
+
+// ---------------------------------------------------------------- the emergency rewind (EMERGENCY_PLAN.md section 5)
+
+#[test]
+fn rewind_takes_the_newest_blocks_off_a_stopped_node_and_the_chain_goes_on_from_there() {
+    let dir = Dir::new("rewind");
+    let alice = tenero_wallet::Wallet::from_seed(&[1; 32], 0)
+        .address()
+        .to_text();
+    let node = Running::start(config(
+        &dir.0,
+        &format!("mine = sha256\nmine_to = {alice}\nmine_pace = 0\n"),
+    ));
+    node.wait_height(8, 40);
+    let before = node.stop();
+    let tip = before.height;
+    assert!(tip >= 8);
+
+    // while a node uses the directory, the rewind refuses (the database is locked)
+    let running = Running::start(config(&dir.0, ""));
+    let e = daemon::rewind(&dir.0, tenero_app::config::Network::Test, 3, true).unwrap_err();
+    assert!(
+        e.contains("still running") || e.contains("cannot open"),
+        "{e}"
+    );
+    running.stop();
+
+    // a dry run says what it would do and changes nothing
+    let dry = daemon::rewind(&dir.0, tenero_app::config::Network::Test, 3, false).unwrap();
+    assert!(!dry.applied && dry.record.is_none());
+    assert_eq!((dry.tip_height, dry.new_height), (tip, 3));
+    assert_eq!(dry.tip_id, before.tip_id);
+    assert_eq!(dry.removed.len() as u64, tip - 3);
+    assert_eq!(dry.removed[0], (tip, before.tip_id), "newest first");
+    assert_eq!(dry.removed.last().unwrap().0, 4);
+    let again = Running::start(config(&dir.0, ""));
+    assert_eq!(again.client().info().unwrap().height, tip);
+    again.stop();
+
+    // nothing to remove: the target is not below the tip
+    let e = daemon::rewind(&dir.0, tenero_app::config::Network::Test, tip, true).unwrap_err();
+    assert!(e.contains("nothing to do"), "{e}");
+
+    // the real thing
+    let done = daemon::rewind(&dir.0, tenero_app::config::Network::Test, 3, true).unwrap();
+    assert!(done.applied);
+    assert_eq!((done.new_height, done.removed.len() as u64), (3, tip - 3));
+    let record = std::fs::read_to_string(done.record.as_ref().unwrap()).unwrap();
+    assert!(record.contains(&format!("{tip} ")), "{record}");
+    assert_eq!(record.lines().count() as u64, 1 + (tip - 3));
+    assert!(
+        !dir.path(POOL_FILE).exists() && dir.path("pool.dat.before-rewind").exists(),
+        "the side-branch pool was set aside"
+    );
+
+    // the node starts from the shorter chain, which is whole, and then extends it
+    let node = Running::start(config(
+        &dir.0,
+        &format!("mine = sha256\nmine_to = {alice}\nmine_pace = 0\n"),
+    ));
+    let info = node.client().info().unwrap();
+    assert!(info.height >= 3);
+    node.wait_height(6, 40);
+    let after = node.stop();
+    assert!(after.height >= 6);
+    assert_ne!(after.tip_id, before.tip_id);
+}
