@@ -38,6 +38,9 @@ use crate::server::{self, ControlHook, Meta};
 use crate::ui::{Banner, Event as UiEvent, MiningStatus, NodeStatus, SyncProgress};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The source this build was made from (a git commit, `-dirty` if it had local changes, or `unknown`): see `build.rs`.
+pub const COMMIT: &str = env!("TENERO_COMMIT");
 /// What every start-up prints, so nobody mistakes what this is.
 pub const BANNER: &str = "tenero node: EXPERIMENTAL and UNAUDITED. No launched network exists; nothing on the test or dev networks has value.";
 
@@ -709,6 +712,7 @@ pub fn run(
     ready: Option<Sender<Ready>>,
 ) -> Result<Summary, String> {
     log.info(BANNER);
+    log.info(&format!("build: v{VERSION}, commit {COMMIT}"));
     // a new data directory is made private to its owner; an existing one that other accounts can read is refused
     crate::private_dir::ensure_private(&cfg.data, cfg.allow_open_data_dir, &log)?;
     let chain = chain_of(cfg.network)?;

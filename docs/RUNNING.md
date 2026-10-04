@@ -111,6 +111,8 @@ the side-branch pool, and prints `stopped at height H, tip ID`. A second Ctrl-C 
 `tenerod stop --data DIR` (and `tenerod status --data DIR`). If the node is killed instead, what it has saved is at most
 five minutes old (the chain itself is written as each block arrives).
 
+**Which build is this:** `tenerod --version` prints the version and the source commit (`-dirty` if the tree had changes); a bug report or an emergency starts with it. The node's log begins with the same line.
+
 **Emergency rewind (`docs/EMERGENCY_PLAN.md`):** with the node **stopped**, `tenerod rewind --data DIR --network test|dev --to HEIGHT` takes the newest blocks
 off its chain, down to HEIGHT. Without `--yes` it only says what it would remove and changes nothing; with `--yes` it first writes the removed blocks'
 ids to `rewind-<time>.txt` in the data directory, sets the side-branch pool aside (`pool.dat.before-rewind`), and then removes the blocks one at a time

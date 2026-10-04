@@ -279,6 +279,8 @@ pub struct Sim<'a> {
     pub sent_by_kind: BTreeMap<&'static str, u64>,
     /// Messages lost in transit.
     pub dropped: u64,
+    /// Why each node ended a connection, as the engine said it (the node's index and the text), in order.
+    pub disconnect_reasons: Vec<(usize, String)>,
 }
 
 impl<'a> Sim<'a> {
@@ -352,6 +354,7 @@ impl<'a> Sim<'a> {
             rng: Rng(cfg.seed),
             sent_by_kind: BTreeMap::new(),
             dropped: 0,
+            disconnect_reasons: Vec::new(),
             cfg,
         };
         sim.schedule(sim.cfg.tick_ms, Ev::Tick);
@@ -643,7 +646,10 @@ impl<'a> Sim<'a> {
                     }
                     self.deliver(to, to_peer, msg);
                 }
-                Action::Disconnect { peer, .. } => {
+                Action::Disconnect { peer, reason } => {
+                    if let End::Node(n) = from {
+                        self.disconnect_reasons.push((n, reason));
+                    }
                     if let Some((to, to_peer)) = self.links.remove(&(from, peer)) {
                         // a close arrives AFTER everything sent before it, as on a real TCP connection: the
                         // far end's side of the link stays until then

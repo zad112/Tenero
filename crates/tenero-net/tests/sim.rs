@@ -386,6 +386,22 @@ fn an_invalid_block_bans_the_peer_at_once_and_the_ban_holds() {
     assert!(sim.engines[0].is_banned("evil", now));
     assert_eq!(sim.engines[0].stats.bans, 1);
     assert_eq!(sim.tip(0).0, 0, "the invalid block was not applied");
+    // the line that bans names the block and the rule it broke (the emergency drill, 2026-10-04: it used to say only "an invalid block",
+    // and finding the first bad block is the first thing an emergency needs)
+    let said: Vec<&String> = sim
+        .disconnect_reasons
+        .iter()
+        .filter(|(n, r)| *n == 0 && r.contains("invalid block"))
+        .map(|(_, r)| r)
+        .collect();
+    assert_eq!(said.len(), 1, "{:?}", sim.disconnect_reasons);
+    let hex: String = bad_id.iter().map(|b| format!("{b:02x}")).collect();
+    assert!(
+        said[0].contains("height 1") && said[0].contains(&hex),
+        "{}",
+        said[0]
+    );
+    assert!(said[0].contains(':'), "the rule is named: {}", said[0]);
     // the honest peers are untouched, and the banned address is refused at once
     assert_eq!(sim.engines[0].ready_peer_count(), 2);
     sim.hostile_connect(h);

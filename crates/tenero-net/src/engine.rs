@@ -2434,9 +2434,17 @@ impl<'a> Engine<'a> {
                 Applied::NotYet
             }
             Err(BlockError::Store(_)) => Applied::Ours,
-            Err(_) => {
+            Err(e) => {
                 if let Some(p) = from {
-                    self.penalize(p, 100, "sent an invalid block", out);
+                    // the height, the id and the rule it broke, in the line that bans the peer: when a rule is wrong somewhere, the first
+                    // question is which block it was (found by the emergency drill, 2026-10-04: the log used to say only "an invalid block")
+                    let id = self.block_id_of(b);
+                    let why = format!(
+                        "sent an invalid block (height {}, id {}): {e:?}",
+                        b.coinbase.height,
+                        id.iter().map(|x| format!("{x:02x}")).collect::<String>()
+                    );
+                    self.penalize(p, 100, &why, out);
                 }
                 Applied::Invalid
             }

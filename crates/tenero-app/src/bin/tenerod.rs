@@ -17,6 +17,7 @@ tenerod: the Tenero node (EXPERIMENTAL, UNAUDITED; no launched network exists)
 
   tenerod --config FILE [--key value ...]       run a node
   tenerod --data DIR --network test|dev [...]   run a node with settings on the command line
+  tenerod --version                             which build this is (version and source commit)
   tenerod status --data DIR [--control IP:PORT] ask a running node about itself
   tenerod stop   --data DIR [--control IP:PORT] ask a running node to shut down cleanly
   tenerod rewind --data DIR --network test|dev --to HEIGHT [--yes]
@@ -97,11 +98,12 @@ fn rewind_command(args: &[String]) -> i32 {
     match daemon::rewind(&data, network, to, yes) {
         Ok(r) => {
             println!(
-                "the chain is at height {} (tip {}); to height {} (tip {}) it would lose {} block(s), newest {} down to {}",
+                "the chain was at height {} (tip {}); to height {} (tip {}) {} {} block(s), newest {} down to {}",
                 r.tip_height,
                 daemon::short_id(&r.tip_id),
                 r.new_height,
                 daemon::short_id(&r.new_tip_id),
+                if r.applied { "it lost" } else { "it would lose" },
                 r.removed.len(),
                 r.tip_height,
                 r.new_height + 1
@@ -133,6 +135,17 @@ fn main() {
         Some("help" | "--help" | "-h")
     ) {
         println!("{USAGE}");
+        return;
+    }
+    if matches!(
+        args.first().map(String::as_str),
+        Some("version" | "--version" | "-V")
+    ) {
+        println!(
+            "tenerod v{} (commit {}) EXPERIMENTAL, UNAUDITED; nothing on any network it runs has value",
+            daemon::VERSION,
+            daemon::COMMIT
+        );
         return;
     }
     match args.first().map(String::as_str) {
