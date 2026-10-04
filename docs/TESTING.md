@@ -2,7 +2,7 @@
 
 **Read this first.** Tenero is an experiment: **unaudited, one developer, no value, and the network will be reset.** Do not put anything on it that you cannot lose. The only place a
 "stop mining" notice is ever posted is the pinned issue, https://github.com/zad112/Tenero/issues/1 (only the owner can post there): subscribe to it, and look at it before you start a miner.
-This guide is for the `alpha` network of the first test release, `v0.1.0-alpha.1`. Everything here has been run by the author on one Windows 11 machine; **the Linux build has not been run by a person**.
+This guide is for the `alpha` network of the first test release, `v0.1.0-alpha.1`. Everything here has been run by the author on one Windows 11 machine; the Linux build has been run once, as a node in WSL2 on that machine (it served and synced the 16-block chain); **the Linux wallet app, the GPU miner on Linux and a native Linux machine are untried**.
 
 ## What to expect to break
 
@@ -12,7 +12,7 @@ may well be; say so (see "Telling the author", below).
 
 ## What you need
 
-* **Windows 11** (tried) or **Linux, Ubuntu 22.04 or newer** (untried).
+* **Windows 11** (tried) or **Linux, Ubuntu 22.04 or newer** (a node has run in WSL2; nothing else is tried).
 * About **4.3 GiB of free RAM** for a node on `alpha` (about 8.6 GiB briefly, while the next epoch's dataset is built), and a few GB of disk.
 * **To mine: an NVIDIA GPU, a current driver and the CUDA Toolkit 13.x.** The miner uses NVIDIA's NVRTC and cuBLASLt libraries, which come with the Toolkit, not with the driver. It keeps up to two
   4 GiB datasets in video memory; **only a 16 GB card has been tried.** CPU mining of `alpha` takes about 53 minutes a block at the best measured speed and is not practical.

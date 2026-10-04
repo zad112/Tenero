@@ -35,7 +35,9 @@ zeroize = "1"
 
 # Approved by the owner 2026-10-01. ctrlc (MIT OR Apache-2.0): Ctrl-C and window-close become a clean shutdown,
 # without our own unsafe code. rpassword (Apache-2.0): reads a passphrase without echoing it.
-ctrlc = "3"
+# `termination` (an option of the same crate that adds no package: 2026-10-04) makes SIGTERM and SIGHUP a clean shutdown too, on Linux: without it a service
+# manager's "stop" (and `kill`) ended the node on the spot (measured: exit status 143, no "shutting down" line).
+ctrlc = { version = "3", features = ["termination"] }
 rpassword = "7"
 anstyle-query = "1.1.5"
 

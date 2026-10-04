@@ -112,7 +112,7 @@ A node cut off by an attacker who feeds it a valid chain slowly cannot tell from
 
 **Stopping:** Ctrl-C (or closing the window) shuts the node down cleanly: it closes its connections, saves the peers and
 the side-branch pool, and prints `stopped at height H, tip ID`. A second Ctrl-C ends it at once. From another window:
-`tenerod stop --data DIR` (and `tenerod status --data DIR`). If the node is killed instead, what it has saved is at most
+`tenerod stop --data DIR` (and `tenerod status --data DIR`); **on `dev` and `alpha` add `--control 127.0.0.1:PORT` (28332 and 38332), because these commands assume the `test` network's port 18332** (measured 2026-10-04: without it they say "cannot reach the node at 127.0.0.1:18332"). If the node is killed instead, what it has saved is at most
 five minutes old (the chain itself is written as each block arrives).
 
 **Which build is this:** `tenerod --version` prints the version and the source commit (`-dirty` if the tree had changes); a bug report or an emergency starts with it. The node's log begins with the same line.

@@ -31,7 +31,8 @@ against the source on this date; **argued** = a design argument, not shown; **ar
 | NVRTC and cuBLASLt come with the CUDA Toolkit, not the driver | read from code + the sizes on the owner's machine | `crates/tenero-gpu/src/lib.rs`, `gemm.rs`; `cublasLt64_13.dll` 470 MB there |
 | About 900 tests (898 passing, 24 skipped); six fuzz targets, 30 min each, no crash | **measured** 2026-10-04 (count taken before the last few tests were added) | M11.2 test run; workflow run 37199833458 |
 | `--version` on every command-line program | read from code + test | `crates/tenero-app/tests/version.rs` |
-| Linux: built for Ubuntu 22.04 or newer; glibc 2.34 (programs), 2.35 (app); **no person has run it** | **measured** in CI (`objdump`), nothing more | release workflow run 37233836092 |
+| Linux: built for Ubuntu 22.04 or newer; glibc 2.34 (programs), 2.35 (app) | **measured** in CI (`objdump`) | release workflow run 37233836092 |
+| The Linux node was run by hand once (WSL2, Ubuntu 26.04): it served a 16-block alpha chain, an empty Linux node synced it with the real proof-of-work check (about 4.1 GiB resident), and a Windows node from the CI package synced from it; the miner, wallet and app were not run on Linux | **measured** 2026-10-04, one machine | `docs/M10_M11_PLAN.md` M11.3 |
 | Windows 11 is the only Windows tried | the owner's machine | |
 | The wallet app uses 24 words; the command-line wallet a raw 64-digit seed; they are different wallets | read from code | `crates/tenero-wallet/src/mnemonic.rs`, `purse.rs`; `docs/RUNNING.md` |
 | The command-line wallet and miner default to control port 18332 and need `--control 127.0.0.1:38332` on alpha | read from code | `wallet_cli.rs` `DEFAULT_CONTROL`, `tenero_miner.rs` |

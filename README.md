@@ -75,8 +75,7 @@ for, and a special-purpose chip would need the same memory to compete. **That is
 ## Get it
 
 **There is no published release yet.** The first, `v0.1.0-alpha.1`, will appear on the [Releases](../../releases) page as a Windows zip and a Linux tar.gz with a `SHA256SUMS` file;
-how it is made and checked is in [`docs/RELEASING.md`](docs/RELEASING.md). The files are **not code-signed** (Windows SmartScreen will warn), and the Linux build has **not been
-run by a person**. Until a release exists, build from source.
+how it is made and checked is in [`docs/RELEASING.md`](docs/RELEASING.md). The files are **not code-signed** (Windows SmartScreen will warn), and the Linux build has been run by hand **only once, as a node in WSL2 on the author's PC** (the Linux wallet app and the GPU miner on Linux have not been run). Until a release exists, build from source.
 
 **Build from source** (needs [Rust](https://rustup.rs)); [`docs/RUNNING.md`](docs/RUNNING.md) is the full guide:
 
@@ -89,7 +88,7 @@ cargo test --workspace            # no GPU needed
 
 | To do this | You need |
 |---|---|
-| Run a node or the wallet | Windows 11 (the only Windows tried) or Linux (built for Ubuntu 22.04 or newer; **no person has run it yet**); on `alpha` or `dev`, about **4.3 GiB of free RAM** for the proof-of-work check, about **8.6 GiB** while the next epoch's dataset is built |
+| Run a node or the wallet | Windows 11 (the only Windows tried) or Linux (built for Ubuntu 22.04 or newer; **run by hand once, as a node in WSL2 only**); on `alpha` or `dev`, about **4.3 GiB of free RAM** for the proof-of-work check, about **8.6 GiB** while the next epoch's dataset is built |
 | Mine on a GPU | an NVIDIA GPU with a current driver **and the CUDA Toolkit 13.x** (the miner uses NVIDIA's NVRTC and cuBLASLt, which come with the Toolkit, not the driver; nothing from NVIDIA is shipped here). Up to two 4 GiB datasets are kept in video memory: **only a 16 GB card has been tried**; whether an 8 GB card works is untested |
 | Mine on a CPU | nothing extra, but see the next section: on `alpha` it is **impractical** |
 

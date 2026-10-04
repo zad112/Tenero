@@ -1,7 +1,6 @@
 # Running a seed node (a guide for an operator, 2026-10-04)
 
-**Experimental and unaudited; nothing on `alpha` has any value. Nobody has followed this guide yet: it was written from the code and the documents, not from a run on a server, and the Linux build has not been
-run by a person.** Read [`SEED_POLICY.md`](SEED_POLICY.md) first: a seed is a convenience for newcomers, and **a list of seeds is only as trustworthy as the number of independent operators in different network
+**Experimental and unaudited; nothing on `alpha` has any value. Nobody has followed this guide yet: it was written from the code and the documents, not from a run on a server, and the Linux build has been run by hand only as a node in WSL2 (`docs/TESTING.md`), never on a server.** Read [`SEED_POLICY.md`](SEED_POLICY.md) first: a seed is a convenience for newcomers, and **a list of seeds is only as trustworthy as the number of independent operators in different network
 groups behind it.** One seed is one point of failure and one point an attacker would aim at.
 
 ## What a seed is, and what this one must do
@@ -57,7 +56,7 @@ serve the **whole chain** (an archive node, never pruned), accept connections fr
        [Install]
        WantedBy=multi-user.target
 
-   `sudo systemctl enable --now tenero-seed`, then `journalctl -u tenero-seed -f`. The node starts with a line `build: v..., commit ...` and the banner; `sudo -u tenero /opt/tenero/tenerod status --data /var/lib/tenero/data`
+   `sudo systemctl enable --now tenero-seed`, then `journalctl -u tenero-seed -f`. The node starts with a line `build: v..., commit ...` and the banner; `sudo -u tenero /opt/tenero/tenerod status --data /var/lib/tenero/data --control 127.0.0.1:38332` (on `alpha` the `--control` is needed: the command assumes the `test` network's port)
    shows height and peers. Stopping is `systemctl stop tenero-seed` (a clean shutdown: the node saves its peers and pool first).
 6. **Check it from another machine,** not the server: `tenero-seedcheck --network alpha --seed YOUR.IP:38333`. With one seed it will warn that the policy wants at least three operators in different groups: that
    warning is true, not a fault of the node.

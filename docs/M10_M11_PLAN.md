@@ -329,9 +329,17 @@ run that keeps the packages for a week; only the draft job can write); notes `do
 **Measured in the first dry run (run 37233836092, commit `ba9a0b5`):** both packages built and the packed programs ran and reported the right version and commit; Windows zip 7.35 MB, Linux tar.gz 9.63 MB;
 build 5 min 15 s (Windows) and 2 min 44 s (Linux), the licence tool 4 min and 2 min on a cold cache; **minimum glibc 2.34 (programs) and 2.35 (wallet app)**; I downloaded the Windows zip, checked its SHA-256 against the
 workflow's, ran the four command-line programs from it, and checked the app's icon and version information and the font notices in the licences file.
-**NOT done or NOT verified:** the wallet app has never been opened from the package (CI has no screen); the GPU tests for this build (the owner's, before a tag); the whole Linux package has been run by nobody
+**NOT done or NOT verified:** the wallet app has never been opened from the package (CI has no screen); the GPU tests for this build (the owner's, before a tag); the Linux package was run by hand only as in the next paragraph (nothing else on Linux)
 (only `--version` in CI); the handshake does not carry the version (the plan asked for it: that is a protocol change, left out); the `.exe` files are not code-signed and the builds are not shown to be bit-for-bit reproducible;
 no release has been made (no tag exists, no draft).
+
+**The Linux build, run by hand for the first time (2026-10-04, in WSL2 Ubuntu 26.04, glibc 2.43, on the owner's PC; the CI package, hash checked after copying in):** all four programs reported the right version and commit;
+a node loaded a copy of the 16-block `alpha` chain (tip 16, `00000cc6`) and served it; **a fresh node from the Windows package synced all 16 blocks from it in under 5 s with the real proof-of-work check (blocks applied 16, bans 0)**;
+**an empty Linux node synced the same 16 blocks, checking every proof of work itself on Linux, using about 4.1 GiB resident**; `tenero-seedcheck` (Windows) reached the Linux node, found the right chain id and tip and warned only that it
+had no addresses to give and that one seed is below the policy's three. **Found:** (1) SIGTERM (what a service manager's stop sends) killed the node on the spot, exit status 143 and no shutdown line: **fixed** by switching on
+`ctrlc`'s empty `termination` option (no package added; `cargo build --locked` on Linux confirms), with `crates/tenero-app/tests/sigterm.rs` (SIGTERM and SIGHUP; it fails without the option, checked); the dry-run package
+`ba9a0b5` predates the fix. (2) `tenerod status` and `stop` assume the `test` network's port and need `--control` on `alpha` (documented; not changed). **Not run on Linux:** the miner, the wallet, the wallet app, a GPU, a native Linux
+machine or a server, and a node under strangers' traffic.
 
 **The plan as it was written:**
 
