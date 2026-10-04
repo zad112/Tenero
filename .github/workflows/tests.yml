@@ -6,11 +6,17 @@ on:
     branches: [main]
   pull_request:
 
+# SECURITY (the repository is, or will be, public): a pull request from a FORK is outside code. It runs on GitHub's own hosted runners (free for a public
+# repository), never on the owner's machines. Only pushes to main and pull requests from branches of this repository (which need write access) run on the
+# self-hosted runners. Nothing here uses pull_request_target or secrets; the token is read-only.
+permissions:
+  contents: read
+
 jobs:
   reference:
     # The owner's Linux runner (WSL, Ubuntu), since 2026-10-04. It uses the system Python (3.14 today) rather than a Python 3.12/3.13/3.14 matrix: the
     # reference is frozen, and a hosted-Python download is not available for every Ubuntu release. The older versions were last checked on 2026-10-04 (CI before the move).
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && '"ubuntu-latest"' || '["self-hosted", "Linux", "X64"]') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install

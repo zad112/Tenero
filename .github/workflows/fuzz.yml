@@ -21,6 +21,10 @@ on:
   schedule:
     - cron: "0 5 1 * *"
 
+# SECURITY: no pull_request trigger, so outside code never reaches this self-hosted job: a push to main, a manual start and the schedule all need write access.
+permissions:
+  contents: read
+
 concurrency:
   group: fuzz-${{ github.ref }}
   cancel-in-progress: true

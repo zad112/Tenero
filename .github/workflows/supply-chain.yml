@@ -11,6 +11,12 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
+# SECURITY (the repository is, or will be, public): a pull request from a FORK is outside code. It runs on GitHub's own hosted runners (free for a public
+# repository), never on the owner's machines. Only pushes to main and pull requests from branches of this repository (which need write access) run on the
+# self-hosted runners. Nothing here uses pull_request_target or secrets; the token is read-only.
+permissions:
+  contents: read
+
 concurrency:
   group: supply-chain-${{ github.ref }}
   cancel-in-progress: true
@@ -18,7 +24,8 @@ concurrency:
 jobs:
   deny-and-audit:
     name: cargo deny and cargo audit
-    runs-on: [self-hosted, Linux, X64]   # the owner's Linux runner (WSL), since 2026-10-04
+    # the owner's Linux runner (WSL), except for a pull request from a fork (see above)
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && '"ubuntu-latest"' || '["self-hosted", "Linux", "X64"]') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # the "stable" branch
