@@ -11,6 +11,10 @@ use tenero_app::seedcheck::{
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if tenero_app::daemon::wants_version(args.first().map(String::as_str)) {
+        println!("{}", tenero_app::daemon::version_line("tenero-seedcheck"));
+        return;
+    }
     if args.is_empty() || args[0] == "help" || args[0] == "--help" {
         println!("{USAGE}");
         return;

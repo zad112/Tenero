@@ -2011,8 +2011,9 @@ impl App {
         ui.add_space(6.0);
         ui.heading("About");
         ui.label(format!(
-            "Tenero wallet app, version {}",
-            env!("CARGO_PKG_VERSION")
+            "Tenero wallet app, version {} (commit {})",
+            env!("CARGO_PKG_VERSION"),
+            tenero_app::daemon::COMMIT
         ));
         ui.add_space(6.0);
         for line in [

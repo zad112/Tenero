@@ -133,15 +133,8 @@ fn main() {
         println!("{USAGE}");
         return;
     }
-    if matches!(
-        args.first().map(String::as_str),
-        Some("version" | "--version" | "-V")
-    ) {
-        println!(
-            "tenerod v{} (commit {}) EXPERIMENTAL, UNAUDITED; nothing on any network it runs has value",
-            daemon::VERSION,
-            daemon::COMMIT
-        );
+    if daemon::wants_version(args.first().map(String::as_str)) {
+        println!("{}", daemon::version_line("tenerod"));
         return;
     }
     match args.first().map(String::as_str) {

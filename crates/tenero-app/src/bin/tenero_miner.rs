@@ -154,6 +154,10 @@ fn parse() -> Result<Args, String> {
 }
 
 fn main() {
+    if tenero_app::daemon::wants_version(std::env::args().nth(1).as_deref()) {
+        println!("{}", tenero_app::daemon::version_line("tenero-miner"));
+        return;
+    }
     if matches!(
         std::env::args().nth(1).as_deref(),
         Some("help" | "--help" | "-h")

@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-app"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anstyle-query",
  "ctrlc",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-chain"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "tenero-core",
  "tenero-store",
@@ -916,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-core"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "serde_json",
  "sha2",
@@ -924,7 +924,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-crypto"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "curve25519-dalek",
  "monero-bulletproofs",
@@ -947,7 +947,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-fuzzcases"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "rand_core",
  "tenero-app",
@@ -960,7 +960,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-gpu"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cudarc",
  "tenero-core",
@@ -968,7 +968,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-miner"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "nvml-wrapper",
  "tenero-chain",
@@ -981,7 +981,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-net"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "snow",
  "tenero-chain",
@@ -992,7 +992,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-node"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "tenero-chain",
  "tenero-core",
@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-store"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "redb",
  "tenero-core",
@@ -1010,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-wallet"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "argon2",
  "bip39",

@@ -41,6 +41,16 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The source this build was made from (a git commit, `-dirty` if it had local changes, or `unknown`): see `build.rs`.
 pub const COMMIT: &str = env!("TENERO_COMMIT");
+
+/// What `--version` prints, for every program of the project: which program, which version, which source commit, and what it is.
+pub fn version_line(program: &str) -> String {
+    format!("{program} v{VERSION} (commit {COMMIT}) EXPERIMENTAL, UNAUDITED; nothing on any network it runs has value")
+}
+
+/// Whether the first command-line argument asks for the version.
+pub fn wants_version(first: Option<&str>) -> bool {
+    matches!(first, Some("version" | "--version" | "-V"))
+}
 /// What every start-up prints, so nobody mistakes what this is.
 pub const BANNER: &str = "tenero node: EXPERIMENTAL and UNAUDITED. No launched network exists; nothing on the test or dev networks has value.";
 

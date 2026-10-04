@@ -19,6 +19,10 @@ impl Io for Terminal {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if tenero_app::daemon::wants_version(args.first().map(String::as_str)) {
+        println!("{}", tenero_app::daemon::version_line("tenero-wallet"));
+        return;
+    }
     if let Err(e) = run(&args, &mut Terminal) {
         eprintln!("error: {e}");
         std::process::exit(1);
