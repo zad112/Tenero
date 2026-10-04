@@ -2,7 +2,9 @@
 
 use std::path::PathBuf;
 
-use tenero_app::config::{Config, ConfigError, MineMode, Network, Raw};
+use tenero_app::config::{
+    check_seed_list, effective_seeds, Config, ConfigError, MineMode, Network, Raw, ALPHA_SEEDS,
+};
 use tenero_app::log::{utc_timestamp, Level, Logger};
 
 fn parse(file: &str, args: &[&str]) -> Result<Config, ConfigError> {
@@ -128,7 +130,7 @@ fn the_command_line_overrides_the_file() {
 fn the_network_and_the_data_directory_are_required() {
     assert!(err("network=dev").contains("`data`"));
     assert!(err("data=d").contains("`network`"));
-    assert!(err("data=d\nnetwork=main").contains("not `test` or `dev`"));
+    assert!(err("data=d\nnetwork=main").contains("not `test`, `dev` or `alpha`"));
 }
 
 #[test]
@@ -437,4 +439,65 @@ network = dev");
 network = dev
 gpu_batch = fast")
     .contains("gpu_batch"));
+}
+
+// ---- seeds: the program's own list, and the operator's -------------------------------------------------------------
+
+#[test]
+fn the_seeds_a_node_starts_from_are_the_built_in_ones_then_the_configured_ones_each_once() {
+    let configured = vec!["203.0.113.9:1".to_string(), "198.51.100.7:1".to_string()];
+    let builtin = ["198.51.100.7:1", "192.0.2.5:1"];
+    assert_eq!(
+        effective_seeds(&builtin, &configured, true),
+        ["198.51.100.7:1", "192.0.2.5:1", "203.0.113.9:1"]
+    );
+    // `no_builtin_seeds yes`: only the operator's own
+    assert_eq!(
+        effective_seeds(&builtin, &configured, false),
+        ["203.0.113.9:1", "198.51.100.7:1"]
+    );
+    assert!(effective_seeds(&[], &[], true).is_empty());
+}
+
+#[test]
+fn a_seed_list_with_a_mistake_in_it_is_refused() {
+    assert!(check_seed_list(&[]).is_ok());
+    assert!(check_seed_list(&["8.8.8.8:38333", "9.9.9.9:38333"]).is_ok());
+    for (list, why) in [
+        (vec!["8.8.8.8"], "no port"),
+        (vec!["8.8.8.8:0"], "port 0"),
+        (vec!["seed.example:38333"], "a name, not an address"),
+        (vec!["127.0.0.1:38333"], "loopback"),
+        (vec!["192.168.1.5:38333"], "a private address"),
+        (vec!["8.8.8.8:38333", "8.8.8.8:38333"], "listed twice"),
+        (
+            vec!["8.8.8.8:38333", "8.8.4.4:38333"],
+            "one network group (8.8)",
+        ),
+    ] {
+        assert!(check_seed_list(&list).is_err(), "{why}: {list:?}");
+    }
+}
+
+#[test]
+fn the_built_in_lists_of_every_network_pass_their_own_check() {
+    assert!(check_seed_list(ALPHA_SEEDS).is_ok(), "ALPHA_SEEDS");
+    for n in Network::ALL {
+        assert!(check_seed_list(n.builtin_seeds()).is_ok(), "{n:?}");
+    }
+    // the private networks never carry built-in seeds
+    assert!(Network::Test.builtin_seeds().is_empty());
+    assert!(Network::Dev.builtin_seeds().is_empty());
+}
+
+#[test]
+fn a_node_reads_the_built_in_seed_option_strictly() {
+    assert_eq!(ok("data=d\nnetwork=alpha").seeds, ALPHA_SEEDS.to_vec());
+    let c = ok("data=d\nnetwork=alpha\nseed=203.0.113.9:1\nno_builtin_seeds=yes");
+    assert_eq!(c.seeds, ["203.0.113.9:1"]);
+    assert!(err("data=d\nnetwork=alpha\nno_builtin_seeds=maybe").contains("no_builtin_seeds"));
+    assert!(
+        err("data=d\nnetwork=alpha\nno_builtin_seeds=yes\nno_builtin_seeds=no")
+            .contains("no_builtin_seeds")
+    );
 }

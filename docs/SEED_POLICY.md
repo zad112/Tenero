@@ -4,6 +4,13 @@
 (eclipse). The numbers below are from a simulation that drives the REAL engine against scripted peers (`crates/tenero-net/tests/eclipse_sim.rs`),
 so they show what the engine does under a stated model, **not what an attacker on the real Internet can do**. Read "What this does not show".
 
+## Where the seeds come from (added 2026-10-04)
+
+A node starts from the seed addresses **built into the program for its network** (`ALPHA_SEEDS` in `crates/tenero-app/src/config.rs`; **empty today: no seed exists**) **plus** every `seed` the operator gives; the setting
+`no_builtin_seeds = yes` drops the built-in ones. `check_seed_list` refuses a built-in list with an entry that is not `ip:port`, not public, listed twice, or **in the same network group as another entry**, and a test runs
+it on every network's list, so a bad list cannot be committed unnoticed. It cannot know whether two seeds have the same operator. Running one: [`RUNNING_A_SEED.md`](RUNNING_A_SEED.md). The first seed is to be a rented
+server (the owner's decision, 2026-10-04); **one seed does not meet this policy's own wish for at least three independent operators.**
+
 ## The rules (in `engine.rs` and `addrbook.rs`, tests in `bootstrap_rules.rs`)
 
 1. **Wait for every seed.** A node with no tried address (a first start) dials ONLY its configured seeds. It dials addresses those seeds

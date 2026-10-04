@@ -51,6 +51,7 @@ parse is an error that names the setting; nothing silently falls back to a defau
 | `network` | `test`, `dev` or `alpha` | required |
 | `listen` | the peer-to-peer address to accept connections on | none (dial out only) |
 | `seed` | an `ip:port` to start from (repeat it); on the command line, `--seed` replaces the file's seeds | none |
+| `no_builtin_seeds` | `yes` ignores the seed addresses built into the program for this network (`alpha` has none yet; `test` and `dev` never do). A node starts from the built-in seeds **and** every `seed` you give; use this for a private network of your own | no |
 | `trusted_peer` | an `ip:port` you got **out of band** (from someone you trust, not from the network) to always connect to: dialled first, and again whenever it is not connected (at most every 30 s), exempt from the per-network-group limit, never passed on to other nodes; repeat it (up to 16); on the command line, `--trusted_peer` replaces the file's. It is still checked like any peer and still banned if it misbehaves. This is the one defence against an eclipse that the attacker cannot influence | none |
 | `peers` | how many peers to aim for | 50 |
 | `max_inbound` | the most inbound peers | 64 |

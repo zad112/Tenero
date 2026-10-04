@@ -80,6 +80,65 @@ pub enum MineMode {
     Gpu,
 }
 
+/// The seed addresses built into the program for the `alpha` network (`ip:port`). A brand-new node starts from these and from any `seed` setting.
+/// **Empty until a seed exists**: nothing may be put here that nobody runs, and the list is only as trustworthy as the number of *independent
+/// operators in different network groups* behind it (`docs/SEED_POLICY.md`; `check_seed_list` refuses a list that breaks the rules that can be
+/// checked). A release carries whatever is here, so a change of address needs a new release (a node's own `seed` settings and `no_builtin_seeds`
+/// are the way round that).
+pub const ALPHA_SEEDS: &[&str] = &[];
+
+impl Network {
+    /// The seeds built into the program for this network (none for the private `test` and `dev` networks).
+    pub fn builtin_seeds(self) -> &'static [&'static str] {
+        match self {
+            Network::Alpha => ALPHA_SEEDS,
+            Network::Test | Network::Dev => &[],
+        }
+    }
+}
+
+/// Checks a list of built-in seeds for the mistakes a program can see: every entry is `ip:port` with a port, a public address (not loopback or private),
+/// listed once, and **no two in one network group** (a new node counts a group once, so a second seed there adds nothing). It cannot tell whether a seed is
+/// honest or whether two seeds are run by the same person: that is the author's to know.
+pub fn check_seed_list(list: &[&str]) -> Result<(), String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut groups = std::collections::BTreeSet::new();
+    for s in list {
+        let sa: SocketAddr = s.parse().map_err(|_| format!("`{s}` is not ip:port"))?;
+        if sa.port() == 0 {
+            return Err(format!("`{s}` has no port"));
+        }
+        if !tenero_net::addrbook::is_routable(&sa) {
+            return Err(format!("`{s}` is not a public address"));
+        }
+        if !seen.insert(sa) {
+            return Err(format!("`{s}` is listed twice"));
+        }
+        let group = tenero_net::addrbook::group_of(s);
+        if !groups.insert(group.clone()) {
+            return Err(format!(
+                "`{s}`: another seed is already in the network group {group}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The seeds a node starts from: the built-in ones (unless `use_builtin` is false), then the configured ones, each once.
+pub fn effective_seeds(builtin: &[&str], configured: &[String], use_builtin: bool) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let from_builtin = builtin
+        .iter()
+        .filter(|_| use_builtin)
+        .map(|s| s.to_string());
+    for s in from_builtin.chain(configured.iter().cloned()) {
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    out
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub data: PathBuf,
@@ -136,6 +195,7 @@ const KEYS: &[&str] = &[
     "network",
     "listen",
     "seed",
+    "no_builtin_seeds",
     "trusted_peer",
     "peers",
     "max_inbound",
@@ -278,11 +338,15 @@ impl Raw {
         let network = self.one("network").ok_or_else(|| {
             bad(
                 "network",
-                "is required: `test` (a CPU-mined test chain) or `dev` (the development network)",
+                "is required: `test` (a CPU-mined test chain), `dev` (the development network) or `alpha` (the test release's network)",
             )
         })?;
-        let network = Network::parse(network)
-            .ok_or_else(|| bad("network", format!("`{network}` is not `test` or `dev`")))?;
+        let network = Network::parse(network).ok_or_else(|| {
+            bad(
+                "network",
+                format!("`{network}` is not `test`, `dev` or `alpha`"),
+            )
+        })?;
         let listen = match self.one("listen") {
             Some(v) => Some(
                 v.parse::<SocketAddr>()
@@ -299,12 +363,18 @@ impl Raw {
         if !control.ip().is_loopback() {
             return Err(bad("control", "must be a loopback address (127.0.0.1): the control interface is for this machine only"));
         }
-        let seeds = self.0.get("seed").cloned().unwrap_or_default();
-        for s in &seeds {
+        let configured_seeds = self.0.get("seed").cloned().unwrap_or_default();
+        for s in &configured_seeds {
             if s.parse::<SocketAddr>().is_err() {
                 return Err(bad("seed", format!("`{s}` is not ip:port")));
             }
         }
+        // the program's own seeds for this network, then the operator's (`no_builtin_seeds yes` for a private network of one's own)
+        let seeds = effective_seeds(
+            network.builtin_seeds(),
+            &configured_seeds,
+            !self.flag("no_builtin_seeds", false)?,
+        );
         let trusted_peers = self.0.get("trusted_peer").cloned().unwrap_or_default();
         for s in &trusted_peers {
             match s.parse::<SocketAddr>() {
