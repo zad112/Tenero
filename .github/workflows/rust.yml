@@ -21,13 +21,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Both run on the owner's own machine (self-hosted runners: Windows, and Linux in WSL since 2026-10-04), not on GitHub's metered minutes
+        # Linux runs on the owner's own machine (a self-hosted runner in WSL since 2026-10-04). Windows always runs on GitHub's hosted runner (since 2026-10-04: the
+        # owner chose not to keep a Windows runner on the machine that also runs the weather station; hosted runners are free for a public repository).
         include:
           - name: ubuntu
             runner: '["self-hosted", "Linux", "X64"]'
             hosted: '"ubuntu-latest"'
           - name: windows
-            runner: '["self-hosted", "Windows", "X64"]'
+            runner: '"windows-latest"'
             hosted: '"windows-latest"'
     name: test (${{ matrix.name }})
     runs-on: ${{ fromJSON(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && matrix.hosted || matrix.runner) }}
@@ -38,9 +39,8 @@ jobs:
         with:
           toolchain: stable
           components: clippy, rustfmt
-      # On the owner's machine that action fails (its `bash` is the WSL launcher, with no distro installed), and the toolchain is
-      # already there: use it as it is (so Windows can be a Rust release behind or ahead of Ubuntu)
-      - name: use the installed Rust (self-hosted Windows)
+      # The rust-toolchain action is not used on Windows: GitHub's Windows image already has Rust (stable, with clippy and rustfmt), so use it as it is
+      - name: use the installed Rust (Windows)
         if: matrix.name == 'windows'
         shell: powershell
         run: |
