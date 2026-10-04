@@ -28,7 +28,7 @@ python reference/tools/make_vectors_proofs.py --check        # the message-signa
 $env:TENERO_SLOW_VECTORS = "1"; python -m pytest reference/tests/test_vectors.py -q     # also the deep vectors
 ```
 
-**Linux:** CI's Linux jobs (and anything that needs Linux by hand) run on the owner's self-hosted runner in WSL2 (distro `Ubuntu`: `wsl -d Ubuntu -u test -- bash script.sh`; the default WSL distro is `docker-desktop`). The Windows jobs run on the owner's Windows runner. Neither runs on GitHub's machines.
+**CI and Linux:** all CI (Windows and Linux) runs on GitHub's own hosted runners (since 2026-10-04 the repository is public and no self-hosted runner remains; a pull request from a fork never runs on the owner's machines). For anything that needs Linux by hand there is the owner's WSL2 distro `Ubuntu` (`wsl -d Ubuntu -u test -- bash script.sh`; the default WSL distro is `docker-desktop`); it has no Windows drives mounted, no Windows interop and no sudo for `test` (pipe files in through `wsl`; root via `wsl -d Ubuntu -u root` with the owner's OK).
 
 The old Python miner, wallet and command line (`miner.py`, `cli.py`, `gpu_test.bat` ...) are NOT in this tree: they are on the `legacy-python` branch / `python-final` tag.
 

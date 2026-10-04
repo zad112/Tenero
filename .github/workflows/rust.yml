@@ -5,9 +5,9 @@ on:
     branches: [main]
   pull_request:
 
-# SECURITY (the repository is, or will be, public): a pull request from a FORK is outside code. It runs on GitHub's own hosted runners (free for a public
-# repository), never on the owner's machines. Only pushes to main and pull requests from branches of this repository (which need write access) run on the
-# self-hosted runners. Nothing here uses pull_request_target or secrets; the token is read-only.
+# Everything runs on GitHub's own hosted runners (free for a public repository), never on the owner's machines: a pull request from a fork is outside code.
+# (Until 2026-10-04 the owner's Windows and Linux machines ran these jobs; the owner moved both to GitHub's runners.) Nothing here uses pull_request_target or
+# secrets; the token is read-only.
 permissions:
   contents: read
 
@@ -16,22 +16,24 @@ concurrency:
   group: rust-${{ github.ref }}
   cancel-in-progress: true
 
+# No incremental builds and no debug info on a runner that starts empty every time: less to write, a smaller cache.
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
 jobs:
   test:
     strategy:
       fail-fast: false
       matrix:
-        # Linux runs on the owner's own machine (a self-hosted runner in WSL since 2026-10-04). Windows always runs on GitHub's hosted runner (since 2026-10-04: the
-        # owner chose not to keep a Windows runner on the machine that also runs the weather station; hosted runners are free for a public repository).
         include:
           - name: ubuntu
-            runner: '["self-hosted", "Linux", "X64"]'
-            hosted: '"ubuntu-latest"'
+            runner: ubuntu-latest
           - name: windows
-            runner: '"windows-latest"'
-            hosted: '"windows-latest"'
+            runner: windows-latest
     name: test (${{ matrix.name }})
-    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && matrix.hosted || matrix.runner) }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # the "stable" branch
@@ -39,10 +41,9 @@ jobs:
         with:
           toolchain: stable
           components: clippy, rustfmt
-      # A hosted Windows runner starts empty every time, and compiling the workspace (the window library above all) was most of a 30-minute run
-      # (measured 2026-10-04: clippy 93 s, tests 28 min). The Linux runner keeps its own build, so only Windows uses the cache. The key follows Cargo.lock.
-      - name: keep the build between runs (Windows)
-        if: matrix.name == 'windows'
+      # A hosted runner starts empty every time, and compiling the workspace (the window library above all) is most of a run. The key follows Cargo.lock and the OS.
+      # (Measured 2026-10-04 on Windows: with the cache, clippy 34 s instead of 68 s and the test build 186 s instead of 248 s.)
+      - name: keep the build between runs
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -50,9 +51,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: rust-windows-${{ hashFiles('Cargo.lock') }}
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            rust-windows-
+            rust-${{ runner.os }}-
       # The rust-toolchain action is not used on Windows: GitHub's Windows image already has Rust (stable, with clippy and rustfmt), so use it as it is
       - name: use the installed Rust (Windows)
         if: matrix.name == 'windows'
@@ -62,14 +63,9 @@ jobs:
           & "$env:USERPROFILE\.cargo\bin\rustc.exe" --version
           & "$env:USERPROFILE\.cargo\bin\cargo.exe" clippy --version
           & "$env:USERPROFILE\.cargo\bin\cargo.exe" fmt --version
-          # no incremental builds and no debug info on a runner that starts empty: less to write, a smaller cache
-          "CARGO_INCREMENTAL=0" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "CARGO_PROFILE_DEV_DEBUG=0" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "CARGO_PROFILE_TEST_DEBUG=0" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      # Windows builds the tests in a step of its own, so the log says how long the build takes and how long the tests take
-      - name: build the tests (Windows)
-        if: matrix.name == 'windows'
+      # The tests are built in a step of their own, so the log says how long the build takes and how long the tests take
+      - name: build the tests
         run: cargo test --workspace --no-run
       - run: cargo test --workspace

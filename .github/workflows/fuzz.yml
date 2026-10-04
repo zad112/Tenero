@@ -1,10 +1,10 @@
 name: fuzz
 
 # Coverage-guided fuzzing with libFuzzer (docs/THREAT_MODEL.md, A3 and A4). Run by hand ("Run workflow", with the seconds each target may run) or
-# once a month. It needs a nightly Rust and Linux, which is why it is here and not on the owner's machine. The work of each target is in
+# once a month, on GitHub's hosted Linux runners (the six targets run side by side there). It needs a nightly Rust and Linux. The work of each target is in
 # crates/tenero-fuzzcases (compiled and tested everywhere); a crash is uploaded as an artifact, and becomes a case in
 # crates/tenero-fuzzcases/tests/regressions.rs.
-# It does NOT run on a push (the owner's choice, 2026-10-04: a run takes too long and holds the Linux runner). The crates/tenero-fuzzcases tests, which run in the rust
+# It does NOT run on a push (the owner's choice, 2026-10-04: a run takes too long). The crates/tenero-fuzzcases tests, which run in the rust
 # workflow on every push, still check that every target's code works; only the separate fuzz/ crate (the libFuzzer entry points) is compiled by this workflow alone, so
 # start it by hand after changing anything under fuzz/.
 on:
@@ -16,7 +16,7 @@ on:
   schedule:
     - cron: "0 5 1 * *"
 
-# SECURITY: no pull_request trigger, so outside code never reaches this self-hosted job: a manual start needs write access, and the schedule is GitHub's own.
+# SECURITY: no pull_request trigger, so outside code never reaches this job: a manual start needs write access, and the schedule is GitHub's own.
 permissions:
   contents: read
 
@@ -27,7 +27,7 @@ concurrency:
 jobs:
   fuzz:
     name: fuzz (${{ matrix.target }})
-    runs-on: [self-hosted, Linux, X64]   # the owner's Linux runner (WSL), since 2026-10-04: one job at a time, so the targets run one after another
+    runs-on: ubuntu-latest   # (until 2026-10-04 the owner's Linux runner, one job at a time; hosted, the six targets run in parallel)
     timeout-minutes: 90
     strategy:
       fail-fast: false
