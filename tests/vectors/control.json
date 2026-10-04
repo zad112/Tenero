@@ -1,5 +1,5 @@
 {
- "description": "The control protocol between a wallet and a node on one machine (docs/CONTROL_PROTOCOL.md): every request and answer as a body and a frame, malformed bodies with the error a decoder must give, and the frame length rule. An independent Python implementation (tools/make_vectors_control.py).",
+ "description": "The control protocol between a wallet and a node on one machine (docs/CONTROL_PROTOCOL.md): every request and answer as a body and a frame, malformed bodies with the error a decoder must give, and the frame length rule. An independent Python implementation (reference/tools/make_vectors_control.py).",
  "frames": [
   {
    "length": 0,

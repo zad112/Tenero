@@ -371,7 +371,7 @@ exactly as before.
 * **What it does not do.** It does not slow how fast the median can rise toward the ceiling (a longer median window, or a
   limit on the growth of the median, as Monero has, remain options), and a majority miner can still push blocks to the
   ceiling at the cost of the penalty. It bounds the damage; it does not remove the incentive question.
-* **Tests.** `v2_fees.json` (made by `tools/make_vectors_v2.py`) lists the limit and whether a size is too large at
+* **Tests.** `v2_fees.json` (made by `reference/tools/make_vectors_v2.py`) lists the limit and whether a size is too large at
   medians around every place it changes (below, at and above half the ceiling; the largest `u64`); the validator refuses
   a block one byte over the ceiling when twice the median would allow 2 MiB more, and does not refuse one of exactly the
   ceiling; a block template never holds more than a block may carry; a block as large as the rules allow is sent in a
@@ -434,7 +434,7 @@ keep their meaning.
 ## 11. What M5 delivers as vectors
 
 Vectors for the parts that need no cryptography are produced by a small standard-library Python reference,
-`tools/make_vectors_v2.py`, so that the Rust code in M6 is checked against an independent implementation:
+`reference/tools/make_vectors_v2.py`, so that the Rust code in M6 is checked against an independent implementation:
 
 | file | what it pins down |
 |---|---|
@@ -445,7 +445,7 @@ Vectors for the parts that need no cryptography are produced by a small standard
 | `v2_merkle.json` | the Merkle root for 0 to 17, 31, 32, 33 and 100 leaves, and the no-padding and leaf-versus-node properties |
 | `v2_genesis.json` | the genesis header and the chain id for three network labels |
 
-`python tools/make_vectors_v2.py --check` compares them with the reference, and `tests/test_vectors_v2.py`
+`python reference/tools/make_vectors_v2.py --check` compares them with the reference, and `reference/tests/test_vectors_v2.py`
 also checks them against the RFC 6962 definition and a from-scratch computation of the hashes, so the
 reference is not only agreeing with itself. The limits in the serialization vector are the PROPOSED constants
 of section 6; changing one is a consensus change and regenerates the file.

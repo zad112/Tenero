@@ -3,7 +3,7 @@
 # It pretends miners with a given hashrate are mining, using the SAME adjustment
 # code as the chain, and prints how block times and difficulty respond when the
 # hashrate jumps up and drops back. Change the numbers below and run:
-#     python difficulty_sim.py
+#     python reference/difficulty_sim.py
 import random
 
 from tenero.chain import Blockchain, format_hashrate

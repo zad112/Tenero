@@ -5,12 +5,12 @@ other implementation of this coin (a C++ or Rust rewrite, a GPU kernel) can be c
 reference BIT FOR BIT, the same way the numpy code, OpenSSL, the CUDA emulator and the real GPU were
 checked against each other here.
 
-    python tools/make_vectors.py --check        do the committed files match the reference?
-    python tools/make_vectors.py --write        regenerate the fast vectors (a CONSENSUS CHANGE:
+    python reference/tools/make_vectors.py --check        do the committed files match the reference?
+    python reference/tools/make_vectors.py --write        regenerate the fast vectors (a CONSENSUS CHANGE:
                                                 explain it in the commit, update docs/CONSENSUS.md)
-    python tools/make_vectors.py --write --deep also the deep vector (slices up to 77 at real size:
+    python reference/tools/make_vectors.py --write --deep also the deep vector (slices up to 77 at real size:
                                                 about 20 s and 1.3 GiB of RAM)
-    python tools/make_vectors.py --full         the FULL vector: a hash of every one of the 256
+    python reference/tools/make_vectors.py --full         the FULL vector: a hash of every one of the 256
                                                 slices of the real 4 GiB dataset (about 4.3 GiB of
                                                 RAM; run it on a machine that has that)
 
@@ -30,9 +30,10 @@ import tempfile
 import numpy as np
 from ecdsa import SECP256k1
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+REFERENCE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # reference/: the `tenero` package is here
+ROOT = os.path.dirname(REFERENCE)   # the repository: tests/vectors is here
+if REFERENCE not in sys.path:
+    sys.path.insert(0, REFERENCE)
 
 from tenero import chacha  # noqa: E402
 from tenero import chain as chain_module  # noqa: E402

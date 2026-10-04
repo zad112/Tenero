@@ -39,7 +39,7 @@ In this order, the first two before anything is understood:
 ## 4. Understand it
 
 - Reproduce it with a test first (a new vector or a regression test), so that the fix is checked against the failure and not against a belief.
-  A consensus rule's fix starts in the reference (`tools/make_vectors_v2.py`), then `CONSENSUS_V2.md`, then the Rust code, then the vectors
+  A consensus rule's fix starts in the reference (`reference/tools/make_vectors_v2.py`), then `CONSENSUS_V2.md`, then the Rust code, then the vectors
   (CLAUDE.md rule 1), and says in the commit what changed and why.
 - Find **how far back** it goes: the first block that should have been refused. That decides the choice in section 5.
 

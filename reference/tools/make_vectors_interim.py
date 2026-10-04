@@ -6,8 +6,8 @@ here (RFC 8032 formulas, affine coordinates: slow and plain on purpose), not tak
 shares no code with the Rust side. **This is a test reference, not a wallet**: it handles real secrets in plain
 integers and is not constant-time. Nothing here is Carrot; the scheme is an interim stand-in.
 
-    python tools/make_vectors_interim.py --check     do the committed vectors match the reference?
-    python tools/make_vectors_interim.py --write     regenerate them (a CHANGE OF THE WALLET SCHEME: explain it
+    python reference/tools/make_vectors_interim.py --check     do the committed vectors match the reference?
+    python reference/tools/make_vectors_interim.py --write     regenerate them (a CHANGE OF THE WALLET SCHEME: explain it
                                                      in the commit)
 
 Nothing here is random and nothing depends on the clock.
@@ -18,7 +18,7 @@ import json
 import os
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the repository (the tools live in reference/tools)
 VECTOR_DIR = os.path.join(ROOT, "tests", "vectors")
 NAME = "interim_scheme"
 
@@ -256,7 +256,7 @@ def build():
         "name": NAME,
         "description": "The INTERIM wallet output scheme (crates/tenero-wallet/src/interim.rs; NOT Carrot): keys, "
                        "addresses, making an output for a recipient, and what the receiver recovers. An independent "
-                       "Python reference (tools/make_vectors_interim.py).",
+                       "Python reference (reference/tools/make_vectors_interim.py).",
         "enotes": cases(),
         "addresses": address_cases(),
     }

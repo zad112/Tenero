@@ -3,10 +3,10 @@
 An independent implementation, in Python and the standard library only, of how crates/tenero-app turns the requests
 a wallet makes of a node, and the node's answers, into bytes: the frame, the eleven requests, the answers, and the
 order in which a decoder checks a message. The transaction and coinbase encodings inside come from the version 2
-data-model reference (`tools/make_vectors_v2.py`).
+data-model reference (`reference/tools/make_vectors_v2.py`).
 
-    python tools/make_vectors_control.py --check     do the committed vectors match the reference?
-    python tools/make_vectors_control.py --write     regenerate them (a PROTOCOL CHANGE: explain it in the commit
+    python reference/tools/make_vectors_control.py --check     do the committed vectors match the reference?
+    python reference/tools/make_vectors_control.py --write     regenerate them (a PROTOCOL CHANGE: explain it in the commit
                                                      and update docs/CONTROL_PROTOCOL.md)
 
 Nothing here is random and nothing depends on the clock.
@@ -20,7 +20,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import make_vectors_v2 as v2  # noqa: E402
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the repository (the tools live in reference/tools)
 VECTOR_DIR = os.path.join(ROOT, "tests", "vectors")
 NAME = "control"
 
@@ -504,7 +504,7 @@ def build():
         "description": "The control protocol between a wallet and a node on one machine (docs/CONTROL_PROTOCOL.md): "
                        "every request and answer as a body and a frame, malformed bodies with the error a decoder "
                        "must give, and the frame length rule. An independent Python implementation "
-                       "(tools/make_vectors_control.py).",
+                       "(reference/tools/make_vectors_control.py).",
         "limits": {"max_frame": MAX_FRAME, "max_text": MAX_TEXT, "max_name": MAX_NAME,
                    "max_blocks_per_request": MAX_BLOCKS_PER_REQUEST},
         "kinds": {"requests": REQUESTS, "responses": {k: v | ANSWER for k, v in RESPONSES.items()}, "error": ERROR},

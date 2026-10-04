@@ -89,7 +89,7 @@ is dropped at once). Proposed messages: `Hello` (protocol version, chain id, tip
 strict-decoding tests for each malformed case.
 *Result:* a frame is `length u32 | kind u8 | body`, fixed-width little-endian on the version 2 codec, with a cap on
 every kind's length (16 MiB only for block and transaction lists), counts checked before any element is read, and
-the checks in a documented order. An independent Python reference (`tools/make_vectors_wire.py`, standard library
+the checks in a documented order. An independent Python reference (`reference/tools/make_vectors_wire.py`, standard library
 only) makes `v2_wire.json`: 22 valid messages (every kind, empty lists, lists exactly at their caps, extreme
 numbers), 40 malformed frames each with the error a decoder must give, and 8 stream prefixes that must fail (or
 wait) without more bytes. The Rust codec reproduces all of it byte for byte on the first run. It also has a
@@ -355,7 +355,7 @@ replace; a hostile file cannot make the wallet allocate gigabytes). **`chain`**:
 small traits (`ChainView`, `Submitter`), implemented for the in-process `Node`; M8.7 implements them over the
 network protocol. The miner pays a wallet through `WalletPayout`.
 *Tests (40 in the wallet, 1 in the miner):* the interim scheme against an **independent Python reference** with its
-own Ed25519 arithmetic (`tools/make_vectors_interim.py`, `tests/vectors/interim_scheme.json`: six outputs, valid and
+own Ed25519 arithmetic (`reference/tools/make_vectors_interim.py`, `tests/vectors/interim_scheme.json`: six outputs, valid and
 invalid addresses); two wallets paying each other through a node that **verifies every proof for real** (CLSAG,
 Bulletproofs+, the balance), on the SHA-256 test chain (a CPU mines it, so no GPU and no 4.3 GiB dataset); rings of 16;
 payments that need several inputs; change spent from either position in the transaction; a restored wallet finding the

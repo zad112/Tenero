@@ -1,4 +1,4 @@
-//! The control protocol against the independent Python reference's vectors (`tools/make_vectors_control.py`,
+//! The control protocol against the independent Python reference's vectors (`reference/tools/make_vectors_control.py`,
 //! `tests/vectors/control.json`): every message must encode to exactly the reference's bytes, decode back to the same
 //! message, and every malformed one must be refused with the error the reference gives.
 

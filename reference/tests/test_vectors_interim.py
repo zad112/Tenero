@@ -1,5 +1,5 @@
 """The INTERIM wallet output scheme (crates/tenero-wallet/src/interim.rs): the reference in
-tools/make_vectors_interim.py against its committed vectors, and some facts computed independently of it."""
+reference/tools/make_vectors_interim.py against its committed vectors, and some facts computed independently of it."""
 import json
 import os
 

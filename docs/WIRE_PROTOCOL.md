@@ -3,7 +3,7 @@
 Status: **draft, 2026-09-30, unreviewed.** This is how the messages of `crates/tenero-net` (`Message`) become
 bytes. It reuses the version 2 codec of `CONSENSUS_V2.md` section 4: fixed-width little-endian integers, no
 varints, strict decoding, and `u32` counts checked **before** any element is read or any memory is reserved. The
-independent Python reference is `tools/make_vectors_wire.py`, which makes `tests/vectors/v2_wire.json`; the Rust
+independent Python reference is `reference/tools/make_vectors_wire.py`, which makes `tests/vectors/v2_wire.json`; the Rust
 code (`crates/tenero-net/src/wire.rs`) must reproduce every vector.
 
 This layer carries no cryptography. The encrypted channel (Noise, M8.4, `crates/tenero-net/src/noise.rs`) carries

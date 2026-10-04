@@ -17,7 +17,7 @@
   "pong": 9,
   "txs": 16777216
  },
- "description": "The peer-to-peer wire protocol (docs/WIRE_PROTOCOL.md): every message as a whole frame, malformed frames with the error a decoder must give, and the prefixes on which a stream decoder must already fail. Made by tools/make_vectors_wire.py. `blocks` and `txs` hold the wire form (CONSENSUS_V2.md) of each block and transaction as hex.",
+ "description": "The peer-to-peer wire protocol (docs/WIRE_PROTOCOL.md): every message as a whole frame, malformed frames with the error a decoder must give, and the prefixes on which a stream decoder must already fail. Made by reference/tools/make_vectors_wire.py. `blocks` and `txs` hold the wire form (CONSENSUS_V2.md) of each block and transaction as hex.",
  "early": [
   {
    "error": "empty frame",

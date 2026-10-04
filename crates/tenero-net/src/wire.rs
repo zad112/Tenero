@@ -3,7 +3,7 @@
 //! A frame is `length u32 | kind u8 | body`, `length` counting the kind byte and the body. Everything is
 //! fixed-width little-endian, counts are checked before any element is read, and a decoder that accepts bytes
 //! yields a message that encodes back to the same bytes. The independent Python reference
-//! (`tools/make_vectors_wire.py`) makes `tests/vectors/v2_wire.json`, which this code must reproduce.
+//! (`reference/tools/make_vectors_wire.py`) makes `tests/vectors/v2_wire.json`, which this code must reproduce.
 //!
 //! No cryptography lives here: the Noise channel of M8.4 wraps these frames.
 

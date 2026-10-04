@@ -1,5 +1,5 @@
 //! Message signatures and payment proofs, like Monero's `sign`/`verify` and `get_tx_proof`/`check_tx_proof`, for the INTERIM
-//! output scheme. The byte-level definition is in `docs/WALLET_PROOFS.md`, and `tools/make_vectors_proofs.py` is an independent
+//! output scheme. The byte-level definition is in `docs/WALLET_PROOFS.md`, and `reference/tools/make_vectors_proofs.py` is an independent
 //! implementation that the vectors (`tests/vectors/wallet_proofs.json`) come from.
 //!
 //! **Unaudited, and home-made in the sense of CLAUDE.md rule 3**: a Schnorr signature and a Chaum-Pedersen proof (two points

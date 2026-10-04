@@ -2,7 +2,7 @@
 
 **Unaudited. Home-made in the sense of CLAUDE.md rule 3**: a Schnorr signature and a Chaum-Pedersen proof, both standard, composed
 from `curve25519-dalek` and SHA-256 with the owner's approval (2026-10-03), because the interim output scheme is already ours. An
-independent Python implementation (`tools/make_vectors_proofs.py`, its own Ed25519 arithmetic) makes the vectors
+independent Python implementation (`reference/tools/make_vectors_proofs.py`, its own Ed25519 arithmetic) makes the vectors
 (`tests/vectors/wallet_proofs.json`); the Rust code (`crates/tenero-wallet/src/proofs.rs`) matches them bit for bit. **Nothing
 here is a legal or financial proof.** It all goes when Carrot replaces the interim scheme (the format will change).
 

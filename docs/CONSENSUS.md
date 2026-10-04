@@ -43,7 +43,7 @@ Every number below is checked by a vector file, named in the last section.
 ## 2. Chain parameters
 
 Saved in `chain.json` (`params`, plus `target` at the top level) when a chain is created; an existing
-chain keeps them. Defaults are in `tenero/config.py`.
+chain keeps them. Defaults are in `reference/tenero/config.py`.
 
 | parameter | default | meaning |
 |---|---|---|

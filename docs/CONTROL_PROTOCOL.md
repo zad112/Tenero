@@ -6,8 +6,8 @@ How a wallet, or any program on the same computer, talks to a running node. It i
 *style* (length-prefixed frames, strict decoding, golden vectors from an independent Python reference) with its own
 message set, because the peer-to-peer messages are about sharing blocks with strangers and the wallet needs to ask
 questions. **Experimental and unaudited.** The code is `crates/tenero-app/src/{control,server,client}.rs`; the vectors
-are `tests/vectors/control.json`, made by `tools/make_vectors_control.py`, an independent implementation, and checked
-by `crates/tenero-app/tests/control_vectors.rs` and `tests/test_vectors_control.py`.
+are `tests/vectors/control.json`, made by `reference/tools/make_vectors_control.py`, an independent implementation, and checked
+by `crates/tenero-app/tests/control_vectors.rs` and `reference/tests/test_vectors_control.py`.
 
 ## Who may connect, and how
 

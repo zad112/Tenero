@@ -1,4 +1,4 @@
-"""The peer-to-peer wire protocol (docs/WIRE_PROTOCOL.md): the reference in tools/make_vectors_wire.py against
+"""The peer-to-peer wire protocol (docs/WIRE_PROTOCOL.md): the reference in reference/tools/make_vectors_wire.py against
 its committed vectors, and a few facts computed here independently of it (the sizes in the document, the check
 order, one message one encoding)."""
 import json

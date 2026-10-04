@@ -1,12 +1,8 @@
 """Where chain.json, mempool.json and the wallets live.
 
-Normally that is the project folder. Setting the TENERO_DATA environment variable points
-everything (miner, wallet, view) at another folder instead, which is handy for a scratch
-chain you can experiment on without touching your real one:
-
-    PowerShell:   $env:TENERO_DATA = "scratch"      (then run miner.bat / cli.bat as usual)
-    cmd:          set TENERO_DATA=scratch
-    back to normal:   Remove-Item Env:TENERO_DATA      (or close the window)
+Normally that is the folder above this package (`reference/`). Setting the TENERO_DATA environment variable points
+everything at another folder instead. (The miner, wallet and viewer that used it were removed at M11.1 and are on the
+`legacy-python` branch; what is left is the frozen reference chain code, which still saves and loads through here.)
 """
 import os
 

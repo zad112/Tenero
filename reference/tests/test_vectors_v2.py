@@ -1,4 +1,4 @@
-"""The version 2 data model (docs/CONSENSUS_V2.md): the reference in tools/make_vectors_v2.py against its
+"""The version 2 data model (docs/CONSENSUS_V2.md): the reference in reference/tools/make_vectors_v2.py against its
 committed vectors, and a few facts computed here independently of it (sizes, tags, an RFC 6962 check)."""
 import hashlib
 import json

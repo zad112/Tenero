@@ -7,7 +7,7 @@ verbatim, so that our pinned copy of the proof libraries can be shown to accept 
 is recorded in the file. The source repository is MIT-licensed; the transactions themselves are public
 blockchain data.
 
-    python tools/import_upstream_vectors.py <path to a monero-oxide checkout>
+    python reference/tools/import_upstream_vectors.py <path to a monero-oxide checkout>
 """
 import json
 import subprocess
@@ -51,7 +51,7 @@ out = {
                "path": "monero-oxide/src/tests/vectors/", "licence": "MIT"},
     "proofs": proofs,
 }
-dest = Path(__file__).resolve().parent.parent / "tests" / "vectors" / "upstream_monero_bpp.json"
+dest = Path(__file__).resolve().parent.parent.parent / "tests" / "vectors" / "upstream_monero_bpp.json"
 dest.write_text(json.dumps(out, indent=2) + "\n", newline="\n")
 print(f"wrote {dest} with {len(proofs)} proofs from {commit[:12]}")
 
@@ -79,6 +79,6 @@ clsag_out = {
         for i, inp in enumerate(inputs)
     ],
 }
-dest = Path(__file__).resolve().parent.parent / "tests" / "vectors" / "upstream_monero_clsag.json"
+dest = Path(__file__).resolve().parent.parent.parent / "tests" / "vectors" / "upstream_monero_clsag.json"
 dest.write_text(json.dumps(clsag_out, indent=2) + "\n", newline="\n")
 print(f"wrote {dest} with {len(inputs)} inputs")

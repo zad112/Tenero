@@ -1,5 +1,5 @@
 {
- "description": "Message signatures and payment proofs of the INTERIM wallet scheme (crates/tenero-wallet/src/proofs.rs, docs/WALLET_PROOFS.md). UNAUDITED. An independent Python reference (tools/make_vectors_proofs.py).",
+ "description": "Message signatures and payment proofs of the INTERIM wallet scheme (crates/tenero-wallet/src/proofs.rs, docs/WALLET_PROOFS.md). UNAUDITED. An independent Python reference (reference/tools/make_vectors_proofs.py).",
  "messages": [
   {
    "address": "tni118e786a795dd67841036bf8a92be38e128eefdb3f733c3c55d5e5960752625fb3e6f7ece5c18cee2f7f7493c645d03ab518b151a3b35257ef51ff8cc4c655451cbff2c52",

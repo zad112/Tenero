@@ -6,8 +6,8 @@ secrets in plain integers and is not constant-time.** These are small, standard 
 Chaum-Pedersen proof that two points have the same discrete logarithm) put together for this project: **unaudited**, and nothing
 here is "proof" in a legal or financial sense. See docs/WALLET_PROOFS.md.
 
-    python tools/make_vectors_proofs.py --check     do the committed vectors match the reference?
-    python tools/make_vectors_proofs.py --write     regenerate them (a CHANGE OF THE PROOF FORMAT: explain it in the commit)
+    python reference/tools/make_vectors_proofs.py --check     do the committed vectors match the reference?
+    python reference/tools/make_vectors_proofs.py --write     regenerate them (a CHANGE OF THE PROOF FORMAT: explain it in the commit)
 
 Nothing here is random and nothing depends on the clock: the random 32 bytes a signer draws are fixed inputs.
 """
@@ -247,7 +247,7 @@ def build():
         "schema": 1,
         "name": NAME,
         "description": "Message signatures and payment proofs of the INTERIM wallet scheme (crates/tenero-wallet/src/proofs.rs, "
-                       "docs/WALLET_PROOFS.md). UNAUDITED. An independent Python reference (tools/make_vectors_proofs.py).",
+                       "docs/WALLET_PROOFS.md). UNAUDITED. An independent Python reference (reference/tools/make_vectors_proofs.py).",
         "messages": message_cases(),
         "proofs": proof_cases(),
     }

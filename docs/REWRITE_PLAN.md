@@ -10,7 +10,7 @@ Decisions marked **DECIDE** are open. Each has a recommendation, which is only a
 ## What is already fixed
 
 - **matmulhash v2**, bit for bit as in `CONSENSUS.md` section 8, and the CUDA source in
-  `tenero/gpubackend.py` (it is already C++).
+  `reference/tenero/gpubackend.py` (it is already C++).
 - **Emission** (20 coins, halving every 525,600 blocks, 20,000,000 coin cap, 0.5 tail), **60 s blocks**,
   **LWMA** difficulty, the **block-size floor with the quadratic penalty and the 2x hard limit** (300 kB in
   v1; **150 kB in version 2**, `CONSENSUS_V2.md` 8.2).
@@ -54,7 +54,7 @@ chain must be able to run pruned (`CONSENSUS_V2.md` section 14). The original op
    the output set, the spent key images and, for FCMP++, the curve tree.
 8. **Build and CI. DECIDE.** CMake with a package manager (vcpkg or Conan), MSVC on Windows (the owner's
    platform) and gcc/clang on Linux, cargo for Rust, sanitizers and fuzzing in CI. GitHub Actions on Windows
-   as well as Linux. GPU code cannot run in CI: keep the emulator tests and the owner's `gpu_test.bat`.
+   as well as Linux. GPU code cannot run in CI: keep the emulator tests and the owner's `gpu_test.bat` (M11.1: the emulator tests stay in `reference/tests`; the owner's check is now the Rust `tenero-gpu` ignored tests).
 9. **What happens to the Python. Recommendation:** keep it as the executable reference, the vector
    generator and the tooling, but do not ship it. Retire a Python module only when the native code passes
    its vectors, and say so in the commit.
@@ -84,12 +84,12 @@ chain must be able to run pruned (`CONSENSUS_V2.md` section 14). The original op
   measures about 30,000 to 35,000 attempts/s (`docs/BENCHMARKS.md`; the 22,000 baseline is an earlier Python
   measurement, not a same-day one). Not done: a miner program (it needs the chain, so M6 and M8), epoch
   switching and prefetching the next dataset, overlapping the CPU work with the GPU, more than one GPU.
-  The CUDA source is a byte-identical copy checked by `tests/test_kernel_source_copy.py`.
+  The CUDA source is a byte-identical copy checked by `reference/tests/test_kernel_source_copy.py`.
 - **M5. The new data model, on paper first.** The output model, the canonical serialization, a fixed genesis
   and chain id. Write `CONSENSUS.md` v2 and its vectors before writing the validator.
   *Status (2026-09-29): done as `docs/CONSENSUS_V2.md`, a draft, with six vector files
   (`v2_serialization`, `v2_ids`, `v2_merkle`, `v2_genesis`, `v2_fees`, `v2_emission`) made by
-  `tools/make_vectors_v2.py`. The dynamic minimum fee and the version 2 emission are already implemented in
+  `reference/tools/make_vectors_v2.py`. The dynamic minimum fee and the version 2 emission are already implemented in
   Rust and pass their vectors. Not vectorised, because it needs the upstream libraries: everything
   cryptographic (Carrot, CLSAG, Bulletproofs+).*
 - **M6. Chain state and validation** in the new model, storage, fork choice, reorganisations.
@@ -147,10 +147,10 @@ Use those chain cases as a checklist of rules the new model must also enforce in
 
 ## The first hour of the rewrite session
 
-1. `git checkout -b rewrite`; run `python -m pytest -q` and `python tools/make_vectors.py --check`. Confirm
+1. `git checkout -b rewrite`; run `python -m pytest -q` and `python reference/tools/make_vectors.py --check`. Confirm
    the baseline is green.
 2. `tests/vectors/matmulhash_full.json` is already committed. Run the slow vector test once on the owner's
    machine (4.3 GiB of free RAM) to confirm slices 78-255, which no other vector cross-checks:
-   `TENERO_SLOW_VECTORS=1 python -m pytest tests/test_vectors.py -q`.
+   `TENERO_SLOW_VECTORS=1 python -m pytest reference/tests/test_vectors.py -q`.
 3. Read `docs/CONSENSUS.md` and `docs/KNOWN_ISSUES.md`; settle decisions 1 to 4.
 4. Build M0.

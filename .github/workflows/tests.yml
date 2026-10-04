@@ -1,12 +1,13 @@
 name: tests
 
+# The Python REFERENCE (reference/): the independent implementation the Rust code is checked against, and the generator of the golden vectors. Not the program.
 on:
   push:
-    branches: [main]
+    branches: [main, rewrite]
   pull_request:
 
 jobs:
-  test:
+  reference:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -19,11 +20,20 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
+            reference/requirements.txt
+            reference/requirements-dev.txt
       - name: Install
-        run: python -m pip install -r requirements-dev.txt
+        run: python -m pip install -r reference/requirements-dev.txt
       # The suite needs no GPU: the CUDA kernels are compiled with g++ (already on the runner)
-      # and run on the CPU through tests/cuda_emulator.py.
+      # and run on the CPU through reference/tests/cuda_emulator.py.
       - name: Test
+        working-directory: reference
         run: python -m pytest -q
+      - name: The committed vectors match the references
+        run: |
+          python reference/tools/make_vectors.py --check
+          python reference/tools/make_vectors_v2.py --check
+          python reference/tools/make_vectors_wire.py --check
+          python reference/tools/make_vectors_control.py --check
+          python reference/tools/make_vectors_interim.py --check
+          python reference/tools/make_vectors_proofs.py --check

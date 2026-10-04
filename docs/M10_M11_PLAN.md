@@ -104,7 +104,7 @@ What the owner asked for is a rate that can be compared with other GPU miners. T
 * **Measured on the owner's machine only** (rule 5); after the work, the number is re-measured and recorded. If it is not
   faster than today's 35,000, the report says so: this milestone is about *reporting*, not a promise of speed.
 * Possible real speed work, **not promised**: overlapping the CPU work with the GPU, a faster fold, a kernel tuned for the
-  card. Each is a consensus-neutral change that must still pass `tests/test_fused_kernels.py` and the owner's GPU check.
+  card. Each is a consensus-neutral change that must still pass `reference/tests/test_fused_kernels.py` and the owner's GPU check.
 
 ### M10.3 The wallet app: a GUI that can run the node (size L)
 
@@ -156,7 +156,7 @@ What the owner asked for is a rate that can be compared with other GPU miners. T
   folder.
 * **A version number and a protocol/network id in the peer handshake**, so a tester on an old build or on another chain
   is refused with a clear message instead of a ban or a split.
-* **Sign and verify messages, and prove and check payments, as Monero's wallet does (the owner's request, 2026-10-03; size M; BUILT 2026-10-03: the owner chose to keep each payment's secret key in the wallet file behind a click to reveal, and the hand-written option with no new dependency; the definition is `docs/WALLET_PROOFS.md`, the independent reference `tools/make_vectors_proofs.py`, 4 signature and 9 proof vectors the Rust matches bit for bit, a fuzz target `wallet_proofs`; the window has a Prove tab and History buttons; still unaudited and the review is not done).** The plan as written before building:
+* **Sign and verify messages, and prove and check payments, as Monero's wallet does (the owner's request, 2026-10-03; size M; BUILT 2026-10-03: the owner chose to keep each payment's secret key in the wallet file behind a click to reveal, and the hand-written option with no new dependency; the definition is `docs/WALLET_PROOFS.md`, the independent reference `reference/tools/make_vectors_proofs.py`, 4 signature and 9 proof vectors the Rust matches bit for bit, a fuzz target `wallet_proofs`; the window has a Prove tab and History buttons; still unaudited and the review is not done).** The plan as written before building:
   What each does, and what it needs:
   * **Sign a message / verify a signature:** the wallet signs a text with an account's spend key (the signature says "whoever
     holds this address's spend key wrote this", nothing about when or where); anyone checks it against the address alone. The
@@ -258,7 +258,7 @@ rewrite). Nothing is pushed to `main` before M11.25, and then only when the owne
 * **The timestamp rule (DECIDED by the owner, 2026-10-03): a block's timestamp must be later than its parent's** (in place of "not below the
   median of the last 11"). Why: the simulation (`tenero-core/tests/difficulty_sim.rs`, `THREAT_MODEL.md` E3) showed that with the median rule a
   miner holding only 30 % of the hash rate can pull the difficulty to 0.40x by backdating its blocks, and that this rule leaves it at 1.00x.
-  **To do, together, for the fresh chain (rule 1):** the reference (`tools/make_vectors.py` and `tools/make_vectors_v2.py`), `CONSENSUS.md`
+  **To do, together, for the fresh chain (rule 1):** the reference (`reference/tools/make_vectors.py` and `reference/tools/make_vectors_v2.py`), `CONSENSUS.md`
   section 7 and `CONSENSUS_V2.md` 5.5, the validator in `tenero-chain`, new vectors, a test per edge (equal to the parent, one second later, earlier,
   and the future limit still held), the simulation rerun against the real rule instead of a stand-in, and a line in the release notes. It
   changes what a block must satisfy, so it is a new chain (there is no activation mechanism, `EMERGENCY_PLAN.md` section 8). Not changed yet.

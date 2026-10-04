@@ -2,158 +2,67 @@
   <img src="assets/banner.webp" alt="Tenero" width="100%">
 </p>
 
-An experimental proof-of-work cryptocurrency in Python, built to learn how these things work.
-The interesting part is its **GPU proof of work, "matmulhash v2"**: an int8 matrix multiplication
-against a 4 GiB dataset that is built from ChaCha20 in a way that makes every slice depend on the
-earlier ones.
+An experimental proof-of-work cryptocurrency, built to learn how these things work. Its centre is a GPU-friendly proof of work, **"matmulhash v2"**: an int8
+matrix multiplication against a 4 GiB dataset that is built from ChaCha20 so that every slice depends on the earlier ones. It began as a Python prototype and has
+been rewritten in Rust, with Monero-style privacy (ring signatures, hidden amounts) as the design target.
 
-> **This is a learning project, not a currency.** The cryptography is standard (secp256k1 ECDSA,
-> SHA-256, ChaCha20) but the design has not been audited, there is no networking yet (one node
-> only), and the proof of work is new and unreviewed. Do not use it to hold anything of value.
+> **This is a learning project, not a currency.** It is **unaudited**, there is **no launched network** (only test networks on one or a few machines), and
+> **nothing on it has value**. The proof of work is new and unreviewed, and nothing cryptographic in it has been audited as it is used here. The wallet currently
+> uses an **interim output scheme that is not Carrot and not private in Monero's sense**. Do not use it to hold anything of value.
 
 Inspired by Monero's design ideas; not affiliated with or endorsed by the Monero project.
 
-## What it has
+## Where it is
 
-- **Chain and wallet.** Signed transactions with fees and memos, amounts in units of 0.0001,
-  a command-line wallet, a mempool, atomic saves.
-- **Emission.** 20 coins per block to start, halving every 525,600 blocks (about a year), 20,000,000
-  coins of main emission (reached at block 2,334,400, about 4.4 years in), then a 0.5 coin tail
-  forever. 60-second blocks.
-- **Difficulty.** LWMA (window 30, at most 4x per block) with timestamp rules.
-- **Flexible block size.** Monero-style: blocks up to 300 kB are free, the reward shrinks
-  quadratically above the median, and the hard limit is twice the median (600 kB at the floor).
-- **GPU proof of work (matmulhash v2).**
-  - Each attempt multiplies a ChaCha20-generated matrix by one slice of the dataset (int8 tensor
-    cores, exact int32 results) and folds the product with the ChaCha20 permutation.
-  - The 256-slice dataset changes every epoch (100 blocks). Each slice is built from the previous
-    one plus three data-dependent picks from anywhere earlier, so keeping only part of the dataset
-    makes rebuilding a missing slice snowball (see `tenero/analysis.py`).
-  - Blocks carry the fold result (`mix`), so a node can reject a tampered block in microseconds
-    (SHA-256 of seed + mix must equal the hash and meet the target) before doing the expensive
-    recomputation.
-- **Miner.** Runs on the GPU, and double-checks every block on the CPU in a separate low-priority
-  process while the GPU searches for the next one. The whole program stays within a CPU core budget
-  (`--max-cores`, default 6).
+*This README is an interim one. A full rewrite (how it works, how to set it up, the test network plan) is planned as M11.4 in [`docs/M10_M11_PLAN.md`](docs/M10_M11_PLAN.md).*
 
-## Requirements
+- **The programs** (Rust, in `crates/`): `tenerod` (the node), `tenero-miner` (the miner: GPU, CPU, and a SHA-256 test backend), `tenero-wallet` (the wallet on the
+  command line), `tenero-wallet-gui` (the wallet as a window: it starts and stops the node and the miner, several wallets and accounts, a 24-word seed phrase,
+  sending with three fee levels, receiving with a QR code, message signatures and payment proofs, payment requests) and `tenero-seedcheck`.
+- **Two networks:** `test` (a SHA-256 chain a CPU can mine) and `dev` (the real matmulhash proof of work; the GPU miner needs an NVIDIA GPU with enough memory
+  for the 4 GiB dataset). A first public test release, on a fresh chain with no premine, is planned (M11.2 to M11.4) and **does not exist yet**.
+- **Tested:** the Rust workspace has 893 passing tests (measured 2026-10-04; 24 more need a GPU or a lot of memory and are skipped by default), checked against
+  golden test vectors made by an independent Python reference (`reference/`). A random-case fuzz run of the protocol engine ran 9 hours with no failure after the
+  one bug it found was fixed. That says nothing about bugs it cannot find, and it is not an audit.
+- **What is known to be wrong or missing:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) and [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 
-- Python 3.12 or newer (developed on 3.14 on Windows; the test suite also runs on 3.12 on Linux).
-- `numpy` and `ecdsa`: `pip install -r requirements.txt`
-- **GPU mining only:** an NVIDIA GPU with at least 8 GB of VRAM, a CUDA build of PyTorch, and CuPy.
-  The 4 GiB dataset lives in VRAM.
-- About 4.3 GiB of RAM for the CPU double-check (about 8.6 GiB for the last 10 blocks of each epoch,
-  while the next epoch's dataset is prepared).
+## Build and run
 
-## Quick start (Windows PowerShell)
+Windows, PowerShell (Linux builds in CI and has not been run by hand yet). You need [Rust](https://rustup.rs). `docs/RUNNING.md` is the full guide.
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-
-python cli.py                                   # the wallet: type `help`
-python miner.py <your-address> --pow sha256     # a small chain a CPU can mine, for trying things out
+cargo build --release
+cargo test --workspace           # no GPU needed
 ```
 
-### GPU mining
+Run a node on the test network, or open the wallet app (which starts and stops the node and the miner itself):
 
 ```powershell
-# install a CUDA build of PyTorch for your GPU: https://pytorch.org/get-started/locally/
-pip install "cupy-cuda13x[ctk]"                 # choose the CuPy package that matches your CUDA
-.\gpu_test.bat                                  # checks the GPU against the CPU bit for bit, then benchmarks
-python miner.py <your-address>
+.\target\release\tenerod.exe --data $HOME\tenero-data --network test
+.\target\release\tenero-wallet-gui.exe
 ```
 
-`gpu_test.bat` (or `python gpu_pow_test.py`) is the real test of the GPU code. It compares the GPU's
-dataset, ChaCha20 kernels, fold and full attempts with the CPU reference, mines and verifies a
-solution, benchmarks the pipeline, and prints what keeping only part of the dataset would cost.
+## The Python reference
 
-The wallet is a separate program from the miner:
-
-| command | what it does |
-|---|---|
-| `address`, `balance` | your address, a balance |
-| `send <address> <amount> [slow\|normal\|fast\|fee] ["memo"]` | sign and queue a payment |
-| `fees`, `pending`, `history` | fee tiers and block space, queued and confirmed transactions |
-| `blocks`, `chain`, `supply`, `difficulty` | look at the chain, the emission and the mining |
-| `verify` | re-check every block's proof of work |
-| `wallet <name>`, `wallets` | switch or list wallets |
-
-## Where your data lives
-
-By default the **wallets, `chain.json` and `mempool.json` are stored in the project folder**. A wallet
-file holds a private key, so `.gitignore` excludes them, and **you should never commit them**. To keep
-data elsewhere (a scratch chain for experiments):
+[`reference/`](reference/README.md) holds the original Python implementation, kept frozen on purpose: it is the **second, independent implementation** the Rust code is
+checked against ("bit for bit, or it is wrong"), it generates the golden vectors in [`tests/vectors/`](tests/vectors/README.md), and it holds the CPU simulation of
+the memory-hardness argument. It is not a program to run. The old Python miner, wallet and command line were removed; they are preserved on the
+[`legacy-python`](../../tree/legacy-python) branch and the `python-final` tag, and their old README is in [`docs/PYTHON_LEGACY.md`](docs/PYTHON_LEGACY.md).
 
 ```powershell
-$env:TENERO_DATA = "$HOME\scratch"
-```
-
-Settings are in `tenero/config.py`. The supply, halving, tail, block-time and difficulty settings are
-saved into `chain.json` when a chain is created, so editing them only affects a new chain: delete
-`chain.json` and `mempool.json` to apply a change. The fee and block-size settings apply immediately
-to whatever chain is loaded and are consensus rules, so changing them can invalidate an existing chain.
-
-## Tests
-
-```powershell
+cd reference
 pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-About 550 tests, no GPU needed. The CUDA kernels are checked by compiling the real kernel source with
-g++ and running it on the CPU (`tests/cuda_emulator.py`) against a numpy reference, which is itself
-checked against an independent OpenSSL-based implementation. If g++ is missing those tests are
-skipped. GitHub Actions is set up to run the suite on Linux for Python 3.12, 3.13 and 3.14
-(`.github/workflows/tests.yml`).
-
 ## Documentation
 
-- [`docs/CONSENSUS.md`](docs/CONSENSUS.md): the rules, precisely enough to build another implementation from
-- [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md): verified flaws in the current design
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): how the parts fit, and what is measured
-- [`docs/REWRITE_PLAN.md`](docs/REWRITE_PLAN.md): the proposed plan for a native rewrite with privacy
-- [`tests/vectors/`](tests/vectors/README.md): golden test vectors that pin the reference down bit for bit
-  (`python tools/make_vectors.py --check`)
+- [`docs/CONSENSUS.md`](docs/CONSENSUS.md) and [`docs/CONSENSUS_V2.md`](docs/CONSENSUS_V2.md): the rules, precisely enough to build another implementation from (version 2 is the Rust program's data model, a draft)
+- [`docs/RUNNING.md`](docs/RUNNING.md): running the node, miner and wallets; [`docs/TESTNET.md`](docs/TESTNET.md): a private test network on one machine
+- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md), [`docs/EMERGENCY_PLAN.md`](docs/EMERGENCY_PLAN.md), [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md): what can go wrong, and what is done about it
+- [`docs/M10_M11_PLAN.md`](docs/M10_M11_PLAN.md): what is done and what is left before a first test release
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (describes the Python prototype), [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md): the parts and the measured numbers (one machine, an RTX 5070 Ti)
 
-## Layout
+## Licence
 
-```
-miner.py            the miner            cli.py     the wallet
-view.py             print the chain      demo.py    a tiny SHA-256 demo
-gpu_pow_test.py     GPU vs CPU checks and benchmark
-difficulty_sim.py   try difficulty settings without waiting for blocks
-tenero/
-  chain.py block.py transaction.py wallet.py mempool.py storage.py units.py config.py paths.py
-  pow.py            proof-of-work algorithms and the searchers
-  matmulhash.py     matmulhash v2 (CPU reference: dataset, attempt, fold, cheap pre-check)
-  chacha.py         ChaCha20 in numpy
-  gpubackend.py     CUDA kernels, the PyTorch backend, the GPU self-test and searcher
-  checker.py        the separate-process CPU double-check
-  analysis.py       simulation of the cost of not keeping the whole dataset
-docs/               the specification and plans
-tools/make_vectors.py  generates tests/vectors/ from the reference
-tests/              the tests; tests/vectors/ holds the golden vectors
-```
-
-## Measured on one machine (RTX 5070 Ti)
-
-About 22,000 attempts per second (roughly 47 TOPS of int8 work), the 4 GiB dataset built on the GPU in
-0.10 s, a CPU check of a block in 0.1 s, and the CPU reference dataset built in about 37 s on 6 threads
-(about 68 s on one). These are one machine's numbers, not guarantees.
-
-## Known limits and ideas
-
-- One node only: no networking or fork-choice rule yet.
-- The chain is rewritten to a single JSON file on every save, which will not scale to sustained full
-  blocks (a day of full 300 kB blocks is about 530 MB). A database would fix that.
-- No privacy yet: addresses and amounts are public.
-- The memory-hardness numbers come from a simulation of the dependency structure, not a proof, and the
-  fill and fold functions are unaudited.
-- Ideas: networking with a cumulative-work fork rule, an output model with stealth addresses and hidden
-  amounts, a database for storage, a written threat model.
-
-## License
-
-BSD 3-Clause: see [`LICENSE`](LICENSE).
+See [`LICENSE`](LICENSE).

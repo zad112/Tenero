@@ -1,5 +1,5 @@
 //! Real Monero mainnet Bulletproofs+ proofs (`tests/vectors/upstream_monero_bpp.json`, imported verbatim by
-//! `tools/import_upstream_vectors.py`). They show that the pinned library accepts what Monero's own code
+//! `reference/tools/import_upstream_vectors.py`). They show that the pinned library accepts what Monero's own code
 //! produced, not only what the library produced itself.
 
 use monero_bulletproofs::Bulletproof;

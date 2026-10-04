@@ -1,7 +1,7 @@
 //! The GPU miner's engine, in Rust, without Python. Experimental and unaudited.
 //!
 //! It runs the same three CUDA kernels as the Python miner (`kernels/matmulhash.cu`, kept
-//! identical to `tenero/gpubackend.py` by `tests/test_kernel_source_copy.py`), compiled at run time
+//! identical to `reference/tenero/gpubackend.py` by `reference/tests/test_kernel_source_copy.py`), compiled at run time
 //! with NVRTC, and the exact int8 matrix multiply through cuBLASLt (`gemm`). Everything is checked
 //! against the CPU code in `tenero-core`, which is checked against the golden vectors.
 //!

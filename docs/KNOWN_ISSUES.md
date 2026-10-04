@@ -3,13 +3,22 @@
 Things wrong or missing in the current Python implementation, found while preparing for a rewrite.
 A rewrite should **not** carry them over. Each says how it was established:
 
-- **verified** = reproduced by a test in `tests/test_known_issues.py` (a strict expected failure:
+- **verified** = reproduced by a test in `reference/tests/test_known_issues.py` (a strict expected failure:
   the test asserts the correct behaviour and fails today; when the flaw is fixed it flips and its
   marker must be removed);
 - **from the code** = read in the source, not reproduced by a test.
 
 Most of 1 to 5 disappear by themselves in the output-based privacy model that the rewrite is meant
 to introduce, but they are worth knowing because they show what to test for.
+
+**Status at M11.1 (2026-10-04): the Python program was retired; nothing below was fixed by that.** Items 1 to 10 and 14 are flaws of the Python account-model chain, wallet and
+JSON storage. That code is **still present, frozen, in `reference/tenero/`** (`chain.py`, `block.py`, `transaction.py`, `wallet.py`, `storage.py`), kept only because the
+vector generators call it for the emission, difficulty and fee arithmetic; nothing shipped uses it. So the flaws are still there, their strict-xfail tests are still in
+`reference/tests/test_known_issues.py` and still fail as expected, and nothing here is called "fixed". The Rust program was designed not to carry them (an output model with
+key images, a canonical binary serialization, a checked genesis and chain id: `CONSENSUS_V2.md`), which is a design claim tested by its own tests, not by these. **Item 15 is
+retired because it no longer describes anything shipped** (the Rust program has fork choice by cumulative work, networking, relay rules and reorganisation handling; it
+described the Python prototype). Items 11, 12 and 13 apply to the Rust program too. No item is retired merely because its code was deleted: the code that remains
+carries its items with it.
 
 ## Correctness and security
 
@@ -63,7 +72,7 @@ minimum relay fee as policy instead.
 ## The proof of work
 
 **11. Memory-hardness is simulated, not proven (from the code and the simulation).** The dependency
-structure was measured on a 256-slice stack of small slices (`tenero/analysis.py`), and the slowdown for
+structure was measured on a 256-slice stack of small slices (`reference/tenero/analysis.py`), and the slowdown for
 keeping only part of the dataset is an estimate built from that and from one GPU's measured times. The fill
 and fold construction (a ChaCha20 core with feed-forward and XORs, used as a compression function) is
 original to this project and has had no cryptanalysis or independent review.

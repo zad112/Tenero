@@ -1,4 +1,4 @@
-"""The memory-hardness analysis (tenero/analysis.py): the rebuild-cost simulation behind KNOWN_ISSUES 11 and the README's ASIC-resistance
+"""The memory-hardness analysis (reference/tenero/analysis.py): the rebuild-cost simulation behind KNOWN_ISSUES 11 and the README's ASIC-resistance
 argument. Split out of test_gpu_script.py when the Python GPU program was retired (M11.1); the analysis stays because the argument
 rests on it. It is an ESTIMATE from a small simulation, not a proof."""
 import pytest

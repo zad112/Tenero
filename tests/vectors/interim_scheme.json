@@ -56,7 +56,7 @@
    }
   ]
  },
- "description": "The INTERIM wallet output scheme (crates/tenero-wallet/src/interim.rs; NOT Carrot): keys, addresses, making an output for a recipient, and what the receiver recovers. An independent Python reference (tools/make_vectors_interim.py).",
+ "description": "The INTERIM wallet output scheme (crates/tenero-wallet/src/interim.rs; NOT Carrot): keys, addresses, making an output for a recipient, and what the receiver recovers. An independent Python reference (reference/tools/make_vectors_interim.py).",
  "enotes": [
   {
    "address": "tni1ca69dc577e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577aebea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d250441930376cce398",

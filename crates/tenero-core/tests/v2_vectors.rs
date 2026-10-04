@@ -1,5 +1,5 @@
 //! The version 2 data model against `tests/vectors/v2_*.json`, which a separate Python reference made
-//! (`tools/make_vectors_v2.py`): the wire forms, the invalid encodings, the ids, the Merkle root and the genesis.
+//! (`reference/tools/make_vectors_v2.py`): the wire forms, the invalid encodings, the ids, the Merkle root and the genesis.
 
 use serde_json::{json, Value};
 use tenero_core::hash::{hex_lower, sha256};

@@ -77,7 +77,7 @@ class Blockchain:
         self.max_supply = max_supply
         self.tail_reward = tail_reward
         self.chain = [Block(0, [], "0" * 64, timestamp=0)]
-        self.pending = []  # in-memory only (used by tests and demo.py)
+        self.pending = []  # in-memory only (used by tests)
 
     # ---------- coin supply ----------
     def scheduled_reward(self, height):

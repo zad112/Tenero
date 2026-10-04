@@ -1,4 +1,4 @@
-"""The control protocol (docs/CONTROL_PROTOCOL.md): the reference in tools/make_vectors_control.py against its committed
+"""The control protocol (docs/CONTROL_PROTOCOL.md): the reference in reference/tools/make_vectors_control.py against its committed
 vectors, and facts computed here independently of it (one message has one encoding; the frame rule)."""
 import json
 import os

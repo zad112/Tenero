@@ -11,8 +11,8 @@ It does NOT cover Carrot, CLSAG, Bulletproofs+ or FCMP++: for those we import th
 test vectors when their code is added (a vector made by our own reference would only prove we agree
 with ourselves).
 
-    python tools/make_vectors_v2.py --check     do the committed files match the reference?
-    python tools/make_vectors_v2.py --write     regenerate them (a CONSENSUS CHANGE: explain it in the
+    python reference/tools/make_vectors_v2.py --check     do the committed files match the reference?
+    python reference/tools/make_vectors_v2.py --write     regenerate them (a CONSENSUS CHANGE: explain it in the
                                                 commit and update docs/CONSENSUS_V2.md)
 
 Nothing here is random and nothing depends on the clock.
@@ -24,7 +24,8 @@ import os
 import struct
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REFERENCE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # reference/: the `tenero` package is here
+ROOT = os.path.dirname(REFERENCE)   # the repository: tests/vectors is here
 VECTOR_DIR = os.path.join(ROOT, "tests", "vectors")
 SCHEMA = 1
 FILES = ("v2_serialization", "v2_ids", "v2_merkle", "v2_genesis", "v2_fees", "v2_emission", "v2_work")
@@ -742,8 +743,8 @@ def fees_vectors():
 
 
 def emission_vectors():
-    if ROOT not in sys.path:
-        sys.path.insert(0, ROOT)
+    if REFERENCE not in sys.path:
+        sys.path.insert(0, REFERENCE)
     from tenero.chain import Blockchain          # the version 1 reference: its arithmetic does not care about units
 
     def rows(bc, heights):

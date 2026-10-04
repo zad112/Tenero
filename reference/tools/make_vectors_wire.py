@@ -3,10 +3,10 @@
 An independent implementation, in Python and the standard library only, of how the messages of
 crates/tenero-net become bytes: the frame, the sixteen message layouts, the caps, and the order in which a
 decoder checks a frame. The transaction and block encodings inside `blocks` and `txs` come from the version 2
-data-model reference (`tools/make_vectors_v2.py`), which is itself checked against the Rust code.
+data-model reference (`reference/tools/make_vectors_v2.py`), which is itself checked against the Rust code.
 
-    python tools/make_vectors_wire.py --check     do the committed vectors match the reference?
-    python tools/make_vectors_wire.py --write     regenerate them (a PROTOCOL CHANGE: explain it in the commit
+    python reference/tools/make_vectors_wire.py --check     do the committed vectors match the reference?
+    python reference/tools/make_vectors_wire.py --write     regenerate them (a PROTOCOL CHANGE: explain it in the commit
                                                   and update docs/WIRE_PROTOCOL.md)
 
 Nothing here is random and nothing depends on the clock.
@@ -20,7 +20,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import make_vectors_v2 as v2  # noqa: E402  (the data-model reference)
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the repository (the tools live in reference/tools)
 VECTOR_DIR = os.path.join(ROOT, "tests", "vectors")
 NAME = "v2_wire"
 
@@ -454,7 +454,7 @@ def build():
         "schema": 1, "name": NAME,
         "description": "The peer-to-peer wire protocol (docs/WIRE_PROTOCOL.md): every message as a whole frame, "
                        "malformed frames with the error a decoder must give, and the prefixes on which a stream "
-                       "decoder must already fail. Made by tools/make_vectors_wire.py. `blocks` and `txs` hold "
+                       "decoder must already fail. Made by reference/tools/make_vectors_wire.py. `blocks` and `txs` hold "
                        "the wire form (CONSENSUS_V2.md) of each block and transaction as hex.",
         "limits": {"max_frame": MAX_FRAME, "max_locator": MAX_LOCATOR, "max_ids": MAX_IDS, "max_blocks": MAX_BLOCKS,
                    "max_txs": MAX_TXS, "max_not_found": MAX_NOT_FOUND, "max_addrs": MAX_ADDRS,
