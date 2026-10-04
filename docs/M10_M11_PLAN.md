@@ -317,7 +317,23 @@ move the things that only work from the default branch: the **long fuzz run** (`
 schedule, and any branch protection. Then the first long fuzz runs start (hours, not the two-minute smoke run), with the engine target made faster and
 the noise handshake and the proofs targets included. The old Python tests and tools that are kept (the vector references) move with it.
 
-### M11.3 Packaging for Windows and Linux (size L)
+### M11.3 Packaging for Windows and Linux (size L): BUILT 2026-10-04, first dry run green; the owner's steps remain (see `docs/RELEASING.md`)
+
+**What exists (commits `4ab29f6`, `ba9a0b5`, and the one that records this):** version `0.1.0-alpha.1`; `--version` with the source commit on `tenerod`, `tenero-miner`, `tenero-wallet`, `tenero-seedcheck`
+(the wallet app shows it in its About tab: it has no console on Windows); the circular icon and the version information compiled into `tenero-wallet-gui.exe` (`embed-resource`, owner-approved
+2026-10-04, build-time and Windows-only; the build FAILS if it cannot embed); `THIRD-PARTY-LICENCES.txt` made by `cargo-about` 0.9.2 (owner-approved 2026-10-04, a CI tool, not linked into the
+programs) plus the two font notices the tool misses; `.github/workflows/release.yml` (a tag builds a Windows zip and a Linux tar.gz with SHA-256 files and creates a DRAFT pre-release; a manual run is a dry
+run that keeps the packages for a week; only the draft job can write); notes `docs/releases/v0.1.0-alpha.1.md`; the owner's checklist `docs/RELEASING.md`.
+**Decisions (owner, 2026-10-04):** GPU users install the CUDA Toolkit 13.x themselves (the miner needs NVRTC and cuBLASLt, which come with the Toolkit, not the driver: `cublasLt64_13.dll` is 470 MB and NVRTC
+101 MB on the owner's machine; nothing from NVIDIA is bundled; bundling after a licence check, precompiling the kernels, or writing our own int8 multiply are later options, none done); first release `v0.1.0-alpha.1`.
+**Measured in the first dry run (run 37233836092, commit `ba9a0b5`):** both packages built and the packed programs ran and reported the right version and commit; Windows zip 7.35 MB, Linux tar.gz 9.63 MB;
+build 5 min 15 s (Windows) and 2 min 44 s (Linux), the licence tool 4 min and 2 min on a cold cache; **minimum glibc 2.34 (programs) and 2.35 (wallet app)**; I downloaded the Windows zip, checked its SHA-256 against the
+workflow's, ran the four command-line programs from it, and checked the app's icon and version information and the font notices in the licences file.
+**NOT done or NOT verified:** the wallet app has never been opened from the package (CI has no screen); the GPU tests for this build (the owner's, before a tag); the whole Linux package has been run by nobody
+(only `--version` in CI); the handshake does not carry the version (the plan asked for it: that is a protocol change, left out); the `.exe` files are not code-signed and the builds are not shown to be bit-for-bit reproducible;
+no release has been made (no tag exists, no draft).
+
+**The plan as it was written:**
 
 * **The program's icon inside the `.exe` (the owner's, 2026-10-03):** the circular logo (`assets/tenero.ico`, made by `tools/make_icons.py`) is today only
   the window icon and a shortcut's icon, so a copied `tenero-wallet-gui.exe` shows the default one. Embedding it needs a Windows resource compiled into the
