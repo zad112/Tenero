@@ -15,10 +15,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows runs on the owner's own machine (a self-hosted runner), not on GitHub's metered minutes
+        # Both run on the owner's own machine (self-hosted runners: Windows, and Linux in WSL since 2026-10-04), not on GitHub's metered minutes
         include:
           - name: ubuntu
-            runner: '"ubuntu-latest"'
+            runner: '["self-hosted", "Linux", "X64"]'
           - name: windows
             runner: '["self-hosted", "Windows", "X64"]'
     name: test (${{ matrix.name }})

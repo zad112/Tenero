@@ -18,7 +18,7 @@ concurrency:
 jobs:
   deny-and-audit:
     name: cargo deny and cargo audit
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]   # the owner's Linux runner (WSL), since 2026-10-04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

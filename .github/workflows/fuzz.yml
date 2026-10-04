@@ -28,7 +28,7 @@ concurrency:
 jobs:
   fuzz:
     name: fuzz (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]   # the owner's Linux runner (WSL), since 2026-10-04: one job at a time, so the targets run one after another
     timeout-minutes: 90
     strategy:
       fail-fast: false
