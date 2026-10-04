@@ -20,10 +20,12 @@ jobs:
     name: cargo deny and cargo audit
     runs-on: [self-hosted, Linux, X64]   # the owner's Linux runner (WSL), since 2026-10-04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # the "stable" branch
+        with:
+          toolchain: stable
       # The two tools take several minutes to build; they are kept between runs (the key names their versions, so a new version is a new build).
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         id: tools
         with:
           path: |

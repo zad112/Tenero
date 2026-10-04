@@ -24,10 +24,11 @@ jobs:
     name: test (${{ matrix.name }})
     runs-on: ${{ fromJSON(matrix.runner) }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # the "stable" branch
         if: matrix.name == 'ubuntu'
         with:
+          toolchain: stable
           components: clippy, rustfmt
       # On the owner's machine that action fails (its `bash` is the WSL launcher, with no distro installed), and the toolchain is
       # already there: use it as it is (so Windows can be a Rust release behind or ahead of Ubuntu)
