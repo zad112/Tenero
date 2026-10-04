@@ -405,6 +405,7 @@ fn two_nodes_sync_and_a_wallet_pays_through_the_control_interface() {
     r.unwrap();
     let spendable = find(&said, "spendable");
     assert_ne!(spendable, "0", "Alice has mature coins: {said:#?}");
+    let before_the_payment = said.clone();
 
     // she pays Bob 1.5 coins
     let (r, said) = cli(
@@ -443,10 +444,12 @@ fn two_nodes_sync_and_a_wallet_pays_through_the_control_interface() {
         ],
         &[],
     );
+    // (This failed once on a slow hosted Windows runner, 2026-10-04, and could not be reproduced: the message carries what the next failure needs.)
     assert_ne!(
         find(&said2, "reserved"),
         "0",
-        "the coins sent are promised: {said2:#?}"
+        "the coins sent are promised.\nbefore the payment: {before_the_payment:#?}\nthe payment said: {said:#?}\nafter it: {said2:#?}\nnode log:\n{}",
+        a.log()
     );
 
     // a block takes it in, and Bob sees it
