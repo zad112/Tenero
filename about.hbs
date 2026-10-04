@@ -1,0 +1,24 @@
+THIRD-PARTY LICENCES FOR TENERO
+
+Tenero (this program) is BSD-3-Clause: see the file LICENSE. It is an experiment: unaudited, not for real value.
+The programs contain the open-source libraries listed here. Each is used under the licence shown, and the full text of every licence is below.
+(Made with cargo-about from the dependency list in Cargo.lock; the fonts of the wallet app's window library carry their own notices, included below.)
+
+SUMMARY
+{{#each overview}}
+  {{{name}}}: {{count}} crate(s)
+{{/each}}
+
+{{#each licenses}}
+================================================================================
+{{{name}}}
+================================================================================
+
+Used by:
+{{#each used_by}}
+  - {{{crate.name}}} {{{crate.version}}}{{#if crate.repository}}  {{{crate.repository}}}{{/if}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

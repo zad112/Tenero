@@ -1,0 +1,172 @@
+name: release
+
+# Builds the release packages (Windows zip, Linux tar.gz, each with a SHA-256 file) on GitHub's hosted runners.
+# * A push of a tag `vX.Y.Z...` builds both and creates a DRAFT, pre-release GitHub release with the packages, a combined SHA256SUMS and the notes in
+#   docs/releases/<tag>.md. Nothing is public until the owner edits the notes and presses "Publish". The tag must equal "v" + the version in Cargo.toml.
+# * "Run workflow" by hand is a dry run: it builds and keeps the packages as workflow artifacts (a week), and creates no release.
+# The steps for the owner (the GPU tests that CI cannot run, the tag, the checks) are in docs/RELEASING.md.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  build:
+    name: package (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04 on purpose: the oldest hosted Linux image, so the programs need the oldest glibc (the run's log prints the exact floor)
+          - name: windows
+            runner: windows-latest
+            exe: ".exe"
+          - name: linux
+            runner: ubuntu-22.04
+            exe: ""
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # the "stable" branch
+        if: matrix.name == 'linux'
+        with:
+          toolchain: stable
+      - name: the version, and that a tag matches it
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TENERO_COMMIT=${GITHUB_SHA:0:12}" >> "$GITHUB_ENV"
+          echo "version $VERSION, commit ${GITHUB_SHA:0:12}"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "::error::the tag $GITHUB_REF_NAME does not match the version $VERSION in Cargo.toml"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ ! -f "docs/releases/$GITHUB_REF_NAME.md" ]; then
+            echo "::error::docs/releases/$GITHUB_REF_NAME.md (the release notes) does not exist"
+            exit 1
+          fi
+      # --locked: exactly the versions in Cargo.lock. The build paths are removed from the programs (they hold the runner's folder names otherwise).
+      - name: build the programs
+        shell: bash
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: debuginfo
+        run: |
+          export RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/build"
+          cargo build --release --locked -p tenero-app -p tenero-gui
+      - name: keep the licence tool between runs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/cargo-about*
+          key: cargo-about-0.9.2-${{ runner.os }}
+      - name: make THIRD-PARTY-LICENCES.txt
+        shell: bash
+        run: |
+          command -v cargo-about >/dev/null || cargo install cargo-about --version 0.9.2 --locked --features cli
+          cargo about generate about.hbs > THIRD-PARTY-LICENCES.txt
+          # The window library carries four fonts, each with a notice of its own that the tool does not list (the OFL and Ubuntu licence texts it does). Add the other two
+          # from the crate's own fonts folder; stop if that folder cannot be found, so a missing notice is never shipped silently.
+          set -- "$HOME"/.cargo/registry/src/*/epaint_default_fonts-*/fonts
+          if [ "$#" -ne 1 ] || [ ! -f "$1/Hack-Regular.txt" ] || [ ! -f "$1/emoji-icon-font-mit-license.txt" ]; then
+            echo "::error::cannot find the font notices of epaint_default_fonts"; exit 1
+          fi
+          {
+            printf '\n================================================================================\n'
+            printf 'FONTS INSIDE THE WALLET APP WINDOW LIBRARY (epaint_default_fonts): their own notices\n'
+            printf '================================================================================\n'
+            for f in Hack-Regular.txt emoji-icon-font-mit-license.txt; do printf '\n--- %s\n\n' "$f"; cat "$1/$f"; done
+          } >> THIRD-PARTY-LICENCES.txt
+          wc -c THIRD-PARTY-LICENCES.txt
+      - name: put the package together
+        shell: bash
+        run: |
+          NAME="tenero-$VERSION-${{ matrix.name }}-x64"
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+          mkdir "$NAME"
+          for b in tenerod tenero-miner tenero-wallet tenero-seedcheck tenero-wallet-gui; do
+            cp "target/release/$b${{ matrix.exe }}" "$NAME/"
+          done
+          cp LICENSE THIRD-PARTY-LICENCES.txt README.md "$NAME/"
+          cp docs/RUNNING.md "$NAME/RUNNING.md"
+          if [ -f "docs/releases/v$VERSION.md" ]; then cp "docs/releases/v$VERSION.md" "$NAME/RELEASE-NOTES.md"; fi
+          ls -l "$NAME"
+      # the packaged programs must run and say which build they are (the exact version and the commit this run is building)
+      - name: run what was packaged
+        shell: bash
+        run: |
+          for b in tenerod tenero-miner tenero-wallet tenero-seedcheck; do
+            out=$("$NAME/$b${{ matrix.exe }}" --version)
+            echo "$out"
+            case "$out" in
+              "$b v$VERSION (commit $TENERO_COMMIT)"*) ;;
+              *) echo "::error::$b does not report v$VERSION and commit $TENERO_COMMIT"; exit 1 ;;
+            esac
+          done
+      - name: the oldest glibc the Linux programs need (measured, goes in the release notes)
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          for b in tenerod tenero-miner tenero-wallet tenero-seedcheck tenero-wallet-gui; do
+            echo "$b: needs glibc $(objdump -T "$NAME/$b" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+          done
+      - name: the file properties of the Windows app (icon and version information are embedded)
+        if: matrix.name == 'windows'
+        shell: powershell
+        run: |
+          $v = (Get-Item "$env:NAME\tenero-wallet-gui.exe").VersionInfo
+          "ProductName=$($v.ProductName) FileVersion=$($v.FileVersion) PreRelease=$($v.IsPreRelease)"
+          if ($v.ProductName -ne 'Tenero') { throw 'the version information is not embedded' }
+      - name: make the archive and its SHA-256
+        shell: bash
+        run: |
+          if [ "${{ matrix.name }}" = "windows" ]; then
+            ARCHIVE="$NAME.zip"; 7z a -tzip "$ARCHIVE" "$NAME" > /dev/null
+          else
+            ARCHIVE="$NAME.tar.gz"; tar -czf "$ARCHIVE" "$NAME"
+          fi
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          ls -l "$ARCHIVE" "$ARCHIVE.sha256"; cat "$ARCHIVE.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: package-${{ matrix.name }}
+          path: |
+            tenero-*.zip
+            tenero-*.tar.gz
+            tenero-*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  # Only a tag build gets this job, and only this job may write (to create the draft release).
+  draft-release:
+    name: draft release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: package-*
+          merge-multiple: true
+      - name: create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat tenero-*.sha256 > SHA256SUMS
+          cat SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --draft --prerelease \
+            --title "Tenero $GITHUB_REF_NAME (alpha, experimental)" \
+            --notes-file "docs/releases/$GITHUB_REF_NAME.md" \
+            tenero-*.zip tenero-*.tar.gz SHA256SUMS

@@ -1,0 +1,24 @@
+# cargo-about (a build tool, never part of the programs) makes THIRD-PARTY-LICENCES.txt for a release: every dependency that ends up in the shipped programs, the
+# licence it is used under, and the licence text. The list of accepted licences is the one in deny.toml (cargo deny refuses anything else first).
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "CC0-1.0",
+    "ISC",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+# the two systems a release is built for
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+
+# Build scripts and test helpers are not in the shipped programs (the programs' own crates, BSD-3-Clause, are covered by LICENSE).
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
