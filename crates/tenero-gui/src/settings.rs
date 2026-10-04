@@ -56,7 +56,7 @@ impl MinerBackend {
     pub fn for_network(n: Network) -> &'static [MinerBackend] {
         match n {
             Network::Test => &[MinerBackend::Sha256],
-            Network::Dev => &[MinerBackend::Gpu, MinerBackend::Cpu],
+            Network::Dev | Network::Alpha => &[MinerBackend::Gpu, MinerBackend::Cpu],
         }
     }
 }
@@ -107,10 +107,7 @@ pub fn default_app_dir() -> PathBuf {
 }
 
 pub fn default_control(n: Network) -> SocketAddr {
-    match n {
-        Network::Test => "127.0.0.1:18332".parse().expect("valid"),
-        Network::Dev => "127.0.0.1:28332".parse().expect("valid"),
-    }
+    SocketAddr::from(([127, 0, 0, 1], n.default_control_port()))
 }
 
 impl Settings {

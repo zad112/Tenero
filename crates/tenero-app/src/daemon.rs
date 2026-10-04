@@ -47,10 +47,17 @@ pub const BANNER: &str = "tenero node: EXPERIMENTAL and UNAUDITED. No launched n
 pub const POOL_FILE: &str = "pool.dat";
 const POOL_SAVE_EVERY: Duration = Duration::from_secs(300);
 const PRUNE_EVERY: Duration = Duration::from_secs(600);
-/// The proof-of-work epoch of the development network, in blocks.
-pub const DEV_EPOCH_BLOCKS: u64 = 100;
+/// The proof-of-work epoch of the development network, in blocks (the same as the release network's: `Network::epoch_blocks`).
+pub const DEV_EPOCH_BLOCKS: u64 = crate::config::REAL_POW_EPOCH_BLOCKS;
 /// The development network starts easy (one attempt in eight meets the target): a placeholder, not a decision.
 const DEV_START_TARGET_POW2: u32 = 253;
+/// The release network ("alpha", M11.2) starts at a real difficulty: a target of 2^237 is about 524,000 attempts a block. At the measured
+/// 34,000 attempts a second of one RTX 5070 Ti that is a block every 15 s at first, never under a second; a GPU a quarter as fast gets a
+/// block a minute; a 6-thread CPU (about 164 a second) alone about one an hour. The difficulty then adjusts by up to 4x a block, so the
+/// start matters for roughly the first hour. The owner's choice (2026-10-04), from those measured speeds.
+pub const ALPHA_START_TARGET_POW2: u32 = 237;
+/// The release network's genesis label (hashed into the chain id). A restart of the network (for Carrot) gets "alpha network 2".
+pub const ALPHA_LABEL: &str = "tenero alpha network 1";
 
 /// The rules and proof of work of a network.
 struct Chain {
@@ -86,7 +93,29 @@ fn chain_of(network: Network) -> Result<Chain, String> {
                 )?)),
             })
         }
+        Network::Alpha => {
+            let label = ALPHA_LABEL.to_string();
+            Ok(Chain {
+                params: ChainParams::version_2(
+                    &label,
+                    PowKind::Matmul,
+                    U256::pow2(ALPHA_START_TARGET_POW2).ok_or("bad start target")?,
+                ),
+                label,
+                kind: PowKind::Matmul,
+                matmul: Some(Arc::new(MatmulPow::new(
+                    Params::DEFAULT,
+                    Network::Alpha.epoch_blocks(),
+                    6,
+                )?)),
+            })
+        }
     }
+}
+
+/// The consensus parameters of a network (its genesis label, proof of work, starting target, block time and so on), for tests and tools.
+pub fn params_of(network: Network) -> Result<ChainParams, String> {
+    Ok(chain_of(network)?.params)
 }
 
 /// The chain id (the genesis block id) of a network. Every node of the network works it out the same way, from the label of the network, and
@@ -647,6 +676,7 @@ fn miner_hook(
         }
         Box::new(h)
     };
+    let epoch = cfg.network.epoch_blocks();
     let hook: Box<dyn Hooks> = match cfg.mine {
         MineMode::Off => unreachable!("handled above"),
         MineMode::Sha256 => seen(MinerHook::new(
@@ -655,15 +685,13 @@ fn miner_hook(
             mcfg,
         )),
         MineMode::Cpu => {
-            let pow = Arc::clone(
-                chain
-                    .matmul
-                    .as_ref()
-                    .ok_or("cpu mining needs the dev network")?,
-            );
+            let pow =
+                Arc::clone(chain.matmul.as_ref().ok_or(
+                    "cpu mining needs a network with the real proof of work (dev or alpha)",
+                )?);
             let cores = cfg.mine_cores;
             seen(MinerHook::new(
-                Miner::spawn(move || Ok(CpuMatmulBackend::new(pow, DEV_EPOCH_BLOCKS, cores, 10))),
+                Miner::spawn(move || Ok(CpuMatmulBackend::new(pow, epoch, cores, 10))),
                 payout,
                 mcfg,
             ))
@@ -675,7 +703,7 @@ fn miner_hook(
                 tenero_miner::gpu::auto_batch(
                     device,
                     Params::DEFAULT,
-                    DEV_EPOCH_BLOCKS,
+                    epoch,
                     cfg.gpu_batch,
                     &move |m| l.info(&format!("miner: {m}")),
                 )
@@ -692,9 +720,7 @@ fn miner_hook(
                 Err(e) => log.info(&format!("GPU readings are not available: {e}")),
             }
             seen(MinerHook::new(
-                Miner::spawn(move || {
-                    GpuBackend::new(device, Params::DEFAULT, DEV_EPOCH_BLOCKS, batch, 10)
-                }),
+                Miner::spawn(move || GpuBackend::new(device, Params::DEFAULT, epoch, batch, 10)),
                 payout,
                 mcfg,
             ))
@@ -741,6 +767,10 @@ pub fn run(
             network_note: match cfg.network {
                 Network::Test => "SHA-256 test chain, no real proof of work".to_string(),
                 Network::Dev => "development chain, real matmulhash proof of work".to_string(),
+                Network::Alpha => {
+                    "release network (first test release): real matmulhash proof of work, no premine; still no value"
+                        .to_string()
+                }
             },
             details,
         });

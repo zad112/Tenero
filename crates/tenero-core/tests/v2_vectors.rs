@@ -536,6 +536,11 @@ fn genesis_and_the_chain_id() {
     let v = load("v2_genesis").unwrap();
     let cases = v["cases"].as_array().unwrap();
     assert_eq!(cases[0]["label"].as_str().unwrap(), ids::NETWORK_LABEL);
+    // the release network's label is in the vectors, so that its chain id is checked against the reference
+    assert!(
+        cases.iter().any(|c| c["label"] == "tenero alpha network 1"),
+        "the alpha label is vectored"
+    );
     let mut seen = std::collections::BTreeSet::new();
     for c in cases {
         let label = c["label"].as_str().unwrap();
@@ -552,6 +557,9 @@ fn genesis_and_the_chain_id() {
             "{label:?}"
         );
         assert_eq!(c["genesis_id"], c["chain_id"]);
+        // no premine: the genesis block is a header and nothing else
+        assert_eq!(c["transactions"], 0, "{label:?}");
+        assert_eq!(c["coinbase_outputs"], 0, "{label:?}");
         assert!(
             seen.insert(c["chain_id"].as_str().unwrap().to_string()),
             "two labels gave one chain id"

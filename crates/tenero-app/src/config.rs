@@ -20,13 +20,22 @@ pub enum Network {
     /// The real matmulhash proof of work, with a placeholder starting difficulty and genesis: the **development**
     /// network. It is not a launched network and nothing on it has value.
     Dev,
+    /// The **release network** of the first test release (M11.2): the real matmulhash proof of work, a fresh genesis with no premine
+    /// ("tenero alpha network 1"), a real starting difficulty (2^237: about 524,000 attempts a block) and 100-block epochs. It is still a
+    /// test network: unaudited, and nothing on it has value.
+    Alpha,
 }
+
+/// The proof-of-work epoch of the networks that use the real proof of work, in blocks (the owner's choice for M11.2; the same value the
+/// development network always had).
+pub const REAL_POW_EPOCH_BLOCKS: u64 = 100;
 
 impl Network {
     pub fn parse(s: &str) -> Option<Network> {
         match s {
             "test" => Some(Network::Test),
             "dev" => Some(Network::Dev),
+            "alpha" => Some(Network::Alpha),
             _ => None,
         }
     }
@@ -35,6 +44,30 @@ impl Network {
         match self {
             Network::Test => "test",
             Network::Dev => "dev",
+            Network::Alpha => "alpha",
+        }
+    }
+
+    /// Every network, in the order the screens list them.
+    pub const ALL: [Network; 3] = [Network::Test, Network::Dev, Network::Alpha];
+
+    /// Whether the network uses the real matmulhash proof of work (a CPU or a GPU mines it) and not SHA-256.
+    pub fn real_pow(self) -> bool {
+        self != Network::Test
+    }
+
+    /// The proof-of-work epoch in blocks (the real proof of work's; the test chain has none, and the number is not used there).
+    pub fn epoch_blocks(self) -> u64 {
+        REAL_POW_EPOCH_BLOCKS
+    }
+
+    /// The default port of the loopback control interface: a different one for each network, so that nodes of two networks on one
+    /// machine do not meet.
+    pub fn default_control_port(self) -> u16 {
+        match self {
+            Network::Test => 18332,
+            Network::Dev => 28332,
+            Network::Alpha => 38332,
         }
     }
 }
@@ -261,10 +294,7 @@ impl Raw {
             Some(v) => v
                 .parse()
                 .map_err(|_| bad("control", format!("`{v}` is not ip:port")))?,
-            None => match network {
-                Network::Test => "127.0.0.1:18332".parse().expect("valid"),
-                Network::Dev => "127.0.0.1:28332".parse().expect("valid"),
-            },
+            None => SocketAddr::from(([127, 0, 0, 1], network.default_control_port())),
         };
         if !control.ip().is_loopback() {
             return Err(bad("control", "must be a loopback address (127.0.0.1): the control interface is for this machine only"));
@@ -333,10 +363,13 @@ impl Raw {
             Some(v) => return Err(bad("mine", format!("`{v}` is not off, sha256, cpu or gpu"))),
         };
         match (mine, network) {
-            (MineMode::Sha256, Network::Dev) => {
+            (MineMode::Sha256, n) if n.real_pow() => {
                 return Err(bad(
                     "mine",
-                    "sha256 is the test network's proof of work; the dev network needs cpu or gpu",
+                    format!(
+                    "sha256 is the test network's proof of work; the {} network needs cpu or gpu",
+                    n.name()
+                ),
                 ))
             }
             (MineMode::Cpu | MineMode::Gpu, Network::Test) => {

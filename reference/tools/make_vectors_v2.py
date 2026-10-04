@@ -50,6 +50,9 @@ COINBASE_TAG = b"tenero coinbase v2"
 GENESIS_TAG = b"tenero genesis"
 GENESIS_ID_TAG = b"tenero genesis id v2"
 NETWORK_LABEL = "tenero experimental network 1"
+# the labels of the networks the program knows (M11.2): the release network "alpha", chosen once; and the development network
+ALPHA_LABEL = "tenero alpha network 1"
+DEV_LABEL = "tenero development network"
 VERSION = 2
 
 # Units: 8 decimals, so 1 coin = 10**8 units and the 20,000,000-coin cap is 2 * 10**15 units.
@@ -642,16 +645,20 @@ def merkle_vectors():
 
 
 def genesis_vectors():
-    labels = [NETWORK_LABEL, "tenero test network 2", ""]
+    labels = [NETWORK_LABEL, "tenero test network 2", "", ALPHA_LABEL, DEV_LABEL]
     cases = []
     for label in labels:
         hd = genesis_header(label)
         cases.append({"label": label, "header": hd, "header_bytes": enc_header(hd).hex(),
-                      "genesis_id": genesis_id(label).hex(), "chain_id": genesis_id(label).hex()})
+                      "genesis_id": genesis_id(label).hex(), "chain_id": genesis_id(label).hex(),
+                      # no premine, by construction: the genesis block is a header and nothing else: no transactions, no coinbase output
+                      "transactions": 0, "coinbase_outputs": 0})
     return wrap("v2_genesis",
                 "The fixed genesis header and the chain id (docs/CONSENSUS_V2.md 5.4): version 2, no parent, timestamp 0, "
                 "nonce 0, zero mix, tx_root = SHA-256('tenero genesis' || label); genesis_id = SHA-256('tenero genesis id "
-                "v2' || header bytes); chain_id = genesis_id. The default label is the first case.",
+                "v2' || header bytes); chain_id = genesis_id. The default label is the first case. NO PREMINE: the genesis block has no transactions and "
+                "no coinbase output (every case says so), so every coin comes from a mined block. The labels include the release network "
+                "'tenero alpha network 1' (M11.2) and the development network.",
                 {"cases": cases})
 
 

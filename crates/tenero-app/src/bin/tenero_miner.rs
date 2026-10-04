@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tenero_app::config::Network;
-use tenero_app::daemon::{MiningShared, DEV_EPOCH_BLOCKS};
+use tenero_app::daemon::MiningShared;
 use tenero_app::log::{Level, Logger};
 use tenero_app::remote_miner::{connect_to, RemoteMiner, RemoteMinerConfig};
 use tenero_app::ui::{
@@ -205,6 +205,7 @@ fn main() {
         "tenero-miner: EXPERIMENTAL and UNAUDITED. Nothing on the test or dev networks has value.",
     );
     // the banner names the network the backend belongs to (the node is asked below, and a mismatch is an error)
+    // (cpu and gpu mine the real proof of work on dev and on alpha; the node's answer below says which)
     let implied = if args.backend == "sha256" {
         Network::Test
     } else {
@@ -258,7 +259,7 @@ fn main() {
     };
     let pow = match (network, args.backend.as_str()) {
         (Network::Test, "sha256") => PowKind::Sha256,
-        (Network::Dev, "cpu" | "gpu") => PowKind::Matmul,
+        (n, "cpu" | "gpu") if n.real_pow() => PowKind::Matmul,
         _ => {
             log.error(&format!(
                 "the node is on the {} network, which needs {}, not --backend {}",
@@ -277,10 +278,11 @@ fn main() {
         "node: network {}, height {}, version {}; backend {}",
         info.network, info.height, info.version, args.backend
     ));
+    let epoch = network.epoch_blocks();
     let miner = match args.backend.as_str() {
         "sha256" => Miner::spawn(|| Ok(Sha256Backend)),
         "cpu" => {
-            let pow = match MatmulPow::new(Params::DEFAULT, DEV_EPOCH_BLOCKS, 6) {
+            let pow = match MatmulPow::new(Params::DEFAULT, epoch, 6) {
                 Ok(p) => Arc::new(p),
                 Err(e) => {
                     log.error(&e);
@@ -288,7 +290,7 @@ fn main() {
                 }
             };
             let cores = args.cores;
-            Miner::spawn(move || Ok(CpuMatmulBackend::new(pow, DEV_EPOCH_BLOCKS, cores, 10)))
+            Miner::spawn(move || Ok(CpuMatmulBackend::new(pow, epoch, cores, 10)))
         }
         _ => {
             let device = args.gpu_device;
@@ -297,16 +299,14 @@ fn main() {
                 tenero_miner::gpu::auto_batch(
                     device,
                     Params::DEFAULT,
-                    DEV_EPOCH_BLOCKS,
+                    epoch,
                     args.gpu_batch,
                     &move |m| l.info(&format!("miner: {m}")),
                 )
             } else {
                 args.gpu_batch
             };
-            Miner::spawn(move || {
-                GpuBackend::new(device, Params::DEFAULT, DEV_EPOCH_BLOCKS, batch, 10)
-            })
+            Miner::spawn(move || GpuBackend::new(device, Params::DEFAULT, epoch, batch, 10))
         }
     };
     let l = Arc::clone(&log);

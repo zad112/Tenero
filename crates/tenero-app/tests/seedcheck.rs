@@ -537,10 +537,10 @@ fn the_command_line_refuses_what_it_cannot_make_sense_of() {
         let e = parse_args(&args(v), &no_files).unwrap_err();
         assert!(e.contains(why), "{v:?}: {e}");
     };
-    bad(&["--seed", "a:1"], "--network must be test or dev");
+    bad(&["--seed", "a:1"], "--network must be test, dev or alpha");
     bad(
         &["--network", "main", "--seed", "a:1"],
-        "--network must be test or dev",
+        "--network must be test, dev or alpha",
     );
     bad(&["--network", "test"], "no seeds");
     bad(

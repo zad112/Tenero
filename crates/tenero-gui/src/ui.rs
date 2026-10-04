@@ -1850,7 +1850,7 @@ impl App {
                     egui::ComboBox::from_label("Network")
                         .selected_text(crate::procs::network_words(draft.network))
                         .show_ui(ui, |ui| {
-                            for n in [Network::Test, Network::Dev] {
+                            for n in Network::ALL {
                                 ui.selectable_value(
                                     &mut draft.network,
                                     n,

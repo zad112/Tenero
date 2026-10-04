@@ -16,16 +16,16 @@ const USAGE: &str = "\
 tenerod: the Tenero node (EXPERIMENTAL, UNAUDITED; no launched network exists)
 
   tenerod --config FILE [--key value ...]       run a node
-  tenerod --data DIR --network test|dev [...]   run a node with settings on the command line
+  tenerod --data DIR --network test|dev|alpha [...] run a node with settings on the command line
   tenerod --version                             which build this is (version and source commit)
   tenerod status --data DIR [--control IP:PORT] ask a running node about itself
   tenerod stop   --data DIR [--control IP:PORT] ask a running node to shut down cleanly
-  tenerod rewind --data DIR --network test|dev --to HEIGHT [--yes]
+  tenerod rewind --data DIR --network test|dev|alpha --to HEIGHT [--yes]
                                                 emergency: with the node STOPPED, take the newest blocks off its chain down to HEIGHT.
                                                 Without --yes it only says what it would remove. See docs/EMERGENCY_PLAN.md
 
 Settings (the same keys in the file as `key = value` and on the command line as `--key value`):
-  data, network (test|dev), listen, seed (repeatable), peers, max_inbound, allow_private_peers, control,
+  data, network (test|dev|alpha), listen, seed (repeatable), peers, max_inbound, allow_private_peers, control,
   prune_keep (0 = archive node), assume_valid (height:blockid), mine (off|sha256|cpu|gpu), mine_to (address),
   mine_cores, mine_pace, gpu_device, gpu_batch, log_level, log_file, status_every, quiet, verbose, color.
 
@@ -87,13 +87,9 @@ fn rewind_command(args: &[String]) -> i32 {
         eprintln!("error: rewind needs --data, --network and --to\n\n{USAGE}");
         return 2;
     };
-    let network = match network.as_str() {
-        "test" => tenero_app::config::Network::Test,
-        "dev" => tenero_app::config::Network::Dev,
-        other => {
-            eprintln!("error: --network: `{other}` is not test or dev");
-            return 2;
-        }
+    let Some(network) = tenero_app::config::Network::parse(&network) else {
+        eprintln!("error: --network: `{network}` is not test, dev or alpha");
+        return 2;
     };
     match daemon::rewind(&data, network, to, yes) {
         Ok(r) => {
