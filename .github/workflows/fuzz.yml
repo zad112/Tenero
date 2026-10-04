@@ -4,15 +4,10 @@ name: fuzz
 # once a month. It needs a nightly Rust and Linux, which is why it is here and not on the owner's machine. The work of each target is in
 # crates/tenero-fuzzcases (compiled and tested everywhere); a crash is uploaded as an artifact, and becomes a case in
 # crates/tenero-fuzzcases/tests/regressions.rs.
-# (The file has been on the default branch since M11.1, so the manual start and the schedule work; a push that changes the fuzzing files still runs it, for two
-# minutes a target.)
+# It does NOT run on a push (the owner's choice, 2026-10-04: a run takes too long and holds the Linux runner). The crates/tenero-fuzzcases tests, which run in the rust
+# workflow on every push, still check that every target's code works; only the separate fuzz/ crate (the libFuzzer entry points) is compiled by this workflow alone, so
+# start it by hand after changing anything under fuzz/.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "fuzz/**"
-      - "crates/tenero-fuzzcases/**"
-      - ".github/workflows/fuzz.yml"
   workflow_dispatch:
     inputs:
       seconds:
@@ -21,7 +16,7 @@ on:
   schedule:
     - cron: "0 5 1 * *"
 
-# SECURITY: no pull_request trigger, so outside code never reaches this self-hosted job: a push to main, a manual start and the schedule all need write access.
+# SECURITY: no pull_request trigger, so outside code never reaches this self-hosted job: a manual start needs write access, and the schedule is GitHub's own.
 permissions:
   contents: read
 
