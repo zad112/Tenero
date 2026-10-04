@@ -48,17 +48,17 @@ parse is an error that names the setting; nothing silently falls back to a defau
 | setting | meaning | default |
 |---|---|---|
 | `data` | the node's directory: the chain, the node key, the saved peers, the side-branch pool, the log (if any) and the cookie | required |
-| `network` | `test` or `dev` | required |
+| `network` | `test`, `dev` or `alpha` | required |
 | `listen` | the peer-to-peer address to accept connections on | none (dial out only) |
 | `seed` | an `ip:port` to start from (repeat it); on the command line, `--seed` replaces the file's seeds | none |
 | `trusted_peer` | an `ip:port` you got **out of band** (from someone you trust, not from the network) to always connect to: dialled first, and again whenever it is not connected (at most every 30 s), exempt from the per-network-group limit, never passed on to other nodes; repeat it (up to 16); on the command line, `--trusted_peer` replaces the file's. It is still checked like any peer and still banned if it misbehaves. This is the one defence against an eclipse that the attacker cannot influence | none |
 | `peers` | how many peers to aim for | 50 |
 | `max_inbound` | the most inbound peers | 64 |
-| `allow_private_peers` | dial and accept addresses such as 127.0.0.2 and 10.x.x.x | yes on `test`, no on `dev` |
-| `control` | where the control interface listens (**must be a loopback address**) | `127.0.0.1:18332` (`test`), `127.0.0.1:28332` (`dev`) |
+| `allow_private_peers` | dial and accept addresses such as 127.0.0.2 and 10.x.x.x | yes on `test`, no on `dev` and `alpha` |
+| `control` | where the control interface listens (**must be a loopback address**) | `127.0.0.1:18332` (`test`), `127.0.0.1:28332` (`dev`), `127.0.0.1:38332` (`alpha`) |
 | `prune_keep` | `0` keeps every block in full (an **archive** node); `N` (at least 1000; the design proposes 5,500) keeps the proofs of the last `N` blocks only (a **pruned** node). Older blocks are kept in pruned form; a node syncing from scratch will not use a pruned peer that has already thrown away what it needs | 0 |
 | `assume_valid` | `height:blockid` (64 hexadecimal digits): trust that blocks up to there have valid proofs and skip checking them while syncing (`docs/M8_PLAN.md`, M8.3: what this trusts is written there). **Off unless you set it.** | off |
-| `mine` | `off`, `sha256` (the test network), `cpu` or `gpu` (the dev network). Mining runs **inside the node's process** and pays `mine_to` | off |
+| `mine` | `off`, `sha256` (the test network), `cpu` or `gpu` (the `dev` and `alpha` networks). Mining runs **inside the node's process** and pays `mine_to` | off |
 | `mine_to` | the address (`tni1...`) block rewards are paid to; required when mining | |
 | `mine_pace` | seconds to wait after a block is found before starting the next | 5 on `test`, 0 on `dev` |
 | `mine_cores` | CPU threads for `mine = cpu` (1 to 6) | 6 |
@@ -206,7 +206,7 @@ cargo build --release -p tenero-gui -p tenero-app --bins      # the app and the 
 * **First run:** create a wallet (a password, or none after a warning), write down the **24 words**, and type three of them back; or restore from 24 words. The words are the wallet; the password only locks the file on this computer. A password can be changed later; the words are shown again only after the password is typed again, and are never put on the clipboard.
 * **Several wallets (the owner's request, 2026-10-03):** each is its own file `NAME.twl` in the wallets folder (`wallets-test` / `wallets-dev` under the app folder), with its own seed, password and accounts. "Lock / switch wallet" (top right) goes back to the list; pick one, type its password. "Create another wallet" and "Restore another wallet from 24 words" ask for a name (letters, digits, spaces, - and _; no clash with an existing name, case aside). A wallet file of the first versions (`wallet-<network>.twl` in the app folder) is listed too and stays where it is. Nothing ever overwrites another wallet's file. The selected wallet is remembered.
 * **Payment requests (Receive tab):** a request is a link `tenero:<address>?amount=1.5&label=Rent&message=...` and a QR code of it, kept in the wallet file so it can be shown again. In Send, "Paste a payment request or an address" fills in the address and the amount and carries the label to the confirmation screen and the history ("for Rent"). A link with anything the wallet does not understand is refused. **A request is not an invoice and is not marked paid** (the interim scheme cannot tell which payment answered it).
-* **The desktop shortcut and the icon:** the window and taskbar icon is the circular logo. `tenero-wallet-gui.exe --app-dir FOLDER` opens a particular app folder (what a shortcut uses). `assets/tenero.ico` is the same logo for shortcuts (made by `python tools/make_icons.py`). The icon is not yet inside the `.exe` itself (that needs a Windows resource and a build dependency: M11.3).
+* **The desktop shortcut and the icon:** the window and taskbar icon is the circular logo. `tenero-wallet-gui.exe --app-dir FOLDER` opens a particular app folder (what a shortcut uses). `assets/tenero.ico` is the same logo for shortcuts (made by `python tools/make_icons.py`). Since M11.3 the icon (and the version information) is also compiled into `tenero-wallet-gui.exe` itself (`crates/tenero-gui/build.rs`, `tenero.rc`; Windows only).
 * **Accounts:** several per wallet, each with its own address and balance, all from the same 24 words. A payment comes from one account. Restoring finds the accounts that were used (it stops after 3 unused ones in a row; add a later one by hand). Account names and the record of payments *sent* are kept only in the wallet file.
 * **Send:** an address, an amount, and one of three fee levels shown with their price: **Low** (1.25 times the minimum fee), **Normal** (2 times), **High** (5 times). A higher fee only buys a better place when the pool is full. A confirmation screen shows everything before anything is sent.
 * **Receive:** the address, a Copy button and a QR code. **History:** what was received, mined and sent, and where each sent payment stands (waiting, taken in, dropped).

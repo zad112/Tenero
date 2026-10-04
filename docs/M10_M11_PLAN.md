@@ -360,7 +360,15 @@ no release has been made (no tag exists, no draft).
   but from the registry or the pinned commit.
 * **Reproducibility:** the version and git commit are printed by every program (`--version`) and appear in the handshake.
 
-### M11.4 What testers need (my suggestions; the owner picks)
+### M11.4 What testers need (my suggestions; the owner picks): README, TESTING.md and the facts check WRITTEN 2026-10-04; the rest is open
+
+**Done (2026-10-04):** `README.md` rewritten (banner first and unaltered; what it is and is not in the first screen; how it works; the proof of work with measured, simulated and argued kept apart; how to get it; the `alpha` network;
+what is next with no dates; links); `docs/TESTING.md` (the testers' guide: what to expect to break, requirements, the app way and the command-line way, finding peers, what to attach and not to attach, resets);
+`docs/README_FACTS.md` (every number traced to code, a document, a measurement or arithmetic; links checked; the README searched for words it must never use); small fixes in `docs/RUNNING.md` (alpha in the tables, the icon).
+**Still open:** a seed node (none exists: the README and the guide say so), a status page, the "small group first" decision, the licence is BSD-3-Clause as it stands, a diagnostics bundle (planned, not built; the guide says so),
+the README must be updated at the moment `v0.1.0-alpha.1` is published ("no published release yet"), and the owner has not read either text yet.
+
+**The plan as it was written:**
 
 * **A full rewrite of `README.md` (the owner's request, 2026-10-03; not started).** More professional, and **the banner image stays at the
   top, unaltered** (`assets/banner.webp`; the circular logo `assets/logo-circle.webp` may sit beside it). Today's README describes the
