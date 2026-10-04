@@ -52,3 +52,10 @@ path = "fuzz_targets/engine_messages.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "noise_handshake"
+path = "fuzz_targets/noise_handshake.rs"
+test = false
+doc = false
+bench = false

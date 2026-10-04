@@ -12,10 +12,13 @@
 //!   more than one frame's worth;
 //! * [`control_bodies`]: the control interface's requests and responses decode strictly;
 //! * [`wallet_proofs`]: a signature or a payment proof of any shape is refused or checked without a panic, and what parses writes back the same;
+//! * [`noise_handshake`]: the encrypted channel: made-up bytes never complete a handshake or authenticate as a chunk, and an honest chunk that is
+//!   flipped, cut short, replayed, reordered or preceded by a dropped one is always refused;
 //! * [`engine_messages`]: a real protocol engine, given a stream of connections, messages (valid or not, in any order), bad bytes and time,
 //!   never panics, never sends to a peer that is gone or just ordered off (the bug the proptest harness found on 2026-10-02), only sends
 //!   what the wire can carry, and keeps within its peer limits.
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::OnceLock;
@@ -186,6 +189,199 @@ pub fn proof_fixture() -> &'static ProofFixture {
             address,
         }
     })
+}
+
+// ---- the encrypted channel (the Noise handshake and the chunks after it) --------------------------------------------------------
+
+/// A stream over fixed bytes: what is read comes from `input` (a short input is an `UnexpectedEof`, never a wait), what is written is kept.
+struct Duplex {
+    input: std::io::Cursor<Vec<u8>>,
+    output: Vec<u8>,
+}
+
+impl Duplex {
+    fn new(input: &[u8]) -> Duplex {
+        Duplex {
+            input: std::io::Cursor::new(input.to_vec()),
+            output: Vec::new(),
+        }
+    }
+}
+
+impl std::io::Read for Duplex {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.input.read(buf)
+    }
+}
+
+impl std::io::Write for Duplex {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.output.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn noise_keys() -> (tenero_net::noise::NodeKey, tenero_net::noise::NodeKey) {
+    (
+        tenero_net::noise::NodeKey::from_bytes(&[0x11; 32]).expect("a key"),
+        tenero_net::noise::NodeKey::from_bytes(&[0x22; 32]).expect("a key"),
+    )
+}
+
+fn noise_prologue() -> Vec<u8> {
+    // `test_chain_id` opens a scratch database, so it is asked once for the whole process (not once per input, and never from two threads)
+    static ID: OnceLock<[u8; 32]> = OnceLock::new();
+    let id = ID.get_or_init(test_chain_id);
+    tenero_net::noise::prologue(PROTOCOL_VERSION, id)
+}
+
+/// One REAL handshake between two parties (over a loopback socket, once per process): the initiator's writer and the responder's reader, so that
+/// the fuzzer can seal chunks and try to get a damaged one accepted. Their counters are set by hand for every input.
+struct Honest {
+    writer: tenero_net::noise::SecureWriter,
+    reader: tenero_net::noise::SecureReader,
+}
+
+fn honest() -> &'static std::sync::Mutex<Honest> {
+    static H: OnceLock<std::sync::Mutex<Honest>> = OnceLock::new();
+    H.get_or_init(|| {
+        let (ka, kb) = noise_keys();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback socket");
+        let addr = listener.local_addr().expect("an address");
+        let prologue = noise_prologue();
+        let p2 = prologue.clone();
+        let responder = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().expect("a connection");
+            tenero_net::noise::handshake_responder(&mut s, &kb, &p2)
+                .expect("the honest handshake works (responder)")
+        });
+        let mut s = std::net::TcpStream::connect(addr).expect("connect");
+        let initiator = tenero_net::noise::handshake_initiator(&mut s, &ka, &prologue)
+            .expect("the honest handshake works (initiator)");
+        let responder = responder.join().expect("the responder thread");
+        std::sync::Mutex::new(Honest {
+            writer: initiator.writer,
+            reader: responder.reader,
+        })
+    })
+}
+
+/// The Noise channel (`tenero-net/src/noise.rs`), attacked four ways, chosen by the first byte; **it panics when the channel lets something
+/// through that it must not**:
+/// * 0: arbitrary bytes sent to a RESPONDER that is waiting for a handshake: it must never complete one (that needs a message encrypted to its
+///   own key and ephemeral key: a forgery), and never panic or hang;
+/// * 1: the same for an INITIATOR reading a made-up reply;
+/// * 2: arbitrary bytes given to the reader of an ESTABLISHED channel, as chunks and as raw ciphertext: never accepted (an arbitrary chunk
+///   authenticating would be a break of the cipher), never a panic;
+/// * 3: an HONEST chunk, tampered with in the way the next byte picks (intact: it comes out exactly; a flipped bit; cut short; replayed;
+///   reordered; one dropped before it): every tampering is refused, which is the property the module's documentation promises.
+pub fn noise_handshake(data: &[u8]) {
+    use tenero_net::noise::{handshake_initiator, handshake_responder};
+    let Some((&mode, rest)) = data.split_first() else {
+        return;
+    };
+    let (ka, kb) = noise_keys();
+    match mode % 4 {
+        0 => {
+            let mut d = Duplex::new(rest);
+            if handshake_responder(&mut d, &kb, &noise_prologue()).is_ok() {
+                panic!("a responder completed a handshake with made-up bytes");
+            }
+            assert!(
+                d.output.len() <= 2 + 512,
+                "a responder wrote {} bytes before failing",
+                d.output.len()
+            );
+        }
+        1 => {
+            let mut d = Duplex::new(rest);
+            if handshake_initiator(&mut d, &ka, &noise_prologue()).is_ok() {
+                panic!("an initiator completed a handshake with a made-up reply");
+            }
+        }
+        2 => {
+            let mut h = honest().lock().unwrap_or_else(|e| e.into_inner());
+            h.reader.set_nonce_for_tests(0);
+            let mut cur = std::io::Cursor::new(rest.to_vec());
+            if h.reader.read_chunk(&mut cur).is_ok() {
+                panic!("an arbitrary chunk authenticated");
+            }
+            h.reader.set_nonce_for_tests(0);
+            if h.reader.open(rest).is_ok() {
+                panic!("arbitrary ciphertext authenticated");
+            }
+        }
+        _ => {
+            if rest.len() < 3 {
+                return;
+            }
+            let (op, a, b) = (rest[0] % 6, rest[1], rest[2]);
+            let payload = &rest[3..rest.len().min(3 + 3000)];
+            if payload.is_empty() {
+                return;
+            }
+            let mut h = honest().lock().unwrap_or_else(|e| e.into_inner());
+            h.writer.set_nonce_for_tests(0);
+            h.reader.set_nonce_for_tests(0);
+            let first = h.writer.seal(payload).expect("seal");
+            let read = |h: &mut Honest, bytes: &[u8]| {
+                let mut cur = std::io::Cursor::new(bytes.to_vec());
+                h.reader.read_chunk(&mut cur)
+            };
+            match op {
+                0 => {
+                    let got = read(&mut h, &first).expect("an untouched chunk must be accepted");
+                    assert_eq!(got, payload, "an untouched chunk came out changed");
+                }
+                1 => {
+                    let at = (usize::from(a) | usize::from(b) << 8) % first.len();
+                    let mut bad = first.clone();
+                    bad[at] ^= 1 << (a % 8);
+                    assert!(
+                        read(&mut h, &bad).is_err(),
+                        "a chunk with a flipped bit (byte {at}) was accepted"
+                    );
+                }
+                2 => {
+                    let keep = (usize::from(a) | usize::from(b) << 8) % first.len();
+                    assert!(
+                        read(&mut h, &first[..keep]).is_err(),
+                        "a chunk cut to {keep} bytes was accepted"
+                    );
+                }
+                3 => {
+                    assert!(
+                        read(&mut h, &first).is_ok(),
+                        "an untouched chunk must be accepted"
+                    );
+                    assert!(
+                        read(&mut h, &first).is_err(),
+                        "a replayed chunk was accepted"
+                    );
+                }
+                4 => {
+                    let mut reversed = payload.to_vec();
+                    reversed.reverse();
+                    let second = h.writer.seal(&reversed).expect("seal");
+                    assert!(
+                        read(&mut h, &second).is_err(),
+                        "a chunk that arrived before the one sent first was accepted"
+                    );
+                }
+                _ => {
+                    let _dropped = first;
+                    let second = h.writer.seal(payload).expect("seal");
+                    assert!(
+                        read(&mut h, &second).is_err(),
+                        "a chunk was accepted after the one before it was dropped"
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// A signature or a payment proof, as text or bytes, of any shape.
@@ -456,12 +652,24 @@ impl Harness<'_> {
     }
 }
 
-/// The first byte picks the settings; the rest is records (see [`op`]). A record cut short ends the input. Returns what the engine did
-/// (the fuzz target ignores it; the tests of the seeds use it to check that a seed gets deep into the protocol).
-pub fn engine_messages(data: &[u8]) -> tenero_net::Stats {
-    let Some((&variant, mut rest)) = data.split_first() else {
-        return tenero_net::Stats::default();
-    };
+/// A store that is kept from one input to the next. Making a database file for every input cost 22 ms on Windows and about 3 ms on Linux
+/// (measured: 350 inputs a second under libFuzzer, against 50,000 to 130,000 for the decoders); winding a few blocks back costs microseconds.
+/// After every input the store is wound back to the genesis block and CHECKED to be exactly a fresh one (the tip is the genesis block, no
+/// output exists, the state digest is the genesis one); if it is not, the store is thrown away and the next input makes a new one, so an
+/// input can never depend on an earlier one and a crash file still reproduces alone.
+struct ReusableRig {
+    rig: SimRig,
+    genesis_digest: [u8; 32],
+}
+
+thread_local! {
+    static RIG: RefCell<Option<ReusableRig>> = const { RefCell::new(None) };
+}
+
+fn take_rig() -> ReusableRig {
+    if let Some(r) = RIG.with(|c| c.borrow_mut().take()) {
+        return r;
+    }
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let rig = SimRig::new(
         &format!(
@@ -470,6 +678,45 @@ pub fn engine_messages(data: &[u8]) -> tenero_net::Stats {
         ),
         0,
     );
+    let genesis_digest = rig.store.state_digest().expect("a digest");
+    ReusableRig {
+        rig,
+        genesis_digest,
+    }
+}
+
+/// Winds the store back to the genesis block and keeps it for the next input, if it is exactly a fresh store again.
+fn give_back(r: ReusableRig) {
+    let store = &r.rig.store;
+    let mut guard = 0;
+    while store.tip().map(|(h, _)| h).unwrap_or(1) > 0 {
+        guard += 1;
+        if guard > 100_000 || store.pop_block().is_err() {
+            return;
+        }
+    }
+    let fresh = store
+        .tip()
+        .map(|(h, t)| h == 0 && t.block_id == store.chain_id())
+        .unwrap_or(false)
+        && store.output_count().map(|n| n == 0).unwrap_or(false)
+        && store
+            .state_digest()
+            .map(|d| d == r.genesis_digest)
+            .unwrap_or(false);
+    if fresh {
+        RIG.with(|c| *c.borrow_mut() = Some(r));
+    }
+}
+
+/// The first byte picks the settings; the rest is records (see [`op`]). A record cut short ends the input. Returns what the engine did
+/// (the fuzz target ignores it; the tests of the seeds use it to check that a seed gets deep into the protocol).
+pub fn engine_messages(data: &[u8]) -> tenero_net::Stats {
+    let Some((&variant, mut rest)) = data.split_first() else {
+        return tenero_net::Stats::default();
+    };
+    let reusable = take_rig();
+    let rig = &reusable.rig;
     let node = Node::with_proof_check(
         &rig.store,
         &rig.params,
@@ -500,7 +747,10 @@ pub fn engine_messages(data: &[u8]) -> tenero_net::Stats {
         rest = &rest[4 + len..];
         records += 1;
     }
-    h.engine.stats.clone()
+    let stats = h.engine.stats.clone();
+    drop(h); // the engine borrows the store: it goes first
+    give_back(reusable);
+    stats
 }
 
 // ---- seeds ---------------------------------------------------------------------------------------------------------------------------
@@ -600,5 +850,48 @@ pub fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
     }
     engine_sync.extend(record(op::TICK, 3, &[0u8; 20]));
     out.push(("engine_messages", "an honest sync".to_string(), engine_sync));
+    // the encrypted channel: the real first and second handshake messages (they get a responder and an initiator past the framing and into the
+    // decryption), and honest chunks for every kind of tampering
+    {
+        use tenero_net::noise::{handshake_initiator, handshake_responder};
+        let (ka, kb) = noise_keys();
+        let mut to_responder = Duplex::new(&[]);
+        let _ = handshake_initiator(&mut to_responder, &ka, &noise_prologue());
+        let first = to_responder.output.clone();
+        let mut to_initiator = Duplex::new(&first);
+        let _ = handshake_responder(&mut to_initiator, &kb, &noise_prologue());
+        let second = to_initiator.output.clone();
+        let tag = |mode: u8, bytes: &[u8]| {
+            let mut v = vec![mode];
+            v.extend_from_slice(bytes);
+            v
+        };
+        out.push((
+            "noise_handshake",
+            "first message".to_string(),
+            tag(0, &first),
+        ));
+        out.push((
+            "noise_handshake",
+            "second message".to_string(),
+            tag(1, &second),
+        ));
+        out.push((
+            "noise_handshake",
+            "a chunk-shaped input".to_string(),
+            tag(
+                2,
+                &[
+                    0, 40, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+                    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+                ],
+            ),
+        ));
+        for op in 0..6u8 {
+            let mut v = vec![3, op, 3, 0];
+            v.extend_from_slice(b"an honest message of some length");
+            out.push(("noise_handshake", format!("tamper-{op}"), v));
+        }
+    }
     out
 }
