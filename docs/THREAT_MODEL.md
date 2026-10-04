@@ -219,3 +219,18 @@ privacy of Monero**, for these reasons:
 * A status moves to **Mitigated** only with a named test. "I believe so" stays **to verify**.
 * The independent review's findings are added here whether or not they are flattering; items found by someone else are marked as such.
 * The labels on tester-facing text (`unaudited`, `no value`, `may be reset`) are part of the defence, and removing them is a decision for the owner, not a side effect of any change.
+
+## An outside scanner's findings, read against the code (2026-10-04)
+
+The owner ran an automated audit service (found by someone else; the author read each finding against the code). Result, finding by finding:
+
+* **"Path traversal" (5 places: `transport.rs` `write_atomic`, `node.rs` `save_pool`, `store.rs` open, `settings.rs` `write_atomic`, `segments.rs` `read_many`): not a vulnerability.** Four build `<path>.tmp` from a path the program already holds (the owner's settings or command line); `segments.rs` builds a file name from a number. No peer, network message or file content chooses any of those paths. Nothing changed.
+* **"Command injection" (`tenero-gui/src/procs.rs`, `Command::new(exe)`): not a vulnerability.** `exe` is the node or miner program chosen in the owner's own settings; the arguments are a list, with no shell. Whoever can edit those settings can already run programs as the owner.
+* **Actions not pinned to a hash (all four workflows): real.** The workflows run on the owner's own machines. `rust.yml`, `supply-chain.yml` and `tests.yml` are pinned to commit hashes (`38c6d91`); `fuzz.yml` follows once the long fuzz run has ended. The hashes are a snapshot: bumping them is a manual step.
+* **Three dependency advisories (`weezl` 0.1.12, `moxcms` 0.8.1, `quick-xml` 0.41.0): real as reported, with little reach here, and not fixable by us.** They arrive through `eframe`, `arboard` and `image` (the wallet window's libraries): the window copies and pastes text and never decodes an image, and `quick-xml` is a Linux-only build-time tool reading Wayland protocol files. No newer version fits the allowed ranges (`cargo update --dry-run` changes nothing); the fix has to come from a new `eframe`. **They are not in the RustSec database** (`cargo deny check advisories` passes), so `deny.toml` has nothing to ignore and none was added; the scanner's ids (AIKIDO-...) are not ones `cargo deny` knows. To re-check: watch for a new `eframe`/`image` release.
+* **Five findings on the Python reference (`chain.py`, `matmulhash.py`), checked against the Rust:**
+  * *ECDSA malleability bypassing replay protection:* does not apply. The Rust data model has no ECDSA. A transaction's id is computed over the part that is not prunable; the range-proof encoding is checked canonical (`ringct.rs`); key images, not signatures, stop a second spend.
+  * *Miner-controlled coinbase payload bypassing block-size limits:* **partly true, bounded.** The block-size limit counts the transactions only (`validate.rs`), not the coinbase. The coinbase is capped by encoding at 16 outputs and 128 bytes of `extra`, so the unmetered part is about 1.4 KB a block. Left as it is, because counting it would be a consensus change for no real gain; noted here.
+  * *Fabricated mixes causing expensive validation:* known and covered (B5 above): the cheap check comes first, and a forger pays about as much CPU as the node does.
+  * *Big-endian dataset serialization diverging:* the Rust code writes every word with explicit little-endian calls (`matmulhash.rs`), whatever the machine; it has been run on x86-64 only, so a big-endian machine has not been tried.
+  * *Non-empty coinbase signatures poisoning confirmation tracking:* does not apply; the Rust coinbase has no signature field.
