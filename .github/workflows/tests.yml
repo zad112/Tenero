@@ -3,7 +3,7 @@ name: tests
 # The Python REFERENCE (reference/): the independent implementation the Rust code is checked against, and the generator of the golden vectors. Not the program.
 on:
   push:
-    branches: [main, rewrite]
+    branches: [main]
   pull_request:
 
 jobs:

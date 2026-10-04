@@ -2,7 +2,7 @@ name: rust
 
 on:
   push:
-    branches: [main, rewrite]
+    branches: [main]
   pull_request:
 
 # A newer push to the same branch makes the older run pointless: cancel it instead of queueing (the Windows job is slow).

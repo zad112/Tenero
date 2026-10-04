@@ -8,7 +8,7 @@ name: fuzz
 # minutes a target.)
 on:
   push:
-    branches: [main, rewrite]
+    branches: [main]
     paths:
       - "fuzz/**"
       - "crates/tenero-fuzzcases/**"

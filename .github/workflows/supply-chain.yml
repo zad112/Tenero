@@ -5,7 +5,7 @@ name: supply-chain
 # of ours: that is the point of it.
 on:
   push:
-    branches: [main, rewrite]
+    branches: [main]
   pull_request:
   schedule:
     - cron: "0 6 * * 1"
