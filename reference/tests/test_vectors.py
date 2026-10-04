@@ -255,7 +255,7 @@ def test_difficulty_scenarios():
         ts, targets = bc._history()
         got = [str(t) for t in targets[1:]] + [str(bc.next_target())]
         assert got == sc["required_targets"], sc["name"]
-        assert [bc._median_time(ts, pos) for pos in range(1, len(ts) + 1)] == sc["median_times"], sc["name"]
+        assert [bc._earliest_time(ts, pos) for pos in range(1, len(ts) + 1)] == sc["min_timestamps"], sc["name"]
 
 
 def test_difficulty_by_an_independent_reimplementation():
@@ -395,7 +395,7 @@ def test_every_rule_case_breaks_exactly_one_thing():
 def test_the_chain_cases_cover_the_rules_a_validator_must_check():
     names = " ".join(c["name"] for c in chain_cases())
     for rule in ("coinbase claims", "no transactions", "not from COINBASE", "more than the sender has", "fee below",
-                 "wrong key", "does not match the sender", "positive", "twice", "median of the last 11",
+                 "wrong key", "does not match the sender", "positive", "twice", "older than the parent", "equal to the parent",
                  "future", "target", "previous_hash", "parent's + 1", "penalty", "hard limit", "epoch",
                  "made-up mix"):
         assert rule in names, rule

@@ -1,4 +1,4 @@
-//! Difficulty (LWMA) and the timestamp median (`CONSENSUS.md` section 7).
+//! Difficulty (LWMA) and the timestamp rule: later than the parent's (`CONSENSUS.md` section 7).
 //!
 //! `ts[i]` is the timestamp and `targets[i]` the required target of the block at position `i`;
 //! position 0 is the genesis block with timestamp 0 and the starting target. Timestamps are `i64`
@@ -8,8 +8,6 @@ use crate::u256::{U256, U320};
 
 /// The target can change by at most this factor, up or down, per block.
 pub const MAX_TARGET_STEP: u64 = 4;
-/// A block's timestamp may not be older than the median of this many previous blocks.
-pub const MEDIAN_TIME_WINDOW: usize = 11;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DifficultyParams {
@@ -130,37 +128,27 @@ pub fn required_targets(p: &DifficultyParams, timestamps: &[i64]) -> Result<Vec<
     Ok(targets.split_off(1))
 }
 
-/// The earliest timestamp the block at position `pos` may carry: the upper median of the timestamps
-/// of positions `max(1, pos - 11) .. pos` (0 when that window is empty).
-pub fn median_time(ts: &[i64], pos: usize) -> i64 {
-    let lo = pos.saturating_sub(MEDIAN_TIME_WINDOW).max(1);
-    let hi = pos.min(ts.len());
-    if lo >= hi {
-        return 0;
-    }
-    let mut window = ts[lo..hi].to_vec();
-    window.sort_unstable();
-    window[window.len() / 2]
+/// The earliest timestamp a block may carry when its parent's is `parent`: one second later. **A block's timestamp must be later than its
+/// parent's** (`CONSENSUS.md` section 7; M11.2). It replaced "not below the median of the last 11", under which a miner with 30 % of the hash rate
+/// could backdate its blocks and pull the difficulty to 0.40x (`THREAT_MODEL.md` E3).
+pub fn earliest_time_after(parent: i64) -> i64 {
+    parent.saturating_add(1)
 }
 
-/// The same as [`median_time`], from only the timestamps of the last `recent.len()` positions before `pos`
-/// (positions `pos - len .. pos`, oldest first, none of them the genesis block): `MEDIAN_TIME_WINDOW`
-/// entries are always enough. 0 when there are none.
-pub fn median_time_recent(recent: &[i64]) -> i64 {
-    let take = recent.len().min(MEDIAN_TIME_WINDOW);
-    if take == 0 {
-        return 0;
+/// The earliest timestamp the block at position `pos` may carry, from `ts` (position 0, the genesis block, has timestamp 0): one second after
+/// position `pos - 1`'s. 0 for position 0, which is no block's child.
+pub fn earliest_time(ts: &[i64], pos: usize) -> i64 {
+    match pos.checked_sub(1).and_then(|i| ts.get(i)) {
+        Some(&parent) => earliest_time_after(parent),
+        None => 0,
     }
-    let mut window = recent[recent.len() - take..].to_vec();
-    window.sort_unstable();
-    window[window.len() / 2]
 }
 
-/// `median_time` for blocks 1, 2, ... (one more entry than `timestamps`, as `required_targets`).
-pub fn median_times(timestamps: &[i64]) -> Vec<i64> {
+/// `earliest_time` for blocks 1, 2, ... (one more entry than `timestamps`, as `required_targets`).
+pub fn earliest_times(timestamps: &[i64]) -> Vec<i64> {
     let mut ts = vec![0i64];
     ts.extend_from_slice(timestamps);
     (1..=timestamps.len() + 1)
-        .map(|pos| median_time(&ts, pos))
+        .map(|pos| earliest_time(&ts, pos))
         .collect()
 }

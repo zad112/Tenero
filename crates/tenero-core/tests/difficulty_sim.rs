@@ -1,15 +1,16 @@
-//! Difficulty and timestamps on a small network (E3 and E4 of `docs/THREAT_MODEL.md`): the REAL `retarget_recent` and the real timestamp
-//! rules (the median of the last 11 blocks from below, the wall clock plus 120 seconds from above), driven by simulated miners that find
-//! blocks at random, join, leave, and (in the attack runs) choose their timestamps. The numbers it prints are what the parameters of the
-//! fresh chain (M11.2) were meant to be chosen from; `#[ignore]`d ones print tables (`--ignored --nocapture`), and the plain ones keep
-//! the findings as regression tests.
+//! Difficulty and timestamps on a small network (E3 and E4 of `docs/THREAT_MODEL.md`): the REAL `retarget_recent` and the REAL timestamp
+//! rule (since M11.2: a block's timestamp must be later than its parent's, `difficulty::earliest_time_after`, the wall clock plus 120 seconds
+//! from above), driven by simulated miners that find blocks at random, join, leave, and (in the attack runs) choose their timestamps. The
+//! rule BEFORE M11.2 (not below the median of the last 11 blocks) is kept here as a stand-in, [`Rule::OldMedian`], only so that the finding
+//! that led to the change stays reproducible: it is no longer in the crate. `#[ignore]`d tests print tables (`--ignored --nocapture`), and the
+//! plain ones keep the findings as regression tests.
 //!
 //! **What this is not:** a model of a real network. Block finding is an exponential wait at the current work and hash rate (no network
 //! delay, no orphans, no miners that react to the difficulty by leaving or joining on their own), the miners are fixed shares of a
 //! hash rate, and the clock is perfect for everyone. It shows what the ALGORITHM does with these inputs, which is a floor on the trouble
 //! a real network will have, not an estimate of it.
 
-use tenero_core::difficulty::{retarget_recent, DifficultyParams, MEDIAN_TIME_WINDOW};
+use tenero_core::difficulty::{earliest_time_after, retarget_recent, DifficultyParams};
 use tenero_core::u256::U256;
 
 /// The chain's parameters (`CONSENSUS.md` section 3): one block a minute, a window of 30.
@@ -17,6 +18,8 @@ const T: u64 = 60;
 const W: u64 = 30;
 /// A block's timestamp may be at most this far ahead of the clock of the node that checks it.
 const FUTURE_LIMIT: i64 = 120;
+/// The window of the rule before M11.2 (used only by [`Rule::OldMedian`] and the candidates built on it).
+const OLD_MEDIAN_WINDOW: usize = 11;
 
 // ---- a small deterministic random source (no dependency) -----------------------------------------------------------------------------
 
@@ -60,8 +63,12 @@ fn target_for_work(w: f64) -> U256 {
 /// Which rule picks the next target: the chain's own (`retarget_recent`), or a CANDIDATE that is only here, to measure what changing it would do.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Rule {
-    /// The rule in `CONSENSUS.md` section 7: a solve time is at least 1 second.
+    /// The rules of the chain as they are since M11.2 (`CONSENSUS.md` section 7), using the crate's own functions: a block must be later than
+    /// its parent, a solve time is at least 1 second, nobody can backdate a block, and what a timestamp can do is bounded by the future limit.
     Current,
+    /// The timestamp rule BEFORE M11.2, with the same difficulty rule: a block's timestamp may not be below the median of the last 11 (a
+    /// stand-in kept here to reproduce the finding that a 30 % miner could pull the difficulty to 0.40x; the code itself is gone).
+    OldMedian,
     /// The same, except that a solve time may be negative, down to minus the future limit (a backdated block then takes away from the
     /// next block's gap what it added to its own, so the sum of the window follows the clock), and the weighted sum is kept above a twentieth
     /// of what the aimed-for rate would give.
@@ -69,10 +76,6 @@ enum Rule {
     /// As `NegativeSolveTimes`, but the solve time is clamped to plus or minus six block times: wide enough that a block backdated to the
     /// median (about five blocks back) is not cut short, so that what a backdated block takes off its own gap is put back on the next one.
     SymmetricClamp,
-    /// The chain's own difficulty rule, with a different TIMESTAMP rule: a block's timestamp must be later than its parent's (instead of
-    /// not below the median of the last 11). Nobody can then backdate a block, a solve time is never below 1 for any reason but the clock,
-    /// and what a timestamp can do is bounded by the future limit.
-    MonotonicStamps,
 }
 
 struct Chain {
@@ -113,7 +116,7 @@ impl Chain {
         let pos = self.ts.len();
         let from = pos.saturating_sub(W as usize + 1);
         match self.rule {
-            Rule::Current | Rule::MonotonicStamps => {
+            Rule::Current | Rule::OldMedian => {
                 retarget_recent(&self.params, &self.ts[from..], &self.targets[from..], pos)
                     .expect("the history is long enough")
             }
@@ -134,14 +137,14 @@ impl Chain {
         }
     }
 
-    /// The least timestamp the next block may carry: the upper median of the last 11 (`CONSENSUS.md` section 7).
-    fn median_time(&self) -> i64 {
-        if self.rule == Rule::MonotonicStamps {
-            // the least a block may carry: one second more than its parent
-            return self.ts.last().map_or(0, |t| t + 1);
+    /// The least timestamp the next block may carry. For the chain's own rule that is the crate's `earliest_time_after` (one second after the
+    /// parent's); the candidates built on the old rule use the upper median of the last 11.
+    fn earliest_time(&self) -> i64 {
+        if self.rule == Rule::Current {
+            return earliest_time_after(*self.ts.last().expect("the genesis block"));
         }
         let pos = self.ts.len();
-        let lo = pos.saturating_sub(MEDIAN_TIME_WINDOW).max(1);
+        let lo = pos.saturating_sub(OLD_MEDIAN_WINDOW).max(1);
         let mut w: Vec<i64> = self.ts[lo..pos].to_vec();
         if w.is_empty() {
             return 0;
@@ -270,18 +273,21 @@ fn simulate_with(
         let want = match run.groups[g].stamp {
             Stamp::Honest => now as i64,
             Stamp::Forward => now as i64 + FUTURE_LIMIT,
-            Stamp::Backward => chain.median_time(),
+            Stamp::Backward => chain.earliest_time(),
             Stamp::Alternate => {
                 flip[g] = !flip[g];
                 if flip[g] {
                     now as i64 + FUTURE_LIMIT
                 } else {
-                    chain.median_time()
+                    chain.earliest_time()
                 }
             }
         };
-        // the rules: not below the median, not more than 120 s past the clock of the node that checks it
-        let ts = want.max(chain.median_time()).min(now as i64 + FUTURE_LIMIT);
+        // the rules: not below the floor (later than the parent), not more than 120 s past the clock of the node that checks it (a floor that is
+        // itself past that limit means the block would be held a moment: it is taken at the floor, which is at most a second beyond)
+        let ts = want
+            .min(now as i64 + FUTURE_LIMIT)
+            .max(chain.earliest_time());
         chain.push(ts, now);
     }
     chain
@@ -366,7 +372,7 @@ fn the_simulation_reproduces_the_rules_it_drives() {
             "work {a} then {b} at block {i}"
         );
     }
-    // timestamps never fall below the median and never run more than 120 s ahead
+    // every block is later than its parent, and none runs more than 120 s (plus the second of the floor) ahead of the clock
     let back = simulate(
         STEADY * 60.0,
         &Run {
@@ -387,12 +393,9 @@ fn the_simulation_reproduces_the_rules_it_drives() {
         3,
     );
     for i in 12..back.ts.len() {
-        let lo = i.saturating_sub(MEDIAN_TIME_WINDOW).max(1);
-        let mut w: Vec<i64> = back.ts[lo..i].to_vec();
-        w.sort_unstable();
         assert!(
-            back.ts[i] >= w[w.len() / 2],
-            "block {i} is below the median"
+            back.ts[i] > back.ts[i - 1],
+            "block {i} is not later than its parent"
         );
         assert!(
             back.ts[i] as f64 <= back.real[i] + FUTURE_LIMIT as f64 + 1.0,
@@ -432,14 +435,14 @@ fn mean_work(rule: Rule, share: f64, stamp: Stamp, seeds: u64) -> f64 {
     (sum / seeds as f64).exp()
 }
 
-/// KNOWN_ISSUES.md item 12 and THREAT_MODEL.md E3, kept as numbers. These tests describe the rules AS THEY ARE: if the timestamp rule is
-/// changed on purpose (M11.2), the first two are the ones that are meant to change.
+/// KNOWN_ISSUES.md item 12 and THREAT_MODEL.md E3, kept as numbers. THE FINDING BEFORE M11.2: with the median rule (the stand-in
+/// [`Rule::OldMedian`]) a minority that backdates or stamps ahead lowers the difficulty. The next test is the same miners on the real rule.
 #[test]
-fn with_the_current_rules_a_minority_that_backdates_or_stamps_ahead_lowers_the_difficulty() {
-    let honest = mean_work(Rule::Current, 0.0001, Stamp::Honest, 6);
-    let backward30 = mean_work(Rule::Current, 0.30, Stamp::Backward, 6) / honest;
-    let backward10 = mean_work(Rule::Current, 0.10, Stamp::Backward, 6) / honest;
-    let forward30 = mean_work(Rule::Current, 0.30, Stamp::Forward, 6) / honest;
+fn with_the_old_median_rule_a_minority_that_backdates_or_stamps_ahead_lowers_the_difficulty() {
+    let honest = mean_work(Rule::OldMedian, 0.0001, Stamp::Honest, 6);
+    let backward30 = mean_work(Rule::OldMedian, 0.30, Stamp::Backward, 6) / honest;
+    let backward10 = mean_work(Rule::OldMedian, 0.10, Stamp::Backward, 6) / honest;
+    let forward30 = mean_work(Rule::OldMedian, 0.30, Stamp::Forward, 6) / honest;
     // measured over 20 runs: 0.40, 0.69 and 0.70
     assert!(
         backward30 < 0.55,
@@ -456,16 +459,18 @@ fn with_the_current_rules_a_minority_that_backdates_or_stamps_ahead_lowers_the_d
     assert!(backward30 < backward10, "more hash rate, more effect");
 }
 
+/// THE REAL RULE (M11.2): a block must be later than its parent's, checked with the crate's own function. The same miners cannot move the difficulty.
 #[test]
-fn if_a_block_must_be_later_than_its_parent_the_same_miners_cannot_move_the_difficulty() {
-    let honest = mean_work(Rule::MonotonicStamps, 0.0001, Stamp::Honest, 6);
+fn with_the_real_rule_a_block_must_be_later_than_its_parent_and_the_same_miners_cannot_move_the_difficulty(
+) {
+    let honest = mean_work(Rule::Current, 0.0001, Stamp::Honest, 6);
     for (share, stamp, lo, hi) in [
         (0.10, Stamp::Backward, 0.95, 1.08),
         (0.30, Stamp::Backward, 0.95, 1.12),
         (0.30, Stamp::Forward, 0.95, 1.05),
         (0.45, Stamp::Alternate, 0.95, 1.10),
     ] {
-        let r = mean_work(Rule::MonotonicStamps, share, stamp, 6) / honest;
+        let r = mean_work(Rule::Current, share, stamp, 6) / honest;
         assert!(
             (lo..=hi).contains(&r),
             "{share} {stamp:?}: {r:.2}x the honest difficulty (measured 1.00 to 1.06)"
@@ -486,10 +491,10 @@ fn if_a_block_must_be_later_than_its_parent_the_same_miners_cannot_move_the_diff
 #[ignore = "a measurement: run with --ignored --nocapture"]
 fn measure_steady_and_a_hash_rate_that_changes() {
     for rule in [
-        Rule::Current,
+        Rule::OldMedian,
         Rule::NegativeSolveTimes,
         Rule::SymmetricClamp,
-        Rule::MonotonicStamps,
+        Rule::Current,
     ] {
         println!(
             "
@@ -596,10 +601,10 @@ fn measure_steady_and_a_hash_rate_that_changes() {
 #[ignore = "a measurement: run with --ignored --nocapture"]
 fn measure_how_long_it_takes_to_recover_from_a_loss_of_hash_rate() {
     for rule in [
-        Rule::Current,
+        Rule::OldMedian,
         Rule::NegativeSolveTimes,
         Rule::SymmetricClamp,
-        Rule::MonotonicStamps,
+        Rule::Current,
     ] {
         println!(
             "
@@ -634,7 +639,7 @@ fn measure_how_long_it_takes_to_recover_from_a_loss_of_hash_rate() {
                     while chain.height() < 300 + 1500 {
                         let w = work(&chain.next_target());
                         now += rng.exp(w / (STEADY * factor));
-                        let ts = (now as i64).max(chain.median_time());
+                        let ts = (now as i64).max(chain.earliest_time());
                         chain.push(ts, now);
                     }
                     chain
@@ -666,10 +671,10 @@ fn measure_how_long_it_takes_to_recover_from_a_loss_of_hash_rate() {
 #[ignore = "a measurement: run with --ignored --nocapture"]
 fn measure_timestamp_manipulation() {
     for rule in [
-        Rule::Current,
+        Rule::OldMedian,
         Rule::NegativeSolveTimes,
         Rule::SymmetricClamp,
-        Rule::MonotonicStamps,
+        Rule::Current,
     ] {
         println!(
             "

@@ -64,7 +64,8 @@ DEFAULT_TARGET = 2**256 // 32_719_438  # SHA-256 chains only: starting difficult
 DIFFICULTY_WINDOW = 30   # blocks to look back. Bigger = smoother but slower to react.
                          # 0 = fixed difficulty (adjustment off)
 MAX_TARGET_STEP = 4      # difficulty can change at most 4x up or down per block
-MEDIAN_TIME_WINDOW = 11  # a block's timestamp may not be older than the median of this many blocks
+# A block's timestamp must be LATER than its parent's (M11.2: this replaced "not below the median of the last 11", which let a miner with 30 % of the hash
+# rate pull the difficulty to 0.40x by backdating; docs/THREAT_MODEL.md E3)...
 FUTURE_TIME_LIMIT = 120  # ...and may not be more than this many seconds ahead of your clock
 # DIFFICULTY_WINDOW and TARGET_BLOCK_TIME are saved inside chain.json when a chain
 # is created, like the supply settings: editing them only affects a NEW chain.

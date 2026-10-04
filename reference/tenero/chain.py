@@ -6,7 +6,7 @@ from .block import Block
 from .config import (
     INITIAL_REWARD, HALVING_INTERVAL, MAX_SUPPLY, TAIL_REWARD,
     MIN_FEE_RATE, MAX_MEMO_BYTES, MIN_BLOCK_MEDIAN, MEDIAN_WINDOW, DEFAULT_TARGET,
-    TARGET_BLOCK_TIME, DIFFICULTY_WINDOW, MAX_TARGET_STEP, MEDIAN_TIME_WINDOW,
+    TARGET_BLOCK_TIME, DIFFICULTY_WINDOW, MAX_TARGET_STEP,
     FUTURE_TIME_LIMIT, MATMUL_START_ATTEMPTS,
 )
 from . import paths
@@ -162,9 +162,10 @@ class Blockchain:
         return max(1, min(2**256 - 1, new))
 
     @staticmethod
-    def _median_time(ts, pos):
-        window = ts[max(1, pos - MEDIAN_TIME_WINDOW):pos]
-        return sorted(window)[len(window) // 2] if window else 0
+    def _earliest_time(ts, pos):
+        # the earliest timestamp the block at position `pos` may carry: one second after its parent's
+        # (the genesis block counts as time 0, so block 1 may carry any timestamp from 1 on)
+        return ts[pos - 1] + 1
 
     def _history(self):
         # (timestamps, required targets) for every block on the chain
@@ -182,7 +183,7 @@ class Blockchain:
     def min_timestamp(self):
         # the earliest timestamp the next block may carry
         ts, _ = self._history()
-        return self._median_time(ts, len(self.chain))
+        return self._earliest_time(ts, len(self.chain))
 
     def recent_stats(self):
         # (average block time in seconds, estimated network attempts/second) over the recent
@@ -407,10 +408,10 @@ class Blockchain:
                 return False
             required = self._retarget(ts, targets, pos)
             if self.difficulty_window > 0:
-                # timestamps drive the difficulty, so they are policed: not older
-                # than the recent median, and not from the future
+                # timestamps drive the difficulty, so they are policed: later than
+                # the parent's, and not from the future
                 stamp = int(cur.timestamp)
-                if stamp < self._median_time(ts, pos):
+                if stamp < self._earliest_time(ts, pos):
                     return False
                 if stamp > now + FUTURE_TIME_LIMIT:
                     return False
@@ -477,7 +478,7 @@ class Blockchain:
         if self.difficulty_window > 0:
             stamp = int(block.timestamp)
             if stamp < self.min_timestamp():
-                return False, "timestamp older than the recent median"
+                return False, "timestamp not later than its parent's"
             if stamp > time.time() + FUTURE_TIME_LIMIT:
                 return False, "timestamp too far in the future"
         if not self.pow.precheck(block, self.next_target()):

@@ -243,9 +243,9 @@ fn difficulty_scenarios() {
         // the timestamp rule applies only when the adjustment is on
         if p.window > 0 {
             assert_eq!(
-                difficulty::median_times(&timestamps),
-                i64s(&s["median_times"]),
-                "{name}: median times"
+                difficulty::earliest_times(&timestamps),
+                i64s(&s["min_timestamps"]),
+                "{name}: earliest timestamps"
             );
         }
     }
@@ -268,7 +268,7 @@ fn the_windowed_forms_agree_with_the_full_history_on_every_scenario() {
         ts.extend(i64s(&s["timestamps"]));
         let mut targets = vec![p.start_target];
         targets.extend(s["required_targets"].as_array().unwrap().iter().map(target));
-        let medians = i64s(&s["median_times"]);
+        let earliest = i64s(&s["min_timestamps"]);
         for pos in 1..=ts.len() {
             // position `pos` needs the last `window + 1` positions before it, at most
             let k = pos.min(p.window as usize + 1);
@@ -281,18 +281,16 @@ fn the_windowed_forms_agree_with_the_full_history_on_every_scenario() {
             );
             checked += 1;
             if p.window > 0 {
-                let lo = pos.saturating_sub(difficulty::MEDIAN_TIME_WINDOW).max(1);
-                let recent = &ts[lo..pos];
+                // only the parent's timestamp counts: from the last one alone, and from the whole history, the same answer
                 assert_eq!(
-                    difficulty::median_time_recent(recent),
-                    medians[pos - 1],
-                    "{name}: median time at {pos}"
+                    difficulty::earliest_time_after(ts[pos - 1]),
+                    earliest[pos - 1],
+                    "{name}: earliest timestamp at {pos}"
                 );
-                // extra history changes nothing: only the last 11 count
                 assert_eq!(
-                    difficulty::median_time_recent(&ts[1..pos]),
-                    medians[pos - 1],
-                    "{name}: median at {pos}, all history"
+                    difficulty::earliest_time(&ts[..pos], pos),
+                    earliest[pos - 1],
+                    "{name}: earliest timestamp at {pos}, all history"
                 );
             }
         }
@@ -363,15 +361,36 @@ fn difficulty_edges() {
 }
 
 #[test]
-fn median_time_window() {
-    assert_eq!(difficulty::median_time(&[0], 1), 0); // nothing before block 1 but the genesis
-    assert_eq!(difficulty::median_times(&[]), vec![0]);
-    // upper median: of [10, 20] the element at index 1
-    assert_eq!(difficulty::median_time(&[0, 10, 20], 3), 20);
-    // only the last 11 blocks count
-    let mut ts = vec![0i64];
-    ts.extend((1..=30).map(|i| i * 10));
-    assert_eq!(difficulty::median_time(&ts, 31), 250); // blocks 20..=30: median block 25
+fn a_timestamp_must_be_later_than_the_parents() {
+    // block 1's parent is the genesis block, whose time is 0: block 1 may carry any timestamp from 1 on
+    assert_eq!(difficulty::earliest_time(&[0], 1), 1);
+    assert_eq!(difficulty::earliest_times(&[]), vec![1]);
+    // one second after the parent's, whatever the blocks before it did (equal is NOT enough, earlier is not)
+    assert_eq!(difficulty::earliest_time(&[0, 10, 20], 3), 21);
+    assert_eq!(
+        difficulty::earliest_time(&[0, 50, 20], 3),
+        21,
+        "only the parent's time counts, not the highest so far"
+    );
+    assert_eq!(
+        difficulty::earliest_time_after(1_700_000_000),
+        1_700_000_001
+    );
+    assert_eq!(
+        difficulty::earliest_time_after(i64::MAX),
+        i64::MAX,
+        "no overflow"
+    );
+    assert_eq!(
+        difficulty::earliest_time(&[], 1),
+        0,
+        "no parent known: no floor"
+    );
+    assert_eq!(
+        difficulty::earliest_time(&[0], 0),
+        0,
+        "position 0 is the genesis block: no floor"
+    );
 }
 
 // ------------------------------------------------------------------ fees_and_size.json

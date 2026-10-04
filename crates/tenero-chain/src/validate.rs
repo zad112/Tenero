@@ -27,9 +27,10 @@ pub enum BlockError {
     Malformed(String),
     BadVersion(u16),
     BadParent,
+    /// The timestamp is not later than the parent's: `earliest` is the least it may be (the parent's plus one second).
     TimestampTooEarly {
         timestamp: u64,
-        median: i64,
+        earliest: i64,
     },
     /// The required target is 0 or 1, whose work cannot be represented (such a chain is refused).
     TargetUnrepresentable,
@@ -220,10 +221,7 @@ impl<'a> Validator<'a> {
     /// the block-size median. A miner builds a block from this; the validator checks a block against it.
     pub fn lookback(&self) -> usize {
         let window = usize::try_from(self.params.difficulty.window).unwrap_or(usize::MAX - 1);
-        window
-            .saturating_add(1)
-            .max(difficulty::MEDIAN_TIME_WINDOW)
-            .max(fees::MEDIAN_WINDOW)
+        window.saturating_add(1).max(fees::MEDIAN_WINDOW)
     }
 
     /// The next block on top of the current tip.
@@ -273,10 +271,11 @@ impl<'a> Validator<'a> {
         let target = difficulty::retarget_recent(&self.params.difficulty, &ts, &targets, pos)
             .map_err(BlockError::Malformed)?;
 
-        // positions from 1 on: the genesis block counts for neither the median time nor the median size
+        // positions from 1 on: the genesis block does not count for the block-size median
         let non_genesis = usize::from(first == 0);
+        // a block's timestamp must be later than its parent's (the genesis block's is 0)
         let min_timestamp = if self.params.difficulty.window > 0 {
-            difficulty::median_time_recent(&ts[non_genesis..])
+            difficulty::earliest_time_after(*ts.last().expect("a parent"))
         } else {
             0
         };
@@ -341,7 +340,7 @@ impl<'a> Validator<'a> {
         {
             return Err(BlockError::TimestampTooEarly {
                 timestamp: header.timestamp,
-                median: next.min_timestamp,
+                earliest: next.min_timestamp,
             });
         }
         if header.timestamp > now.saturating_add(self.params.future_limit_seconds) {

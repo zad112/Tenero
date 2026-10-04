@@ -247,7 +247,7 @@ def test_precheck_block_accepts_a_good_candidate_and_gives_reasons_for_bad_ones(
 def test_precheck_block_checks_timestamps_when_difficulty_adjusts():
     bc = mine(matmul_chain(window=5), 6)
     height = len(bc.chain)
-    for stamp, expected in ((1_000_000, "older"), (int(time.time()) + 10_000, "future")):
+    for stamp, expected in ((1_000_000, "not later than its parent"), (int(time.time()) + 10_000, "future")):
         block = Block(height, [Transaction(COINBASE, MINER, 1)], bc.chain[-1].hash,
                       timestamp=stamp)
         ok, reason = bc.precheck_block(block)

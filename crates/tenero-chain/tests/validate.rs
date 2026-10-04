@@ -414,59 +414,84 @@ fn version_parent_and_time() {
     net.mine(&mut b);
     assert_eq!(net.rejects(&b), BlockError::BadParent);
 
-    // the earliest a block may be is the median of the last 11 timestamps: with blocks 60 s apart from T0, the
-    // last 11 (blocks 10..=20) have block 15's as their middle: T0 + 60 * 14
-    let median = net.validator().next_block().unwrap().min_timestamp;
-    assert_eq!(median, i64::try_from(T0 + 60 * 14).unwrap());
-    let early = median as u64 - 1;
-    let b = net.block_at(vec![], Some(early));
-    assert_eq!(
-        net.rejects(&b),
-        BlockError::TimestampTooEarly {
-            timestamp: early,
-            median
-        }
-    );
-    let b = net.block_at(vec![], Some(median as u64));
+    // a block's timestamp must be LATER than its parent's (M11.2; it replaced "not below the median of the last 11"). With blocks
+    // 60 s apart from T0 the parent (block 20) is at T0 + 60 * 19, and the earliest the next may be is one second after it.
+    let parent = net.tip_timestamp();
+    assert_eq!(parent, T0 + 60 * 19);
+    let earliest = net.validator().next_block().unwrap().min_timestamp;
+    assert_eq!(earliest, i64::try_from(parent + 1).unwrap());
+    // equal to the parent's: refused (the old rule allowed it), and one second earlier too
+    for early in [parent, parent - 1] {
+        let b = net.block_at(vec![], Some(early));
+        assert_eq!(
+            net.rejects(&b),
+            BlockError::TimestampTooEarly {
+                timestamp: early,
+                earliest
+            }
+        );
+    }
+    // where the old median rule drew its line (block 15's time, T0 + 60 * 14) and anything up to the parent's own time: refused now
+    for old_ok in [T0 + 60 * 14, T0 + 60 * 14 + 1, parent - 30] {
+        let b = net.block_at(vec![], Some(old_ok));
+        assert!(
+            matches!(net.rejects(&b), BlockError::TimestampTooEarly { .. }),
+            "{old_ok}"
+        );
+    }
+    // exactly one second after the parent's: allowed
+    let b = net.block_at(vec![], Some(earliest as u64));
     assert!(
         matches!(
             net.validator().validate_block(&b, NOW),
             Ok(Outcome::Valid(_))
         ),
-        "exactly the median is allowed"
+        "one second after the parent is allowed"
     );
 }
 
-/// On a young chain the median-time window holds fewer than 11 blocks, and the genesis block (timestamp 0)
-/// is not one of them: counting it would let a block carry a timestamp the rule forbids.
+/// On a young chain the parent of block 1 is the genesis block, whose time is 0: block 1 must be later than that, so any real timestamp does,
+/// and a block with timestamp 0 does not. After that the rule is the same as everywhere: one second after the parent's.
 #[test]
-fn on_a_young_chain_the_median_time_ignores_the_genesis_block() {
+fn on_a_young_chain_block_1_must_be_later_than_the_genesis_time_of_0() {
     let mut net = Net::new("young");
     assert_eq!(
         net.validator().next_block().unwrap().min_timestamp,
-        0,
-        "no block yet: nothing to compare"
+        1,
+        "the genesis block's time is 0, so block 1 must carry at least 1"
+    );
+    let b = net.block_at(vec![], Some(0));
+    assert_eq!(
+        net.rejects(&b),
+        BlockError::TimestampTooEarly {
+            timestamp: 0,
+            earliest: 1
+        }
     );
     let b = net.block_at(vec![], Some(T0));
     net.accept(&b);
     assert_eq!(
         net.validator().next_block().unwrap().min_timestamp,
-        i64::try_from(T0).unwrap()
+        i64::try_from(T0 + 1).unwrap()
     );
     let b = net.block_at(vec![], Some(T0 + 60));
     net.accept(&b);
-    // the timestamps of blocks 1 and 2 are T0 and T0 + 60: the upper median is T0 + 60 (with the genesis block's
-    // 0 in the window it would wrongly be T0)
     let next = net.validator().next_block().unwrap();
-    assert_eq!(next.min_timestamp, i64::try_from(T0 + 60).unwrap());
+    assert_eq!(next.min_timestamp, i64::try_from(T0 + 61).unwrap());
     let b = net.block_at(vec![], Some(T0 + 30));
     assert_eq!(
         net.rejects(&b),
         BlockError::TimestampTooEarly {
             timestamp: T0 + 30,
-            median: next.min_timestamp
+            earliest: next.min_timestamp
         }
     );
+    // the future limit is still held, and is a hold, not a refusal
+    let far = net.block_at(vec![], Some(NOW + 100_000));
+    assert!(matches!(
+        net.validator().validate_block(&far, NOW),
+        Ok(Outcome::NotYet)
+    ));
 }
 
 /// The block-size median is the upper median of the last ten block sizes, never below the 150 kB floor: one

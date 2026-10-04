@@ -130,7 +130,8 @@ An odd number of leaves is never padded by repeating the last one.
 
 ### 5.5 Time [issue 6]
 
-- A block whose `timestamp` is not above the **median time** rule (v1 section 7) is invalid.
+- A block whose `timestamp` is **not later than its parent's** is invalid (v1 section 7; `timestamp > parent.timestamp`, the genesis block's being 0). **Changed at M11.2:** it
+  replaced the median-of-11 rule, which let a 30 % miner backdate the difficulty down to 0.40x (`THREAT_MODEL.md` E3).
 - A block more than 120 seconds ahead of the node's clock is **not yet acceptable**: the node holds it and
   reconsiders later. It is **never permanently invalid** for being early, so two honest nodes converge and a
   chain that was valid yesterday is valid today.
@@ -267,7 +268,7 @@ Measured sizes (real proofs, `tests/ringct.rs`): a 2-input, 2-output transaction
 For a block at height `h` on top of a known parent:
 
 1. `version` is the rules version active at `h` (section 10); `prev_id` is the parent; `timestamp` passes
-   5.5 (median time; too early is invalid, too far ahead is deferred).
+   5.5 (later than the parent's; too early is invalid, too far ahead is deferred).
 2. The **required target** for `h` (v1 section 7) and the **cheap** proof-of-work check.
 3. The **full** proof-of-work check (needs the epoch's dataset).
 4. The block **decodes strictly** (section 4), its size (the sum of its transactions' sizes) is within
@@ -382,7 +383,7 @@ exactly as before.
 - **The chain is the branch with the most cumulative work**, the sum over its blocks of
   `floor(2^256 / target)`. A branch replaces the chain only if its work is **strictly greater**: on a tie the
   branch seen first stays. (A shorter branch can win if its blocks were harder; a test builds one.)
-- A block on a side branch is judged by **its own branch**: the target, median time and block-size median come
+- A block on a side branch is judged by **its own branch**: the target, the parent's timestamp and the block-size median come
   from that branch's last blocks, never from the chain's tip. On arrival it gets every check of section 8
   except step 6 (per-transaction fee, key images, rings, proofs), which need the state at its parent and are
   checked only when the branch is about to become the chain. A side branch may therefore spend an output the

@@ -3443,8 +3443,184 @@
    },
    "expect_valid": false,
    "expect_valid_without_pow_recheck": false,
-   "name": "rule: timestamp older than the median of the last 11",
-   "note": "median-time-past"
+   "name": "rule: timestamp older than the parent's",
+   "note": "T0, long before the parent's timestamp"
+  },
+  {
+   "constants": {},
+   "doc": {
+    "chain": [
+     {
+      "hash": "310d91e47584e2c931967e372ab65e1a3e414e50b0792c86dd1989fc0ecbf207",
+      "index": 0,
+      "nonce": 0,
+      "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "timestamp": 0,
+      "transactions": []
+     },
+     {
+      "hash": "008ae6d1f5d92a1e7c1bec7a737e2936f0b99ab94511e15a02d6a7f2c4b39121",
+      "index": 1,
+      "nonce": 50,
+      "previous_hash": "310d91e47584e2c931967e372ab65e1a3e414e50b0792c86dd1989fc0ecbf207",
+      "timestamp": 1700000060,
+      "transactions": [
+       {
+        "amount": 500000,
+        "fee": 0,
+        "memo": "",
+        "public_key": "",
+        "recipient": "5e48805430df35781e25f3b59a2b5292049618c1",
+        "sender": "COINBASE",
+        "signature": ""
+       }
+      ]
+     },
+     {
+      "hash": "008b8334b8908928e77d99a171dc0590ee8763b523963eda5feb61a078a7faf4",
+      "index": 2,
+      "nonce": 1008,
+      "previous_hash": "008ae6d1f5d92a1e7c1bec7a737e2936f0b99ab94511e15a02d6a7f2c4b39121",
+      "timestamp": 1700000120,
+      "transactions": [
+       {
+        "amount": 500000,
+        "fee": 0,
+        "memo": "",
+        "public_key": "",
+        "recipient": "5e48805430df35781e25f3b59a2b5292049618c1",
+        "sender": "COINBASE",
+        "signature": ""
+       }
+      ]
+     },
+     {
+      "hash": "0072cc3d33165fbe6e80e4df67985ba30a7405d4dd4a04769f519993223a5929",
+      "index": 3,
+      "nonce": 44,
+      "previous_hash": "008b8334b8908928e77d99a171dc0590ee8763b523963eda5feb61a078a7faf4",
+      "timestamp": 1700000180,
+      "transactions": [
+       {
+        "amount": 500700,
+        "fee": 0,
+        "memo": "",
+        "public_key": "",
+        "recipient": "5e48805430df35781e25f3b59a2b5292049618c1",
+        "sender": "COINBASE",
+        "signature": ""
+       },
+       {
+        "amount": 100000,
+        "fee": 500,
+        "memo": "rent",
+        "public_key": "481d882ac7e52c71bcecb521575b164ce756a8a668e484d15c430e918b7a3897b9ad693e45827070f6836e07dbcf4690540640b53763557e408be363648d3718",
+        "recipient": "5f3b25c534c5fca0c89ecf4685508e3e19bee776",
+        "sender": "5e48805430df35781e25f3b59a2b5292049618c1",
+        "signature": "4806aa7c4488c301163abd6297ed5a07836e34b6a28d917109197d0edcd87b78fbfadf6061f499308253018ee00fc102d8cdc25590b8c43a3a8a5bba581c856a"
+       },
+       {
+        "amount": 35000,
+        "fee": 200,
+        "memo": "",
+        "public_key": "481d882ac7e52c71bcecb521575b164ce756a8a668e484d15c430e918b7a3897b9ad693e45827070f6836e07dbcf4690540640b53763557e408be363648d3718",
+        "recipient": "11149801f1e7006e2990dc18ced26f44eeec2924",
+        "sender": "5e48805430df35781e25f3b59a2b5292049618c1",
+        "signature": "6411c79b295b08637650d7117c75f23c2a110fbce4006a14c5492f16c4ea171716767639984aa2f5eb4420505186c390108ca494e32dfd9350424fb1c134eb75"
+       }
+      ]
+     },
+     {
+      "hash": "00359dd257f62d14cd14b41d221aaed869a2e3f3d6d8da7153c702689d3c6aae",
+      "index": 4,
+      "nonce": 335,
+      "previous_hash": "0072cc3d33165fbe6e80e4df67985ba30a7405d4dd4a04769f519993223a5929",
+      "timestamp": 1700000240,
+      "transactions": [
+       {
+        "amount": 500100,
+        "fee": 0,
+        "memo": "",
+        "public_key": "",
+        "recipient": "5f3b25c534c5fca0c89ecf4685508e3e19bee776",
+        "sender": "COINBASE",
+        "signature": ""
+       },
+       {
+        "amount": 10000,
+        "fee": 100,
+        "memo": "h\u00e9llo \u2713",
+        "public_key": "8ee684eeb1f60e4af1d34d92a142dae4d228f24a7c36cfb0bbb1cd328761770785dc000aa08089617aaad593f6d730d207b5fd5638ce4a6625bf0af4b84fed15",
+        "recipient": "11149801f1e7006e2990dc18ced26f44eeec2924",
+        "sender": "5f3b25c534c5fca0c89ecf4685508e3e19bee776",
+        "signature": "3389b6eae256d2e0007583e27d57db1070d46d24eefd9a525998bb5f53f7a62736300b66e835f43c677d2df4e345b5c10fd7e90e220ec48cd1399d710b5d5cbc"
+       }
+      ]
+     },
+     {
+      "hash": "00c4390b678a839e1bd39ccace52134af8001ef650843bc1e6b30f7608245ad2",
+      "index": 5,
+      "nonce": 23,
+      "previous_hash": "00359dd257f62d14cd14b41d221aaed869a2e3f3d6d8da7153c702689d3c6aae",
+      "timestamp": 1700000300,
+      "transactions": [
+       {
+        "amount": 500050,
+        "fee": 0,
+        "memo": "",
+        "public_key": "",
+        "recipient": "11149801f1e7006e2990dc18ced26f44eeec2924",
+        "sender": "COINBASE",
+        "signature": ""
+       },
+       {
+        "amount": 5000,
+        "fee": 50,
+        "memo": "",
+        "public_key": "5910c88705e54bb1c1bbfc4c4f677837c6c743593a5fa5d1bc846a22f10c5bf0afe72b36f1a600229ec1dbec92e97e85ada786297b9eb98ec8eaefdf898d9015",
+        "recipient": "5e48805430df35781e25f3b59a2b5292049618c1",
+        "sender": "11149801f1e7006e2990dc18ced26f44eeec2924",
+        "signature": "c0850d1b75af904e776296cac07e8f738a24717e57a627e9a4a21b36b9b585ffb3ed0ea962e6a0568ac3b053c0e0db61200a5c85c128294f900b25d6175f13c5"
+       }
+      ]
+     },
+     {
+      "hash": "004bfaf37ea5b6c4ce9421c89212bff2bc8071b36c72bc31a8900de11ab40c6d",
+      "index": 6,
+      "nonce": 29,
+      "previous_hash": "00c4390b678a839e1bd39ccace52134af8001ef650843bc1e6b30f7608245ad2",
+      "timestamp": 1700000300,
+      "transactions": [
+       {
+        "amount": 500000,
+        "fee": 0,
+        "memo": "",
+        "public_key": "",
+        "recipient": "5e48805430df35781e25f3b59a2b5292049618c1",
+        "sender": "COINBASE",
+        "signature": ""
+       }
+      ]
+     }
+    ],
+    "params": {
+     "block_time": 60,
+     "decimals": 4,
+     "difficulty_window": 4,
+     "halving_interval": 1000,
+     "initial_reward": 500000,
+     "max_supply": 10000000000,
+     "pow": {
+      "name": "sha256"
+     },
+     "tail_reward": 10000
+    },
+    "target": "452312848583266388373324160190187140051835877600158453279131187530910662656"
+   },
+   "expect_valid": false,
+   "expect_valid_without_pow_recheck": false,
+   "name": "rule: timestamp equal to the parent's",
+   "note": "the parent's own timestamp: it must be LATER (the old median rule allowed this)"
   },
   {
    "constants": {},

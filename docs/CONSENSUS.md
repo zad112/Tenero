@@ -66,7 +66,6 @@ Consensus constants that are **not** saved in the chain file (they are constants
 | `MIN_BLOCK_MEDIAN` | 300,000 bytes |
 | `MEDIAN_WINDOW` | 10 blocks |
 | `MAX_TARGET_STEP` | 4 |
-| `MEDIAN_TIME_WINDOW` | 11 blocks |
 | `FUTURE_TIME_LIMIT` | 120 seconds |
 
 ## 3. Blocks  (LEGACY serialization)
@@ -186,8 +185,10 @@ target and the first measured solve time is block 2's. A backwards timestamp cou
 
 **Timestamp rules** (only when `W > 0`): block `pos` is invalid if `int(timestamp)` is
 
-- less than the **median time**: sort `ts[max(1, pos - 11) .. pos - 1]` and take index `len // 2`
-  (the upper median; 0 if the window is empty); or
+- **not later than its parent's**: less than `ts[pos - 1] + 1`, where the genesis block counts as time 0 (so block 1 may carry any timestamp from 1
+  on). **Changed at M11.2 (2026-10-04, the owner's decision of 2026-10-03):** this replaced "less than the median of the last 11", under which a miner
+  with 30 % of the hash rate could backdate its blocks to the median and pull the difficulty to 0.40x the honest value (`THREAT_MODEL.md` E3); under this
+  rule the same miner leaves it at 1.00x. It is a consensus change, so it starts a new chain: there is no activation height (`EMERGENCY_PLAN.md` section 8); or
 - greater than the validator's clock plus 120 seconds. **This makes validity depend on the wall clock,
   so two honest nodes can disagree about a block near the boundary [issue 6].**
 

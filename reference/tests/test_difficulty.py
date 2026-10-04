@@ -133,12 +133,28 @@ def test_easier_than_required_target_is_rejected():
     assert honest.is_valid()
 
 
-def test_timestamp_older_than_recent_median_is_rejected():
+def test_timestamp_older_than_the_parent_is_rejected():
     bc = new_chain()
     run(bc, [T] * 12)
     assert bc.is_valid()
-    bc.mine_block(MINER, timestamp=BASE_TIME + 5)   # far older than the recent blocks
+    bc.mine_block(MINER, timestamp=BASE_TIME + 5)   # far older than the parent
     assert not bc.is_valid()
+
+
+def test_a_timestamp_must_be_later_than_the_parents_not_merely_not_earlier():
+    # M11.2: equal is refused, one second later is accepted, one second earlier is refused (the old median rule allowed all three
+    # whenever the parent was above the median)
+    for delta, ok in ((0, False), (1, True), (-1, False)):
+        bc = new_chain()
+        parent_ts = run(bc, [T] * 12)
+        assert bc.is_valid()
+        assert int(bc.chain[-1].timestamp) == parent_ts
+        bc.mine_block(MINER, timestamp=parent_ts + delta)
+        assert bc.is_valid() == ok, delta
+    bc = new_chain()
+    parent_ts = run(bc, [T] * 12)
+    assert bc.min_timestamp() == parent_ts + 1
+
 
 
 def test_timestamp_from_the_future_is_rejected():

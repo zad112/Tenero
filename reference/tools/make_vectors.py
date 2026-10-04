@@ -357,10 +357,10 @@ def difficulty_record(name, params, timestamps):
     ts, targets = bc._history()
     nxt = bc.next_target()
     required = [str(t) for t in targets[1:]] + [str(nxt)]
-    medians = [bc._median_time(ts, pos) for pos in range(1, len(ts) + 1)]
-    assert medians[-1] == bc.min_timestamp()
+    earliest = [bc._earliest_time(ts, pos) for pos in range(1, len(ts) + 1)]
+    assert earliest[-1] == bc.min_timestamp()
     return {"name": name, "params": {**params, "start_target": str(params["start_target"])},
-            "timestamps": timestamps, "required_targets": required, "median_times": medians}
+            "timestamps": timestamps, "required_targets": required, "min_timestamps": earliest}
 
 
 def difficulty_vectors():
@@ -396,10 +396,10 @@ def difficulty_vectors():
     scen.append(difficulty_record("fixed difficulty (window 0)", {"block_time": 60, "window": 0, "start_target": start},
                                   seq([30 + det_int(f"f {i}", 60) for i in range(20)])))
     scen.append(difficulty_record("very short chain (2 blocks)", base, seq([60] * 2)))
-    return wrap("difficulty", "The LWMA difficulty adjustment and the median-time rule. timestamps[i] is "
+    return wrap("difficulty", "The LWMA difficulty adjustment and the timestamp rule (a block's timestamp must be later than its parent's). timestamps[i] is "
                 "block i+1's timestamp (the genesis block has timestamp 0). required_targets[i] is the "
                 "target block i+1 must be BELOW, and the last entry is for the next block. "
-                "median_times[i] is the earliest timestamp block i+1 may carry (when window > 0). "
+                "min_timestamps[i] is the earliest timestamp block i+1 may carry: one second after its parent's, with the genesis block at time 0 (when window > 0). "
                 "Targets are decimal strings.", {"scenarios": scen})
 
 
@@ -685,8 +685,10 @@ def sha_chain_cases():
         lambda bc: manual_block(bc, ALICE, [stx(ALICE, BOB.address, 0, fee)], ts))
     bad("rule: a transaction may not appear twice", "the same signed transaction as in block 3, again",
         lambda bc: manual_block(bc, ALICE, [_transaction(bc, 3, 1)], ts))
-    bad("rule: timestamp older than the median of the last 11", "median-time-past",
+    bad("rule: timestamp older than the parent's", "T0, long before the parent's timestamp",
         lambda bc: manual_block(bc, ALICE, [], T0))
+    bad("rule: timestamp equal to the parent's", "the parent's own timestamp: it must be LATER (the old median rule allowed this)",
+        lambda bc: manual_block(bc, ALICE, [], int(bc.chain[-1].timestamp)))
     bad("rule: timestamp too far in the future", "more than 120 s after the validator's clock (year 2100)",
         lambda bc: manual_block(bc, ALICE, [], 4_102_444_800))
     bad("rule: the hash does not meet the required target", "mined at an easier target than required",
