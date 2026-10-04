@@ -4,11 +4,11 @@ name: fuzz
 # once a month. It needs a nightly Rust and Linux, which is why it is here and not on the owner's machine. The work of each target is in
 # crates/tenero-fuzzcases (compiled and tested everywhere); a crash is uploaded as an artifact, and becomes a case in
 # crates/tenero-fuzzcases/tests/regressions.rs.
-# (GitHub only starts a workflow by hand, or on a schedule, once the file is on the default branch, which `rewrite` is not yet: until it is, a push to
-# `rewrite` that changes the fuzzing files runs it, for two minutes a target.)
+# (The file has been on the default branch since M11.1, so the manual start and the schedule work; a push that changes the fuzzing files still runs it, for two
+# minutes a target.)
 on:
   push:
-    branches: [rewrite]
+    branches: [main, rewrite]
     paths:
       - "fuzz/**"
       - "crates/tenero-fuzzcases/**"

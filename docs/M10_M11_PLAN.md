@@ -205,7 +205,7 @@ send some on, **by following only what is on screen**, and the owner has confirm
 
 **The order (the owner's, 2026-10-03):** M11.0 (the stored-block checksum and the emergency plan), M11.1 (retire the Python), M11.2 (the fresh chain,
 with the timestamp rule), **M11.25 (open `main`)**, M11.3 (packaging, with the icon inside the program), M11.4 (what testers need, with the README
-rewrite). Nothing is pushed to `main` before M11.25, and then only when the owner says so.
+rewrite). Nothing is pushed to `main` before M11.25, and then only when the owner says so. **CHANGED by the owner on 2026-10-04: `main` became the Rust program at M11.1, ahead of M11.2** (see M11.1 and M11.25 below).
 
 ### M11.0 Two things to settle before anything else (the owner's pick, 2026-10-03; BOTH DONE 2026-10-04: the checksum, and the emergency plan's decisions, `tenerod rewind` and a first drill)
 
@@ -226,7 +226,19 @@ rewrite). Nothing is pushed to `main` before M11.25, and then only when the owne
   sections 3 to 6 of the plan by the people named in it, timed, and written up with what did not work. The plan is not called finished until the drill has
   been done once.
 
-### M11.1 Retire the old Python (size M, deliberate, in steps)
+### M11.1 Retire the old Python (size M, deliberate, in steps): DONE 2026-10-04
+
+**What was done, in order (each step with the tests green):** (0) the Python state of `main` was kept as the `python-final` tag and the `legacy-python` branch (commit
+`715c41a`); (1) the old program that only it used was deleted: `miner.py`, `cli.py`, `view.py`, `demo.py`, `calibrate.py`, `gpu_pow_test.py`, the `.bat` files, and the
+modules `checker.py` and `mempool.py`, with their tests (commit `59e9b24`); (2) the independent reference was moved to `reference/` with `git mv` (commit `1a181e4`); (3) `main`
+was fast-forwarded to it (`715c41a..1a181e4`, no force, no history lost), after CI was green on `rewrite` (rust on Ubuntu and Windows, supply-chain, and the Python reference
+suite on Python 3.12, 3.13, 3.14). **Two differences from the plan as written, and why:** the order was delete-then-move (less to move, same safety), and **more stayed than the
+plan listed**: `chain.py` itself imports `paths.py` and `storage.py`, so those stayed; `gpubackend.py` stayed with its emulator test (the only check of the CUDA kernel logic that
+runs without a GPU, and the Rust copy of the kernels is held identical to it); `analysis.py` stayed (the memory-hardness simulation the README's argument rests on; its tests were
+split into `test_analysis.py`). **Measured:** Python 343 passed, 64 skipped, 5 expected failures (was 468 + 115 skipped before; the difference is the deleted program's tests); all
+six `make_vectors --check` ok; Rust 893 passed, 0 failed, 24 ignored. The four vector files that embed their generator's path were regenerated and differ by that one line each.
+`KNOWN_ISSUES.md` now says that items 1 to 10 and 14 still live in the frozen reference code (not fixed), and that item 15 no longer describes anything shipped. `CLAUDE.md` and
+the README are rewritten for the Rust-first project (the README is an interim one; the full rewrite is M11.4). **The plan as it was written:**
 
 * **What goes:** the Python *node, miner, wallet and account-model chain* (`miner.py`, the old node and wallet code, the
   legacy chain tests, `chains.json`, the GPU Python miner and its `.bat` files) and the tests that exist only for them.
@@ -241,7 +253,7 @@ rewrite). Nothing is pushed to `main` before M11.25, and then only when the owne
 * **Done in steps**, each with the test suite green: first move, then delete, never both at once; the old code stays in the
   git history and on the `main` branch (tag it, e.g. `python-final`, before deleting).
 * `CLAUDE.md` is rewritten for the Rust-first project (its rules 1 to 9 stay in spirit; rule 4's `gpu_test.bat` becomes the
-  Rust GPU check), and `main` is replaced by the `rewrite` branch only when the owner says so.
+  Rust GPU check), and `main` is replaced by the `rewrite` branch only when the owner says so (the owner said so on 2026-10-04).
 
 ### M11.2 A fresh chain, with no premine (size S to M)
 
@@ -270,7 +282,10 @@ rewrite). Nothing is pushed to `main` before M11.25, and then only when the owne
 
 ### M11.25 Open `main` (the owner's, 2026-10-03; only when the owner says so)
 
-`main` still holds the Python prototype and `rewrite` holds the Rust program; nothing has been pushed to `main`. When M11.0 to M11.2 are done and the
+**2026-10-04: the first half is DONE early, at the owner's word** (the `python-final` tag, `legacy-python`, and `main` = the Rust program as a fast-forward; the Python
+reference job runs in CI on `main`). **Still to do here:** check CI on `main` itself (its first run is the one that followed the push), the first long fuzz runs
+(`fuzz.yml` is on the default branch now, so its "Run workflow" button and its monthly schedule work; neither has been used yet) and branch protection. The branch `rewrite` equals `main` now and
+can be deleted when the owner wants. **The text below is the plan as written on 2026-10-03.** `main` still holds the Python prototype and `rewrite` holds the Rust program; nothing has been pushed to `main`. When M11.0 to M11.2 are done and the
 owner gives the word: tag the last Python state (`python-final`, M11.1), make `main` the Rust program (a merge or a replacement, whichever keeps the
 history the owner wants; **a replacement of `main` is the owner's explicit decision, not mine**), check that CI is green on `main` on both systems, and
 move the things that only work from the default branch: the **long fuzz run** (`fuzz.yml`'s manual start and its monthly schedule), the supply-chain
