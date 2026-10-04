@@ -207,9 +207,9 @@ send some on, **by following only what is on screen**, and the owner has confirm
 with the timestamp rule), **M11.25 (open `main`)**, M11.3 (packaging, with the icon inside the program), M11.4 (what testers need, with the README
 rewrite). Nothing is pushed to `main` before M11.25, and then only when the owner says so.
 
-### M11.0 Two things to settle before anything else (the owner's pick, 2026-10-03; not started)
+### M11.0 Two things to settle before anything else (the owner's pick, 2026-10-03; the checksum DONE 2026-10-04, the emergency plan not started)
 
-* **A checksum on every stored record (`THREAT_MODEL.md` G3, A2; a storage-format change, NOT a consensus change).** Measured on 2026-10-03: of 900
+* **A checksum on every stored record (`THREAT_MODEL.md` G3, A2; a storage-format change, NOT a consensus change). DONE 2026-10-04: format version 4, 16 bytes after each record covering the record and its place; measured: 600 damaged copies, 3,600 reads, 3,581 refused, 19 right, 0 a different block (was 3 of 900); with the check removed the test fails (mutation check); a format-3 store is refused (test); no migration. The text below is the plan as written.** Measured on 2026-10-03: of 900
   damaged reads of a segment file, 3 returned a *different, valid-looking block* with no error, because the damage landed where a block still
   decodes. The fix: each record in a segment file carries a checksum (a SHA-256 prefix of the record, from a hash the project already uses; no
   new dependency) checked on every read, so a damaged record is an error that names the segment and the record, never a wrong block. **To do:**

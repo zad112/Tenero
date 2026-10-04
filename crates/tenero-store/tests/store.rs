@@ -56,7 +56,7 @@ impl Drop for TempDb {
 /// The bytes of one transaction's prunable part as the tests build them: a ring count, two rings of 16,
 /// the proof length and the proof (`proof_len` bytes).
 fn prunable_size(proof_len: usize) -> u64 {
-    (4 + 2 * (4 + 16 * 8) + 4 + proof_len) as u64
+    (4 + 2 * (4 + 16 * 8) + 4 + proof_len + 16) as u64
 }
 
 // ------------------------------------------------------------------ making blocks
@@ -537,10 +537,10 @@ fn pruning_removes_only_proofs_and_changes_no_id_root_or_state() {
     let stats = s.prune_below(40).unwrap();
     // blocks 1..=39, two transactions each
     assert_eq!(stats.transactions_pruned, 39 * 2);
-    // per transaction: 4 (ring count) + 2 rings of (4 + 16 * 8) + 4 (proof length) + 1900 (proof)
+    // per transaction: 4 (ring count) + 2 rings of (4 + 16 * 8) + 4 (proof length) + 1900 (proof) + 16 (the record's checksum)
     assert_eq!(
         stats.prunable_bytes_freed,
-        39 * 2 * (4 + 2 * (4 + 16 * 8) + 4 + 1900)
+        39 * 2 * (4 + 2 * (4 + 16 * 8) + 4 + 1900 + 16)
     );
     assert_eq!(stats.pruned_below, 40);
     assert_eq!(s.pruned_below().unwrap(), 40);
@@ -1089,10 +1089,10 @@ fn a_random_history_of_appends_reorganisations_and_pruning_matches_the_model() {
 /// A2 and G3 of the threat model: a damaged segment file is a hostile file. Bytes of it are flipped, replaced with garbage, or given a huge
 /// count, in many random ways, and the store is asked for everything it can read from it. The rule is that it never panics and never
 /// allocates wildly (a test that hangs or runs out of memory is a failure too); what it MAY do is hand back a block that differs from the
-/// one written, because **the segment files carry no checksum of their own**, and this test says how often that happens (see the last
-/// assertion: it is a finding, kept as a number, and it changes only if a check is added on purpose).
+/// one written. Before M11.0 the segment files carried no checksum and 3 of 900 damaged reads did exactly that (measured 2026-10-03); now every
+/// record carries one, and the rule is: NO damaged read ever returns a different block. It is an error that names the segment and the record.
 #[test]
-fn a_damaged_segment_file_never_panics_and_the_store_says_how_often_it_cannot_tell() {
+fn a_damaged_segment_file_never_panics_and_never_returns_a_different_block() {
     let db = TempDb::new("damaged-segments");
     let mut c = Chain::new(&db, 21);
     c.push_n(6);
@@ -1111,7 +1111,8 @@ fn a_damaged_segment_file_never_panics_and_the_store_says_how_often_it_cannot_te
         x
     };
     let (mut errors, mut same, mut different) = (0u32, 0u32, 0u32);
-    let rounds = 150;
+    let rounds = 600;
+    let mut messages = std::collections::BTreeSet::new();
     for round in 0..rounds {
         let mut bytes = clean.clone();
         match round % 5 {
@@ -1150,7 +1151,14 @@ fn a_damaged_segment_file_never_panics_and_the_store_says_how_often_it_cannot_te
         for (h, original_block) in original.iter().enumerate() {
             let h = h as u64 + 1;
             match s.get_block(h) {
-                Err(_) => errors += 1,
+                Err(e) => {
+                    errors += 1;
+                    let m = e.to_string();
+                    if m.contains("checksum") {
+                        assert!(m.contains("segment 0") && m.contains("byte"), "{m}");
+                    }
+                    messages.insert(m.contains("checksum"));
+                }
                 Ok(Some(b)) => match b.into_full() {
                     Some(b) if &b == original_block => same += 1,
                     Some(_) => different += 1,
@@ -1177,10 +1185,38 @@ fn a_damaged_segment_file_never_panics_and_the_store_says_how_often_it_cannot_te
         errors > 0 && same > 0,
         "damage should sometimes be seen, and a read of an undamaged part should work"
     );
-    // The finding: there is no checksum, so some damage returns a different block. If a check is ever added this number becomes 0 and this
-    // assertion is the one to change, on purpose.
-    assert!(
-        different > 0,
-        "the store now notices every change: change this test and THREAT_MODEL.md G3"
+    assert_eq!(
+        different, 0,
+        "a damaged record was returned as a different block: the checksum is not doing its job"
     );
+    assert!(
+        messages.contains(&true),
+        "some damage should be reported as a failed checksum"
+    );
+}
+
+/// M11.0: a store written before the checksums (format 3) is refused with `WrongFormat`, not read on trust; the development networks'
+/// old data is throwaway, so there is no migration.
+#[test]
+fn a_store_written_without_checksums_is_refused_not_guessed_at() {
+    let db = TempDb::new("old-format");
+    let mut c = Chain::new(&db, 22);
+    c.push_n(3);
+    let store_path = db.0.clone();
+    drop(c.store);
+    {
+        let raw = redb::Database::open(&store_path).unwrap();
+        let txn = raw.begin_write().unwrap();
+        {
+            let meta_def: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("meta");
+            let mut meta = txn.open_table(meta_def).unwrap();
+            meta.insert("format", 3u32.to_le_bytes().as_slice())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+    }
+    assert!(matches!(
+        Store::open_with(&store_path, LABEL, POW, Some(SEGMENT_BLOCKS)),
+        Err(StoreError::WrongFormat)
+    ));
 }

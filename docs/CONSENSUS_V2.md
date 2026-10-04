@@ -579,6 +579,10 @@ How the two parts stay consistent, and what pruning does:
   byte is written, so a refused block writes nothing.
 - **Reading.** A transaction's location gives segment, offset and length. A missing or short file is reported
   as corruption, never a panic, and a failed operation changes nothing.
+- **Checksums (layout version 4, M11.0; storage only, not consensus).** Each record in a segment file is followed by 16
+  bytes: the first 16 of SHA-256(`"tenero segment record v1"`, segment as u32 LE, offset as u64 LE, length as u64 LE, the
+  record). The location's length is the record's length without them. Every read checks it, and a mismatch is
+  `Corrupt`, naming the segment and the byte. A store of an older layout version is refused (`WrongFormat`).
 - **Rolling a block back** returns its bytes (they are the tail of its segment) and gives the space back: the
   segment's committed length moves back, and an emptied segment's file is deleted.
 - **Pruning** below a height deletes the 16-byte locations of those blocks **exactly**, in one transaction, so

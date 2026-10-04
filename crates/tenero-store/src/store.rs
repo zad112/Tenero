@@ -41,8 +41,27 @@ const KEY_IMAGES: TableDefinition<&[u8], u64> = TableDefinition::new("key_images
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 /// The on-disk layout version, in `meta`. Version 2: the prunable data is in segment files. Version 3: the
-/// block record also holds the block's target and body size.
-pub const FORMAT_VERSION: u32 = 3;
+/// block record also holds the block's target and body size. Version 4: every record in a segment file is followed by
+/// a 16-byte checksum (`CHECK_LEN`), which every read verifies. A store of an older version is refused (`WrongFormat`), not guessed at.
+pub const FORMAT_VERSION: u32 = 4;
+
+/// The bytes of checksum after each record in a segment file: the first 16 bytes of a SHA-256 of the record and of where it is.
+const CHECK_LEN: usize = 16;
+
+/// The checksum of a record. It covers the place too (segment, offset, length), so a record that is intact but was read from
+/// the wrong place, or a length the database got wrong, is also caught.
+fn record_check(segment: u32, offset: u64, payload: &[u8]) -> [u8; CHECK_LEN] {
+    let h = tenero_core::hash::sha256(&[
+        b"tenero segment record v1",
+        &segment.to_le_bytes(),
+        &offset.to_le_bytes(),
+        &(payload.len() as u64).to_le_bytes(),
+        payload,
+    ]);
+    let mut out = [0u8; CHECK_LEN];
+    out.copy_from_slice(&h[..CHECK_LEN]);
+    out
+}
 
 /// How many block heights one segment file covers, by default (about 17 hours of 60-second blocks; at the
 /// worst case of full 150 kB blocks about 130 MB of prunable data).
@@ -267,11 +286,22 @@ impl Store {
             }
         }
         for (segment, items) in by_segment {
-            let ranges: Vec<(u64, u32)> = items.iter().map(|(_, l)| (l.offset, l.len)).collect();
-            for ((i, _), bytes) in items
+            let ranges: Vec<(u64, u32)> = items
+                .iter()
+                .map(|(_, l)| (l.offset, l.len.saturating_add(CHECK_LEN as u32)))
+                .collect();
+            for ((i, loc), mut bytes) in items
                 .iter()
                 .zip(self.segments.read_many(u64::from(segment), &ranges)?)
             {
+                let payload_len = bytes.len() - CHECK_LEN;
+                let tag = bytes.split_off(payload_len);
+                if tag[..] != record_check(segment, loc.offset, &bytes)[..] {
+                    return Err(StoreError::Corrupt(format!(
+                        "segment {segment}: the record at byte {} ({} bytes) fails its checksum: the file is damaged",
+                        loc.offset, loc.len
+                    )));
+                }
                 out[*i] = Some(bytes);
             }
         }
@@ -565,14 +595,16 @@ impl Store {
                     return Err(StoreError::Duplicate("transaction"));
                 }
                 let bytes = t.prunable.to_bytes(t.prefix.inputs.len())?;
+                let record_offset = committed + blob.len() as u64;
                 let loc = Loc {
                     segment: segment32,
-                    offset: committed + blob.len() as u64,
+                    offset: record_offset,
                     len: u32::try_from(bytes.len())
                         .map_err(|_| StoreError::Corrupt("prunable data over 4 GiB".into()))?,
                 };
                 tx_loc.insert(id.as_slice(), loc.to_bytes().as_slice())?;
                 blob.extend_from_slice(&bytes);
+                blob.extend_from_slice(&record_check(segment32, record_offset, &bytes));
                 for input in &t.prefix.inputs {
                     if images.insert(input.key_image.as_slice(), height)?.is_some() {
                         return Err(StoreError::DoubleSpend(input.key_image));
@@ -797,7 +829,8 @@ impl Store {
                 for id in ids {
                     if let Some(old) = tx_loc.remove(id.as_slice())? {
                         s.transactions_pruned += 1;
-                        s.prunable_bytes_freed += u64::from(Loc::from_bytes(old.value())?.len);
+                        s.prunable_bytes_freed +=
+                            u64::from(Loc::from_bytes(old.value())?.len) + CHECK_LEN as u64;
                     }
                 }
             }
