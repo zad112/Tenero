@@ -12,14 +12,17 @@ cargo build --release -p tenero-app
 
 This makes `target\release\tenerod.exe` (the node) and `target\release\tenero-wallet.exe` (the wallet).
 
-## The two networks
+## The three networks
 
 | name | proof of work | what it is for |
 |---|---|---|
 | `test` | SHA-256, mined by a CPU in an instant | trying the programs. Rings of 2 and a maturity of 1 block, so a payment works after a few blocks. Nodes on one machine need different loopback addresses (`127.0.0.1`, `127.0.0.2`, ...). |
 | `dev` | the real matmulhash (4.3 GiB dataset per epoch), starting difficulty a placeholder (one attempt in eight meets the target) | the real proof of work end to end. The real rings (16) and maturities (10 and 60 blocks). **Not a launched network:** its genesis is made from a label, and `docs/M8_PLAN.md` section 7 lists what must be true before one exists. |
+| `alpha` | the real matmulhash, **a real starting difficulty (a target of 2^237: about 524,000 attempts a block)**, epochs of 100 blocks | **the release network** of the first test release (M11.2): a fresh genesis ("tenero alpha network 1", chain id `430ca700...69d3`) with **no premine** (the genesis creates no output; every coin, the owner's included, comes from a mined block), the new timestamp rule, the real rings and maturities. **Still a test network: unaudited, nothing on it has value, and it can restart** (a restart for Carrot would be "alpha network 2"). The default control port is 38332 (test 18332, dev 28332), and private peer addresses are refused by default. |
 
-You must name a network; there is no default, so nobody runs the wrong one by forgetting a setting.
+You must name a network; there is no default, so nobody runs the wrong one by forgetting a setting. A node and a peer on different networks refuse each other at the handshake (the chain ids differ).
+
+**Timestamps (all networks, since M11.2):** a block's timestamp must be **later than its parent's**. A chain that finds blocks faster than one a second therefore runs ahead of the clock (at most 120 s ahead is accepted; beyond that a block is held until the clock catches up), which a network aiming at 60 s per block never reaches; the SHA-256 `test` network mined at `mine_pace = 0` can, in a long run.
 
 ## The node: `tenerod`
 

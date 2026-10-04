@@ -255,7 +255,33 @@ the README are rewritten for the Rust-first project (the README is an interim on
 * `CLAUDE.md` is rewritten for the Rust-first project (its rules 1 to 9 stay in spirit; rule 4's `gpu_test.bat` becomes the
   Rust GPU check), and `main` is replaced by the `rewrite` branch only when the owner says so (the owner said so on 2026-10-04).
 
-### M11.2 A fresh chain, with no premine (size S to M)
+### M11.2 A fresh chain, with no premine (size S to M): DONE 2026-10-04
+
+**What was done (commits `ad01d74`, `6b5b7f0`, and the one that records this):**
+* **The owner's three choices, 2026-10-04:** the network is called **`alpha`** (label "tenero alpha network 1"; a restart for Carrot becomes "alpha network 2");
+  the **starting target is 2^237** (about 524,288 attempts a block); the **epoch is 100 blocks** (the original value; the one every measurement used; a choice, not
+  an optimisation). The difficulty window (LWMA 30), the 60 s block time, the 4x step, the emission, the rings (16) and the maturities (60 and 10) are unchanged.
+* **The timestamp rule (a CONSENSUS CHANGE, in the order of rule 1):** a block's timestamp must be later than its parent's. Python reference, `CONSENSUS.md` section 7,
+  `CONSENSUS_V2.md` 5.5, the vectors regenerated (`difficulty.json`, `chains.json`), then the Rust validator and `difficulty::earliest_time*`. A test per edge: equal to the
+  parent (refused), one second later (accepted), earlier (refused), where the old median line was (refused now), block 1 against the genesis time 0, the future limit still held.
+* **The simulation rerun against the real rule** (the crate's own function, 20 runs of 3,000 blocks): a miner that backdates holds the difficulty at **1.00x with 10 %** of the hash
+  rate, **1.02x with 30 %**, **1.06x with 45 %** and 1.20x with 60 % (a 60 % miner controls the chain anyway); stamping ahead 0.99x to 1.00x and alternating 1.00x to 1.01x at every
+  share. The old rule on the same code: 0.69x, 0.40x, 0.29x (kept as the stand-in `Rule::OldMedian` so that the finding stays reproducible).
+* **The network:** `Network::Alpha` through the node, the miner, the wallet app, the seed check and `tenerod rewind`; `v2_genesis.json` has the alpha label, and **every case says 0
+  transactions and 0 coinbase outputs**; chain id `430ca70081d3e52c618fd9af46fecdf6d6fc8f7965dc8ed2aa53c92ecfe069d3`, the same in the Python reference and in Rust (a test reads the
+  vector). **No premine is checked on the real store of every network** (the genesis creates no output; no coin exists before block 1). 5 new tests; Rust 898 passed, 0 failed, 24 ignored;
+  Python 345 passed.
+* **Measured on the real network, one run, 2026-10-04 (the owner's RTX 5070 Ti, one node, mining into a scratch folder, 16 blocks in 12 minutes):** the node's genesis tip was the alpha chain
+  id; block 1 was found 4.5 s after the start and block 2 after 17.4 s (the plan's "never under a second" held); then a 3-minute wait for block 3 (the difficulty had just gone up about 3.5x,
+  a long draw); over the 15 gaps between blocks the shortest was 11 s, the longest 183 s and the mean 48 s (block times are random, so gaps of a few times the mean are normal; the LWMA
+  was still moving from its start toward 60 s: **it had not settled in 16 blocks, which this run does not show it doing**).
+  Every block passed the node's full CPU proof-of-work check; no invalid block, no ban, one warning (no peers: one node). **What this does NOT show:** a settled difficulty, a
+  second miner, a CPU miner, a network of more than one node, an epoch boundary (100 blocks) on the new chain, or that the 2^237 start suits other people's hardware.
+* **Release-notes line (to be carried into M11.4):** "The timestamp rule changed: a block must be later than its parent. This starts a new chain; chains from before are not valid under it."
+* **Still true:** the old `test` and `dev` networks are kept as development networks (the timestamp rule applies to them too: one validator, so old data mined under the old rule can
+  contain blocks the new rule refuses; it is throwaway), and a peer on another chain is refused at the handshake (the chain ids differ).
+
+**The plan as it was written:**
 
 * **A new genesis block:** a new chain id and genesis message and a fresh data model start, chosen once and written in
   `CONSENSUS_V2.md`, with **no coinbase output and no premine of any kind** (today's genesis already has no coinbase output;

@@ -77,12 +77,12 @@ keeping only part of the dataset is an estimate built from that and from one GPU
 and fold construction (a ChaCha20 core with feed-forward and XORs, used as a compression function) is
 original to this project and has had no cryptanalysis or independent review.
 
-**12. A minority miner can lower the difficulty with its timestamps (verified by simulation of the real rules, 2026-10-02; NOT fixed; the owner decided on 2026-10-03 that the fix, "a block's timestamp must be later than its parent's", goes into the fresh chain at M11.2).**
+**12. A minority miner can lower the difficulty with its timestamps (verified by simulation of the real rules, 2026-10-02; FIXED in the code at M11.2, 2026-10-04, for the new chain: "a block's timestamp must be later than its parent's", the owner's decision of 2026-10-03; measured after the fix: a 30 % backdating miner leaves the difficulty at 1.02x, was 0.40x).**
 LWMA with a window of 30, a solve time floored at 1 s and capped at 6 block times, and a median-of-11 timestamp rule. A miner with 30 %
 of the hash rate that backdates its blocks to the median gets 0.40x the honest difficulty (blocks every 25 s instead of 60); with 10 %, 0.69x.
 The same attackers leave it at 1.00x if a block's timestamp must be later than its parent's. `tenero-core/tests/difficulty_sim.rs` keeps
 both numbers as tests and `docs/THREAT_MODEL.md` (E3) has the table and the fixes that were tried and rejected. A consensus change, so
-for the fresh chain (M11.2), by decision. The Python reference and the Rust validator both have the flaw.
+for the fresh chain (M11.2), by decision. **Both the Python reference and the Rust validator now have the new rule** (`CONSENSUS.md` section 7; vectors and tests per edge). It starts a new chain: data from before is not valid under it. The analysis above is as it was written.
 
 **13. Speed numbers come from one machine (from the code).** Everything measured about the GPU (about
 22,000 attempts per second, a 0.10 s dataset build) is from one RTX 5070 Ti.

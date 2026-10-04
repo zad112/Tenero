@@ -19,8 +19,11 @@ Inspired by Monero's design ideas; not affiliated with or endorsed by the Monero
 - **The programs** (Rust, in `crates/`): `tenerod` (the node), `tenero-miner` (the miner: GPU, CPU, and a SHA-256 test backend), `tenero-wallet` (the wallet on the
   command line), `tenero-wallet-gui` (the wallet as a window: it starts and stops the node and the miner, several wallets and accounts, a 24-word seed phrase,
   sending with three fee levels, receiving with a QR code, message signatures and payment proofs, payment requests) and `tenero-seedcheck`.
-- **Two networks:** `test` (a SHA-256 chain a CPU can mine) and `dev` (the real matmulhash proof of work; the GPU miner needs an NVIDIA GPU with enough memory
-  for the 4 GiB dataset). A first public test release, on a fresh chain with no premine, is planned (M11.2 to M11.4) and **does not exist yet**.
+- **Three networks:** `test` (a SHA-256 chain a CPU can mine), `dev` (the real matmulhash proof of work with an easy placeholder difficulty) and **`alpha`**, the
+  network of the first test release (built in M11.2): the real proof of work at a real starting difficulty, a fresh genesis with **no premine** (every coin comes from a
+  mined block, the owner's included), and the rule that a block's timestamp must be later than its parent's. A GPU miner needs an NVIDIA GPU with enough memory for the
+  4 GiB dataset; a CPU can mine `alpha` only very slowly (measured speeds of a 6-thread CPU: 164 attempts a second with a build tuned for the machine, 31.7 with the default build; at the start a block is about 524,000 attempts, so about 53 minutes or about 4.6 hours alone, and far less often once GPUs mine). **The packaged release and the testers' guide
+  (M11.3, M11.4) do not exist yet, and `alpha` is still a test network with no value that can restart.**
 - **Tested:** the Rust workspace has 893 passing tests (measured 2026-10-04; 24 more need a GPU or a lot of memory and are skipped by default), checked against
   golden test vectors made by an independent Python reference (`reference/`). A random-case fuzz run of the protocol engine ran 9 hours with no failure after the
   one bug it found was fixed. That says nothing about bugs it cannot find, and it is not an audit.

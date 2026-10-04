@@ -121,8 +121,11 @@ An odd number of leaves is never padded by repeating the last one.
 - **The genesis block is fixed in the software and checked** (v1 never checked it). It has no transactions and
   is exempt from the proof of work. Its header is `version = 2`, `prev_id = 32 zero bytes`, `timestamp = 0`,
   `nonce = 0`, `mix = 64 zero bytes`, and `tx_root = SHA-256("tenero genesis" ‖ network_label)`, where
-  `network_label` is a fixed ASCII name such as `"tenero experimental network 1"`. **PROPOSED**: the label is what
-  makes two Tenero networks different.
+  `network_label` is a fixed ASCII name such as `"tenero experimental network 1"`. The label is what
+  makes two Tenero networks different. **The release network's label (M11.2) is `"tenero alpha network 1"`, chain id
+  `430ca70081d3e52c618fd9af46fecdf6d6fc8f7965dc8ed2aa53c92ecfe069d3`** (in `v2_genesis.json`, from the Python reference, and checked by the Rust code). **No premine: the
+  genesis block has no transactions and no coinbase output** (`v2_genesis.json` says so for every label, and a test checks the real genesis of every network), so every
+  coin comes from a mined block.
 - `genesis_id = SHA-256( "tenero genesis id v2" ‖ serialized genesis header )`.
 - **`chain_id = genesis_id`.** Every signature and proof in a transaction is bound to it (section 7), so a
   transaction cannot be replayed on another chain **[issue 4]**. A node refuses a chain whose genesis
@@ -485,7 +488,7 @@ Decided by the owner on 2026-09-29:
 | 3 | ring size and maturity (6.2, 6.3) | **ring 16, fixed; 60 blocks for mined outputs, 10 for ordinary outputs** |
 | 4 | minimum fee (8.1) | **dynamic consensus rule** |
 | 5 | storage | **`redb`** (pure Rust, MIT OR Apache-2.0, 4.3.0 at the time of writing), laid out for pruning (14.3) |
-| 6 | genesis label (5.4) and limits (6.2) | label **`"tenero experimental network 1"`**; the limits are **PROVISIONAL** |
+| 6 | genesis label (5.4) and limits (6.2) | label **`"tenero experimental network 1"`** (the default); **the release network `alpha` uses `"tenero alpha network 1"` (M11.2)**; the limits are **PROVISIONAL** |
 | 7 | CLSAG and Bulletproofs+ (section 2) | **the `monero-oxide` crates**, after the audit is read and a version is pinned (M7) |
 | 8 | pruning (section 14) | **required**: the chain must be able to run pruned so nobody has to download hundreds of gigabytes |
 | 9 | block-size floor (8.2) | **150,000 bytes** (v1: 300,000), to bound the free growth of the chain |
