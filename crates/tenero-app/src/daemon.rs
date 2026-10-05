@@ -96,7 +96,7 @@ fn chain_of(network: Network) -> Result<Chain, String> {
                 ),
                 label,
                 kind: PowKind::Matmul,
-                matmul: Some(Arc::new(MatmulPow::new(
+                matmul: Some(Arc::new(MatmulPow::low_memory(
                     Params::DEFAULT,
                     DEV_EPOCH_BLOCKS,
                     6,
@@ -113,7 +113,7 @@ fn chain_of(network: Network) -> Result<Chain, String> {
                 ),
                 label,
                 kind: PowKind::Matmul,
-                matmul: Some(Arc::new(MatmulPow::new(
+                matmul: Some(Arc::new(MatmulPow::low_memory(
                     Params::DEFAULT,
                     Network::Alpha.epoch_blocks(),
                     6,
@@ -121,6 +121,14 @@ fn chain_of(network: Network) -> Result<Chain, String> {
             })
         }
     }
+}
+
+/// How many proof-of-work datasets (4 GiB each at the real parameters) a node on this network holds at once: `None` for the SHA-256 test network,
+/// which has none. **One**: the node must stay inside 8 GB (the owner's limit, 2026-10-04), which two datasets plus the rest of the node would not
+/// (`MatmulPow::low_memory`; measured before the change: 8.0 GiB of dataset after the first epoch boundary). The cost is a wait of a few seconds
+/// for the first block of each epoch.
+pub fn proof_of_work_datasets(network: Network) -> Result<Option<usize>, String> {
+    Ok(chain_of(network)?.matmul.map(|m| m.max_datasets()))
 }
 
 /// The consensus parameters of a network (its genesis label, proof of work, starting target, block time and so on), for tests and tools.

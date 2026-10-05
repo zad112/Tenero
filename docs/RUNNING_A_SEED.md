@@ -12,9 +12,11 @@ serve the **whole chain** (an archive node, never pruned), accept connections fr
 
 * **A server that is only this.** A small cloud Linux server or a machine on a separate network, running **Ubuntu 22.04 or newer** (the Linux build needs glibc 2.34; 2.35 for the wallet app, which a seed does not need).
   **Not your own computer and not one that holds a wallet or anything else of yours.** A seed accepts connections from strangers, the part of the project that is least hardened against hostile traffic.
-* **RAM is the expensive part.** A node on `alpha` checks every block's real proof of work, which needs **about 4.3 GiB of RAM per epoch, and about 8.6 GiB briefly while the next epoch's dataset is built**
-  (`docs/RUNNING.md`; measured in earlier milestones on the owner's PC, **not measured on a server**). So the cheapest 1 or 2 GB servers **cannot run this**; plan on **at least 8 GB, and 16 GB for headroom**.
-  I have not priced servers of that size, and the price is the owner's to check. A few GB of disk is plenty at this stage.
+* **RAM.** A node on `alpha` checks every block's real proof of work, which needs the epoch's **4 GiB dataset in memory**. **A node holds one dataset at a time** (the owner's limit for the node is
+  8 GB, 2026-10-04): **4.01 GiB measured** for a whole check process across three epoch boundaries (a Linux node used 4.1 GiB resident with one epoch built), plus the chain database and the system. **An 8 GB
+  server is the target**; I would not go below 6 GB and have not tried (nothing smaller was measured, and building a dataset touches all of it). **The price:** the node waits about 3 seconds (measured) for the first
+  block of each 100-block epoch, while it frees the old dataset and builds the next. Not measured on a server. 16 GB would be headroom, not need. (The program used to hold two datasets, 8.0 GiB, which is why
+  earlier drafts of this guide asked for 16 GB.) I have not priced servers of this size; the price is yours to check, and in the figures I found (unverified for Hetzner) 8 GB is the cheaper size by a wide margin.
 * **A fixed IPv4 address.** `seed` entries are `ip:port` literals (names are not accepted), and a built-in list ships with a release, so an address that changes means a new release.
 * **One open port**, TCP, of your choosing (there is no default; `38333` is a reasonable convention next to `alpha`'s local control port 38332, nothing more). Nothing else may be open to the internet except SSH.
 

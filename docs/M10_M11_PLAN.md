@@ -341,6 +341,14 @@ had no addresses to give and that one seed is below the policy's three. **Found:
 `ba9a0b5` predates the fix. (2) `tenerod status` and `stop` assume the `test` network's port and need `--control` on `alpha` (documented; not changed). **Not run on Linux:** the miner, the wallet, the wallet app, a GPU, a native Linux
 machine or a server, and a node under strangers' traffic.
 
+**The node's memory (2026-10-04, the owner's limit: the node must stay under 8 GB at all times; the miner is not limited):** measured first, because the documents said "8.6 GiB briefly": with the old rule (keep the last two epochs, build the next
+ahead of time) a process checking a real-proof-of-work chain went from **4.0 to 8.0 GiB of dataset at the first epoch boundary and stayed there**, i.e. two datasets for most of every epoch, over the limit once the rest of the node is added.
+**Fixed without any consensus change:** `MatmulPow::low_memory` (used by the node on `dev` and `alpha`; the miner keeps the old behaviour): one dataset at a time, the old one freed (once no check is using it) before the new one is allocated, builds one at a
+time, no build ahead of time. **Measured after:** 4.01 GiB for the whole process across three epoch boundaries and every sync variant (harness `real_pow_sync` with `TENERO_POW_LOW_MEMORY=1`, 70 blocks, epochs of 20); the first block of an epoch took
+2.9 to 3.0 s (the build, 2.76 s), the median block 179 ms. Six tests (`pow_low_memory.rs`; three guards broken on purpose, three tests failed as they should) and one that pins the node's setting (`alpha_network.rs`). **The price is a wait of about 3 s once per
+epoch, and a rebuild after a reorganisation across a boundary** (`THREAT_MODEL.md` has the note). **Not done:** a dataset kept on disk (only one 16 MiB slice is read per check, so steady memory could be tiny, but a build still needs the 4 GiB and the code
+would be consensus-critical); a smaller dataset or a light-verification design (both change the rules and the memory-hardness argument: a decision for the owner with a re-run of the simulation); the seed server can now be an 8 GB one.
+
 **The plan as it was written:**
 
 * **The program's icon inside the `.exe` (the owner's, 2026-10-03):** the circular logo (`assets/tenero.ico`, made by `tools/make_icons.py`) is today only

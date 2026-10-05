@@ -69,5 +69,6 @@ The old Python miner, wallet and command line (`miner.py`, `cli.py`, `gpu_test.b
 7. **Known issues stay visible.** Do not fix an item in `docs/KNOWN_ISSUES.md` silently: its strict-xfail test in
    `reference/tests/test_known_issues.py` will start passing, which fails the suite until the marker is removed.
 8. **Resource limits are design constraints.** The miner stays within 6 CPU cores (`--max-cores`), and the CPU
-   check needs about 4.3 GiB of RAM per epoch dataset (about 8.6 GiB briefly during the prefetch).
+   **node** holds ONE epoch dataset at a time, about 4 GiB (the owner's limit for the node is 8 GB, 2026-10-04: it is freed before the next is built, at the price of a wait of about 3 s for the
+   first block of each epoch; `MatmulPow::low_memory`; measured 4.01 GiB for a whole check process across three epoch boundaries, against 8.0 GiB when two are kept). The miner is not limited by this rule and may hold two.
 9. Explain plainly, with the reasoning, and mention risks and uncertainty rather than hiding them.

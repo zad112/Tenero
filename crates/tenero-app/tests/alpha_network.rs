@@ -158,3 +158,19 @@ fn settings_for_alpha() {
         assert_eq!(c.network, Network::Alpha);
     }
 }
+
+#[test]
+fn a_node_holds_one_proof_of_work_dataset_so_it_stays_inside_8_gb() {
+    // Two datasets are 8.0 GiB (measured 2026-10-04: a process went from 4.0 to 8.0 GiB at the first epoch boundary and stayed there), which
+    // with the rest of the node is more than the owner's limit of 8 GB. A node on a real-proof-of-work network keeps one.
+    assert_eq!(
+        daemon::proof_of_work_datasets(Network::Alpha).unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        daemon::proof_of_work_datasets(Network::Dev).unwrap(),
+        Some(1)
+    );
+    // the SHA-256 test network has no dataset at all
+    assert_eq!(daemon::proof_of_work_datasets(Network::Test).unwrap(), None);
+}

@@ -18,7 +18,7 @@ against the source on this date; **argued** = a design argument, not shown; **ar
 | One attempt: 64 x 8192 int8 matrix from ChaCha20, times one 16 MiB slice chosen by the attempt, exact int32 arithmetic, folded and hashed | read from docs | `docs/CONSENSUS.md` section 8.2 (parameters `m=64, k=8192, nb=2048, num_blocks=256`) |
 | Dataset 4 GiB (256 slices), rebuilt every epoch, slices built in order with data-dependent picks | read from docs | `docs/CONSENSUS.md` section 8.2 |
 | Epoch 100 blocks on `alpha` | read from code | `crates/tenero-app/src/config.rs` (`REAL_POW_EPOCH_BLOCKS`) |
-| A check needs about 4.3 GiB of RAM and about 0.1 s; 8.6 GiB briefly while the next dataset is built | docs (measured in earlier milestones, not re-measured) | `docs/CONSENSUS.md` 8.2, `docs/RUNNING.md` "Memory and disk", CLAUDE.md rule 8 |
+| A check needs about 4.3 GiB of RAM and about 0.1 s (the first block of an epoch about 3 s more, for the dataset build) | **measured** 2026-10-04 (4.01 GiB for a whole check process across three epoch boundaries with the node's one-dataset mode; 8.0 GiB with the old two-dataset mode; 2.8 to 3.0 s for a build with 6 threads) | `crates/tenero-chain/tests/real_pow_sync.rs` with `TENERO_POW_LOW_MEMORY=1`; `docs/RUNNING.md` "Memory and disk" |
 | 33,000 to 36,000 attempts/s on one RTX 5070 Ti (batch 128 to 256) | **measured** | `docs/BENCHMARKS.md` |
 | 550 to 590 GB/s of slice reads | arithmetic (rate x 16 MiB), **not** a bus measurement | `docs/BENCHMARKS.md` (the same caveat is there) |
 | CPU: 164 attempts/s (tuned build) and 31.7 (default build), 6 threads of a Ryzen 9 5900X | **measured** | `docs/BENCHMARKS.md` |

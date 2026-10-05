@@ -1,5 +1,5 @@
 //! What it costs a node to verify a chain with the REAL matmulhash proof of work, and what assume-valid saves.
-//! `#[ignore]`d: it needs about 4.3 GiB of RAM for one epoch's dataset (about 8.6 GiB while a second is built) and
+//! `#[ignore]`d: it needs about 4 GiB of RAM for one epoch's dataset (with the default proof of work two are kept: 8.0 GiB measured; `TENERO_POW_LOW_MEMORY=1` uses the node's, one at a time: 4.0 GiB measured) and
 //! minutes of CPU. Run it on the owner's machine:
 //!
 //! ```text
@@ -12,6 +12,7 @@
 //!   epoch boundaries, so the once-per-epoch dataset build is paid more than once)
 //! * `TENERO_POW_THREADS` threads that build a dataset (default 6, and never more: CLAUDE.md rule 8)
 //! * `TENERO_POW_TAIL`    blocks at the end that assume-valid still checks in full (default 5)
+//! * `TENERO_POW_LOW_MEMORY=1` use the node's proof of work (one dataset at a time) instead of the default (the last two epochs); watch the process's memory from outside
 //! * `TENERO_POW_SMALL=1` tiny parameters, a dataset of a few KiB: a check that this harness works, NOT a measurement
 //!
 //! What it measures: CPU time in `Chain::submit_block` for a chain of coinbase-only blocks, on an easy target
@@ -57,6 +58,15 @@ impl TempDb {
 impl Drop for TempDb {
     fn drop(&mut self) {
         self.remove();
+    }
+}
+
+/// The proof of work under test: the node's (one dataset at a time) when `TENERO_POW_LOW_MEMORY=1`, else the default (the last two epochs kept).
+fn make_pow(s: &Setup) -> MatmulPow {
+    if env_u64("TENERO_POW_LOW_MEMORY", 0) == 1 {
+        MatmulPow::low_memory(s.params, s.epoch, s.threads).unwrap()
+    } else {
+        MatmulPow::new(s.params, s.epoch, s.threads).unwrap()
     }
 }
 
@@ -114,7 +124,7 @@ fn median(v: &mut [Duration]) -> Duration {
 /// Mines `n` blocks with the real proof of work on one thread and returns them, how many attempts it took, and how
 /// long. Each block is accepted by a store of its own as it is made, so the chain is valid by construction.
 fn mine_chain(s: &Setup) -> (Vec<Block>, u64, Duration, [u8; 32]) {
-    let pow = MatmulPow::new(s.params, s.epoch, s.threads).unwrap();
+    let pow = make_pow(s);
     let params = chain_params();
     let db = TempDb::new("mine");
     let store = Store::open(&db.0, LABEL, PowKind::Matmul).unwrap();
@@ -190,7 +200,7 @@ fn sync(
     assumed: Option<HashSet<[u8; 32]>>,
     name: &str,
 ) -> (Vec<Duration>, [u8; 32]) {
-    let pow = MatmulPow::new(s.params, s.epoch, s.threads).unwrap();
+    let pow = make_pow(s);
     let params = chain_params();
     let db = TempDb::new(name);
     let store = Store::open(&db.0, LABEL, PowKind::Matmul).unwrap();

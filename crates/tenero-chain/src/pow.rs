@@ -60,6 +60,9 @@ struct Inner {
     params: Params,
     epoch_blocks: u64,
     threads: usize,
+    /// How many datasets may be kept at once: 2 (the default: the current epoch and the next, built ahead of time) or 1 (low memory: see
+    /// [`MatmulPow::low_memory`]).
+    max_kept: usize,
     builder: Builder,
     cache: Mutex<Cache>,
     /// Signalled whenever a build ends (or fails), for callers waiting for the epoch they need.
@@ -67,12 +70,18 @@ struct Inner {
     builds: AtomicU64,
 }
 
-/// matmulhash v2: the dataset of an epoch is built once and kept (the last two epochs).
+/// matmulhash v2: the dataset of an epoch is built once and kept.
 ///
-/// A dataset is built **outside the lock**, so checking a block of the current epoch is never held up by a build of
-/// another; callers that need an epoch that is being built wait for that one build rather than starting a second;
-/// and before a build starts, a dataset further than one epoch away is freed, so at most two exist at once (about
-/// 8.6 GiB at the real parameters, briefly). `prefetch` builds the next epoch's dataset on a background thread.
+/// **Two modes.** The default ([`MatmulPow::new`], used by the miner) keeps the last two epochs: a dataset is built **outside the lock**, so
+/// checking a block of the current epoch is never held up by a build of another, callers that need an epoch that is being built wait for
+/// that one build, and before a build starts a dataset further than one epoch away is freed, so at most two exist at once, **and two do
+/// exist for most of every epoch** (about 8 GiB of dataset at the real parameters; measured 2026-10-04: the process went from 4.0 to 8.0 GiB at
+/// the first epoch boundary and stayed there). `prefetch` builds the next epoch's dataset on a background thread.
+///
+/// **Low memory** ([`MatmulPow::low_memory`], used by the node): ONE dataset at a time, about 4 GiB. Builds are one at a time; the dataset in
+/// the way is freed, once nothing is still using it, BEFORE the next one is allocated; `prefetch` does nothing (it would need two at once). The
+/// price is a wait, about 3 to 4 seconds at the real parameters, for the first block checked in a new epoch (and again after a reorganisation
+/// that goes back across an epoch boundary), instead of a build done ahead of time.
 pub struct MatmulPow {
     inner: Arc<Inner>,
 }
@@ -101,6 +110,33 @@ impl MatmulPow {
         )
     }
 
+    /// Like `new`, but only ONE dataset is ever held (see the type's documentation): for a node, which must stay inside a memory limit.
+    pub fn low_memory(
+        params: Params,
+        epoch_blocks: u64,
+        threads: usize,
+    ) -> Result<MatmulPow, String> {
+        MatmulPow::with_builder_limit(
+            params,
+            epoch_blocks,
+            threads,
+            1,
+            Box::new(|params, epoch, threads| {
+                Dataset::build(
+                    params,
+                    &matmulhash::epoch_seed(epoch),
+                    params.num_blocks,
+                    threads,
+                )
+            }),
+        )
+    }
+
+    /// How many datasets are held at most (1 or 2).
+    pub fn max_datasets(&self) -> usize {
+        self.inner.max_kept
+    }
+
     /// Like `new`, but the datasets are made by `builder(params, epoch, threads)`. **For tests** (to make a build
     /// fail or take long); a chain uses `new`.
     #[doc(hidden)]
@@ -110,6 +146,21 @@ impl MatmulPow {
         threads: usize,
         builder: Builder,
     ) -> Result<MatmulPow, String> {
+        MatmulPow::with_builder_limit(params, epoch_blocks, threads, 2, builder)
+    }
+
+    /// [`MatmulPow::with_builder`] with the number of datasets to hold (1 or 2). **For tests.**
+    #[doc(hidden)]
+    pub fn with_builder_limit(
+        params: Params,
+        epoch_blocks: u64,
+        threads: usize,
+        max_kept: usize,
+        builder: Builder,
+    ) -> Result<MatmulPow, String> {
+        if !(1..=2).contains(&max_kept) {
+            return Err("a proof of work holds one or two datasets".into());
+        }
         params.validate()?;
         if epoch_blocks == 0 {
             return Err("epoch_blocks must be at least 1".into());
@@ -119,6 +170,7 @@ impl MatmulPow {
                 params,
                 epoch_blocks,
                 threads,
+                max_kept,
                 builder,
                 cache: Mutex::new(Cache {
                     kept: Vec::new(),
@@ -167,22 +219,36 @@ impl Inner {
             if let Some((_, d)) = c.kept.iter().find(|(e, _)| *e == epoch) {
                 return Ok(Arc::clone(d));
             }
-            if c.building.contains(&epoch) {
+            // with two datasets allowed a build of ANOTHER epoch may run at the same time; with one, builds go one at a time (two builds at
+            // once would be two datasets in memory)
+            if c.building.contains(&epoch) || (self.max_kept == 1 && !c.building.is_empty()) {
                 c = self.built.wait(c).map_err(poisoned)?;
                 continue;
             }
             break;
         }
         c.building.insert(epoch);
-        // make room BEFORE building, so two datasets are the most that ever exist: the one furthest from this
-        // epoch goes
-        while c.kept.len() >= 2 {
+        // make room BEFORE building, so no more datasets than allowed ever exist: the one furthest from this epoch goes
+        let mut freed: Vec<Arc<Dataset>> = Vec::new();
+        while c.kept.len() >= self.max_kept {
             let far = (0..c.kept.len())
                 .max_by_key(|&i| c.kept[i].0.abs_diff(epoch))
                 .expect("not empty");
-            c.kept.remove(far);
+            freed.push(c.kept.remove(far).1);
         }
         drop(c);
+        // with one dataset allowed, the old one's memory must really be given back before the new one is allocated: a check of a block of the
+        // old epoch may still be using it (it holds its own `Arc`), so wait for that, a moment at most (a bound, so a stuck check cannot stop the
+        // node for ever)
+        if self.max_kept == 1 {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            for d in &freed {
+                while Arc::strong_count(d) > 1 && std::time::Instant::now() < deadline {
+                    thread::sleep(std::time::Duration::from_millis(2));
+                }
+            }
+        }
+        drop(freed);
         let result = (self.builder)(&self.params, epoch, self.threads).map(Arc::new);
         let mut c = self.cache.lock().map_err(poisoned)?;
         c.building.remove(&epoch);
@@ -195,6 +261,9 @@ impl Inner {
     }
 
     fn prefetch(self: &Arc<Inner>, height: u64) {
+        if self.max_kept < 2 {
+            return; // a build ahead of time needs a second dataset in memory
+        }
         let Some(epoch) = matmulhash::epoch_of(height, self.epoch_blocks) else {
             return;
         };

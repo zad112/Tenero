@@ -128,9 +128,12 @@ has them: the plan is a build that refuses the bad block, then every node rewind
 network key; not a wallet), `peers.dat` (the address book, the ban list and the **anchor peers**: up to two long-standing outbound peers that the node dials first after a restart), `pool.dat`, `control.cookie` (new at each start). The wallet's keys are **not**
 here; they are in the wallet file you choose.
 
-**Memory and disk:** the `dev` network's proof-of-work check needs about 4.3 GiB of memory per epoch (about 8.6 GiB while the
-next epoch's dataset is built in the background); the `test` network needs almost nothing. These are the figures
-`CLAUDE.md` rule 8 states, measured in earlier milestones, not measured again here.
+**Memory and disk:** on `dev` and `alpha` a node's proof-of-work check holds **one dataset at a time, 4 GiB** (4.01 GiB measured as the whole check process, 2026-10-04, across three epoch
+boundaries; a node also has the chain database and the operating system, so plan on about 4.3 GiB free and stay well inside the owner's limit of 8 GB). When the first block of a new epoch arrives the old
+dataset is freed and the new one built, which makes the node **wait about 3 seconds** (measured: 2.8 to 3.0 s with 6 threads) once every 100 blocks, and again if a reorganisation goes back across an epoch boundary;
+a node syncing from scratch pays this at every boundary it crosses. **What it replaced:** the node used to keep the last two epochs (and build the next one ahead of time), which is **8.0 GiB** of dataset for most of
+every epoch after the first (measured; the earlier text here said "briefly", which was wrong). **A miner may still hold two** (and prefetch), and `mine = cpu` or `mine = gpu` inside the node adds the miner's own
+memory on top of the node's: the 8 GB limit is for the node alone. The `test` network needs almost nothing.
 
 ## The wallet: `tenero-wallet`
 
@@ -190,7 +193,7 @@ no node settings.
   **carries on if the node restarts**: it reconnects (waiting for the node's new cookie) and starts again. Start it before or
   after the node.
 * **Memory:** with `--backend cpu` the miner builds its own 4.3 GiB dataset, as the node's check does, so the node and the
-  miner together need about 9 GiB on the dev network. `--backend gpu` keeps its datasets in video memory instead.
+  miner together need about 9 GiB on the dev network, or more: the miner keeps the last two epochs. `--backend gpu` keeps its datasets in video memory instead.
 * Stop it with Ctrl-C (it prints how many blocks it found and what became of them).
 
 ## The wallet app: `tenero-wallet-gui` (M10.3)
