@@ -20,7 +20,7 @@ Inspired by Monero's design ideas; not affiliated with or endorsed by the Monero
 | **Tested** | about 900 automated tests (933 passing and 24 skipped when last counted, 2026-10-05), the Rust code checked bit for bit against an independent Python reference, six fuzzing targets run for 30 minutes each with no crash |
 | **Run on `alpha`** | one node and one GPU mined 19 blocks in about 12 minutes; a Windows PC and a rented Linux server (the seed) stayed on one chain, with a third node on the PC. **Not yet seen:** a settled difficulty, a second miner, more than three nodes, an epoch boundary |
 | **Reviewed by anyone else** | **no.** There has been no independent cryptographic, security or hardware review |
-| **Released** | **not yet.** The first test release, `v0.1.0-alpha.1`, has been built as a dry run and not published; see [Get it](#get-it) |
+| **Released** | **yes, as a pre-release (2026-10-05):** the first test release, `v0.1.0-alpha.1`, is on the [Releases](../../releases) page; see [Get it](#get-it) |
 
 What is known to be wrong or missing is written down, including what nobody has fixed: [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) and [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 
@@ -74,8 +74,8 @@ for, and a special-purpose chip would need the same memory to compete. **That is
 
 ## Get it
 
-**There is no published release yet.** The first, `v0.1.0-alpha.1`, will appear on the [Releases](../../releases) page as a Windows zip and a Linux tar.gz with a `SHA256SUMS` file;
-how it is made and checked is in [`docs/RELEASING.md`](docs/RELEASING.md). The files are **not code-signed** (Windows SmartScreen will warn), and the Linux build has been run by hand **only as a node**: in WSL2 on the author's PC, and as a service on a rented Ubuntu 24.04 server (the Linux wallet, wallet app and GPU miner have not been run). Until a release exists, build from source.
+**The first test release, `v0.1.0-alpha.1`, is on the [Releases](../../releases) page** (published 2026-10-05 as a **pre-release**, because it is an alpha): a Windows zip and a Linux tar.gz with a `SHA256SUMS` file. (GitHub's front-page "Releases" box only
+advertises a repository's latest *non-pre-release*, so open the Releases page itself.) How it is made and checked is in [`docs/RELEASING.md`](docs/RELEASING.md). The files are **not code-signed** (Windows SmartScreen will warn), and the Linux build has been run by hand **only as a node**: in WSL2 on the author's PC, and as a service on a rented Ubuntu 24.04 server (the Linux wallet, wallet app and GPU miner have not been run). Prefer to build it yourself? The next section does that.
 
 **Antivirus warning: your antivirus may flag these programs as a "coin miner".** Some scanners do (the labels vary: "coin miner", "PUA" or "potentially unwanted application", sometimes "trojan"), and **that is partly true: `tenero-miner` is a
 miner**, and the wallet app and the node can start it. It runs your GPU or CPU at full load, which is exactly what those detectors look for. **Nothing mines unless you start it** (the Start button on the wallet app's Mining tab, the `tenero-miner`
@@ -113,7 +113,7 @@ Its chain **restarts from block 1 whenever a rule changes**, and the author expe
   53 minutes at 164 attempts a second (and about 4.6 hours with the default build): **CPU mining of `alpha` is impractical.** The difficulty adjusts, so these change as miners come and go.
 * **Measured so far:** one node and one GPU, 16 blocks in 12 minutes in one run (gaps between blocks 11 to 183 seconds, mean 48 s) and 19 blocks in about 12 minutes in another, while the difficulty was still settling from its start. A Windows PC and a Linux server
   (2026-10-05) and a third node on the PC stayed on one chain; the server was stopped, upgraded and restarted with its chain intact.
-* **There is one seed, run by the author, and it is built in** (the source has its address; the first release will carry it): a new `alpha` node finds the network with no setting. It is **one computer run by one
+* **There is one seed, run by the author, and it is built in** (the source has its address, and so does `v0.1.0-alpha.1`): a new `alpha` node finds the network with no setting. It is **one computer run by one
   person**: if it is down, a brand-new node has nowhere to start (one that has run before remembers its peers), and its operator could show a new node a false chain. The plan wants several independent operators
   ([`docs/SEED_POLICY.md`](docs/SEED_POLICY.md)). You can add your own (`--seed ip:port`, see [`docs/RUNNING.md`](docs/RUNNING.md)) or drop the built-in one (`no_builtin_seeds`).
 * **Letting others connect to you** (the wallet app's Settings, "Let other nodes connect to me", off by default) lets your node serve blocks to others, so they do not all rely on the seed. **It needs a TCP port forwarded on your router and allowed in your firewall, it
