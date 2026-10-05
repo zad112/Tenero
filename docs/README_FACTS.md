@@ -1,4 +1,4 @@
-# Facts check of the README and the testers' guide (M11.4, 2026-10-04)
+# Facts check of the README and the testers' guide (M11.4, 2026-10-04; brought up to date 2026-10-05)
 
 Every number and claim in `README.md` and `docs/TESTING.md`, and where it comes from. **Measured** = a number from a run on the owner's machine (one machine); **read from code** = checked
 against the source on this date; **argued** = a design argument, not shown; **arithmetic** = worked out from other numbers here. If a source changes, this file and the README change together.
@@ -25,14 +25,18 @@ against the source on this date; **argued** = a design argument, not shown; **ar
 | Start target 2^237, about 524,000 attempts a block | read from code | `crates/tenero-app/src/daemon.rs` (`ALPHA_START_TARGET_POW2 = 237`); 2^19 = 524,288 attempts (`alpha_network.rs`) |
 | About 15 s a block on one GPU at the start; about 53 min and about 4.6 h on the CPU builds | arithmetic | 524,288 / 34,000; 524,288 / 164; 524,288 / 31.7 (the difficulty adjusts, so these move) |
 | 16 blocks in 12 minutes; gaps 11 to 183 s, mean 48 s; not settled | **measured**, one run | `docs/M10_M11_PLAN.md` M11.2 |
+| 19 blocks in about 12 minutes in a second run (the GUI's miner on the RTX 5070 Ti, about 34,800 attempts/s); a Windows PC, a Linux server and a third node stayed on one chain; the server was stopped, upgraded and restarted with its chain intact | **measured** 2026-10-05, one run | the miner's `miner-output.txt` (blocks 1 to 19 between 06:12:54 and 06:25:01 UTC), the nodes' status lines, `docs/TESTNET.md` |
+| The Linux node has also run as a systemd service on a rented Ubuntu 24.04 server (4 cores, 7.8 GiB): it checked 19 real-proof-of-work blocks from a Windows node, 4.0 GiB as the service manager reports it; the miner, wallet and app have not run on Linux | **measured** 2026-10-05, one server | `systemctl status` output pasted by the owner; `docs/RUNNING_A_SEED.md` |
+| "Let other nodes connect to me": off by default; needs a forwarded TCP port and a firewall rule; announces "the address you see me at" (`0.0.0.0:PORT`); tried once between the owner's PC and the server (the server connected in from the internet, a newcomer was told about the PC); a changing address was NOT watched; CGNAT cannot work | read from code + tests; **measured** once | `crates/tenero-gui/src/procs.rs`, `crates/tenero-net/tests/discovery.rs`, `docs/TESTING.md`, `docs/THREAT_MODEL.md` C7 and C8 |
+| The Buy Me a Coffee page `buymeacoffee.com/zad112` exists and is the owner's, for the seed server's bill; it buys nothing; the project is not selling coins or tokens | **the owner's statement** (2026-10-05); the page answered with HTTP 200 on that date | the owner's request; the project's own rule that nothing on it has value (`CLAUDE.md`) |
 | Chain id `430ca700...69d3`, label "tenero alpha network 1", control port 38332 | read from code | `v2_genesis.json`, `config.rs` |
 | Peers use the Noise protocol through `snow` (no formal audit) | docs | `CLAUDE.md`, `docs/THREAT_MODEL.md` |
 | The GPU miner keeps up to two 4 GiB datasets in video memory; only a 16 GB card tried | read from code (the "up to two"); the "only 16 GB tried" is the owner's one card | `crates/tenero-miner/src/gpu.rs` header |
 | NVRTC and cuBLASLt come with the CUDA Toolkit, not the driver | read from code + the sizes on the owner's machine | `crates/tenero-gpu/src/lib.rs`, `gemm.rs`; `cublasLt64_13.dll` 470 MB there |
-| About 900 tests (898 passing, 24 skipped); six fuzz targets, 30 min each, no crash | **measured** 2026-10-04 (count taken before the last few tests were added) | M11.2 test run; workflow run 37199833458 |
+| About 900 tests (922 passing, 24 skipped); six fuzz targets, 30 min each, no crash | **measured**: the tests 2026-10-05 (`cargo test --workspace`: 94 test programs, 922 passed, 24 ignored, 0 failed; the 24 are `#[ignore]` tests: GPU checks (they need the card and CUDA), a real-proof-of-work sync (about 4.3 GiB of RAM) and long measurements such as the difficulty-simulation tables, a hostile-load run and the eclipse simulation); the fuzzing 2026-10-04 | `cargo test --workspace` on the owner's machine; fuzz workflow run 37199833458 |
 | `--version` on every command-line program | read from code + test | `crates/tenero-app/tests/version.rs` |
 | Linux: built for Ubuntu 22.04 or newer; glibc 2.34 (programs), 2.35 (app) | **measured** in CI (`objdump`) | release workflow run 37233836092 |
-| The Linux node was run by hand once (WSL2, Ubuntu 26.04): it served a 16-block alpha chain, an empty Linux node synced it with the real proof-of-work check (about 4.1 GiB resident), and a Windows node from the CI package synced from it; the miner, wallet and app were not run on Linux | **measured** 2026-10-04, one machine | `docs/M10_M11_PLAN.md` M11.3 |
+| The Linux node was run by hand in WSL2 (Ubuntu 26.04) on 2026-10-04: it served a 16-block alpha chain, an empty Linux node synced it with the real proof-of-work check (about 4.1 GiB resident), and a Windows node from the CI package synced from it; the miner, wallet and app were not run on Linux | **measured** 2026-10-04, one machine | `docs/M10_M11_PLAN.md` M11.3 |
 | Windows 11 is the only Windows tried | the owner's machine | |
 | The wallet app uses 24 words; the command-line wallet a raw 64-digit seed; they are different wallets | read from code | `crates/tenero-wallet/src/mnemonic.rs`, `purse.rs`; `docs/RUNNING.md` |
 | The command-line wallet and miner default to control port 18332 and need `--control 127.0.0.1:38332` on alpha | read from code | `wallet_cli.rs` `DEFAULT_CONTROL`, `tenero_miner.rs` |
@@ -41,3 +45,4 @@ against the source on this date; **argued** = a design argument, not shown; **ar
 | Memory-hardness is simulated, not proven; the construction has had no review | docs | `docs/KNOWN_ISSUES.md` item 11, `docs/THREAT_MODEL.md` F4 |
 
 **Claims the README must never make (and does not):** money, private in Monero's sense, audited, ASIC-proof, secure, "decentralised", or any date. A check before publishing any change to the README: search it for those words.
+The donation section may say what the gift is for (the server's bill) and must keep saying what it does NOT buy (coins, tokens, say, support, early access) and that it is not an investment.

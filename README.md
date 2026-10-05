@@ -12,15 +12,15 @@
 
 Inspired by Monero's design ideas; not affiliated with or endorsed by the Monero project.
 
-## Where it stands (2026-10-04)
+## Where it stands (2026-10-05)
 
 | | |
 |---|---|
-| **Built** | a node, a miner (GPU and CPU), a command-line wallet, a wallet app with a window, a seed checker, a network protocol with an encrypted channel, a test network called **`alpha`** |
-| **Tested** | about 900 automated tests (898 passing and 24 skipped when last counted, 2026-10-04), the Rust code checked bit for bit against an independent Python reference, six fuzzing targets run for 30 minutes each with no crash |
-| **Run on `alpha`** | one node and one GPU mined 16 blocks in 12 minutes. **Not yet seen:** a settled difficulty, a second miner, several nodes, an epoch boundary |
+| **Built** | a node, a miner (GPU and CPU), a command-line wallet, a wallet app with a window, a seed checker, a network protocol with an encrypted channel, a test network called **`alpha`** with one seed server |
+| **Tested** | about 900 automated tests (922 passing and 24 skipped when last counted, 2026-10-05), the Rust code checked bit for bit against an independent Python reference, six fuzzing targets run for 30 minutes each with no crash |
+| **Run on `alpha`** | one node and one GPU mined 19 blocks in about 12 minutes; a Windows PC and a rented Linux server (the seed) stayed on one chain, with a third node on the PC. **Not yet seen:** a settled difficulty, a second miner, more than three nodes, an epoch boundary |
 | **Reviewed by anyone else** | **no.** There has been no independent cryptographic, security or hardware review |
-| **Released** | **not yet.** The first test release, `v0.1.0-alpha.1`, has been built once as a dry run and not published; see [Get it](#get-it) |
+| **Released** | **not yet.** The first test release, `v0.1.0-alpha.1`, has been built as a dry run and not published; see [Get it](#get-it) |
 
 What is known to be wrong or missing is written down, including what nobody has fixed: [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) and [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 
@@ -68,14 +68,14 @@ for, and a special-purpose chip would need the same memory to compete. **That is
 * **`tenerod`**, the node: keeps the chain, relays blocks and payments, checks everything. Peers talk over an encrypted channel (the Noise protocol, through the `snow` library, which has not had a formal audit).
 * **`tenero-miner`** and the miner built into the node: GPU (NVIDIA, through CUDA), CPU, and a SHA-256 backend that only the `test` network uses.
 * **`tenero-wallet`**, the command-line wallet, and **`tenero-wallet-gui`**, the wallet app: a window with several wallets and accounts, a 24-word seed phrase, sending with three fee levels, receiving
-  with a QR code, message signatures and payment proofs. It starts and stops the node and the miner itself.
+  with a QR code, message signatures and payment proofs. It starts and stops the node and the miner itself, and has a tick box, off by default, to let other nodes connect to yours (see [The `alpha` test network](#the-alpha-test-network)).
 * **`tenero-seedcheck`** checks a list of seed nodes (it cannot tell whether one is honest).
 * The programs talk to the node over a **control interface that only listens on the local machine**.
 
 ## Get it
 
 **There is no published release yet.** The first, `v0.1.0-alpha.1`, will appear on the [Releases](../../releases) page as a Windows zip and a Linux tar.gz with a `SHA256SUMS` file;
-how it is made and checked is in [`docs/RELEASING.md`](docs/RELEASING.md). The files are **not code-signed** (Windows SmartScreen will warn), and the Linux build has been run by hand **only once, as a node in WSL2 on the author's PC** (the Linux wallet app and the GPU miner on Linux have not been run). Until a release exists, build from source.
+how it is made and checked is in [`docs/RELEASING.md`](docs/RELEASING.md). The files are **not code-signed** (Windows SmartScreen will warn), and the Linux build has been run by hand **only as a node**: in WSL2 on the author's PC, and as a service on a rented Ubuntu 24.04 server (the Linux wallet, wallet app and GPU miner have not been run). Until a release exists, build from source.
 
 **Build from source** (needs [Rust](https://rustup.rs)); [`docs/RUNNING.md`](docs/RUNNING.md) is the full guide:
 
@@ -88,7 +88,7 @@ cargo test --workspace            # no GPU needed
 
 | To do this | You need |
 |---|---|
-| Run a node or the wallet | Windows 11 (the only Windows tried) or Linux (built for Ubuntu 22.04 or newer; **run by hand once, as a node in WSL2 only**); on `alpha` or `dev`, about **4.3 GiB of free RAM** for the node (it holds one 4 GiB dataset at a time, and pauses about 3 seconds for the first block of each 100-block epoch while it builds the next); **mining adds its own memory** |
+| Run a node or the wallet | Windows 11 (the only Windows tried) or Linux (built for Ubuntu 22.04 or newer; **run by hand only as a node**: in WSL2 and on one rented server); on `alpha` or `dev`, about **4.3 GiB of free RAM** for the node (it holds one 4 GiB dataset at a time, and pauses about 3 seconds for the first block of each 100-block epoch while it builds the next); **mining adds its own memory** |
 | Mine on a GPU | an NVIDIA GPU with a current driver **and the CUDA Toolkit 13.x** (the miner uses NVIDIA's NVRTC and cuBLASLt, which come with the Toolkit, not the driver; nothing from NVIDIA is shipped here). Up to two 4 GiB datasets are kept in video memory: **only a 16 GB card has been tried**; whether an 8 GB card works is untested |
 | Mine on a CPU | nothing extra, but see the next section: on `alpha` it is **impractical** |
 
@@ -101,13 +101,24 @@ Its chain **restarts from block 1 whenever a rule changes**, and the author expe
 * **It is for** trying the programs end to end with a few people who know what this is. **It is not for** holding value, or for anyone who has not read the labels above.
 * **GPU or nothing:** one GPU at about 34,000 attempts a second needs roughly 15 seconds for 524,000 attempts (arithmetic, not a measurement of the network). A 6-thread CPU needs about
   53 minutes at 164 attempts a second (and about 4.6 hours with the default build): **CPU mining of `alpha` is impractical.** The difficulty adjusts, so these change as miners come and go.
-* **Measured so far:** one node and one GPU, 16 blocks in 12 minutes, gaps between blocks 11 to 183 seconds (mean 48 s) while the difficulty was still settling from its start.
+* **Measured so far:** one node and one GPU, 16 blocks in 12 minutes in one run (gaps between blocks 11 to 183 seconds, mean 48 s) and 19 blocks in about 12 minutes in another, while the difficulty was still settling from its start. A Windows PC and a Linux server
+  (2026-10-05) and a third node on the PC stayed on one chain; the server was stopped, upgraded and restarted with its chain intact.
 * **There is one seed, run by the author, and it is built in** (the source has its address; the first release will carry it): a new `alpha` node finds the network with no setting. It is **one computer run by one
   person**: if it is down, a brand-new node has nowhere to start (one that has run before remembers its peers), and its operator could show a new node a false chain. The plan wants several independent operators
   ([`docs/SEED_POLICY.md`](docs/SEED_POLICY.md)). You can add your own (`--seed ip:port`, see [`docs/RUNNING.md`](docs/RUNNING.md)) or drop the built-in one (`no_builtin_seeds`).
+* **Letting others connect to you** (the wallet app's Settings, "Let other nodes connect to me", off by default) lets your node serve blocks to others, so they do not all rely on the seed. **It needs a TCP port forwarded on your router and allowed in your firewall, it
+  lets strangers connect to your computer, and the software is unaudited.** Your node tells peers "the address you see me at", so a changing home address needs no setting (not yet watched happening; it cannot work behind CGNAT). It has been tried once, between the author's PC and the
+  server. See [`docs/TESTING.md`](docs/TESTING.md).
 * **If something goes wrong,** the only place a "stop mining" notice is posted is the pinned issue, [issue #1](https://github.com/zad112/Tenero/issues/1), and only the author can post there.
   The plan behind it, and what is not yet rehearsed, is [`docs/EMERGENCY_PLAN.md`](docs/EMERGENCY_PLAN.md).
 * **Trying it as a tester:** [`docs/TESTING.md`](docs/TESTING.md).
+
+## Helping with the seed server
+
+The one seed server is a rented computer that the author pays for. If you would like to chip in towards that bill, there is a Buy Me a Coffee page: **[buymeacoffee.com/zad112](https://buymeacoffee.com/zad112)**.
+
+**It is a gift towards a server bill, and nothing else.** It buys no coins or tokens, no say in the project, no support and no early access. **Nothing on any Tenero network has any value, the project is not selling coins or
+tokens, and none of this is an investment.** Nobody has to give, and the project does not depend on it.
 
 ## What is next (no dates are promised)
 
