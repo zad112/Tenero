@@ -133,7 +133,7 @@ here; they are in the wallet file you choose.
 boundaries; a node also has the chain database and the operating system, so plan on about 4.3 GiB free and stay well inside the owner's limit of 8 GB). When the first block of a new epoch arrives the old
 dataset is freed and the new one built, which makes the node **wait about 3 seconds** (measured: 2.8 to 3.0 s with 6 threads) once every 100 blocks, and again if a reorganisation goes back across an epoch boundary;
 a node syncing from scratch pays this at every boundary it crosses. **What it replaced:** the node used to keep the last two epochs (and build the next one ahead of time), which is **8.0 GiB** of dataset for most of
-every epoch after the first (measured; the earlier text here said "briefly", which was wrong). **A miner may still hold two** (and prefetch), and `mine = cpu` or `mine = gpu` inside the node adds the miner's own
+every epoch after the first (measured; the earlier text here said "briefly", which was wrong). **The CPU miner may still hold two** (and prefetch); **the GPU miner holds one 4 GiB dataset, in video memory** (about 5.0 GiB committed for the process on Windows, measured, with 0.36 GiB of it in use as RAM). `mine = cpu` or `mine = gpu` inside the node adds the miner's own
 memory on top of the node's: the 8 GB limit is for the node alone. The `test` network needs almost nothing.
 
 **Moving the node's data (the chain) to another folder or drive.** The chain grows with every block, so you may want it on a bigger drive. **In the wallet app:** Settings, "Move the node's data": stop the node and the miner, type a new or empty folder (a full

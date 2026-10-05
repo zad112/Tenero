@@ -316,7 +316,7 @@ fn main() {
             } else {
                 args.gpu_batch
             };
-            Miner::spawn(move || GpuBackend::new(device, Params::DEFAULT, epoch, batch, 10))
+            Miner::spawn(move || GpuBackend::new(device, Params::DEFAULT, epoch, batch))
         }
     };
     let l = Arc::clone(&log);

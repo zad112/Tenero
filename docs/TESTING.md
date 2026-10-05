@@ -14,8 +14,8 @@ may well be; say so (see "Telling the author", below).
 
 * **Windows 11** (tried) or **Linux, Ubuntu 22.04 or newer** (a node has run in WSL2; nothing else is tried).
 * About **4.3 GiB of free RAM** for a node on `alpha` (it holds one 4 GiB dataset and pauses about 3 seconds at the first block of each 100-block epoch while it builds the next; measured once on the real chain at block 100: the node stayed at 4.0 GiB on a PC and on the server, and the pause was not timed; mining uses its own memory on top), and a few GB of disk.
-* **To mine: an NVIDIA GPU, a current driver and the CUDA Toolkit 13.x.** The miner uses NVIDIA's NVRTC and cuBLASLt libraries, which come with the Toolkit, not with the driver. It keeps up to two
-  4 GiB datasets in video memory; **only a 16 GB card has been tried.** CPU mining of `alpha` takes about 53 minutes a block at the best measured speed and is not practical.
+* **To mine: an NVIDIA GPU, a current driver and the CUDA Toolkit 13.x.** The miner uses NVIDIA's NVRTC and cuBLASLt libraries, which come with the Toolkit, not with the driver. It keeps one
+  4 GiB dataset in video memory (about 5.0 GiB committed for the process on Windows, measured; it was 9.2 GiB when it kept two); **only a 16 GB card has been tried.** CPU mining of `alpha` takes about 53 minutes a block at the best measured speed and is not practical.
 * **Check what you downloaded.** The files are **not code-signed**, so Windows will warn. Compare the SHA-256 with `SHA256SUMS` on the release page: PowerShell `Get-FileHash FILE -Algorithm SHA256`, Linux `sha256sum -c SHA256SUMS --ignore-missing`.
 
 ## The easy way: the wallet app

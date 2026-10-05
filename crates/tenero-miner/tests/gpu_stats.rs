@@ -138,6 +138,68 @@ fn a_real_card_is_measured_and_a_batch_is_chosen() {
     assert!(AUTO_BATCHES.contains(&chosen));
 }
 
+/// The owner's machine. The GPU backend holds ONE 4 GiB dataset in video memory, whatever epoch it mines: it frees the old one before
+/// it builds the next (it used to keep the epoch before and build the next ahead, which was about 9.2 GiB of committed memory for the
+/// miner process on Windows). Mines at heights in four different epochs and reads the card's memory use each time: after the first
+/// dataset it must not grow by anything near another 4 GiB. Needs the card to itself (other programs' video memory changing during the
+/// test would show up in the numbers), so stop any other miner first.
+#[test]
+#[ignore = "needs an NVIDIA GPU, the CUDA DLLs and about 4.5 GiB of video memory, and no other miner running"]
+fn on_a_real_card_one_dataset_is_held_in_video_memory_across_epoch_boundaries() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use tenero_core::u256::U256;
+    use tenero_core::v2::BlockHeader;
+    use tenero_miner::gpu::GpuBackend;
+    use tenero_miner::{Backend, Counters, Job};
+
+    let probe = GpuProbe::open(0).expect("NVML and GPU 0");
+    let before = probe.read().mem_used_mib.unwrap();
+    let mut backend =
+        GpuBackend::new(0, tenero_core::matmulhash::Params::DEFAULT, 100, 128).unwrap();
+    let counters = Counters::default();
+    let mut used = vec![];
+    for (i, height) in [1u64, 101, 201, 301].into_iter().enumerate() {
+        let job = Job {
+            id: i as u64 + 1,
+            header: BlockHeader {
+                version: tenero_core::v2::VERSION,
+                prev_id: [0; 32],
+                timestamp: 1,
+                tx_root: [0; 32],
+                nonce: 0,
+                mix: [0; 64],
+            },
+            height,
+            target: U256::ZERO, // never met: it mines until it is told to stop
+            stale: Arc::new(AtomicBool::new(false)),
+        };
+        std::thread::scope(|s| {
+            let t = s.spawn(|| backend.mine(&job, &counters));
+            std::thread::sleep(std::time::Duration::from_millis(2500));
+            used.push(probe.read().mem_used_mib.unwrap());
+            job.stale.store(true, Ordering::SeqCst);
+            t.join().unwrap().expect("the GPU backend failed");
+        });
+    }
+    eprintln!(
+        "  video memory in use: {before} MiB before; while mining in epochs 0 to 3: {used:?} MiB"
+    );
+    assert_eq!(counters.dataset_builds.load(Ordering::Relaxed), 4);
+    let first = used[0] - before;
+    assert!(
+        (3_800..6_000).contains(&first),
+        "the first dataset took {first} MiB (4,096 expected, plus buffers)"
+    );
+    for (i, u) in used.iter().enumerate().skip(1) {
+        let grown = *u as i64 - used[0] as i64;
+        assert!(
+            grown.abs() < 1_000,
+            "epoch {i}: video memory is {grown} MiB away from the first epoch's (a kept second dataset would be about +4,096)"
+        );
+    }
+}
+
 /// The owner's machine. What the separate miner showed on 2026-10-02 at the chain's easy starting difficulty (one attempt in eight): 40
 /// blocks found against 184 expected, because a batch of 512 attempts holds dozens of solutions and only the first becomes a block.
 /// With the attempts after the first solution left out, the blocks found and the blocks expected agree.
@@ -155,7 +217,7 @@ fn on_a_real_card_at_an_easy_target_the_blocks_found_match_the_blocks_expected()
     let target = U256::pow2(253).unwrap(); // one attempt in eight
     assert_eq!(work_of(&target), 8.0);
     let mut miner =
-        Miner::spawn(|| GpuBackend::new(0, tenero_core::matmulhash::Params::DEFAULT, 100, 512, 0));
+        Miner::spawn(|| GpuBackend::new(0, tenero_core::matmulhash::Params::DEFAULT, 100, 512));
     let c = Arc::clone(&miner.counters);
     let jobs = 300u64;
     let mut found = 0u64;

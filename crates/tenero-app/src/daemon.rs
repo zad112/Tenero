@@ -749,7 +749,7 @@ fn miner_hook(
                 Err(e) => log.info(&format!("GPU readings are not available: {e}")),
             }
             seen(MinerHook::new(
-                Miner::spawn(move || GpuBackend::new(device, Params::DEFAULT, epoch, batch, 10)),
+                Miner::spawn(move || GpuBackend::new(device, Params::DEFAULT, epoch, batch)),
                 payout,
                 mcfg,
             ))

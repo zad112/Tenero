@@ -1,6 +1,6 @@
 //! The GPU miner, end to end, at the REAL parameters. `#[ignore]`d: it needs an NVIDIA GPU, the CUDA toolkit's DLLs on
-//! PATH (see `CLAUDE.md`), about 4.3 GiB of video memory per dataset (two while the next epoch is prefetched) and
-//! about 4.3 GiB of RAM for the node's own CPU check. Run it on the owner's machine:
+//! PATH (see `CLAUDE.md`), about 4.3 GiB of video memory (one dataset: the GPU backend builds the next epoch's when its
+//! first job arrives) and about 4.3 GiB of RAM for the node's own CPU check (8.6 with this test's two-dataset pow). Run it on the owner's machine:
 //!
 //! ```text
 //! cargo test --release -p tenero-miner --test gpu_mining -- --ignored --nocapture --test-threads=1
@@ -11,8 +11,8 @@
 //!
 //! Settings (environment variables): `TENERO_POW_BLOCKS` blocks to mine (default 20), `TENERO_POW_EPOCH` blocks per
 //! dataset (default 100; 5 makes the run cross epoch boundaries, which is the point of the second run),
-//! `TENERO_MINER_BATCH` attempts per batch (default 128), `TENERO_MINER_PREFETCH` blocks ahead at which the next
-//! dataset is built (default 5), `TENERO_MINER_SECONDS` seconds per batch size in the speed test (default 15).
+//! `TENERO_MINER_BATCH` attempts per batch (default 128), `TENERO_MINER_PREFETCH` blocks ahead at which the NODE's CPU
+//! check builds the next dataset (default 5; the GPU backend does not build ahead), `TENERO_MINER_SECONDS` seconds per batch size in the speed test (default 15).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -72,7 +72,7 @@ fn the_gpu_mines_blocks_a_cpu_node_verifies_in_full() {
     let params = Params::DEFAULT;
     eprintln!();
     eprintln!("=== GPU mining, verified by the node's CPU check ===");
-    eprintln!("  real parameters; {blocks} blocks; {epoch} blocks per dataset; batch {batch}; prefetch {prefetch} blocks ahead");
+    eprintln!("  real parameters; {blocks} blocks; {epoch} blocks per dataset; batch {batch}; the node's check looks {prefetch} blocks ahead");
 
     let db = TempDb::new("gpu");
     let store = Store::open(&db.0, LABEL, PowKind::Matmul).unwrap();
@@ -92,8 +92,8 @@ fn the_gpu_mines_blocks_a_cpu_node_verifies_in_full() {
         },
     )
     .unwrap();
-    // the node looks as far ahead as the miner does (0 turns both off, for comparison): with epochs this short and
-    // blocks this quick, the default of 10 blocks would prefetch the epoch AFTER the next
+    // the node's CPU check looks ahead (0 turns it off, for comparison): with epochs this short and blocks this quick,
+    // the default of 10 blocks would prefetch the epoch AFTER the next
     let mut engine = Engine::new(
         node,
         EngineConfig {
@@ -106,7 +106,7 @@ fn the_gpu_mines_blocks_a_cpu_node_verifies_in_full() {
         ..MinerConfig::default()
     };
     let mut hook = MinerHook::new(
-        Miner::spawn(move || GpuBackend::new(0, params, epoch, batch, prefetch)),
+        Miner::spawn(move || GpuBackend::new(0, params, epoch, batch)),
         PlaceholderPayout { seed: [3; 32] },
         cfg,
     );
@@ -153,9 +153,8 @@ fn the_gpu_mines_blocks_a_cpu_node_verifies_in_full() {
         attempts as f64 / elapsed.as_secs_f64()
     );
     eprintln!(
-        "  datasets built on the GPU: {} ({} of them ahead of time)",
-        counters.dataset_builds.load(Ordering::Relaxed),
-        counters.prefetches.load(Ordering::Relaxed)
+        "  datasets built on the GPU: {} (none ahead of time: one dataset in video memory at a time)",
+        counters.dataset_builds.load(Ordering::Relaxed)
     );
     let slowest = gaps.iter().max_by_key(|(_, d)| *d).unwrap();
     let first = gaps[0];
@@ -227,7 +226,7 @@ fn how_many_attempts_per_second_the_gpu_backend_does_at_each_batch_size() {
         .unwrap();
     eprintln!("{:>7} {:>14}", "batch", "attempts/s");
     for batch in [32usize, 64, 128, 256] {
-        let mut backend = match GpuBackend::new(0, params, 100, batch, 0) {
+        let mut backend = match GpuBackend::new(0, params, 100, batch) {
             Ok(b) => b,
             Err(e) => panic!("cannot start the GPU backend: {e}"),
         };

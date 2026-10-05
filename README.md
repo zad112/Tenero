@@ -95,7 +95,7 @@ cargo test --workspace            # no GPU needed
 | To do this | You need |
 |---|---|
 | Run a node or the wallet | Windows 11 (the only Windows tried) or Linux (built for Ubuntu 22.04 or newer; **run by hand only as a node**: in WSL2 and on one rented server); on `alpha` or `dev`, about **4.3 GiB of free RAM** for the node (it holds one 4 GiB dataset at a time, and pauses about 3 seconds for the first block of each 100-block epoch while it builds the next); **mining adds its own memory** |
-| Mine on a GPU | an NVIDIA GPU with a current driver **and the CUDA Toolkit 13.x** (the miner uses NVIDIA's NVRTC and cuBLASLt, which come with the Toolkit, not the driver; nothing from NVIDIA is shipped here). Up to two 4 GiB datasets are kept in video memory: **only a 16 GB card has been tried**; whether an 8 GB card works is untested |
+| Mine on a GPU | an NVIDIA GPU with a current driver **and the CUDA Toolkit 13.x** (the miner uses NVIDIA's NVRTC and cuBLASLt, which come with the Toolkit, not the driver; nothing from NVIDIA is shipped here). One 4 GiB dataset is kept in video memory (the miner process commits about 5 GiB on Windows, of which under 0.5 GiB is RAM in use): **only a 16 GB card has been tried**; whether an 8 GB card works is untested |
 | Mine on a CPU | nothing extra, but see the next section: on `alpha` it is **impractical** |
 
 **An AMD (or other non-NVIDIA) GPU miner:** today the GPU miner is **NVIDIA only** (it is written for CUDA). If someone wants to build one for AMD cards, the author is 100% fine with that and would be glad to see it; the author
