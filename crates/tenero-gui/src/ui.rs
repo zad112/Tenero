@@ -162,6 +162,8 @@ pub struct App {
     renaming: Option<(usize, String)>,
     prompt: Prompt,
     draft: Option<(Settings, String)>,
+    /// The settings as they were when `draft` was made: what the user changed is `draft` against this (`Settings::with_changes`).
+    draft_base: Option<Settings>,
     /// The wallet chooser is showing the form for another wallet (not the list).
     adding: bool,
     closing: bool,
@@ -231,6 +233,7 @@ impl App {
             renaming: None,
             prompt: Prompt::default(),
             draft: None,
+            draft_base: None,
             adding: false,
             closing: false,
             closing_since: None,
@@ -1832,12 +1835,15 @@ impl App {
         if self.draft.is_none() {
             let s = self.snap.settings.clone();
             let seeds = s.seeds.join("\n");
+            self.draft_base = Some(s.clone());
             self.draft = Some((s, seeds));
         }
         let node_busy = !matches!(self.snap.node, NodeView::Stopped | NodeView::Failed { .. });
         let miner_busy = !matches!(self.snap.miner, MinerView::Off | MinerView::Failed { .. });
         let unlocked = self.wallet().is_some();
         let app_dir = self.app_dir.clone();
+        // the wallet that is selected NOW (the draft may be older than the wallet that was made or opened since)
+        let wallet_file_now = self.snap.settings.wallet_file.clone();
         let (draft, seeds) = self.draft.as_mut().expect("just set");
         let mut apply = false;
         let mut reset = false;
@@ -1959,7 +1965,7 @@ impl App {
                 }
                 ui.add_space(8.0);
                 ui.label(RichText::new("Wallet").strong());
-                ui.label(format!("Selected wallet file: {}", draft.wallet_file.display()));
+                ui.label(format!("Selected wallet file: {}", wallet_file_now.display()));
                 ui.add_enabled_ui(!unlocked, |ui| {
                     path_row(ui, "Wallets folder", &mut draft.wallets_dir)
                 });
@@ -2026,11 +2032,19 @@ impl App {
                 .filter(|l| !l.is_empty())
                 .map(str::to_string)
                 .collect();
-            self.backend.send(Cmd::SetSettings(Box::new(s)));
+            // only what the user changed, over the settings as they are now (the draft may be old: see `Settings::with_changes`)
+            let now = self.snap.settings.clone();
+            let merged = match &self.draft_base {
+                Some(base) => now.with_changes(base, &s),
+                None => s,
+            };
+            self.backend.send(Cmd::SetSettings(Box::new(merged)));
             self.draft = None;
+            self.draft_base = None;
             self.toast("Settings sent to be applied.", false);
         } else if reset {
             self.draft = None;
+            self.draft_base = None;
         }
     }
 

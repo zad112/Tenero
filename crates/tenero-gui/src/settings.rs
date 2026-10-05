@@ -260,6 +260,39 @@ impl Settings {
         Ok(s)
     }
 
+    /// What the user changed on the Settings screen, laid over the settings as they are NOW (`self`). `base` is the settings when the screen's draft
+    /// was made and `draft` is the draft as edited: a field the user left alone (`draft == base`) keeps whatever `self` has, and only the fields
+    /// they changed are taken from the draft. The draft can be many minutes old, and meanwhile other screens change the real settings (the wallet
+    /// file when a wallet is created, picked or opened; the mining account on the Mining tab): sending the whole draft put the OLD wallet file back,
+    /// which the core refuses while a wallet is unlocked, and it refused every other change with it ("settings do not apply unless the wallet is locked").
+    pub fn with_changes(&self, base: &Settings, draft: &Settings) -> Settings {
+        let mut s = self.clone();
+        macro_rules! take {
+            ($($f:ident),*) => { $( if draft.$f != base.$f { s.$f = draft.$f.to_owned(); } )* };
+        }
+        take!(
+            network,
+            node_kind,
+            control,
+            seeds,
+            listen,
+            inbound_port,
+            external_node,
+            miner_backend,
+            miner_cores,
+            miner_gpu_device,
+            miner_gpu_auto_batch,
+            miner_pace_secs,
+            miner_account,
+            program_dir,
+            data_dir,
+            wallet_file,
+            wallets_dir,
+            legacy_wallet_file
+        );
+        s
+    }
+
     pub fn to_text(&self) -> String {
         let mut t = String::new();
         t.push_str("# Tenero wallet app settings. No secrets in this file.\n");

@@ -1159,6 +1159,13 @@ impl Core {
         if miner_changed && self.miner_proc.is_some() {
             return Err("stop the miner before changing its settings".into());
         }
+        if new.network != old.network && self.purse.is_some() {
+            // each network has its own wallets folder and its own node: the open wallet belongs to the old one
+            return Err(
+                "lock the wallet before changing the network (each network has its own wallets)"
+                    .into(),
+            );
+        }
         if (new.wallet_file != old.wallet_file || new.wallets_dir != old.wallets_dir)
             && self.purse.is_some()
         {

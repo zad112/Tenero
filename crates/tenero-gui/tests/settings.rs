@@ -94,6 +94,38 @@ fn the_file_is_written_and_read_back_and_a_missing_one_gives_the_defaults() {
 }
 
 #[test]
+fn what_the_user_changed_is_laid_over_the_settings_as_they_are_now() {
+    let base = Settings::defaults(app(), Network::Alpha);
+    // the real settings moved on while the draft was open: another wallet file, another mining account
+    let mut now = base.clone();
+    now.wallet_file = "appdir/wallets-alpha/Main wallet.twl".into();
+    now.miner_account = 2;
+    // the user changed two things on the draft and left the rest alone
+    let mut draft = base.clone();
+    draft.inbound_port = Some(38333);
+    draft.seeds = vec!["194.238.27.60:38333".into()];
+    let merged = now.with_changes(&base, &draft);
+    assert_eq!(merged.inbound_port, Some(38333));
+    assert_eq!(merged.seeds, ["194.238.27.60:38333"]);
+    assert_eq!(
+        merged.wallet_file, now.wallet_file,
+        "untouched fields keep the current value"
+    );
+    assert_eq!(merged.miner_account, 2);
+    // nothing changed: nothing is overwritten
+    assert_eq!(now.with_changes(&base, &base), now);
+    // a field the user did change wins, even over a newer value
+    let mut edit = base.clone();
+    edit.miner_account = 5;
+    assert_eq!(now.with_changes(&base, &edit).miner_account, 5);
+    // choosing another network resets the draft to that network's defaults: all of it is taken (wallet folder included)
+    let other = Settings::defaults(app(), Network::Dev);
+    let switched = now.with_changes(&base, &other);
+    assert_eq!(switched.network, Network::Dev);
+    assert_eq!(switched.wallets_dir, other.wallets_dir);
+}
+
+#[test]
 fn the_tick_box_for_inbound_connections_listens_and_says_where_without_naming_an_ip() {
     let args = |s: &Settings| {
         node_args(s)

@@ -776,6 +776,55 @@ fn a_node_that_was_only_found_running_is_left_running_when_the_window_quits() {
 }
 
 #[test]
+fn an_old_settings_draft_does_not_stop_other_settings_from_applying_while_a_wallet_is_open() {
+    // The Settings screen's draft is made when the tab is first opened and lives until Apply. Meanwhile the real settings move on (creating or
+    // opening a wallet changes `wallet_file`; the Mining tab changes the account). The whole draft sent back used to put the OLD wallet file
+    // back, and the core refuses that while a wallet is open, with every other change: "settings do not apply unless the wallet is locked".
+    let rig = Rig::new("staledraft", 18495);
+    let mut c = rig.core();
+    let base = c.settings().clone(); // the draft is made now, before any wallet exists
+    let mut draft = base.clone();
+    draft.inbound_port = Some(38333); // the user ticks "let other nodes connect" and changes the pace
+    draft.miner_pace_secs = 9;
+    c.handle(Cmd::CreateWallet {
+        name: Some("Main".into()),
+        password: Password::None,
+    });
+    assert_ne!(
+        c.settings().wallet_file,
+        base.wallet_file,
+        "creating the wallet moved the real setting"
+    );
+    // sending the whole old draft is what failed
+    assert_eq!(
+        errors(&c.handle(Cmd::SetSettings(Box::new(draft.clone())))).len(),
+        1,
+        "the old way: refused because of the stale wallet file"
+    );
+    // only what the user changed, over the settings as they are now
+    let wallet_now = c.settings().wallet_file.clone();
+    let merged = c.settings().with_changes(&base, &draft);
+    assert!(
+        errors(&c.handle(Cmd::SetSettings(Box::new(merged)))).is_empty(),
+        "the user's changes apply with the wallet open"
+    );
+    assert_eq!(c.settings().inbound_port, Some(38333));
+    assert_eq!(c.settings().miner_pace_secs, 9);
+    assert_eq!(
+        c.settings().wallet_file,
+        wallet_now,
+        "the wallet file was not touched"
+    );
+    // changing the network is the one thing that does need the wallet locked, and it says so
+    let mut other = c.settings().clone();
+    other.network = tenero_app::config::Network::Alpha;
+    let ev = c.handle(Cmd::SetSettings(Box::new(other)));
+    let e = errors(&ev);
+    assert_eq!(e.len(), 1);
+    assert!(format!("{e:?}").contains("changing the network"), "{e:?}");
+}
+
+#[test]
 fn settings_cannot_be_changed_under_a_running_node_or_an_open_wallet() {
     let rig = Rig::new("settings", 18479);
     let mut c = rig.core();
