@@ -140,3 +140,19 @@ To see what a node costs with many peers, in one window run a node (`--max-inbou
 
 and look at the node's memory and thread count in Task Manager (or `Get-Process p2p_testnode`). The clients connect
 40 ms apart on purpose: a node allows only a few handshakes at once from one address.
+
+## A local network of the REAL programs (`tools/localnet.ps1` and `tools/soak.ps1`)
+
+The sections above run the protocol engine's own test nodes. These two PowerShell scripts run the **actual release programs** (`tenerod`, `tenero-miner`, `tenero-wallet`) as separate processes on this
+machine, on the SHA-256 `test` network (a CPU finds a block in an instant), each node on its own loopback address (`127.0.0.1`, `127.0.0.2`, ...). **They check the programs and the peer-to-peer behaviour. They
+do not test the real proof of work, its memory (the 4 GiB dataset) or its speed, and they do not test Linux**: that needs the `dev` or `alpha` network and a GPU. Build first: `cargo build --release -p tenero-app`.
+
+* **`tools/localnet.ps1`** (about 3 minutes): four nodes and one miner, a payment, a late node, a clean restart, a crash. `-BreakOnPurpose` is a self-test of the checks (a node that is never told where to connect;
+  the "syncs" checks must fail).
+* **`tools/soak.ps1 -Minutes 60 [-Visible]`**: four nodes, **each with its own miner**, a fifth node that joins late (no miner), node 2 stopped cleanly and restarted, node 3 killed and restarted, payments from the miners'
+  wallets to two payee wallets that never mine (their balances must equal exactly what was paid), convergence checkpoints, then everything stopped and every data folder opened offline (`tenerod rewind` as a dry run)
+  and compared. `-Visible` gives every program a console window (on Windows 11 they are tabs or windows of Windows Terminal); without it they are hidden and write to files. Exit code 0 = all checks passed.
+
+Both stop only what they started (by process id or `tenerod stop`) and **delete nothing**: the folder they used (printed at the start) keeps the logs, `samples.csv` and the data. **What they found while being
+written:** the status parser read the peer count as the height (a check that could not fail), the miner's log file says "found a block at height" (the screen says "mined in"), and the test chain's difficulty
+adjusts toward one block a minute within a few minutes, so a miner finds a block only every few minutes (a "finds blocks soon" check was wrong; "reconnects" is the right one).
