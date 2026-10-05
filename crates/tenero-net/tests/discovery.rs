@@ -1411,6 +1411,98 @@ fn a_foreign_address_is_not_a_self_announcement_and_two_addresses_are_not_one() 
 }
 
 #[test]
+fn an_announcement_of_the_unspecified_address_means_the_address_the_peer_connected_from() {
+    // a node at home does not know its public IP and it changes: it announces `0.0.0.0:PORT` and the receiver fills in the IP it sees
+    let rigs = SimRig::rigs("autoannounce", 1);
+    let mut sim = Sim::new(&rigs, T0, SimConfig::default(), cfg(0, &[]));
+    let peer = sim.add_hostile(0, "82.1.1.1:41000");
+    sim.hostile_send(peer, hello_from(&rigs[0]));
+    sim.run_for(SEC);
+    let auto = string_to_peer_addr("0.0.0.0:38333", T0).unwrap();
+    sim.hostile_send(peer, Message::Addrs { addrs: vec![auto] });
+    sim.run_for(SEC);
+    assert_eq!(score(&sim, peer), Some(0));
+    assert!(sim.engines[0].addr_book().get("82.1.1.1:38333").is_some());
+    assert!(
+        sim.engines[0].addr_book().get("0.0.0.0:38333").is_none(),
+        "the placeholder itself is never stored"
+    );
+    // still once per connection
+    let again = string_to_peer_addr("0.0.0.0:9999", T0).unwrap();
+    sim.hostile_send(peer, Message::Addrs { addrs: vec![again] });
+    sim.run_for(SEC);
+    assert_eq!(score(&sim, peer), Some(20));
+    assert!(sim.engines[0].addr_book().get("82.1.1.1:9999").is_none());
+
+    // port 0 is no address at all: refused and punished, nothing stored
+    let zero = sim.add_hostile(0, "82.2.2.2:41000");
+    sim.hostile_send(zero, hello_from(&rigs[0]));
+    sim.run_for(SEC);
+    let nothing = string_to_peer_addr("0.0.0.0:0", T0).unwrap();
+    sim.hostile_send(
+        zero,
+        Message::Addrs {
+            addrs: vec![nothing],
+        },
+    );
+    sim.run_for(SEC);
+    assert_eq!(score(&sim, zero), Some(20));
+    assert!(sim.engines[0].addr_book().get("82.2.2.2:0").is_none());
+
+    // the same for an IPv6 peer
+    let six = sim.add_hostile(0, "[2606:4700::1]:41000");
+    sim.hostile_send(six, hello_from(&rigs[0]));
+    sim.run_for(SEC);
+    let auto6 = string_to_peer_addr("[::]:38333", T0).unwrap();
+    sim.hostile_send(six, Message::Addrs { addrs: vec![auto6] });
+    sim.run_for(SEC);
+    assert_eq!(score(&sim, six), Some(0));
+    assert!(sim.engines[0]
+        .addr_book()
+        .get("[2606:4700::1]:38333")
+        .is_some());
+}
+
+#[test]
+fn an_address_that_turns_out_to_be_ourselves_is_not_dialled_again() {
+    // a node with a changing address hears its own address from its peers: dialling it reaches ourselves (the same nonce), which must cost one
+    // connection once, not one every few minutes
+    let rigs = SimRig::rigs("selfdial", 1);
+    let mut c = cfg(1, &[]);
+    c.nonce = 77;
+    c.seeds = seeds_in_groups(1);
+    let mut e = engine_on(&rigs[0], c);
+    let t = T0 * 1000;
+    let dials = connects(&e.handle(t + 1000, Event::Tick));
+    assert_eq!(dials.len(), 1);
+    e.handle(
+        t + 1500,
+        Event::PeerConnected {
+            peer: 1,
+            addr: dials[0].clone(),
+            inbound: false,
+        },
+    );
+    e.handle(
+        t + 1600,
+        Event::Message {
+            peer: 1,
+            msg: hello_with_nonce(&rigs[0], 77),
+        },
+    );
+    e.handle(t + 1700, Event::PeerDisconnected { peer: 1 });
+    assert_eq!(e.outbound_count(), 0);
+    // an hour of ticks, well past any back-off: it is never dialled again
+    for k in 1..=60u64 {
+        let again = connects(&e.handle(t + 1000 + k * 60_000, Event::Tick));
+        assert!(
+            !again.contains(&dials[0]),
+            "dialled ourselves again at minute {k}"
+        );
+    }
+}
+
+#[test]
 fn on_a_private_network_a_peer_may_announce_an_address_other_than_the_one_it_dialled_from() {
     // one machine dials out from 127.0.0.1 whatever address it listens on: a local test network needs this to learn where its peers are,
     // and only a private network (`accept_private`) gets it; the default (public) behaviour is pinned by the test above

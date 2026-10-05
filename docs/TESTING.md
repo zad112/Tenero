@@ -22,7 +22,7 @@ may well be; say so (see "Telling the author", below).
 
 1. Unzip the release somewhere (a folder you own, not the Desktop's root). Start **`tenero-wallet-gui.exe`**. The node and the miner start from it and run hidden; nothing else opens.
 2. Choose the **`alpha`** network in the settings. **Create a wallet**, **write the 24 words on paper**, and type the three it asks for. The words are the wallet; the password only locks the file on this computer. Do not photograph or store the words online.
-3. On the **Node** tab, start the node. It needs peers: there is **no public seed node yet**, so you need the address of another tester's node (see "Finding peers"). A node alone is still a working one-node network.
+3. On the **Node** tab, start the node. It needs peers: **in Settings, add a seed** (the address of another tester's node or of the author's seed server, see "Finding peers"). Optionally tick **"Let other nodes connect to me"** (see "Letting others connect to you" first). A node alone is still a working one-node network.
 4. On the **Mining** tab, press Start (it says what it will use: the GPU at full load). Rewards from mined blocks are spendable after 60 blocks.
 5. **Receive** shows your address (`tni1...`) and a QR code; **Send** asks for an address and an amount and shows everything before it sends.
 
@@ -40,7 +40,7 @@ tenero-wallet pay     --wallet me.wallet --data DIR --control 127.0.0.1:38332 --
 tenero-miner --data DIR --control 127.0.0.1:38332 --address tni1... --backend gpu
 ```
 
-That node only dials out. To let others connect to you, add `--listen IP:PORT` (a port of your choosing: there is no default; see "Finding peers" for the risk).
+That node only dials out. To let others connect to you, add `--listen 0.0.0.0:PORT --advertise 0.0.0.0:PORT` (a port of your choosing; `docs/RUNNING.md` says what `advertise` does; see "Letting others connect to you" for the router and the risk).
 
 `tenerod --version` (and the other programs') says which build you have: **put it in every report.** The command-line wallet keeps a **raw seed of 64 hexadecimal digits** and a wallet file of its own; the
 app keeps **24 words** and its own files; **they are two different wallets.** The wallet shows your seed once: write it down.
@@ -49,8 +49,23 @@ app keeps **24 words** and its own files; **they are two different wallets.** Th
 
 A node needs at least one address to start from. On `alpha` there is no list built in. Get the address of a node run by someone you trust (a friend who is also testing; the author may name one in the pinned
 issue, but none is promised) and give it with `--seed HOST:PORT` (or `trusted_peer`, for an address you got **outside** the network). To run two nodes on one machine or on one home network, set
-`allow_private_peers yes`: `alpha` refuses such addresses by default. If you want others to reach your node, forward its port; **a node that accepts connections from strangers is the least-hardened
+`allow_private_peers yes`: `alpha` refuses such addresses by default. If you want others to reach your node, see the next section; **a node that accepts connections from strangers is the least-hardened
 part of this project**, so do it only on a machine you do not mind exposing, and not on the computer that has your wallet.
+
+## Letting others connect to you
+
+By default your node only **dials out**: it works, but every tester then talks to the seed and not to each other, so the seed does all the work. In the wallet app, **Settings, "Let other nodes connect to me"**
+(a tick box and a TCP port; `38333` on alpha) makes the node accept connections and tell its peers where it is. It does not open your router for you:
+
+1. **Forward the TCP port** on your router to this computer (the same port, inside and out), and **allow the program in Windows Firewall** (Windows asks the first time the node listens).
+2. **Your internet address may change; there is nothing to set.** The node tells each peer "reach me on this port, at the address you see me at" every time it connects, and an old address simply stops answering and is forgotten. You do not need a fixed IP or a
+   dynamic-DNS name (seeds are plain IP addresses: this is a design choice, a name would have to be resolved by whoever dials it).
+3. **It cannot work behind CGNAT** (a provider that shares one public address between customers; your router's "internet address" is then a private one such as 100.64.x.x or 10.x.x.x): nobody can reach you, and the box does nothing.
+4. **To check** that it works, look at the node's status line: `peers N (in M, out K)`. `in` is the strangers who connected to you; it stays 0 until someone else has your address, which takes a few minutes and another node that asks the seed.
+5. **The risk:** strangers can connect to this computer, and the network code has had fuzzing and simulations, **not an audit**. A flood of connections or a bug could use this computer's memory, processor and bandwidth. Do not do this on a computer you cannot afford to slow down or restart.
+
+**What is not tested yet:** the address learned from the seed is checked only by whoever dials it; an address whose owner moved on lingers in the seed's list for up to 30 days and costs each newcomer one failed dial (it is then
+retried with growing waits). Nobody has run this across a real home router yet.
 
 ## Telling the author
 

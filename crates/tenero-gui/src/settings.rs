@@ -69,8 +69,12 @@ pub struct Settings {
     pub control: SocketAddr,
     /// Peers to start from, `host:port`, one per line in the file as `seed = ...`.
     pub seeds: Vec<String>,
-    /// Start the node's listening port (so others can connect), `ip:port`, or none.
+    /// Start the node's listening port (so others can connect), `ip:port`, or none. Only from the settings file (the screen has `inbound_port`):
+    /// it listens but tells nobody where to find it.
     pub listen: Option<String>,
+    /// "Let other nodes connect to me": the TCP port to accept them on (the router must forward it), or none. The node then also tells each peer
+    /// the address it sees us at (`advertise = 0.0.0.0:PORT`), so a changing home IP needs nothing from the user. Wins over `listen`.
+    pub inbound_port: Option<u16>,
     /// Do not start a node of our own: use one that is already running (or will be) at `control`, with its data in
     /// `data_dir`.
     pub external_node: bool,
@@ -110,6 +114,15 @@ pub fn default_control(n: Network) -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], n.default_control_port()))
 }
 
+/// The port the first release suggests for "let other nodes connect to me" (`docs/RUNNING.md`): the one the seed server of the network uses.
+pub fn default_inbound_port(n: Network) -> u16 {
+    match n {
+        Network::Test => 18331,
+        Network::Dev => 28333,
+        Network::Alpha => 38333,
+    }
+}
+
 impl Settings {
     /// The defaults for a network: an archive node, no extra seeds, the first backend the network can use, the
     /// miner paying account 0, data and wallet under `app_dir`.
@@ -120,6 +133,7 @@ impl Settings {
             control: default_control(network),
             seeds: Vec::new(),
             listen: None,
+            inbound_port: None,
             external_node: false,
             miner_backend: MinerBackend::for_network(network)[0],
             miner_cores: 2,
@@ -151,7 +165,7 @@ impl Settings {
             let (k, v) = (k.trim().to_string(), v.trim().to_string());
             if k == "network" {
                 network = Network::parse(&v)
-                    .ok_or_else(|| format!("network: `{v}` is not test or dev"))?;
+                    .ok_or_else(|| format!("network: `{v}` is not test, dev or alpha"))?;
             }
             pairs.push((k, v));
         }
@@ -191,6 +205,17 @@ impl Settings {
                     s.seeds.push(v.clone());
                 }
                 "listen" => s.listen = (!v.is_empty()).then(|| v.clone()),
+                "inbound_port" => {
+                    s.inbound_port = if v.is_empty() {
+                        None
+                    } else {
+                        let p: u16 = v.parse().map_err(|_| bad("is not a port (1 to 65535)"))?;
+                        if p == 0 {
+                            return Err(bad("is not a port (1 to 65535)"));
+                        }
+                        Some(p)
+                    }
+                }
                 "external_node" => {
                     s.external_node = parse_bool(&v).ok_or_else(|| bad("is not yes or no"))?
                 }
@@ -252,6 +277,9 @@ impl Settings {
         }
         if let Some(l) = &self.listen {
             t.push_str(&format!("listen = {l}\n"));
+        }
+        if let Some(p) = self.inbound_port {
+            t.push_str(&format!("inbound_port = {p}\n"));
         }
         t.push_str(&format!("external_node = {}\n", yes_no(self.external_node)));
         t.push_str(&format!("miner_backend = {}\n", self.miner_backend.name()));

@@ -144,9 +144,11 @@ pub struct Config {
     pub data: PathBuf,
     pub network: Network,
     pub listen: Option<SocketAddr>,
-    /// The `ip:port` other nodes can reach this one at, told to every peer once (a peer takes it only if the IP is the one we connected from).
+    /// The `ip:port` other nodes can reach this one at, told to every peer once (a peer takes it only if the IP is the one it connected from).
     /// This is how a seed learns where its peers are, and so what to tell the next node that asks: without it a node never tells anyone where it
-    /// is, and a seed's address book stays empty. Leave it unset behind a router that does not forward the port (nobody could dial it).
+    /// is, and a seed's address book stays empty. **`0.0.0.0:PORT` means "the address you see me at, on this port"**: the node need not know its
+    /// own IP, which changes with a home connection (the wallet app uses this form). Leave it unset behind a router that does not forward the
+    /// port (nobody could dial it). Needs `listen` (a node that is not listening cannot be reached).
     pub advertise: Option<String>,
     pub seeds: Vec<String>,
     /// Peers pinned by the operator (`ip:port`, got out of band): always dialled, whenever not connected.
@@ -367,6 +369,12 @@ impl Raw {
             }
             None => None,
         };
+        if advertise.is_some() && listen.is_none() {
+            return Err(bad(
+                "advertise",
+                "tells other nodes where to reach this one, but this node is not listening (set `listen` too)",
+            ));
+        }
         let control: SocketAddr = match self.one("control") {
             Some(v) => v
                 .parse()

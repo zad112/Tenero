@@ -170,13 +170,28 @@ fn numbers_are_checked() {
     );
     assert!(err("data=d\nnetwork=dev\nlisten=nowhere").contains("not ip:port"));
     assert!(err("data=d\nnetwork=dev\nseed=nowhere").contains("not ip:port"));
-    assert!(err("data=d\nnetwork=dev\nadvertise=nowhere").contains("not ip:port"));
+    assert!(
+        err("data=d\nnetwork=dev\nlisten=0.0.0.0:1\nadvertise=nowhere").contains("not ip:port")
+    );
     assert_eq!(ok("data=d\nnetwork=dev").advertise, None);
     assert_eq!(
-        ok("data=d\nnetwork=dev\nadvertise=203.0.113.9:8333")
+        ok("data=d\nnetwork=dev\nlisten=0.0.0.0:8333\nadvertise=203.0.113.9:8333")
             .advertise
             .as_deref(),
         Some("203.0.113.9:8333")
+    );
+    // `0.0.0.0:PORT` is "the address you see me at": a node at home does not know its IP, which changes
+    assert_eq!(
+        ok("data=d\nnetwork=dev\nlisten=0.0.0.0:8333\nadvertise=0.0.0.0:8333")
+            .advertise
+            .as_deref(),
+        Some("0.0.0.0:8333")
+    );
+    // announcing an address while not listening is a mistake, said plainly
+    let e = err("data=d\nnetwork=dev\nadvertise=203.0.113.9:8333");
+    assert!(
+        e.contains("advertise") && e.contains("not listening"),
+        "{e}"
     );
     assert!(err("data=d\nnetwork=dev\nallow_private_peers=maybe").contains("not yes or no"));
     assert!(ok("data=d\nnetwork=dev\nallow_private_peers=yes").allow_private_peers);

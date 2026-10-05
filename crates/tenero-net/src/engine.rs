@@ -26,7 +26,8 @@ use tenero_core::v2::{Block, BlockHeader, Transaction};
 use tenero_node::{AddOutcome, Node, PoolError};
 
 use crate::addrbook::{
-    group_of, host_of, peer_addr_to_string, string_to_peer_addr, AddrBook, AddrBookConfig, BanList,
+    group_of, host_of, host_with_port, is_unspecified, peer_addr_to_string, string_to_peer_addr,
+    AddrBook, AddrBookConfig, BanList,
 };
 use crate::message::{Hello, Limits, Message, PeerAddr, PROTOCOL_VERSION};
 
@@ -505,6 +506,9 @@ pub struct Engine<'a> {
     /// The answer last given to each requesting network group, and when it stops being reused.
     addr_answers: HashMap<String, (u64, Vec<PeerAddr>)>,
     cooldown: HashMap<PeerId, u64>,
+    /// Addresses that turned out to be this node itself (a dial that connected to our own nonce): never dialled again. A node with a changing
+    /// IP address learns its own address from its peers' answers, and must not waste a connection on it.
+    self_addrs: HashSet<String>,
     req_blocks: BTreeMap<[u8; 32], Req>,
     /// Every (peer, block id) we have asked for and not yet had an answer to: a block that arrives from a
     /// peer we asked is never "unsolicited", even if another peer delivered it first.
@@ -547,6 +551,7 @@ impl<'a> Engine<'a> {
             forgivable: Vec::new(),
             addr_answers: HashMap::new(),
             cooldown: HashMap::new(),
+            self_addrs: HashSet::new(),
             req_blocks: BTreeMap::new(),
             asked: BTreeMap::new(),
             announcers: HashMap::new(),
@@ -937,6 +942,10 @@ impl<'a> Engine<'a> {
             return true;
         }
         if nonce == ours {
+            // a link WE dialled that reached ourselves: that address is us (an inbound one carries an arbitrary port, so says nothing)
+            if let Some(p) = self.peers.get(&peer).filter(|p| !p.inbound) {
+                self.self_addrs.insert(p.addr.clone());
+            }
             self.drop_peer(peer, "connected to ourselves", false, out);
             return false;
         }
@@ -1378,7 +1387,14 @@ impl<'a> Engine<'a> {
         let source = group_of(&peer_addr);
         // a peer telling us its own address (once): one entry, at the host it connected from
         if addrs.len() == 1 && may_announce {
-            let own = peer_addr_to_string(&addrs[0]);
+            // an announcement with the unspecified address (`0.0.0.0:PORT`, or `[::]:PORT`) means "the address you see me at, on this port": the
+            // node does not need to know its own IP (it changes with a home connection, and a router hides it). The IP is the one this
+            // connection came from, so the rule below (only the host it connected from) holds by construction
+            let own = if is_unspecified(&addrs[0]) {
+                host_with_port(&peer_addr, addrs[0].port)
+            } else {
+                peer_addr_to_string(&addrs[0])
+            };
             // a peer may announce only the host it connected from (so it cannot send us to someone else); on a PRIVATE network (`accept_private`: a test
             // network on one machine) the machine dials out from 127.0.0.1 whatever it listens on, so there any address it announces is taken
             let host_ok = own.as_deref().map(host_of) == Some(host_of(&peer_addr))
@@ -1466,6 +1482,7 @@ impl<'a> Engine<'a> {
         }
         let per_group = self.cfg.max_outbound_per_group;
         let own = self.cfg.advertise.clone();
+        let selfs = &self.self_addrs;
         let bans = &self.bans;
         let connecting = &self.connecting;
         let skip = |a: &str| {
@@ -1473,6 +1490,7 @@ impl<'a> Engine<'a> {
                 || connecting.contains_key(a)
                 || bans.is_banned(a, now)
                 || own.as_deref() == Some(a)
+                || selfs.contains(a)
         };
         let full = |g: &str| groups.get(g).copied().unwrap_or(0) >= per_group;
         let candidates = self
@@ -1548,6 +1566,7 @@ impl<'a> Engine<'a> {
         }
         let hosts: HashSet<String> = self.peers.values().map(|p| host_of(&p.addr)).collect();
         let own = self.cfg.advertise.clone();
+        let selfs = &self.self_addrs;
         let bans = &self.bans;
         let connecting = &self.connecting;
         let skip = |a: &str| {
@@ -1555,6 +1574,7 @@ impl<'a> Engine<'a> {
                 || connecting.contains_key(a)
                 || bans.is_banned(a, now)
                 || own.as_deref() == Some(a)
+                || selfs.contains(a)
         };
         let Some(addr) = self.book.untried_candidate(now, &skip) else {
             return;
@@ -1794,6 +1814,7 @@ impl<'a> Engine<'a> {
             .collect();
         used_groups.extend(self.ordinary_dials().map(|a| group_of(a)));
         let own = self.cfg.advertise.clone();
+        let selfs = &self.self_addrs;
         let bans = &self.bans;
         let connecting = &self.connecting;
         let skip = |a: &str| {
@@ -1801,6 +1822,7 @@ impl<'a> Engine<'a> {
                 || connecting.contains_key(a)
                 || bans.is_banned(a, now)
                 || own.as_deref() == Some(a)
+                || selfs.contains(a)
         };
         // a group that already has an outbound peer counts as full: only new groups
         let in_use = used_groups.clone();

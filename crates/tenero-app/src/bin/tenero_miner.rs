@@ -218,11 +218,17 @@ fn main() {
     screen.banner(&Banner {
         role: "miner".to_string(),
         version: format!("v{}", tenero_app::daemon::VERSION),
-        network: implied.name().to_string(),
+        // before it has asked the node, the miner only knows the backend: cpu and gpu mine the real proof of work on dev AND on alpha, so it
+        // must not say "dev" (it did, while mining alpha)
+        network: if implied == Network::Test {
+            implied.name().to_string()
+        } else {
+            "real proof of work (dev or alpha: the node says which)".to_string()
+        },
         network_note: if implied == Network::Test {
             "SHA-256 test chain, no real proof of work".to_string()
         } else {
-            "development chain, real matmulhash proof of work".to_string()
+            "matmulhash".to_string()
         },
         details: {
             let mut d = vec![

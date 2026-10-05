@@ -164,7 +164,12 @@ pub fn node_args(s: &Settings) -> Vec<OsString> {
     for seed in &s.seeds {
         push("seed", seed.into());
     }
-    if let Some(l) = &s.listen {
+    if let Some(p) = s.inbound_port {
+        // accept others on the port, and tell every peer "reach me on this port, at the address you see me at": no IP to configure, so a home
+        // connection whose address changes needs nothing (each new connection tells the peer the new address)
+        push("listen", format!("0.0.0.0:{p}").into());
+        push("advertise", format!("0.0.0.0:{p}").into());
+    } else if let Some(l) = &s.listen {
         push("listen", l.into());
     }
     push("color", "never".into());

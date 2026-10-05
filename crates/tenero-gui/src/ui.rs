@@ -1276,7 +1276,7 @@ impl App {
         ui.add_space(8.0);
         ui.label(
             RichText::new(
-                "This address works on the test network only, and it is an interim format: it will change when the real privacy scheme replaces it. Every payment to it can be linked to it by anyone reading the chain.",
+                "This address works on the test networks only (the SHA-256 test, development and alpha networks, none of which has value), and it is an interim format: it will change when the real privacy scheme replaces it. Every payment to it can be linked to it by anyone reading the chain.",
             )
             .small()
             .color(GREY),
@@ -1895,12 +1895,39 @@ impl App {
                             .desired_rows(3)
                             .desired_width(f32::INFINITY),
                     );
-                    let mut listen = draft.listen.clone().unwrap_or_default();
-                    ui.horizontal(|ui| {
-                        ui.label("Listen for others on (ip:port, empty = outbound only)");
-                        ui.add(egui::TextEdit::singleline(&mut listen).desired_width(180.0));
-                    });
-                    draft.listen = (!listen.trim().is_empty()).then(|| listen.trim().to_string());
+                    let mut inbound = draft.inbound_port.is_some();
+                    ui.checkbox(&mut inbound, "Let other nodes connect to me");
+                    if inbound {
+                        let mut port = draft
+                            .inbound_port
+                            .unwrap_or_else(|| crate::settings::default_inbound_port(draft.network));
+                        ui.horizontal(|ui| {
+                            ui.label("TCP port");
+                            ui.add(egui::DragValue::new(&mut port).range(1..=65535));
+                        });
+                        draft.inbound_port = Some(port);
+                        ui.label(
+                            RichText::new(
+                                "Others can then fetch blocks from you, which takes load off the seeds. This app cannot open your router: forward this TCP port to this \
+                                 computer on your router, and allow the program in Windows Firewall. Your internet address may change: nothing to do, the node tells each \
+                                 peer the address it sees you at. Strangers will be able to connect to this computer, and this software is unaudited. Behind a provider \
+                                 that shares one address between customers (CGNAT) nobody can reach you, and this does nothing.",
+                            )
+                            .small()
+                            .color(GREY),
+                        );
+                    } else {
+                        draft.inbound_port = None;
+                    }
+                    if let Some(l) = draft.listen.as_ref().filter(|_| draft.inbound_port.is_none()) {
+                        ui.label(
+                            RichText::new(format!(
+                                "The settings file also has `listen = {l}` (it listens but does not tell anyone where to find it)."
+                            ))
+                            .small()
+                            .color(GREY),
+                        );
+                    }
                     ui.checkbox(
                         &mut draft.external_node,
                         "Use a node that is already running; do not start one",
@@ -2018,7 +2045,7 @@ impl App {
         ui.add_space(6.0);
         for line in [
             "Tenero is an experimental proof-of-work coin, a learning project: unaudited, one developer, not for real value.",
-            "Nothing on the test or development network has any value. Do not treat these coins as money.",
+            "Nothing on the test, development or alpha network has any value. Do not treat these coins as money.",
             "The output scheme is an INTERIM one, not private in Monero's sense. Anyone reading the chain can link payments to an address.",
             "Nothing cryptographic here has been audited as used.",
         ] {

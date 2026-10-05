@@ -1143,6 +1143,7 @@ impl Core {
             || new.control != old.control
             || new.seeds != old.seeds
             || new.listen != old.listen
+            || new.inbound_port != old.inbound_port
             || new.external_node != old.external_node
             || new.data_dir != old.data_dir
             || new.program_dir != old.program_dir;

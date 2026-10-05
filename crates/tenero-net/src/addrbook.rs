@@ -126,6 +126,23 @@ pub fn peer_addr_to_string(a: &PeerAddr) -> Option<String> {
     Some(SocketAddr::new(ip, a.port).to_string())
 }
 
+/// Is this the unspecified address (`0.0.0.0` or `::`) with a real port? A node that sends it as its own address means "the address you see me
+/// at, on this port" (it does not know its own public IP, and the IP of a home connection changes).
+pub fn is_unspecified(a: &PeerAddr) -> bool {
+    let v6 = Ipv6Addr::from(a.ip);
+    let unspecified = match v6.to_ipv4_mapped() {
+        Some(v4) => v4.is_unspecified(),
+        None => v6.is_unspecified(),
+    };
+    unspecified && a.port != 0
+}
+
+/// `seen` is an address as a connection reports it (`ip:port`); the same host with `port`, or `None` if `seen` is not `ip:port`.
+pub fn host_with_port(seen: &str, port: u16) -> Option<String> {
+    let sa = seen.parse::<SocketAddr>().ok()?;
+    Some(SocketAddr::new(sa.ip(), port).to_string())
+}
+
 /// An address as it goes on the wire, or `None` if it is not `ip:port`.
 pub fn string_to_peer_addr(addr: &str, last_seen: u64) -> Option<PeerAddr> {
     let sa = addr.parse::<SocketAddr>().ok()?;
