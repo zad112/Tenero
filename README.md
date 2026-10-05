@@ -77,6 +77,12 @@ for, and a special-purpose chip would need the same memory to compete. **That is
 **There is no published release yet.** The first, `v0.1.0-alpha.1`, will appear on the [Releases](../../releases) page as a Windows zip and a Linux tar.gz with a `SHA256SUMS` file;
 how it is made and checked is in [`docs/RELEASING.md`](docs/RELEASING.md). The files are **not code-signed** (Windows SmartScreen will warn), and the Linux build has been run by hand **only as a node**: in WSL2 on the author's PC, and as a service on a rented Ubuntu 24.04 server (the Linux wallet, wallet app and GPU miner have not been run). Until a release exists, build from source.
 
+**Antivirus warning: your antivirus may flag these programs as a "coin miner".** Some scanners do (the labels vary: "coin miner", "PUA" or "potentially unwanted application", sometimes "trojan"), and **that is partly true: `tenero-miner` is a
+miner**, and the wallet app and the node can start it. It runs your GPU or CPU at full load, which is exactly what those detectors look for. **Nothing mines unless you start it** (the Start button on the wallet app's Mining tab, the `tenero-miner`
+program, or the node's `mine` setting, which is off by default). The programs are also **not code-signed**, so a scanner has only their behaviour to go on; the author has not tested them against any named antivirus and cannot say which will flag them.
+**Do not take anyone's word for what a file is, this page's included:** check the SHA-256 against `SHA256SUMS` on the Releases page, or **build from source** and run what you built. If you decide to trust a download, exclude **only its own folder**, not the
+whole drive, and do not switch your protection off. And only download from this repository's [Releases](../../releases) page: real malware is often hidden in "free miner" downloads from elsewhere.
+
 **Build from source** (needs [Rust](https://rustup.rs)); [`docs/RUNNING.md`](docs/RUNNING.md) is the full guide:
 
 ```
@@ -91,6 +97,10 @@ cargo test --workspace            # no GPU needed
 | Run a node or the wallet | Windows 11 (the only Windows tried) or Linux (built for Ubuntu 22.04 or newer; **run by hand only as a node**: in WSL2 and on one rented server); on `alpha` or `dev`, about **4.3 GiB of free RAM** for the node (it holds one 4 GiB dataset at a time, and pauses about 3 seconds for the first block of each 100-block epoch while it builds the next); **mining adds its own memory** |
 | Mine on a GPU | an NVIDIA GPU with a current driver **and the CUDA Toolkit 13.x** (the miner uses NVIDIA's NVRTC and cuBLASLt, which come with the Toolkit, not the driver; nothing from NVIDIA is shipped here). Up to two 4 GiB datasets are kept in video memory: **only a 16 GB card has been tried**; whether an 8 GB card works is untested |
 | Mine on a CPU | nothing extra, but see the next section: on `alpha` it is **impractical** |
+
+**An AMD (or other non-NVIDIA) GPU miner:** today the GPU miner is **NVIDIA only** (it is written for CUDA). If someone wants to build one for AMD cards, the author is 100% fine with that and would be glad to see it; the author
+**cannot test it, because they do not own an AMD card.** What such a miner has to match is exact: the proof of work is specified in [`docs/CONSENSUS.md`](docs/CONSENSUS.md) (section 8.2) and pinned by the golden vectors in [`tests/vectors/`](tests/vectors/README.md), the existing
+CUDA kernels are in [`crates/tenero-gpu/kernels/matmulhash.cu`](crates/tenero-gpu/kernels/matmulhash.cu), and the rule is **bit for bit, or it is wrong**: a block the node's check refuses is just wasted work. Nothing about its speed or safety would be claimed until someone measures it on a card they own.
 
 ## The `alpha` test network
 
