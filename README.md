@@ -18,9 +18,9 @@ Inspired by Monero's design ideas; not affiliated with or endorsed by the Monero
 |---|---|
 | **Built** | a node, a miner (GPU and CPU), a command-line wallet, a wallet app with a window, a seed checker, a network protocol with an encrypted channel, a test network called **`alpha`** with one seed server |
 | **Tested** | about 900 automated tests (933 passing and 24 skipped when last counted, 2026-10-05), the Rust code checked bit for bit against an independent Python reference, six fuzzing targets run for 30 minutes each with no crash |
-| **Run on `alpha`** | one node and one GPU mined 19 blocks in about 12 minutes; a Windows PC and a rented Linux server (the seed) stayed on one chain, with a third node on the PC. **One epoch boundary (block 100) has been crossed once** on the real chain, by a Windows PC node and the server with one GPU miner: both kept to about 4.0 GiB and went on applying blocks (the length of the pause was not measured). **Not yet seen:** a settled difficulty, a second miner, more than three nodes, a second boundary |
+| **Run on `alpha`** | one node and one GPU mined the chain to height 103 (2026-10-05); a Windows PC and a rented Linux server (the seed) stayed on one chain, with a third node on the PC. **One epoch boundary (block 100) has been crossed once** on the real chain, by a Windows PC node and the server with one GPU miner: both kept to about 4.0 GiB and went on applying blocks (the length of the pause was not measured). **Not yet seen:** a settled difficulty, a second miner, more than three nodes, a second boundary |
 | **Reviewed by anyone else** | **no.** There has been no independent cryptographic, security or hardware review |
-| **Released** | **yes, as the first release (2026-10-05): `v0.1.0-alpha.1`, on the [Releases](../../releases) page. It is still a TEST release**: "released" means published for people to try, not finished, reviewed or safe; see [Get it](#get-it) |
+| **Released** | **yes (2026-10-05): the latest is `v0.1.0-alpha.2`, after `v0.1.0-alpha.1` the same day, both on the [Releases](../../releases) page. They are still TEST releases**: "released" means published for people to try, not finished, reviewed or safe; see [Get it](#get-it) |
 
 What is known to be wrong or missing is written down, including what nobody has fixed: [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) and [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 
@@ -74,7 +74,7 @@ for, and a special-purpose chip would need the same memory to compete. **That is
 
 ## Get it
 
-**The first release, `v0.1.0-alpha.1`, is on the [Releases](../../releases) page** (published 2026-10-05): a Windows zip and a Linux tar.gz with a `SHA256SUMS` file. **It is a test release and says so in its name, its notes and
+**The latest release, `v0.1.0-alpha.2`, is on the [Releases](../../releases) page** (published 2026-10-05; the first, `v0.1.0-alpha.1`, came out the same day, and the only change is that the GPU miner holds one dataset in video memory and so commits about 5 GiB instead of 9.2): a Windows zip and a Linux tar.gz with a `SHA256SUMS` file. **It is a test release and says so in its notes and
 this page: "released" means published for people to try, not finished, audited or safe, and the network may be reset.** How it is made and checked is in [`docs/RELEASING.md`](docs/RELEASING.md). The files are **not code-signed** (Windows SmartScreen will warn), and the Linux build has been run by hand **only as a node**: in WSL2 on the author's PC, and as a service on a rented Ubuntu 24.04 server (the Linux wallet, wallet app and GPU miner have not been run). Prefer to build it yourself? The next section does that.
 
 **Antivirus warning: your antivirus may flag these programs as a "coin miner".** Some scanners do (the labels vary: "coin miner", "PUA" or "potentially unwanted application", sometimes "trojan"), and **that is partly true: `tenero-miner` is a
@@ -104,7 +104,7 @@ CUDA kernels are in [`crates/tenero-gpu/kernels/matmulhash.cu`](crates/tenero-gp
 
 ## The `alpha` test network
 
-`alpha` is the network of the first test release: the real proof of work at a real starting difficulty, a fresh genesis with no premine (label "tenero alpha network 1", chain id
+`alpha` is the network of the test releases: the real proof of work at a real starting difficulty, a fresh genesis with no premine (label "tenero alpha network 1", chain id
 `430ca70081d3e52c618fd9af46fecdf6d6fc8f7965dc8ed2aa53c92ecfe069d3`), a starting target of 2^237 (about 524,000 attempts a block), epochs of 100 blocks and control port 38332.
 Its chain **restarts from block 1 whenever a rule changes**, and the author expects to reset it.
 
@@ -113,7 +113,7 @@ Its chain **restarts from block 1 whenever a rule changes**, and the author expe
   53 minutes at 164 attempts a second (and about 4.6 hours with the default build): **CPU mining of `alpha` is impractical.** The difficulty adjusts, so these change as miners come and go.
 * **Measured so far:** one node and one GPU, 16 blocks in 12 minutes in one run (gaps between blocks 11 to 183 seconds, mean 48 s) and 19 blocks in about 12 minutes in another, while the difficulty was still settling from its start. A Windows PC and a Linux server
   (2026-10-05) and a third node on the PC stayed on one chain; the server was stopped, upgraded and restarted with its chain intact.
-* **There is one seed, run by the author, and it is built in** (the source has its address, and so does `v0.1.0-alpha.1`): a new `alpha` node finds the network with no setting. It is **one computer run by one
+* **There is one seed, run by the author, and it is built in** (the source has its address, and so do the releases): a new `alpha` node finds the network with no setting. It is **one computer run by one
   person**: if it is down, a brand-new node has nowhere to start (one that has run before remembers its peers), and its operator could show a new node a false chain. The plan wants several independent operators
   ([`docs/SEED_POLICY.md`](docs/SEED_POLICY.md)). You can add your own (`--seed ip:port`, see [`docs/RUNNING.md`](docs/RUNNING.md)) or drop the built-in one (`no_builtin_seeds`).
 * **Letting others connect to you** (the wallet app's Settings, "Let other nodes connect to me", off by default) lets your node serve blocks to others, so they do not all rely on the seed. **It needs a TCP port forwarded on your router and allowed in your firewall, it
