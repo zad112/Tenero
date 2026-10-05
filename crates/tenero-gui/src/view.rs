@@ -162,6 +162,19 @@ pub struct Snapshot {
     pub prepared: Option<Quote>,
     /// What the worker is busy with, for a "please wait" (a long scan, building a payment).
     pub busy: Option<String>,
+    /// The node's data being copied to another folder (the node and the miner are stopped meanwhile).
+    pub moving: Option<MoveView>,
+}
+
+/// A move of the node's data in progress: from where, to where, and how far (see `movedata`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MoveView {
+    pub from: std::path::PathBuf,
+    pub to: std::path::PathBuf,
+    pub phase: crate::movedata::Phase,
+    /// Bytes copied (or, in the checking phase, compared) so far, and the bytes to copy in all (0 until measured).
+    pub done: u64,
+    pub total: u64,
 }
 
 /// How the person wants the wallet file locked.
@@ -262,6 +275,13 @@ pub enum Cmd {
     StartMiner,
     StopMiner,
     SetSettings(Box<Settings>),
+    /// Copies the node's data (the chain) to a new or empty folder, checks the copy, and then uses the new folder. The old one is left alone. The
+    /// node and the miner must be stopped.
+    MoveNodeData {
+        to: std::path::PathBuf,
+    },
+    /// Stops a move in progress; what it made is removed and the old folder stays in use.
+    CancelMove,
     /// Stop what this window started and end.
     Quit,
 }

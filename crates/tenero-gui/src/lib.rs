@@ -7,6 +7,7 @@
 
 pub mod backend;
 pub mod core;
+pub mod movedata;
 pub mod procs;
 pub mod qr;
 pub mod settings;

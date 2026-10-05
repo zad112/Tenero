@@ -164,6 +164,8 @@ pub struct App {
     draft: Option<(Settings, String)>,
     /// The settings as they were when `draft` was made: what the user changed is `draft` against this (`Settings::with_changes`).
     draft_base: Option<Settings>,
+    /// The folder typed in the "move the node's data" box.
+    move_to: String,
     /// The wallet chooser is showing the form for another wallet (not the list).
     adding: bool,
     closing: bool,
@@ -220,6 +222,7 @@ impl App {
                 miner: MinerView::Off,
                 prepared: None,
                 busy: Some("starting".into()),
+                moving: None,
             },
             app_dir,
             tab: Tab::Wallet,
@@ -234,6 +237,7 @@ impl App {
             prompt: Prompt::default(),
             draft: None,
             draft_base: None,
+            move_to: String::new(),
             adding: false,
             closing: false,
             closing_since: None,
@@ -1844,6 +1848,19 @@ impl App {
         let app_dir = self.app_dir.clone();
         // the wallet that is selected NOW (the draft may be older than the wallet that was made or opened since)
         let wallet_file_now = self.snap.settings.wallet_file.clone();
+        let data_dir_now = self.snap.settings.data_dir.clone();
+        let moving = self.snap.moving.clone();
+        // the node's data was moved since the draft was made (and the person did not edit that box): show the new place
+        if let (Some((d, _)), Some(b)) = (self.draft.as_mut(), self.draft_base.as_mut()) {
+            if b.data_dir != data_dir_now {
+                if d.data_dir == b.data_dir {
+                    d.data_dir = data_dir_now.clone();
+                }
+                b.data_dir = data_dir_now.clone();
+            }
+        }
+        let mut start_move: Option<PathBuf> = None;
+        let mut cancel_move = false;
         let (draft, seeds) = self.draft.as_mut().expect("just set");
         let mut apply = false;
         let mut reset = false;
@@ -1977,6 +1994,63 @@ impl App {
                     );
                 }
                 ui.add_space(8.0);
+                ui.label(RichText::new("Move the node's data (the blockchain) to another folder or drive").strong());
+                ui.label(format!("The node keeps its data in: {}", data_dir_now.display()));
+                match &moving {
+                    Some(m) => {
+                        let what = match m.phase {
+                            crate::movedata::Phase::Measuring => "Measuring what there is to copy",
+                            crate::movedata::Phase::Copying => "Copying",
+                            crate::movedata::Phase::Checking => "Checking the copy against the original",
+                        };
+                        ui.label(format!("{what}: {} to {}", m.from.display(), m.to.display()));
+                        let frac = if m.total == 0 {
+                            0.0
+                        } else {
+                            (m.done as f32 / m.total as f32).clamp(0.0, 1.0)
+                        };
+                        ui.add(
+                            egui::ProgressBar::new(frac)
+                                .show_percentage()
+                                .text(format!("{} of {}", bytes_text(m.done), bytes_text(m.total))),
+                        );
+                        if ui.button("Cancel the move").clicked() {
+                            cancel_move = true;
+                        }
+                    }
+                    None => {
+                        ui.add_enabled_ui(!node_busy && !miner_busy, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Move the data to");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.move_to)
+                                        .hint_text("D:\\TeneroData")
+                                        .desired_width(360.0),
+                                );
+                            });
+                            let ready = !self.move_to.trim().is_empty();
+                            if ui
+                                .add_enabled(ready, egui::Button::new("Copy the data there, check it, and use it"))
+                                .clicked()
+                            {
+                                start_move = Some(PathBuf::from(self.move_to.trim()));
+                            }
+                        });
+                        if node_busy || miner_busy {
+                            ui.label(
+                                RichText::new("Stop the node and the miner first.")
+                                    .small()
+                                    .color(GREY),
+                            );
+                        }
+                        ui.label(
+                            RichText::new("Use a new or empty folder (a full path, on any drive). The data is copied, then every file is read back and compared with the original, and only then is the new place used. The old folder is left exactly as it is: delete it yourself once the node has run from the new place. Do not use a network drive, or a USB stick you may unplug. The box above only points the node at another folder (an empty one starts from nothing); it does not move anything.")
+                                .small()
+                                .color(GREY),
+                        );
+                    }
+                }
+                ui.add_space(8.0);
                 ui.label(RichText::new("Wallet").strong());
                 ui.label(format!("Selected wallet file: {}", wallet_file_now.display()));
                 ui.add_enabled_ui(!unlocked, |ui| {
@@ -2025,7 +2099,9 @@ impl App {
                 }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    apply = ui.button("Apply").clicked();
+                    apply = ui
+                        .add_enabled(moving.is_none(), egui::Button::new("Apply"))
+                        .clicked();
                     reset = ui.button("Discard changes").clicked();
                 });
                 ui.label(
@@ -2058,6 +2134,12 @@ impl App {
         } else if reset {
             self.draft = None;
             self.draft_base = None;
+        }
+        if let Some(to) = start_move {
+            self.backend.send(Cmd::MoveNodeData { to });
+        }
+        if cancel_move {
+            self.backend.send(Cmd::CancelMove);
         }
     }
 
@@ -2488,6 +2570,21 @@ fn account_text(d: &WalletData, index: usize) -> String {
             None => a.label.clone(),
         },
         None => format!("account {index}"),
+    }
+}
+
+/// A size for the screen: "3.2 GiB", "480 MiB", "12 KiB", "0 bytes".
+fn bytes_text(n: u64) -> String {
+    const KIB: f64 = 1024.0;
+    let x = n as f64;
+    if x >= KIB * KIB * KIB {
+        format!("{:.2} GiB", x / (KIB * KIB * KIB))
+    } else if x >= KIB * KIB {
+        format!("{:.1} MiB", x / (KIB * KIB))
+    } else if x >= KIB {
+        format!("{:.0} KiB", x / KIB)
+    } else {
+        format!("{n} bytes")
     }
 }
 

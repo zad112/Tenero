@@ -136,6 +136,12 @@ a node syncing from scratch pays this at every boundary it crosses. **What it re
 every epoch after the first (measured; the earlier text here said "briefly", which was wrong). **A miner may still hold two** (and prefetch), and `mine = cpu` or `mine = gpu` inside the node adds the miner's own
 memory on top of the node's: the 8 GB limit is for the node alone. The `test` network needs almost nothing.
 
+**Moving the node's data (the chain) to another folder or drive.** The chain grows with every block, so you may want it on a bigger drive. **In the wallet app:** Settings, "Move the node's data": stop the node and the miner, type a new or empty folder (a full
+path such as `D:\TeneroData`), press the button. It **copies** the data, then reads every file back and compares it with the original, and only then uses the new place; a progress bar shows how far it is and "Cancel the move" stops it (what it
+copied is removed). **The old folder is never touched or deleted**: delete it yourself once the node has run from the new place. The new folder is made private first (only you and the system, as the node does for a new data folder), `control.cookie` is not
+copied (the node makes a new one), and links inside the data folder are refused. It does not check free space (a full disk is an error and everything the move made is removed again). Do not use a network drive or a USB stick you may unplug. **By hand,
+with the node stopped:** copy the folder, make the copy private (`icacls "NEW" /inheritance:r /grant:r "%USERDOMAIN%\%USERNAME%:(OI)(CI)F"` on Windows, `chmod 700` on Linux), and start the node with `--data NEW`. The wallet file is separate (it is not in the data folder).
+
 ## The wallet: `tenero-wallet`
 
 ```powershell

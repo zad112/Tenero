@@ -775,6 +775,226 @@ fn a_node_that_was_only_found_running_is_left_running_when_the_window_quits() {
     assert!(tenero_gui::procs::reach_node(&rig.settings).is_none());
 }
 
+fn notices(events: &[Event]) -> Vec<&str> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Notice(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Something that looks like a node's data folder, in `dir`.
+fn put_node_data(dir: &Path, big: usize) {
+    std::fs::create_dir_all(dir.join("chain.redb.segments")).unwrap();
+    let blob: Vec<u8> = (0..big)
+        .map(|i| (i.wrapping_mul(2654435761) >> 7) as u8)
+        .collect();
+    std::fs::write(dir.join("chain.redb"), &blob).unwrap();
+    std::fs::write(dir.join("chain.redb.segments").join("a"), b"segment").unwrap();
+    std::fs::write(dir.join("node.key"), [7u8; 32]).unwrap();
+    std::fs::write(dir.join("control.cookie"), b"old cookie").unwrap();
+}
+
+#[test]
+fn the_nodes_data_is_moved_checked_and_only_then_used_and_the_old_folder_is_left() {
+    let rig = Rig::new("movedata", 18496);
+    let mut c = rig.core();
+    let old = c.settings().data_dir.clone();
+    put_node_data(&old, 3 * 1024 * 1024 + 11);
+    let new = rig.dir.join("elsewhere");
+    let ev = c.handle(Cmd::MoveNodeData { to: new.clone() });
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    // it runs on its own thread: the snapshot says so, and the setting has not moved yet
+    assert!(c.snapshot().moving.is_some());
+    assert_eq!(
+        c.settings().data_dir,
+        old,
+        "not used until it has been checked"
+    );
+    let ev = wait(&mut c, 60, "the move to end", |s| s.moving.is_none());
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    assert!(
+        notices(&ev)
+            .iter()
+            .any(|n| n.contains("was moved to") && n.contains("delete the old folder yourself")),
+        "{:?}",
+        notices(&ev)
+    );
+    // now it is used, and that is saved for the next run
+    assert_eq!(c.settings().data_dir, new);
+    assert_eq!(Settings::load(&rig.dir).unwrap().data_dir, new);
+    // the copy is whole (and has no old cookie); the old folder is exactly as it was
+    assert_eq!(
+        std::fs::read(new.join("chain.redb")).unwrap(),
+        std::fs::read(old.join("chain.redb")).unwrap()
+    );
+    assert_eq!(std::fs::read(new.join("node.key")).unwrap(), [7u8; 32]);
+    assert!(new.join("chain.redb.segments").join("a").is_file());
+    assert!(!new.join("control.cookie").exists());
+    assert_eq!(
+        std::fs::read(old.join("control.cookie")).unwrap(),
+        b"old cookie"
+    );
+    assert_eq!(
+        std::fs::read(old.join("chain.redb")).unwrap().len(),
+        3 * 1024 * 1024 + 11
+    );
+}
+
+#[test]
+fn a_real_node_stops_its_data_is_moved_and_it_starts_again_from_the_new_folder() {
+    // the point of it all: tenerod accepts the folder the move made (it refuses one that other accounts can open) and runs from it
+    let rig = Rig::new("movereal", 18500);
+    let mut c = rig.core();
+    let old = c.settings().data_dir.clone();
+    assert!(errors(&c.handle(Cmd::StartNode)).is_empty());
+    wait(&mut c, 90, "the node to answer", |s| {
+        matches!(s.node, NodeView::Running { .. })
+    });
+    // a node that is running cannot have its data moved
+    let ev = c.handle(Cmd::MoveNodeData {
+        to: rig.dir.join("too-soon"),
+    });
+    assert_eq!(
+        errors(&ev).len(),
+        1,
+        "a running node's data was not refused"
+    );
+    assert!(errors(&c.handle(Cmd::StopNode)).is_empty());
+    c.tick();
+    assert_eq!(c.snapshot().node, NodeView::Stopped);
+    assert!(
+        old.join("chain.redb").is_file(),
+        "the node made its data here"
+    );
+
+    let new = rig.dir.join("moved");
+    assert!(errors(&c.handle(Cmd::MoveNodeData { to: new.clone() })).is_empty());
+    let ev = wait(&mut c, 60, "the move to end", |s| s.moving.is_none());
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    assert_eq!(c.settings().data_dir, new);
+
+    let ev = c.handle(Cmd::StartNode);
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    wait(&mut c, 90, "the node to answer from the new folder", |s| {
+        matches!(s.node, NodeView::Running { .. } | NodeView::Failed { .. })
+    });
+    match c.snapshot().node {
+        NodeView::Running { info, ours } => {
+            assert!(ours);
+            assert_eq!(info.network, "test");
+        }
+        other => panic!("the node did not start from the moved folder: {other:?}"),
+    }
+    assert!(
+        new.join("control.cookie").is_file(),
+        "it made its own cookie in the new folder"
+    );
+    assert!(errors(&c.handle(Cmd::StopNode)).is_empty());
+    c.tick();
+    assert_eq!(c.snapshot().node, NodeView::Stopped);
+}
+
+#[test]
+fn a_move_with_nothing_to_move_just_uses_the_new_folder() {
+    let rig = Rig::new("movenothing", 18497);
+    let mut c = rig.core();
+    let new = rig.dir.join("fresh");
+    let ev = c.handle(Cmd::MoveNodeData { to: new.clone() });
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    assert!(c.snapshot().moving.is_none(), "there was nothing to copy");
+    assert_eq!(c.settings().data_dir, new);
+    assert_eq!(Settings::load(&rig.dir).unwrap().data_dir, new);
+}
+
+#[test]
+fn a_bad_destination_changes_nothing() {
+    let rig = Rig::new("movebad", 18498);
+    let mut c = rig.core();
+    let old = c.settings().data_dir.clone();
+    put_node_data(&old, 1000);
+    let full = rig.dir.join("full");
+    std::fs::create_dir_all(&full).unwrap();
+    std::fs::write(full.join("x"), b"x").unwrap();
+    for (to, why) in [
+        (full.clone(), "not empty"),
+        (old.clone(), "itself"),
+        (old.join("inside"), "inside"),
+        (PathBuf::from("relative"), "full path"),
+        (
+            rig.dir.join("no").join("such").join("parent"),
+            "does not exist",
+        ),
+    ] {
+        let ev = c.handle(Cmd::MoveNodeData { to });
+        let e = errors(&ev);
+        assert_eq!(e.len(), 1, "{why}: {e:?}");
+        assert!(e[0].contains(why), "{why}: {e:?}");
+        assert!(c.snapshot().moving.is_none());
+        assert_eq!(c.settings().data_dir, old);
+    }
+    assert!(!old.join("inside").exists(), "nothing was made by refusing");
+}
+
+#[test]
+fn while_the_data_is_being_moved_nothing_else_may_change_it_and_a_cancel_changes_nothing() {
+    let rig = Rig::new("movecancel", 18499);
+    let mut c = rig.core();
+    let old = c.settings().data_dir.clone();
+    put_node_data(&old, 160 * 1024 * 1024);
+    let new = rig.dir.join("never");
+    assert!(errors(&c.handle(Cmd::MoveNodeData { to: new.clone() })).is_empty());
+    // a second move, a node, a miner and a settings change are all refused meanwhile
+    for (cmd, name) in [
+        (
+            Cmd::MoveNodeData {
+                to: rig.dir.join("other"),
+            },
+            "a second move",
+        ),
+        (Cmd::StartNode, "the node"),
+        (Cmd::StartMiner, "the miner"),
+        (
+            Cmd::SetSettings(Box::new(rig.settings.clone())),
+            "a settings change",
+        ),
+    ] {
+        let ev = c.handle(cmd);
+        assert_eq!(errors(&ev).len(), 1, "{name} was not refused");
+    }
+    assert!(errors(&c.handle(Cmd::CancelMove)).is_empty());
+    let ev = wait(&mut c, 60, "the cancelled move to end", |s| {
+        s.moving.is_none()
+    });
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    assert!(
+        notices(&ev).iter().any(|n| n.contains("cancelled")),
+        "{:?}",
+        notices(&ev)
+    );
+    assert_eq!(c.settings().data_dir, old, "still the old folder");
+    assert!(!new.exists(), "what it had made is removed");
+    assert_eq!(
+        std::fs::read(old.join("chain.redb")).unwrap().len(),
+        160 * 1024 * 1024
+    );
+    // and a window closed during a move ends it the same way
+    let ev = c.handle(Cmd::MoveNodeData { to: new.clone() });
+    assert!(errors(&ev).is_empty());
+    let ev = c.handle(Cmd::Quit);
+    assert!(ev.iter().any(|e| matches!(e, Event::Quit)));
+    assert!(
+        !new.exists(),
+        "closing the window cancelled the move and cleaned up"
+    );
+    assert_eq!(
+        std::fs::read(old.join("chain.redb")).unwrap().len(),
+        160 * 1024 * 1024
+    );
+}
+
 #[test]
 fn an_old_settings_draft_does_not_stop_other_settings_from_applying_while_a_wallet_is_open() {
     // The Settings screen's draft is made when the tab is first opened and lives until Apply. Meanwhile the real settings move on (creating or

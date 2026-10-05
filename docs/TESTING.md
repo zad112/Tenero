@@ -26,7 +26,7 @@ may well be; say so (see "Telling the author", below).
 4. On the **Mining** tab, press Start (it says what it will use: the GPU at full load). Rewards from mined blocks are spendable after 60 blocks.
 5. **Receive** shows your address (`tni1...`) and a QR code; **Send** asks for an address and an amount and shows everything before it sends.
 
-Files: settings, wallets and the node's data are under `%LOCALAPPDATA%\Tenero` (Linux: `~/.tenero`). The node's and miner's output are in `node-output.txt` and `miner-output.txt` there.
+Files: settings, wallets and the node's data are under `%LOCALAPPDATA%\Tenero` (Linux: `~/.tenero`). The node's and miner's output are in `node-output.txt` and `miner-output.txt` there. **The chain grows, and can be moved to another drive:** Settings, "Move the node's data" (stop the node and the miner first); it copies, checks every file against the original, and only then uses the new folder, leaving the old one for you to delete. Details in `docs/RUNNING.md`.
 
 ## The command-line way
 

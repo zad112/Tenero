@@ -232,6 +232,7 @@ fn snap(
         miner,
         prepared,
         busy: None,
+        moving: None,
     }
 }
 
@@ -697,6 +698,71 @@ fn the_receive_screen_shows_the_address_and_a_code_and_the_settings_screen_its_f
             "`{needle}` missing from settings:\n{t}"
         );
     }
+}
+
+#[test]
+fn the_settings_screen_moves_the_nodes_data_and_shows_how_far_it_has_got() {
+    let mut rig = Rig::new();
+    // idle, node stopped: the box and the button, and what the move does and does not do
+    let s = snap(
+        &rig,
+        wallet(true, true),
+        NodeView::Stopped,
+        MinerView::Off,
+        None,
+    );
+    rig.app.set_snapshot(s);
+    rig.app.goto("Settings");
+    let (t, _) = rig.frame();
+    for needle in [
+        "Move the node's data",
+        "The node keeps its data in",
+        "Copy the data there, check it, and use it",
+        "compared with the original",
+        "delete it yourself",
+    ] {
+        assert!(t.contains(needle), "`{needle}` missing:\n{t}");
+    }
+    assert!(!t.contains("Cancel the move"), "{t}");
+    // the node running: it must be stopped first, and the screen says so
+    let s = snap(
+        &rig,
+        wallet(true, true),
+        NodeView::Starting,
+        MinerView::Off,
+        None,
+    );
+    rig.app.set_snapshot(s);
+    let (t, _) = rig.frame();
+    assert!(t.contains("Stop the node and the miner first."), "{t}");
+    // a move in progress: where from and to, how far, and a way to stop it
+    let mut s = snap(
+        &rig,
+        wallet(true, true),
+        NodeView::Stopped,
+        MinerView::Off,
+        None,
+    );
+    s.moving = Some(MoveView {
+        from: "C:\\old".into(),
+        to: "D:\\new".into(),
+        phase: tenero_gui::movedata::Phase::Copying,
+        done: 3 * 1024 * 1024 * 1024,
+        total: 6 * 1024 * 1024 * 1024,
+    });
+    rig.app.set_snapshot(s);
+    let (t, _) = rig.frame();
+    for needle in [
+        "Copying: C:\\old to D:\\new",
+        "3.00 GiB of 6.00 GiB",
+        "Cancel the move",
+    ] {
+        assert!(t.contains(needle), "`{needle}` missing:\n{t}");
+    }
+    assert!(
+        !t.contains("Copy the data there"),
+        "no second move can be started: {t}"
+    );
 }
 
 #[test]

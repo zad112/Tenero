@@ -7,6 +7,7 @@
 //! writes neither to a log or to a screen except when the person asks to see the words.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rand_core::OsRng;
@@ -20,6 +21,7 @@ use tenero_wallet::{
 };
 use zeroize::Zeroizing;
 
+use crate::movedata;
 use crate::procs::{self, Proc};
 use crate::settings::{MinerBackend, Settings};
 use crate::view::*;
@@ -120,6 +122,16 @@ pub struct Core {
     refresh_due: bool,
     last_refresh: Option<Instant>,
     last_tip: Option<u64>,
+    /// The node's data being copied to another folder, if it is.
+    move_job: Option<MoveJob>,
+}
+
+/// A move of the node's data running on a thread of its own (a chain can be many gigabytes: the window must stay alive), polled by `tick`.
+struct MoveJob {
+    from: PathBuf,
+    to: PathBuf,
+    progress: Arc<movedata::Progress>,
+    thread: Option<std::thread::JoinHandle<Result<(), String>>>,
 }
 
 fn pass_ok(p: &Password) -> Result<Zeroizing<Vec<u8>>, String> {
@@ -186,6 +198,7 @@ impl Core {
             refresh_due: false,
             last_refresh: None,
             last_tip: None,
+            move_job: None,
         };
         c.refresh_wallets();
         // a node an earlier run (or the owner) left going is picked up, not started a second time
@@ -252,6 +265,13 @@ impl Core {
                 note: p.note.clone(),
             }),
             busy: None,
+            moving: self.move_job.as_ref().map(|j| MoveView {
+                from: j.from.clone(),
+                to: j.to.clone(),
+                phase: j.progress.phase(),
+                done: j.progress.done(),
+                total: j.progress.total(),
+            }),
         }
     }
 
@@ -390,6 +410,13 @@ impl Core {
                 Ok(())
             }
             Cmd::SetSettings(s) => self.set_settings(*s),
+            Cmd::MoveNodeData { to } => self.start_move(to),
+            Cmd::CancelMove => {
+                if let Some(j) = &self.move_job {
+                    j.progress.cancel();
+                }
+                Ok(())
+            }
             Cmd::Quit => {
                 self.quit();
                 events.push(Event::Snapshot(Box::new(self.snapshot())));
@@ -886,6 +913,9 @@ impl Core {
     // ---- the node ---------------------------------------------------------------------------------------
 
     fn start_node(&mut self, events: &mut Vec<Event>) -> Result<(), String> {
+        if self.move_job.is_some() {
+            return Err("wait for the move of the node's data to finish (or cancel it)".into());
+        }
         if self.settings.external_node {
             return Err("the settings say to use a node that is already running; this window does not start one".into());
         }
@@ -1048,6 +1078,9 @@ impl Core {
     // ---- the miner --------------------------------------------------------------------------------------
 
     fn start_miner(&mut self) -> Result<(), String> {
+        if self.move_job.is_some() {
+            return Err("wait for the move of the node's data to finish (or cancel it)".into());
+        }
         if self.miner_proc.is_some() {
             return Err("the miner is already running".into());
         }
@@ -1136,7 +1169,95 @@ impl Core {
 
     // ---- settings ---------------------------------------------------------------------------------------
 
+    /// Starts copying the node's data to `to` (see `movedata`), on a thread of its own. Nothing is changed until the copy has been checked.
+    fn start_move(&mut self, to: PathBuf) -> Result<(), String> {
+        if self.move_job.is_some() {
+            return Err("a move is already running".into());
+        }
+        if self.node.is_some() || self.node_proc.is_some() {
+            return Err("stop the node before moving its data".into());
+        }
+        if self.miner_proc.is_some() {
+            return Err("stop the miner before moving the node's data".into());
+        }
+        let from = self.settings.data_dir.clone();
+        movedata::check_destination(&from, &to)?;
+        let has_data = from.is_dir()
+            && std::fs::read_dir(&from)
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false);
+        if !has_data {
+            // nothing there to move (a node never ran here): just use the new place, the node makes the folder itself
+            let mut s = self.settings.clone();
+            s.data_dir = to;
+            return self.set_settings(s);
+        }
+        let progress = Arc::new(movedata::Progress::default());
+        let (p, f, t) = (progress.clone(), from.clone(), to.clone());
+        let thread = std::thread::Builder::new()
+            .name("move-node-data".into())
+            .spawn(move || movedata::move_data(&f, &t, &p))
+            .map_err(|e| format!("cannot start the copy: {e}"))?;
+        self.move_job = Some(MoveJob {
+            from,
+            to,
+            progress,
+            thread: Some(thread),
+        });
+        Ok(())
+    }
+
+    /// If a move has ended: uses the new folder (it was checked), or says why it did not happen. The old folder is never touched.
+    fn poll_move(&mut self) -> Vec<Event> {
+        let finished = self
+            .move_job
+            .as_ref()
+            .and_then(|j| j.thread.as_ref())
+            .is_some_and(|t| t.is_finished());
+        if !finished {
+            return Vec::new();
+        }
+        let mut job = self.move_job.take().expect("a finished job");
+        let result = job
+            .thread
+            .take()
+            .expect("a finished thread")
+            .join()
+            .unwrap_or_else(|_| {
+                Err(
+                    "the copy stopped unexpectedly; the old folder is unchanged and still in use"
+                        .into(),
+                )
+            });
+        match result {
+            Ok(()) => {
+                let mut s = self.settings.clone();
+                s.data_dir = job.to.clone();
+                match self.set_settings(s) {
+                    Ok(()) => vec![Event::Notice(format!(
+                        "The node's data was moved to {} and the copy was checked. The old folder, {}, is still there and untouched: start the node, make sure it runs from the new place, and then delete the old folder yourself.",
+                        job.to.display(),
+                        job.from.display()
+                    ))],
+                    Err(e) => vec![Event::Error(format!(
+                        "the data was copied to {} but the new place could not be saved ({e}); the old folder is still in use",
+                        job.to.display()
+                    ))],
+                }
+            }
+            Err(e) if e == "cancelled" => vec![Event::Notice(
+                "The move was cancelled: nothing was changed, and what it had copied was removed.".into(),
+            )],
+            Err(e) => vec![Event::Error(format!(
+                "The move failed: {e}. The old folder is unchanged and still in use; anything the move had made was removed."
+            ))],
+        }
+    }
+
     fn set_settings(&mut self, new: Settings) -> Result<(), String> {
+        if self.move_job.is_some() {
+            return Err("wait for the move of the node's data to finish (or cancel it)".into());
+        }
         let old = &self.settings;
         let node_changed = new.network != old.network
             || new.node_kind != old.node_kind
@@ -1200,6 +1321,7 @@ impl Core {
             return self.with_snapshot(events);
         }
         let before = self.snapshot();
+        events.extend(self.poll_move());
         self.poll_node(false);
         self.poll_miner();
         if self.node.is_none() && self.miner_proc.is_some() {
@@ -1359,6 +1481,7 @@ impl Core {
     // ---- the end ----------------------------------------------------------------------------------------
 
     fn quit(&mut self) {
+        self.end_move();
         self.stop_miner();
         let _ = self.save_wallet();
         // a node this window started goes with it; one it only found running is left alone
@@ -1368,12 +1491,23 @@ impl Core {
         self.purse = None;
         self.pass = None;
     }
+
+    /// A move still running when the window ends is cancelled and waited for, so that what it made is removed (the old folder is never touched).
+    fn end_move(&mut self) {
+        if let Some(mut j) = self.move_job.take() {
+            j.progress.cancel();
+            if let Some(t) = j.thread.take() {
+                let _ = t.join();
+            }
+        }
+    }
 }
 
 impl Drop for Core {
     /// A core that ends without `Quit` (the worker thread panicked, or a test failed) still must not leave the miner
     /// or a node it started running with nobody holding them: the miner is ended and the node is asked to stop.
     fn drop(&mut self) {
+        self.end_move();
         self.stop_miner();
         if self.node_proc.is_some() {
             let _ = self.do_stop_node();

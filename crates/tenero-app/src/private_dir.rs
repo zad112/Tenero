@@ -26,6 +26,16 @@ use std::path::Path;
 
 use crate::log::Logger;
 
+/// A command that does not open a console window when it is run from a program that has none (the wallet app moves node data and makes the
+/// new folder private through this module; `icacls` and `whoami` would each flash a window).
+#[cfg(windows)]
+fn quiet(program: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut c = std::process::Command::new(program);
+    c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    c
+}
+
 /// What the check found.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Exposure {
@@ -131,7 +141,7 @@ fn check_impl(dir: &Path) -> Exposure {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    let run = std::process::Command::new("icacls")
+    let run = quiet("icacls")
         .arg(dir)
         .arg("/save")
         .arg(&out_file)
@@ -205,7 +215,7 @@ fn make_private_impl(dir: &Path) -> Result<(), String> {
 fn make_private_impl(dir: &Path) -> Result<(), String> {
     let sid = current_user_sid()?;
     let me = format!("*{sid}:(OI)(CI)F");
-    let out = std::process::Command::new("icacls")
+    let out = quiet("icacls")
         .arg(dir)
         // no permissions inherited from the folder above, and the ones it had are kept as copies only for the accounts named
         .args(["/inheritance:r", "/grant:r"])
@@ -237,7 +247,7 @@ fn make_private_impl(_dir: &Path) -> Result<(), String> {
 /// The current user's SID, from `whoami /user`.
 #[cfg(windows)]
 fn current_user_sid() -> Result<String, String> {
-    let out = std::process::Command::new("whoami")
+    let out = quiet("whoami")
         .args(["/user", "/fo", "csv", "/nh"])
         .output()
         .map_err(|e| format!("cannot run whoami: {e}"))?;
