@@ -174,3 +174,11 @@ fn a_node_holds_one_proof_of_work_dataset_so_it_stays_inside_8_gb() {
     // the SHA-256 test network has no dataset at all
     assert_eq!(daemon::proof_of_work_datasets(Network::Test).unwrap(), None);
 }
+
+#[test]
+fn a_seed_repeats_its_address_answer_for_a_day_on_a_public_network_and_never_on_a_private_one() {
+    // public: one network group cannot harvest the address book by asking again. Private (the test network by default): every node is one
+    // "group", and the first, empty answer would otherwise be given to every later node for 24 hours (found by the local soak test)
+    assert_eq!(daemon::address_answer_ttl_ms(false), 24 * 3600 * 1000);
+    assert_eq!(daemon::address_answer_ttl_ms(true), 0);
+}

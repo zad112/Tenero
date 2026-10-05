@@ -1379,7 +1379,11 @@ impl<'a> Engine<'a> {
         // a peer telling us its own address (once): one entry, at the host it connected from
         if addrs.len() == 1 && may_announce {
             let own = peer_addr_to_string(&addrs[0]);
-            if own.as_deref().map(host_of) == Some(host_of(&peer_addr)) {
+            // a peer may announce only the host it connected from (so it cannot send us to someone else); on a PRIVATE network (`accept_private`: a test
+            // network on one machine) the machine dials out from 127.0.0.1 whatever it listens on, so there any address it announces is taken
+            let host_ok = own.as_deref().map(host_of) == Some(host_of(&peer_addr))
+                || (self.cfg.addrbook.accept_private && own.is_some());
+            if host_ok {
                 if let Some(p) = self.peers.get_mut(&peer) {
                     p.self_announced = true;
                 }

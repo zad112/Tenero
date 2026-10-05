@@ -170,6 +170,14 @@ fn numbers_are_checked() {
     );
     assert!(err("data=d\nnetwork=dev\nlisten=nowhere").contains("not ip:port"));
     assert!(err("data=d\nnetwork=dev\nseed=nowhere").contains("not ip:port"));
+    assert!(err("data=d\nnetwork=dev\nadvertise=nowhere").contains("not ip:port"));
+    assert_eq!(ok("data=d\nnetwork=dev").advertise, None);
+    assert_eq!(
+        ok("data=d\nnetwork=dev\nadvertise=203.0.113.9:8333")
+            .advertise
+            .as_deref(),
+        Some("203.0.113.9:8333")
+    );
     assert!(err("data=d\nnetwork=dev\nallow_private_peers=maybe").contains("not yes or no"));
     assert!(ok("data=d\nnetwork=dev\nallow_private_peers=yes").allow_private_peers);
     assert!(!ok("data=d\nnetwork=test\nallow_private_peers=off").allow_private_peers);

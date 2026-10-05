@@ -32,6 +32,7 @@ serve the **whole chain** (an archive node, never pruned), accept connections fr
        data = /var/lib/tenero/data
        network = alpha
        listen = 0.0.0.0:38333
+       advertise = YOUR.SERVER.PUBLIC.IP:38333
        prune_keep = 0
        log_file = /var/lib/tenero/node.log
        # no mining, no mine_to: a seed has no wallet

@@ -37,7 +37,9 @@ function Say([string]$t) { Write-Host ("[{0,5} min] {1}" -f (Elapsed), $t) }
 function Check([string]$name, [bool]$ok, [string]$detail = '') {
     if ($ok) { Say ("PASS  $name") } else { Say ("FAIL  $name  $detail"); $script:failed++ }
 }
-function Addr([int]$i) { "127.0.0.$i" }
+# each node is in its OWN network group (127.i.0.1: a /16 each), like machines in different places; with one shared group a seed gives every asker the same
+# cached answer for 24 hours and a node keeps at most 2 outbound peers per group, so the nodes would not find each other
+function Addr([int]$i) { "127.$i.0.1" }
 function DataOf([int]$i) { Join-Path $Dir "n$i" }
 function Ctl([int]$i) { "$(Addr $i):18332" }
 function WaitFor([int]$seconds, [scriptblock]$cond) {
@@ -63,6 +65,11 @@ function StartMiner([int]$i, [string]$address) {
     $a = @('--data', (DataOf $i), '--control', (Ctl $i), '--address', $address, '--backend', 'sha256', '--pace', "$MinerPace", '--log-file', (Join-Path $Dir "m$i.log"))
     return (Launch "m$i" $miner $a)
 }
+# How it works on the real network: node 1 is the ONLY seed (the one address every other node is given). Every node tells its peers the address it can be reached at
+# (`--advertise`), so the seed learns where its peers are and tells the next node that asks; that node dials them, and so on. Nobody is given the full list.
+function NetArgs([int]$i) { @('--advertise', "$(Addr $i):18331") + @(if ($i -ne 1) { '--seed'; "$(Addr 1):18331" }) }
+function PeersAre([int[]]$ids, [int]$n) { @($ids | Where-Object { (Status $_).Peers -ne $n }).Count -eq 0 }
+function PeerList([int[]]$ids) { ($ids | ForEach-Object { (Status $_).Peers }) -join '/' }
 function Alive([string]$name) { $script:procs.ContainsKey($name) -and [bool](Get-Process -Id $script:procs[$name] -ErrorAction SilentlyContinue) }
 
 function Status([int]$i) {
@@ -108,11 +115,10 @@ foreach ($who in $names) {
 Check 'six wallets made' (@($addr.Keys).Count -eq 6 -and @($addr.Values | Select-Object -Unique).Count -eq 6)
 
 # four nodes, each with its own miner; node 1 is the seed the others start from
-$null = StartNode 1
+$null = StartNode 1 (NetArgs 1)
 Check 'node 1 (the seed) answers' (WaitFor 40 { (Status 1).Up })
-foreach ($i in 2..4) { $null = StartNode $i @('--seed', "$(Addr 1):18331") }
-Check 'all four nodes answer' (WaitFor 60 { @(1..4 | Where-Object { -not (Status $_).Up }).Count -eq 0 })
-Check 'every node has a peer' (WaitFor 60 { @(1..4 | Where-Object { (Status $_).Peers -lt 1 }).Count -eq 0 })
+foreach ($i in 2..4) { $null = StartNode $i (NetArgs $i); Check "node $i answers" (WaitFor 40 { (Status $i).Up }); Start-Sleep -Seconds 8 }   # one at a time: each asks the seed after the earlier ones have told it where they are
+Check 'every node found the others and has exactly 3 peers (told only about node 1)' (WaitFor 180 { PeersAre @(1, 2, 3, 4) 3 }) ("peers " + (PeerList @(1, 2, 3, 4)))
 $minerOwner = @{ 1 = 'alice'; 2 = 'bob'; 3 = 'carol'; 4 = 'dave' }
 foreach ($i in 1..4) { $null = StartMiner $i $addr[$minerOwner[$i]] }
 Check 'the chain passes height 10' (WaitFor 120 { (Status 1).Height -ge 10 })
@@ -183,6 +189,15 @@ function Converge([string]$label, [int[]]$ids, [int]$seconds = 60) {
 function MinerLines([int]$i) { @(Get-Content (Join-Path $Dir "m$i.log") -ErrorAction SilentlyContinue | Where-Object { $_ -match 'found a block at height' }).Count }
 function MinerConnects([int]$i) { @(Get-Content (Join-Path $Dir "m$i.log") -ErrorAction SilentlyContinue | Where-Object { $_ -match 'miner: connected to the node' }).Count }
 $foundAtEvent = @{}
+$jobsAtEvent = @{}
+# the miner's last status line in its log: "... | 60s 6.54M | ... | jobs 145 | solutions 53"; jobs = how many times it took a new job, rate = attempts per second over the last minute (0 if none)
+function MinerStatus([int]$i) {
+    $l = @(Get-Content (Join-Path $Dir "m$i.log") -ErrorAction SilentlyContinue | Where-Object { $_ -match 'status: attempts/s' }) | Select-Object -Last 1
+    $jobs = -1; $rate = 0.0
+    if ($l -match 'jobs (\d+)') { $jobs = [int]$Matches[1] }
+    if ($l -match '60s ([0-9.]+)M') { $rate = [double]$Matches[1] }
+    [pscustomobject]@{ Jobs = $jobs; Rate = $rate }
+}
 
 # ---- the long middle ----
 $pending = $checkpoints | Sort-Object
@@ -198,32 +213,37 @@ while (((Get-Date) -lt $t0.AddMinutes($D)) -or ((-not ($done['late'] -and $done[
     if ((-not $done['late']) -and $m -ge $tLate) {
         $done['late'] = $true
         Say 'the late node (5) starts, with no miner'
-        $null = StartNode 5 @('--seed', "$(Addr 1):18331")
+        $null = StartNode 5 (NetArgs 5)
         Check 'node 5 (late) syncs to the same tip' (WaitFor 180 { AllOnOneTip @(1, 2, 3, 4, 5) })
+        Check 'every node has exactly 4 peers with five nodes up' (WaitFor 120 { PeersAre @(1, 2, 3, 4, 5) 4 }) ("peers " + (PeerList @(1, 2, 3, 4, 5)))
     }
     if ((-not $done['clean']) -and $m -ge $tClean) {
         $done['clean'] = $true
         $before = MinerConnects 2
         $foundAtEvent[2] = MinerLines 2
+        $jobsAtEvent[2] = (MinerStatus 2).Jobs
         Say 'node 2 is stopped cleanly (its miner keeps running)'
         $null = (& $node stop --data (DataOf 2) --control (Ctl 2) | Out-String)
         Check 'node 2 stops cleanly' (WaitFor 60 { -not (Alive 'n2') })
         Start-Sleep -Seconds 30
         Say 'node 2 starts again'
-        $null = StartNode 2 @('--seed', "$(Addr 1):18331")
+        $null = StartNode 2 (NetArgs 2)
         Check 'node 2 is back on the same tip' (WaitFor 180 { AllOnOneTip @(1, 2, 3, 4, 5) })
+        Check 'every node is back to exactly 4 peers after node 2 restarts' (WaitFor 120 { PeersAre @(1, 2, 3, 4, 5) 4 }) ("peers " + (PeerList @(1, 2, 3, 4, 5)))
         Check "node 2's miner reconnects after the restart" (WaitFor 120 { (MinerConnects 2) -gt $before })
     }
     if ((-not $done['crash']) -and $m -ge $tCrash) {
         $done['crash'] = $true
         $before = MinerConnects 3
         $foundAtEvent[3] = MinerLines 3
+        $jobsAtEvent[3] = (MinerStatus 3).Jobs
         Say 'node 3 is KILLED (a crash; its miner keeps running)'
         Stop-Process -Id $script:procs['n3'] -Force
         Start-Sleep -Seconds 30
         Say 'node 3 starts again'
-        $null = StartNode 3 @('--seed', "$(Addr 1):18331")
+        $null = StartNode 3 (NetArgs 3)
         Check 'node 3 is back on the same tip after the crash' (WaitFor 180 { AllOnOneTip @(1, 2, 3, 4, 5) })
+        Check 'every node is back to exactly 4 peers after node 3 crashes and restarts' (WaitFor 120 { PeersAre @(1, 2, 3, 4, 5) 4 }) ("peers " + (PeerList @(1, 2, 3, 4, 5)))
         Check "node 3's miner reconnects after the crash" (WaitFor 120 { (MinerConnects 3) -gt $before })
         $log3 = Get-Content (Join-Path $Dir 'n3.log') -ErrorAction SilentlyContinue | Out-String
         Check "node 3's log reports no corruption" (-not ($log3 -match '(?i)corrupt'))
@@ -241,7 +261,11 @@ while (((Get-Date) -lt $t0.AddMinutes($D)) -or ((-not ($done['late'] -and $done[
 
 # ---- the end: freeze, compare, stop, check the stores ----
 foreach ($i in 2, 3) {
-    Check ("miner $i found blocks again after its node's restart/crash") ((MinerLines $i) -gt $foundAtEvent[$i]) "found $(MinerLines $i) in all, $($foundAtEvent[$i]) at the event"
+    # NOT "it found a block again": with four miners and one block a minute, a miner can go 15 minutes without one by chance (about 1 run in 100; it did once,
+    # and a replay of that miner on a copy of its data, killed and restarted, found one after 12 minutes). What shows it works is that it is hashing and keeps taking jobs.
+    $s = MinerStatus $i
+    Check ("miner $i is still hashing and taking new jobs after its node's restart/crash") (($s.Rate -gt 0) -and ($s.Jobs -ge $jobsAtEvent[$i] + 3)) "jobs $($s.Jobs) now, $($jobsAtEvent[$i]) at the event, rate $($s.Rate)M/s"
+    Say ("note: miner $i found {0} block(s) after the event (luck, not checked)" -f ((MinerLines $i) - $foundAtEvent[$i]))
 }
 Say 'the miners stop (the chain is frozen so the nodes can be compared exactly)'
 foreach ($i in 1..4) { if (Alive "m$i") { Stop-Process -Id $script:procs["m$i"] -Force } }

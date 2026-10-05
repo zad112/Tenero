@@ -25,7 +25,7 @@ tenerod: the Tenero node (EXPERIMENTAL, UNAUDITED; no launched network exists)
                                                 Without --yes it only says what it would remove. See docs/EMERGENCY_PLAN.md
 
 Settings (the same keys in the file as `key = value` and on the command line as `--key value`):
-  data, network (test|dev|alpha), listen, seed (repeatable), no_builtin_seeds, peers, max_inbound, allow_private_peers, control,
+  data, network (test|dev|alpha), listen, advertise (the ip:port others reach this node at), seed (repeatable), no_builtin_seeds, peers, max_inbound, allow_private_peers, control,
   prune_keep (0 = archive node), assume_valid (height:blockid), mine (off|sha256|cpu|gpu), mine_to (address),
   mine_cores, mine_pace, gpu_device, gpu_batch, log_level, log_file, status_every, quiet, verbose, color.
 

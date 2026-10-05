@@ -131,6 +131,17 @@ pub fn proof_of_work_datasets(network: Network) -> Result<Option<usize>, String>
     Ok(chain_of(network)?.matmul.map(|m| m.max_datasets()))
 }
 
+/// How long a seed repeats one answer to a network group's request for addresses (milliseconds). The default is 24 hours: it stops one group
+/// from harvesting the address book by asking again. On a PRIVATE network (`allow_private_peers`: every node on one machine or one LAN, so all
+/// of them are one "group" and a first, empty answer would be repeated to every later node) there is no such group to protect, so it is 0.
+pub fn address_answer_ttl_ms(allow_private_peers: bool) -> u64 {
+    if allow_private_peers {
+        0
+    } else {
+        EngineConfig::default().addr_answer_ttl_ms
+    }
+}
+
 /// The consensus parameters of a network (its genesis label, proof of work, starting target, block time and so on), for tests and tools.
 pub fn params_of(network: Network) -> Result<ChainParams, String> {
     Ok(chain_of(network)?.params)
@@ -840,6 +851,8 @@ pub fn run(
             ..AddrBookConfig::default()
         },
         seeds: cfg.seeds.clone(),
+        advertise: cfg.advertise.clone(),
+        addr_answer_ttl_ms: address_answer_ttl_ms(cfg.allow_private_peers),
         trusted: cfg.trusted_peers.clone(),
         peer_target: cfg.peer_target,
         outbound_target: cfg.peer_target.min(8),

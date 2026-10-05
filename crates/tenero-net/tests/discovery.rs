@@ -1411,6 +1411,30 @@ fn a_foreign_address_is_not_a_self_announcement_and_two_addresses_are_not_one() 
 }
 
 #[test]
+fn on_a_private_network_a_peer_may_announce_an_address_other_than_the_one_it_dialled_from() {
+    // one machine dials out from 127.0.0.1 whatever address it listens on: a local test network needs this to learn where its peers are,
+    // and only a private network (`accept_private`) gets it; the default (public) behaviour is pinned by the test above
+    let rigs = SimRig::rigs("privateannounce", 1);
+    let mut c = cfg(0, &[]);
+    c.addrbook.accept_private = true;
+    let mut sim = Sim::new(&rigs, T0, SimConfig::default(), c);
+    let peer = sim.add_hostile(0, "127.0.0.1:41000");
+    sim.hostile_send(peer, hello_from(&rigs[0]));
+    sim.run_for(SEC);
+    let own = string_to_peer_addr("127.2.0.1:18331", T0).unwrap();
+    sim.hostile_send(peer, Message::Addrs { addrs: vec![own] });
+    sim.run_for(SEC);
+    assert_eq!(score(&sim, peer), Some(0));
+    assert!(sim.engines[0].addr_book().get("127.2.0.1:18331").is_some());
+    // still only once, and only one address
+    let again = string_to_peer_addr("127.3.0.1:18331", T0).unwrap();
+    sim.hostile_send(peer, Message::Addrs { addrs: vec![again] });
+    sim.run_for(SEC);
+    assert_eq!(score(&sim, peer), Some(20));
+    assert!(sim.engines[0].addr_book().get("127.3.0.1:18331").is_none());
+}
+
+#[test]
 fn a_peer_we_asked_answers_once_and_a_second_answer_is_unsolicited() {
     let rigs = SimRig::rigs("secondanswer", 1);
     let l_addr = "72.1.0.1:8333";

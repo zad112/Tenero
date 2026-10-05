@@ -144,6 +144,10 @@ pub struct Config {
     pub data: PathBuf,
     pub network: Network,
     pub listen: Option<SocketAddr>,
+    /// The `ip:port` other nodes can reach this one at, told to every peer once (a peer takes it only if the IP is the one we connected from).
+    /// This is how a seed learns where its peers are, and so what to tell the next node that asks: without it a node never tells anyone where it
+    /// is, and a seed's address book stays empty. Leave it unset behind a router that does not forward the port (nobody could dial it).
+    pub advertise: Option<String>,
     pub seeds: Vec<String>,
     /// Peers pinned by the operator (`ip:port`, got out of band): always dialled, whenever not connected.
     pub trusted_peers: Vec<String>,
@@ -194,6 +198,7 @@ const KEYS: &[&str] = &[
     "data",
     "network",
     "listen",
+    "advertise",
     "seed",
     "no_builtin_seeds",
     "trusted_peer",
@@ -354,6 +359,14 @@ impl Raw {
             ),
             None => None,
         };
+        let advertise = match self.one("advertise") {
+            Some(v) => {
+                v.parse::<SocketAddr>()
+                    .map_err(|_| bad("advertise", format!("`{v}` is not ip:port")))?;
+                Some(v.to_string())
+            }
+            None => None,
+        };
         let control: SocketAddr = match self.one("control") {
             Some(v) => v
                 .parse()
@@ -501,6 +514,7 @@ impl Raw {
             data: PathBuf::from(data),
             network,
             listen,
+            advertise,
             seeds,
             trusted_peers,
             peer_target,

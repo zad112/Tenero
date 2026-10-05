@@ -144,7 +144,7 @@ and look at the node's memory and thread count in Task Manager (or `Get-Process 
 ## A local network of the REAL programs (`tools/localnet.ps1` and `tools/soak.ps1`)
 
 The sections above run the protocol engine's own test nodes. These two PowerShell scripts run the **actual release programs** (`tenerod`, `tenero-miner`, `tenero-wallet`) as separate processes on this
-machine, on the SHA-256 `test` network (a CPU finds a block in an instant), each node on its own loopback address (`127.0.0.1`, `127.0.0.2`, ...). **They check the programs and the peer-to-peer behaviour. They
+machine, on the SHA-256 `test` network (a CPU finds a block in an instant), each node on its own loopback address (`localnet.ps1`: `127.0.0.1`, `127.0.0.2`, ...; `soak.ps1`: `127.1.0.1`, `127.2.0.1`, ..., one network group each). **They check the programs and the peer-to-peer behaviour. They
 do not test the real proof of work, its memory (the 4 GiB dataset) or its speed, and they do not test Linux**: that needs the `dev` or `alpha` network and a GPU. Build first: `cargo build --release -p tenero-app`.
 
 * **`tools/localnet.ps1`** (about 3 minutes): four nodes and one miner, a payment, a late node, a clean restart, a crash. `-BreakOnPurpose` is a self-test of the checks (a node that is never told where to connect;
@@ -156,3 +156,24 @@ do not test the real proof of work, its memory (the 4 GiB dataset) or its speed,
 Both stop only what they started (by process id or `tenerod stop`) and **delete nothing**: the folder they used (printed at the start) keeps the logs, `samples.csv` and the data. **What they found while being
 written:** the status parser read the peer count as the height (a check that could not fail), the miner's log file says "found a block at height" (the screen says "mined in"), and the test chain's difficulty
 adjusts toward one block a minute within a few minutes, so a miner finds a block only every few minutes (a "finds blocks soon" check was wrong; "reconnects" is the right one).
+
+**How the soak's nodes find each other (2026-10-05), and what that found in the program.** Node 1 is the ONLY seed; nodes 2 to 5 are given only its address, and every node starts with `--advertise` (its own `ip:port`), as a node on the real
+network would. Each node has its own network group (`127.1.0.1`, `127.2.0.1`, ... one /16 each). The first tries gave 3/1/1/1 peers for an hour of nothing better, and showed three things, now fixed or known:
+
+1. **`tenerod` never told anyone its own address** (the engine could, `tenerod` never turned it on), so a seed's address book stayed empty and it had nothing to tell the next node. Fixed: the `advertise` setting (`docs/RUNNING.md`).
+2. **A peer may only announce the host it connected from** (so it cannot send us to a third party). Windows dials out from `127.0.0.1` whatever address a node listens on, so every local announcement was refused. On a private network (`allow_private_peers`, on by
+   default only for `test`) the announced address is now taken; on a public network the strict rule stands (a test pins both).
+3. **A seed repeats one answer to a network group for 24 hours** (so one group cannot harvest the address book), and all local nodes look like one group (`127.0.0.1`), so the first, empty answer went to everyone. On a private network the answer is no longer repeated
+   (a test pins both). **What still differs from the real network:** every local node appears to dial from `127.0.0.1`, so the engine cannot tell which host it is connected to and sometimes dials a peer it already has (it keeps one link, but it shows as reconnecting
+   every 30 s in the logs). The fix would be to dial out from the node's own `listen` address, which needs a socket library the project does not have (an owner decision under rule 3); a test on real separate machines (the seed server) is the faithful one.
+
+**Result of the first full hour (run 5, 2026-10-04/05, `target\release` of commit 261a129 plus the changes above, nodes in Windows Terminal tabs):** the three nodes found each other within 30 s of the first node (exactly 3 peers each), then exactly 4 each when node 5 joined
+late, and again after node 2's clean stop/restart and node 3's kill/restart; all nodes were always on one tip (apart from a one-block difference for a moment when two miners found a block at once); **18 payments, and the two payees held exactly what was paid at
+every checkpoint and at the end**; every data folder opened offline and held the same chain (178 blocks); no panic, corruption or ban in any log; every node's largest working set was 11 MB (this chain has no 4 GiB dataset, so this says nothing about the real
+network's memory). **One check failed, and it was the check that was wrong:** "miner 3 found a block again after its node was killed" (it found none in the 16 minutes before the end; the other three found 19 in that time, which is about a 0.4% chance if all are equally strong).
+Its log showed it connected, hashing at full speed and taking a new job for every block; **a replay of the same miner on a copy of node 3's data, killed and restarted, found a block after 12 minutes** (one run, so luck is the likely, not a proven, cause). The check now asks whether the
+miner is still hashing and taking jobs, and only prints how many blocks it found.
+
+**A limit the soak cannot show and that matters for the first public test:** a node learns where its peers are only from peers that announce an address, and a node behind a home router that does not forward the port cannot be dialled, so it should not announce one. **The testers' nodes
+will mostly be outbound-only, so with one seed the network will look like a star around the seed** (every tester connected to the seed, few to each other) unless some testers forward a port and set `advertise`. Blocks still reach everyone through the seed, but the seed is then a single
+point of failure and the seed policy's "several independent seeds" matters more.
