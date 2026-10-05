@@ -62,16 +62,40 @@ honest one (the worst case). Seeds hang up after answering. The measure is the s
   already connected needs seeds much less, and an operator who got a peer's address from a person they trust is not subject to any of this.
 
 * **A full seed makes room (added 2026-10-05; tested in `crates/tenero-net/tests/discovery.rs`, NOT yet run on a real network).** A node (a seed
-  included) that is full (`max_inbound` 64, `max_peers` 128) and has another inbound peer connect to it drops an INBOUND peer that has done
+  included) that is full (only when the operator has set `max_inbound`: the default is no limit, since 2026-10-05) and has another inbound peer connect to it drops an INBOUND peer that has done
   nothing for `idle_evict_after_ms` (10 minutes by default; 0 turns it off), without a ban, and takes the newcomer as a real peer. "Nothing"
   means no request, announcement, block or transaction: pings, pongs, hellos and address messages do not count, and the time since it
   connected counts as quiet time, so a new connection has 10 minutes. A peer that follows the chain asks for every new block (one a minute at
   the target), so it is never quiet for long; a connection that is only kept alive, or has stalled, goes first, the longest quiet first, ties to
   the lowest peer id. Never dropped: an outbound peer, a feeler, or a visitor given addresses; with no idle peer a newcomer is handled as before
-  (a visitor, or refused). Why: before this nothing ever evicted a peer, so a seed's 64 inbound slots would fill with connections that no longer
-  needed it. **Limits:** an attacker who keeps 64 connections active (a cheap request every few minutes is enough) still holds the slots, as
+  (a visitor, or refused). Why: before this nothing ever evicted a peer, so a seed's inbound slots (when limited) would fill with connections that no longer
+  needed it. **Limits:** an attacker who keeps the allowed connections active (a cheap request every few minutes is enough) still holds the slots, as
   before; and a stalled chain makes every peer idle, so on a full seed during a long stall newcomers would replace old peers (harmless churn).
   What the rule cannot tell is whether a quiet peer is valuable to the network for some other reason.
+
+## A node does not stay on its seeds (added 2026-10-05; tested in `crates/tenero-net/tests/discovery.rs` and `addrbook.rs`, NOT yet run on the real network)
+
+A seed is a starting point, not a place to stay: if every node stayed on it, the network would be one computer's view of everyone, and the seed's
+connections would fill up. The owner's rule: a node must go to other nodes automatically whenever any are known, and must not be able to stay on the
+seed for good (it may refuse inbound connections, but it still dials out to others). What the engine does:
+
+* **Leaving.** A node that holds `seed_leave_min_peers` (3) healthy OUTBOUND connections to peers that are not seeds disconnects from every seed (no ban;
+  the address stays in its book) and does not dial a seed again while it holds that many. Peers that dialled us do not count: we did not choose them.
+  Below three it dials a seed again when it needs peers (nothing is lost by a node whose own peers all went away).
+* **Preferring others.** When it dials, addresses that are not seeds go first; a seed is dialled when nothing else is available.
+* **Refreshing.** A peer answers `GetAddrs` once per connection, and a node asks once per connection, so a node that stayed connected to its seed would
+  never hear of a node that appeared later. A node that holds fewer than three non-seed outbound peers therefore closes and remakes a seed connection
+  older than `addr_refresh_ms` (30 minutes), and asks again. It has no peer for a moment when the seed was its only one.
+* **A fresher answer.** A seed repeats one answer to a network group for **15 minutes** (it was 24 hours: a node that had just become reachable was not passed
+  on for up to a day). This weakens the defence against reading the whole book (`THREAT_MODEL.md` C4): one group can take about 96 samples a day, not one.
+* **Retrying and forgetting.** The wait before retrying a failed address doubles from 30 seconds to a **30-minute** cap (it was 6 hours), and an address that never
+  worked is forgotten after **48** failures, about a day (it was 10: about 8 hours, so a node whose port was shut for an evening was forgotten before it was opened).
+* **No inbound limit unless the operator sets one** (`max_inbound`, 0 = none): see `RUNNING.md`.
+
+**Measured:** in a 30-node simulation starting from two seeds (`a_network_that_starts_from_two_seeds_ends_up_connected_to_itself_and_not_to_the_seeds`),
+**without the leaving rule 25 of 28 ordinary nodes were still connected to a seed after an hour although each had 10 to 17 peers of its own; with it, none.**
+**Not known:** how it behaves on the real network, where most home nodes accept no inbound connections and so are not addresses anyone can give out; a network of
+nodes that nobody can dial still ends up as a star on the seed.
 
 ## Checking a seed list
 

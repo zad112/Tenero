@@ -1752,12 +1752,223 @@ fn a_visitor_given_addresses_is_never_the_one_dropped_to_make_room() {
     assert_eq!(e.addr_only_count(), 1);
 }
 
+// ---- a node does not stay on its seed --------------------------------------------------------------------
+
+const THE_SEED: &str = "60.1.1.1:8333";
+const LEFT_SEED: &str = "seed: enough other peers";
+const REFRESH_SEED: &str = "seed: refreshing addresses";
+
+/// A node past its first-start bootstrap with one seed (`THE_SEED`) and these pinned peers, connected to the seed (peer 1) and to the pinned peers
+/// (peers 2, 3, ...), all greeted at `T0 * 1000`; they are outbound peers we chose that are not seeds.
+fn on_a_seed_with_peers<'a>(
+    rigs: &'a [SimRig],
+    leave_min: usize,
+    refresh_ms: u64,
+    others: &[&str],
+) -> Engine<'a> {
+    let mut c = cfg(8, &[]);
+    c.seeds = vec![THE_SEED.to_string()];
+    c.bootstrap_wait_ms = 0;
+    c.seed_leave_min_peers = leave_min;
+    c.addr_refresh_ms = refresh_ms;
+    c.trusted = others.iter().map(|s| s.to_string()).collect();
+    let mut e = engine_on(&rigs[0], c);
+    let t = T0 * 1000;
+    open(&mut e, 1, THE_SEED, false, t);
+    say_hello(&mut e, &rigs[0], 1, 21, t);
+    for (i, a) in others.iter().enumerate() {
+        let peer = 2 + i as u64;
+        open(&mut e, peer, a, false, t);
+        say_hello(&mut e, &rigs[0], peer, 21 + peer, t);
+    }
+    e
+}
+
+#[test]
+fn a_node_with_enough_peers_of_its_own_leaves_its_seed_and_does_not_go_back() {
+    let rigs = SimRig::rigs("leave1", 1);
+    let mut e = on_a_seed_with_peers(&rigs, 2, 0, &["61.1.1.1:8333", "62.1.1.1:8333"]);
+    let t = T0 * 1000;
+    let actions = e.handle(t + 1000, Event::Tick);
+    assert_eq!(disconnected(&actions), vec![(1, LEFT_SEED.to_string())]);
+    assert!(
+        !actions.iter().any(|a| matches!(a, Action::Ban { .. })),
+        "leaving a seed is not a ban"
+    );
+    // not dialled again in the same step either (the seed is in its book, due, and it wants more peers)
+    assert!(
+        !connects(&actions).iter().any(|a| a == THE_SEED),
+        "{actions:?}"
+    );
+    // it wants more peers (8 outbound), the seed is in its book and due, and it still does not dial it: it has enough of its own. (Only
+    // the first 30 seconds are looked at: after that the test's silent pinned peers would be dropped for not answering pings, and the node
+    // would rightly be back below its minimum.)
+    for k in 2..30u64 {
+        let dials = connects(&e.handle(t + k * SEC, Event::Tick));
+        assert!(
+            !dials.iter().any(|a| a == THE_SEED),
+            "dialled the seed again: {dials:?}"
+        );
+    }
+    assert_eq!(e.peer_count(), 2, "the two pinned peers are still there");
+}
+
+#[test]
+fn a_node_that_has_lost_its_own_peers_goes_back_to_its_seed() {
+    let rigs = SimRig::rigs("leave1b", 1);
+    let mut e = on_a_seed_with_peers(&rigs, 2, 0, &["61.1.1.1:8333", "62.1.1.1:8333"]);
+    let t = T0 * 1000;
+    e.handle(t + 1000, Event::Tick); // leaves the seed
+    e.handle(t + 2000, Event::PeerDisconnected { peer: 2 });
+    e.handle(t + 2000, Event::PeerDisconnected { peer: 3 });
+    // no peers at all now: the seed is dialled again (the book still holds it)
+    let dials = connects(&e.handle(t + 40 * SEC, Event::Tick));
+    assert!(dials.iter().any(|a| a == THE_SEED), "{dials:?}");
+}
+
+#[test]
+fn a_node_with_fewer_peers_of_its_own_than_the_limit_keeps_its_seed() {
+    let rigs = SimRig::rigs("leave2", 1);
+    let mut e = on_a_seed_with_peers(&rigs, 3, 0, &["61.1.1.1:8333", "62.1.1.1:8333"]);
+    let t = T0 * 1000;
+    let actions = e.handle(t + 1000, Event::Tick);
+    assert!(disconnected(&actions).is_empty(), "{actions:?}");
+}
+
+#[test]
+fn a_peer_that_dialled_us_does_not_count_as_one_of_our_own() {
+    // the peers that chose to connect to us were not chosen by us: ten of them do not let a node leave its seed
+    let rigs = SimRig::rigs("leave3", 1);
+    let mut e = on_a_seed_with_peers(&rigs, 2, 0, &[]);
+    let t = T0 * 1000;
+    for i in 0..10u64 {
+        open(&mut e, 10 + i, &format!("7{i}.1.1.1:41000"), true, t);
+        say_hello(&mut e, &rigs[0], 10 + i, 100 + i, t);
+    }
+    let actions = e.handle(t + 1000, Event::Tick);
+    assert!(
+        !disconnected(&actions)
+            .iter()
+            .any(|(_, why)| why == LEFT_SEED),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn a_node_that_only_has_its_seed_makes_the_connection_again_after_a_while_to_hear_of_new_nodes() {
+    let rigs = SimRig::rigs("leave4", 1);
+    let mut e = on_a_seed_with_peers(&rigs, 3, 30 * MIN, &[]);
+    let t = T0 * 1000;
+    // 29 minutes: nothing to do yet
+    let before = e.handle(t + 29 * MIN, Event::Tick);
+    assert!(
+        !disconnected(&before)
+            .iter()
+            .any(|(_, why)| why == REFRESH_SEED),
+        "{before:?}"
+    );
+    // 30 minutes: the seed connection is closed (no ban) and made again, in the same step
+    let actions = e.handle(t + 30 * MIN, Event::Tick);
+    assert_eq!(disconnected(&actions), vec![(1, REFRESH_SEED.to_string())]);
+    assert!(!actions.iter().any(|a| matches!(a, Action::Ban { .. })));
+    assert_eq!(connects(&actions), vec![THE_SEED.to_string()]);
+}
+
+#[test]
+fn leaving_a_seed_and_refreshing_it_can_be_turned_off() {
+    let rigs = SimRig::rigs("leave5", 1);
+    let mut e = on_a_seed_with_peers(&rigs, 0, 0, &["61.1.1.1:8333", "62.1.1.1:8333"]);
+    let t = T0 * 1000;
+    let actions = e.handle(t + 60 * MIN, Event::Tick);
+    assert!(
+        !disconnected(&actions)
+            .iter()
+            .any(|(_, why)| why == LEFT_SEED || why == REFRESH_SEED),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn when_it_dials_it_prefers_an_address_that_is_not_a_seed() {
+    // one dial wanted; the book holds the seed and nine other addresses. Whatever the order the book shuffles into, the seed is not chosen.
+    for book_seed in 1..=24u64 {
+        let rigs = SimRig::rigs("prefer", 1);
+        let mut c = cfg(1, &[]);
+        c.bootstrap_wait_ms = 0;
+        c.seed_leave_min_peers = 0; // so that only the ordering is in play
+        c.addrbook.seed = book_seed;
+        c.addrbook.min_redial_ms = 0;
+        let mut e = engine_with_book_and_seeds(&rigs[0], 9, c, vec![THE_SEED.to_string()]);
+        let dials = connects(&e.handle(T0 * 1000 + 5000, Event::Tick));
+        assert_eq!(dials.len(), 1, "{dials:?}");
+        assert_ne!(dials[0], THE_SEED, "book seed {book_seed}: {dials:?}");
+    }
+}
+
+#[test]
+fn a_network_that_starts_from_two_seeds_ends_up_connected_to_itself_and_not_to_the_seeds() {
+    let n = 30;
+    let rigs = SimRig::rigs("offseed", n);
+    let mut sim = Sim::new(&rigs, T0, SimConfig::default(), cfg(8, &[0, 1]));
+    // ten minutes in: the nodes have found each other through the seeds, and most already have three peers of their own
+    sim.run_for(600 * SEC);
+    // an hour in: the seed connections that are not needed have been closed, and the ones that are (a node that has fewer than three
+    // peers of its own) are only refreshed now and then
+    sim.run_for(3000 * SEC);
+    let ordinary: Vec<usize> = (2..n).collect();
+    let on_a_seed: Vec<usize> = ordinary
+        .iter()
+        .copied()
+        .filter(|&i| sim.engines[i].seed_peer_count() > 0)
+        .collect();
+    let own: Vec<usize> = ordinary
+        .iter()
+        .map(|&i| sim.engines[i].outbound_count() - sim.engines[i].seed_peer_count())
+        .collect();
+    eprintln!(
+        "{} of {} ordinary nodes are connected to a seed; outbound peers that are not seeds: min {} max {}",
+        on_a_seed.len(),
+        ordinary.len(),
+        own.iter().min().unwrap(),
+        own.iter().max().unwrap()
+    );
+    // every ordinary node chose peers of its own (at least three, the limit for leaving a seed) ...
+    for &i in &ordinary {
+        let mine = sim.engines[i].outbound_count() - sim.engines[i].seed_peer_count();
+        assert!(mine >= 3, "node {i} has only {mine} peers of its own");
+        // ... and so none of them stays on a seed
+        assert_eq!(
+            sim.engines[i].seed_peer_count(),
+            0,
+            "node {i} is still connected to a seed"
+        );
+        assert_eq!(
+            sim.engines[i].stats.bans, 0,
+            "node {i} banned an honest peer"
+        );
+    }
+    // it is still one working network: a block from anywhere reaches everyone, with no node on a seed
+    sim.mine(17, None);
+    assert!(sim.run_until(120 * SEC, |s| s.all_agree()));
+}
+
 // ---- what a GetAddrs answer reveals --------------------------------------------------------------------
 
 /// An engine whose address book holds exactly `n` fresh routable addresses, learned the way a node learns them: from
 /// answers (60 at a time, each source within its per-source limit). The sources are disconnected afterwards.
-fn engine_with_book(rig: &SimRig, n: usize, mut c: EngineConfig) -> Engine<'_> {
-    c.seeds = vec![];
+fn engine_with_book(rig: &SimRig, n: usize, c: EngineConfig) -> Engine<'_> {
+    engine_with_book_and_seeds(rig, n, c, vec![])
+}
+
+/// `engine_with_book`, with these configured seeds as well (they are in the book, so it holds `n` learned addresses plus the seeds).
+fn engine_with_book_and_seeds(
+    rig: &SimRig,
+    n: usize,
+    mut c: EngineConfig,
+    seeds: Vec<String>,
+) -> Engine<'_> {
+    let in_book = seeds.len();
+    c.seeds = seeds;
     let mut e = engine_on(rig, c);
     let t = T0 * 1000;
     let mut made = 0usize;
@@ -1783,7 +1994,7 @@ fn engine_with_book(rig: &SimRig, n: usize, mut c: EngineConfig) -> Engine<'_> {
     }
     assert_eq!(
         e.addr_book().len(),
-        n,
+        n + in_book,
         "the book is what the test says it is"
     );
     e

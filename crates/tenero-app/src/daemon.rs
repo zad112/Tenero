@@ -131,8 +131,20 @@ pub fn proof_of_work_datasets(network: Network) -> Result<Option<usize>, String>
     Ok(chain_of(network)?.matmul.map(|m| m.max_datasets()))
 }
 
-/// How long a seed repeats one answer to a network group's request for addresses (milliseconds). The default is 24 hours: it stops one group
-/// from harvesting the address book by asking again. On a PRIVATE network (`allow_private_peers`: every node on one machine or one LAN, so all
+/// The engine's two limits for the `max_inbound` setting: `(inbound limit, limit on all peers)`. 0 means the operator set no limit, and then
+/// neither does the program (the machine's own limits and the per-connection budgets still apply); otherwise the peers allowed are the inbound
+/// limit plus the outbound ones (at least 64).
+pub fn inbound_limits(max_inbound: usize, peer_target: usize) -> (usize, usize) {
+    if max_inbound == 0 {
+        (usize::MAX, usize::MAX)
+    } else {
+        (max_inbound, max_inbound.saturating_add(peer_target.max(64)))
+    }
+}
+
+/// How long a seed repeats one answer to a network group's request for addresses (milliseconds). The default is 15 minutes (it was 24 hours; see
+/// `docs/THREAT_MODEL.md` C4): it slows one group harvesting the address book by asking again, and lets a node that has just become reachable
+/// be passed on to newcomers soon. On a PRIVATE network (`allow_private_peers`: every node on one machine or one LAN, so all
 /// of them are one "group" and a first, empty answer would be repeated to every later node) there is no such group to protect, so it is 0.
 pub fn address_answer_ttl_ms(allow_private_peers: bool) -> u64 {
     if allow_private_peers {
@@ -856,8 +868,8 @@ pub fn run(
         trusted: cfg.trusted_peers.clone(),
         peer_target: cfg.peer_target,
         outbound_target: cfg.peer_target.min(8),
-        max_inbound: cfg.max_inbound,
-        max_peers: cfg.max_inbound + cfg.peer_target.max(64),
+        max_inbound: inbound_limits(cfg.max_inbound, cfg.peer_target).0,
+        max_peers: inbound_limits(cfg.max_inbound, cfg.peer_target).1,
         nonce: u64::from_le_bytes(pk[..8].try_into().expect("8 bytes")) | 1,
         ..EngineConfig::default()
     };

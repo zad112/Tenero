@@ -245,6 +245,35 @@ fn backoff_doubles_up_to_a_ceiling() {
     assert_eq!(b.backoff_ms(u32::MAX), 30_000, "no overflow");
 }
 
+#[test]
+fn by_default_an_address_is_retried_within_half_an_hour_and_kept_for_about_a_day_of_failing() {
+    // the defaults, not made-up numbers: a node whose port was shut (not yet forwarded, or switched off for a while) must be tried again
+    // soon after it opens, and must not be forgotten in the hours in which its owner is still setting up (it was retried every 6 hours at
+    // most, and forgotten after 10 failures: about 8 hours)
+    let mut b = AddrBook::new(AddrBookConfig::default());
+    let minute = 60 * 1000u64;
+    assert_eq!(b.backoff_ms(1), 30_000);
+    assert_eq!(b.backoff_ms(7), 30 * minute, "the cap is 30 minutes");
+    assert_eq!(b.backoff_ms(40), 30 * minute, "and stays there");
+    // keep failing it: with the waits above, 48 failures are about 23 hours of trying
+    let a = v4(45, 0, 0, 1, 8333);
+    b.add(&a, NOW, "g", NOW);
+    let mut now = 1000u64;
+    let mut failures = 0u32;
+    while b.get(&a).is_some() {
+        b.mark_failure(&a, now);
+        failures += 1;
+        now += b.backoff_ms(failures).max(30_000);
+        assert!(failures <= 60, "it must be forgotten at some point");
+    }
+    let hours = now as f64 / (60.0 * minute as f64);
+    assert_eq!(failures, 48);
+    assert!(
+        (20.0..26.0).contains(&hours),
+        "forgotten after {hours:.1} hours of failing"
+    );
+}
+
 fn dial(b: &mut AddrBook, now_ms: u64, limit: usize) -> Vec<String> {
     b.candidates(now_ms, limit, &|_| false, &|_| false)
 }

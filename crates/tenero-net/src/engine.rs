@@ -114,6 +114,14 @@ pub struct EngineConfig {
     /// chain is never quiet for long, since each new block makes it ask for it. Never evicts an outbound peer, and with no such idle
     /// peer a newcomer is treated as before (a visitor given addresses, or refused). 0 turns eviction off.
     pub idle_evict_after_ms: u64,
+    /// A node does not stay on its seeds. Once it holds this many healthy OUTBOUND connections to peers that are not seeds (peers
+    /// that dialled us do not count: we did not choose them), it disconnects from every seed, without a ban, and does not dial a seed
+    /// again until it holds fewer. Until then it prefers addresses that are not seeds when it dials. 0 turns this off.
+    pub seed_leave_min_peers: usize,
+    /// While a node holds fewer non-seed outbound peers than `seed_leave_min_peers`, a seed connection older than this is closed and
+    /// made again, because a peer answers `GetAddrs` once per connection and so a node that stays connected never hears of the nodes
+    /// that appeared since (the protocol has no other way to learn them). 0 turns this off.
+    pub addr_refresh_ms: u64,
     pub handshake_timeout_ms: u64,
     /// Idle this long and we send a ping.
     pub ping_after_ms: u64,
@@ -223,6 +231,8 @@ impl Default for EngineConfig {
             max_peers: 128,
             max_inbound: 64,
             idle_evict_after_ms: 10 * 60 * 1000,
+            seed_leave_min_peers: 3,
+            addr_refresh_ms: 30 * 60 * 1000,
             handshake_timeout_ms: 10_000,
             ping_after_ms: 60_000,
             pong_timeout_ms: 30_000,
@@ -246,7 +256,7 @@ impl Default for EngineConfig {
             assume_valid: None,
             addr_share_percent: 23,
             addr_answer_floor: 20,
-            addr_answer_ttl_ms: 24 * 3600 * 1000,
+            addr_answer_ttl_ms: 15 * 60 * 1000,
             addr_answer_cache: 1024,
             pow_prefetch_blocks: 10,
             blocks_reply_bytes: crate::wire::BLOCKS_REPLY_BYTES,
@@ -1506,8 +1516,10 @@ impl<'a> Engine<'a> {
         let seeds_only = self.update_bootstrap(now);
         self.update_health_timers(now, seeds_only);
         if !seeds_only {
+            self.retire_seed_connections(out);
             self.dial_feeler(now, out);
         }
+        let leaving_seeds = self.leaving_seeds();
 
         let regular = self.peers.values().filter(|p| !p.addr_only && !p.feeler);
         let dialling = self.ordinary_dials().count();
@@ -1536,17 +1548,22 @@ impl<'a> Engine<'a> {
         let selfs = &self.self_addrs;
         let bans = &self.bans;
         let connecting = &self.connecting;
+        let seed_list = &self.cfg.seeds;
         let skip = |a: &str| {
             hosts.contains(&host_of(a))
                 || connecting.contains_key(a)
                 || bans.is_banned(a, now)
                 || own.as_deref() == Some(a)
                 || selfs.contains(a)
+                // enough peers of our own: a seed is not dialled again (it is when we hold fewer)
+                || (leaving_seeds && !seeds_only && seed_list.iter().any(|s| s == a))
         };
         let full = |g: &str| groups.get(g).copied().unwrap_or(0) >= per_group;
-        let candidates = self
+        let mut candidates = self
             .book
             .candidates_with(now, want * 4, &skip, &full, seeds_only);
+        // a seed is the last resort, not the first choice: addresses that are not seeds go first (a stable sort keeps the shuffle)
+        candidates.sort_by_key(|a| seed_list.iter().any(|s| s == a));
         let mut chosen_hosts: HashSet<String> = HashSet::new();
         let mut dialled = 0;
         for a in candidates {
@@ -1563,6 +1580,64 @@ impl<'a> Engine<'a> {
             self.connecting.insert(a.clone(), now);
             out.push(Action::Connect { addr: a });
             dialled += 1;
+        }
+    }
+
+    fn is_seed(&self, addr: &str) -> bool {
+        self.cfg.seeds.iter().any(|s| s == addr)
+    }
+
+    /// How many of the connections WE made are to seeds (a node that has enough peers of its own holds none: `seed_leave_min_peers`).
+    pub fn seed_peer_count(&self) -> usize {
+        self.peers
+            .values()
+            .filter(|p| !p.inbound && !p.addr_only && !p.feeler)
+            .filter(|p| self.is_seed(&p.addr))
+            .count()
+    }
+
+    /// The outbound peers we chose that are not seeds and have said hello: what makes a node independent of its seeds.
+    fn non_seed_outbound(&self) -> usize {
+        self.peers
+            .values()
+            .filter(|p| !p.inbound && !p.addr_only && !p.feeler && p.hello.is_some())
+            .filter(|p| !self.is_seed(&p.addr))
+            .count()
+    }
+
+    /// Whether the node holds enough peers of its own to do without its seeds (`EngineConfig::seed_leave_min_peers`).
+    fn leaving_seeds(&self) -> bool {
+        let min = self.cfg.seed_leave_min_peers;
+        min > 0 && !self.cfg.seeds.is_empty() && self.non_seed_outbound() >= min
+    }
+
+    /// Closes the connections to seeds that are not needed (`seed_leave_min_peers`) or that have been open long enough for the node to
+    /// ask again what other nodes exist (`addr_refresh_ms`). Without a ban, and the address stays in the book: a seed is a starting
+    /// point, never a place to stay, and a node dialled out to other nodes as soon as it knows any.
+    fn retire_seed_connections(&mut self, out: &mut Vec<Action>) {
+        if self.cfg.seeds.is_empty() {
+            return;
+        }
+        let leave = self.leaving_seeds();
+        let refresh = self.cfg.addr_refresh_ms;
+        let now = self.now;
+        let retire: Vec<(PeerId, &'static str)> = self
+            .peers
+            .iter()
+            .filter(|(_, p)| !p.inbound && !p.addr_only && !p.feeler && p.hello.is_some())
+            .filter(|(_, p)| self.is_seed(&p.addr))
+            .filter_map(|(id, p)| {
+                if leave {
+                    Some((*id, "seed: enough other peers"))
+                } else if refresh > 0 && now.saturating_sub(p.connected_at) >= refresh {
+                    Some((*id, "seed: refreshing addresses"))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (id, why) in retire {
+            self.drop_peer(id, why, false, out);
         }
     }
 

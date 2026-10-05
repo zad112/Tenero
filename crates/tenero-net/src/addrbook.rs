@@ -187,9 +187,13 @@ impl Default for AddrBookConfig {
             max_entries: 4096,
             max_new_per_source: 64,
             backoff_base_ms: 30_000,
-            backoff_max_ms: 6 * 3600 * 1000,
+            // 30 minutes: an address that was shut (a port not yet forwarded, a node that was off) is tried again soon after it
+            // opens, not hours later (it was 6 hours)
+            backoff_max_ms: 30 * 60 * 1000,
             min_redial_ms: 30_000,
-            max_failures: 10,
+            // with the waits above this is about a day of failing: a never-worked address is not forgotten in the few hours in
+            // which its owner is still setting up (it was 10, about 8 hours with the old 6-hour cap)
+            max_failures: 48,
             stale_secs: 30 * 24 * 3600,
             accept_private: false,
             prefer_corroborated: false,

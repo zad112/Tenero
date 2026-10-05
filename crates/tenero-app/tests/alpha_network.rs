@@ -176,9 +176,25 @@ fn a_node_holds_one_proof_of_work_dataset_so_it_stays_inside_8_gb() {
 }
 
 #[test]
-fn a_seed_repeats_its_address_answer_for_a_day_on_a_public_network_and_never_on_a_private_one() {
-    // public: one network group cannot harvest the address book by asking again. Private (the test network by default): every node is one
-    // "group", and the first, empty answer would otherwise be given to every later node for 24 hours (found by the local soak test)
-    assert_eq!(daemon::address_answer_ttl_ms(false), 24 * 3600 * 1000);
+fn a_seed_repeats_its_address_answer_for_15_minutes_on_a_public_network_and_never_on_a_private_one()
+{
+    // public: one network group is held to one sample every 15 minutes (it was a day: a node that had just become reachable was not passed
+    // on for up to a day). Private (the test network by default): every node is one "group", and the first, empty answer would otherwise be
+    // given to every later node (found by the local soak test)
+    assert_eq!(daemon::address_answer_ttl_ms(false), 15 * 60 * 1000);
     assert_eq!(daemon::address_answer_ttl_ms(true), 0);
+}
+
+#[test]
+fn an_inbound_limit_of_zero_means_no_limit_and_any_other_number_is_the_operators_choice() {
+    // the default: the program sets no limit on inbound peers or on peers in all
+    assert_eq!(daemon::inbound_limits(0, 50), (usize::MAX, usize::MAX));
+    // a limit the operator asked for: that many inbound, and room for the outbound ones (at least 64) on top
+    assert_eq!(daemon::inbound_limits(10, 50), (10, 74));
+    assert_eq!(daemon::inbound_limits(10, 100), (10, 110));
+    // no overflow
+    assert_eq!(
+        daemon::inbound_limits(usize::MAX, 50),
+        (usize::MAX, usize::MAX)
+    );
 }

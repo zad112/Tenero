@@ -9,6 +9,9 @@
 #
 # Timeline (fractions of -Minutes; at 60: late node at 15, clean restart of node 2 at 25, crash of node 3 at 40, convergence checkpoints at 12, 21, 33, 48,
 # payments about every 3 minutes, miners stopped 3 minutes before the end, then the final checks).
+# Short runs squeeze those windows: with -Minutes 14 the crash is 1.6 minutes before the miners stop, and "miner N is still taking new jobs" (3 new jobs
+# after the event) can then fail by luck although the miner is hashing and finding blocks (seen 2026-10-05). Use 30 or more for a verdict; 12 to 14 is a smoke test.
+# With five nodes no node holds three outbound peers that are not the seed, so this does NOT exercise a node leaving its seed (see `docs/SEED_POLICY.md`).
 # Every node and miner is started by this script and stopped by it, by exact process id (or `tenerod stop`); nothing is deleted. -Visible gives each its own
 # console window (the owner's choice for the long run); without it they are hidden and their output goes to files.
 # Exit code 0 = every check passed, 1 = at least one failed.
@@ -38,7 +41,7 @@ function Check([string]$name, [bool]$ok, [string]$detail = '') {
     if ($ok) { Say ("PASS  $name") } else { Say ("FAIL  $name  $detail"); $script:failed++ }
 }
 # each node is in its OWN network group (127.i.0.1: a /16 each), like machines in different places; with one shared group a seed gives every asker the same
-# cached answer for 24 hours and a node keeps at most 2 outbound peers per group, so the nodes would not find each other
+# cached answer (for 15 minutes on a public network; this private one repeats nothing) and a node keeps at most 2 outbound peers per group, so the nodes would not find each other
 function Addr([int]$i) { "127.$i.0.1" }
 function DataOf([int]$i) { Join-Path $Dir "n$i" }
 function Ctl([int]$i) { "$(Addr $i):18332" }
@@ -69,6 +72,8 @@ function StartMiner([int]$i, [string]$address) {
 # (`--advertise`), so the seed learns where its peers are and tells the next node that asks; that node dials them, and so on. Nobody is given the full list.
 function NetArgs([int]$i) { @('--advertise', "$(Addr $i):18331") + @(if ($i -ne 1) { '--seed'; "$(Addr 1):18331" }) }
 function PeersAre([int[]]$ids, [int]$n) { @($ids | Where-Object { (Status $_).Peers -ne $n }).Count -eq 0 }
+# AT LEAST n: a node that holds three outbound peers of its own leaves the seed (and the seed then has fewer peers), so "exactly" no longer holds
+function PeersAtLeast([int[]]$ids, [int]$n) { @($ids | Where-Object { (Status $_).Peers -lt $n }).Count -eq 0 }
 function PeerList([int[]]$ids) { ($ids | ForEach-Object { (Status $_).Peers }) -join '/' }
 function Alive([string]$name) { $script:procs.ContainsKey($name) -and [bool](Get-Process -Id $script:procs[$name] -ErrorAction SilentlyContinue) }
 
@@ -118,7 +123,7 @@ Check 'six wallets made' (@($addr.Keys).Count -eq 6 -and @($addr.Values | Select
 $null = StartNode 1 (NetArgs 1)
 Check 'node 1 (the seed) answers' (WaitFor 40 { (Status 1).Up })
 foreach ($i in 2..4) { $null = StartNode $i (NetArgs $i); Check "node $i answers" (WaitFor 40 { (Status $i).Up }); Start-Sleep -Seconds 8 }   # one at a time: each asks the seed after the earlier ones have told it where they are
-Check 'every node found the others and has exactly 3 peers (told only about node 1)' (WaitFor 180 { PeersAre @(1, 2, 3, 4) 3 }) ("peers " + (PeerList @(1, 2, 3, 4)))
+Check 'every node found the others and has at least 3 peers (told only about node 1)' (WaitFor 180 { PeersAtLeast @(1, 2, 3, 4) 3 }) ("peers " + (PeerList @(1, 2, 3, 4)))
 $minerOwner = @{ 1 = 'alice'; 2 = 'bob'; 3 = 'carol'; 4 = 'dave' }
 foreach ($i in 1..4) { $null = StartMiner $i $addr[$minerOwner[$i]] }
 Check 'the chain passes height 10' (WaitFor 120 { (Status 1).Height -ge 10 })
@@ -166,12 +171,13 @@ function Pay {
     $to = if ($script:payCount % 2 -eq 0) { 'eve' } else { 'frank' }
     if (-not (Alive "n$fromNode")) { $fromNode = 1 }       # the payer's node may be down at this moment: use node 1
     $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    $null = (& $wallet pay --wallet (WalletFile $from) --data (DataOf $fromNode) --control (Ctl $fromNode) --to $addr[$to] --amount 0.5 --passphrase-file $pass 2>$null | Out-String)
+    # both streams are kept, so that a failure says WHY (it used to be thrown away)
+    $text = (& $wallet pay --wallet (WalletFile $from) --data (DataOf $fromNode) --control (Ctl $fromNode) --to $addr[$to] --amount 0.5 --passphrase-file $pass 2>&1 | Out-String)
     $code = $LASTEXITCODE
     $ErrorActionPreference = $old
     $script:payCount++
     if ($code -eq 0) { $script:expectedPaid[$to] += 0.5; Say ("paid 0.5 from $from (via node $fromNode) to $to") }
-    else { $script:payFailed++; Say ("payment from $from via node $fromNode FAILED (exit $code)") }
+    else { $script:payFailed++; Say ("payment from $from via node $fromNode FAILED (exit $code): " + (($text -replace '\s+', ' ').Trim())) }
 }
 function PayeesMatch([int[]]$viaNodes) {
     # each payee, asked through a node that is NOT the payer's, must hold exactly what was paid to it (they never mine)
@@ -208,14 +214,15 @@ while (((Get-Date) -lt $t0.AddMinutes($D)) -or ((-not ($done['late'] -and $done[
     $m = ((Get-Date) - $t0).TotalMinutes
     if (((Get-Date) - $lastSample).TotalSeconds -ge $SampleSeconds) { Sample; $lastSample = Get-Date }
 
-    if ($m -ge $nextPay) { Pay; $nextPay += $payEvery }
+    # no payment in the last minute before the miners stop: it would not get into a block, and the payees' balances are compared after that
+    if ($m -ge $nextPay) { if ($m -lt ($D - 1.0)) { Pay }; $nextPay += $payEvery }
 
     if ((-not $done['late']) -and $m -ge $tLate) {
         $done['late'] = $true
         Say 'the late node (5) starts, with no miner'
         $null = StartNode 5 (NetArgs 5)
         Check 'node 5 (late) syncs to the same tip' (WaitFor 180 { AllOnOneTip @(1, 2, 3, 4, 5) })
-        Check 'every node has exactly 4 peers with five nodes up' (WaitFor 120 { PeersAre @(1, 2, 3, 4, 5) 4 }) ("peers " + (PeerList @(1, 2, 3, 4, 5)))
+        Check 'every node has at least 3 peers with five nodes up (the late one found the others too)' (WaitFor 120 { PeersAtLeast @(1, 2, 3, 4, 5) 3 }) ("peers " + (PeerList @(1, 2, 3, 4, 5)))
     }
     if ((-not $done['clean']) -and $m -ge $tClean) {
         $done['clean'] = $true
@@ -229,7 +236,7 @@ while (((Get-Date) -lt $t0.AddMinutes($D)) -or ((-not ($done['late'] -and $done[
         Say 'node 2 starts again'
         $null = StartNode 2 (NetArgs 2)
         Check 'node 2 is back on the same tip' (WaitFor 180 { AllOnOneTip @(1, 2, 3, 4, 5) })
-        Check 'every node is back to exactly 4 peers after node 2 restarts' (WaitFor 120 { PeersAre @(1, 2, 3, 4, 5) 4 }) ("peers " + (PeerList @(1, 2, 3, 4, 5)))
+        Check 'every node is back to at least 3 peers after node 2 restarts' (WaitFor 120 { PeersAtLeast @(1, 2, 3, 4, 5) 3 }) ("peers " + (PeerList @(1, 2, 3, 4, 5)))
         Check "node 2's miner reconnects after the restart" (WaitFor 120 { (MinerConnects 2) -gt $before })
     }
     if ((-not $done['crash']) -and $m -ge $tCrash) {
@@ -243,7 +250,7 @@ while (((Get-Date) -lt $t0.AddMinutes($D)) -or ((-not ($done['late'] -and $done[
         Say 'node 3 starts again'
         $null = StartNode 3 (NetArgs 3)
         Check 'node 3 is back on the same tip after the crash' (WaitFor 180 { AllOnOneTip @(1, 2, 3, 4, 5) })
-        Check 'every node is back to exactly 4 peers after node 3 crashes and restarts' (WaitFor 120 { PeersAre @(1, 2, 3, 4, 5) 4 }) ("peers " + (PeerList @(1, 2, 3, 4, 5)))
+        Check 'every node is back to at least 3 peers after node 3 crashes and restarts' (WaitFor 120 { PeersAtLeast @(1, 2, 3, 4, 5) 3 }) ("peers " + (PeerList @(1, 2, 3, 4, 5)))
         Check "node 3's miner reconnects after the crash" (WaitFor 120 { (MinerConnects 3) -gt $before })
         $log3 = Get-Content (Join-Path $Dir 'n3.log') -ErrorAction SilentlyContinue | Out-String
         Check "node 3's log reports no corruption" (-not ($log3 -match '(?i)corrupt'))

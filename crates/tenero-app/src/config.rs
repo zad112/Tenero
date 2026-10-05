@@ -413,7 +413,8 @@ impl Raw {
             ));
         }
         let peer_target: usize = self.parse("peers", 50)?;
-        let max_inbound: usize = self.parse("max_inbound", 64)?;
+        // 0 (the default) is no limit set by the program: an operator limits inbound peers only if they want to
+        let max_inbound: usize = self.parse("max_inbound", 0)?;
         if peer_target == 0 {
             return Err(bad(
                 "peers",
