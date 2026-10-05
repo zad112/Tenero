@@ -37,7 +37,7 @@ against the source on this date; **argued** = a design argument, not shown; **ar
 | The wallet app uses 24 words; the command-line wallet a raw 64-digit seed; they are different wallets | read from code | `crates/tenero-wallet/src/mnemonic.rs`, `purse.rs`; `docs/RUNNING.md` |
 | The command-line wallet and miner default to control port 18332 and need `--control 127.0.0.1:38332` on alpha | read from code | `wallet_cli.rs` `DEFAULT_CONTROL`, `tenero_miner.rs` |
 | `alpha` refuses private peer addresses unless `allow_private_peers yes` | read from code | `config.rs`; `docs/RUNNING.md` |
-| There is no public seed node and no diagnostics bundle | true today | nothing exists; `docs/SEED_POLICY.md` (the plan) |
+| There is one seed, built in and run by the author, not several independent ones; and no diagnostics bundle | true today | `ALPHA_SEEDS` in `crates/tenero-app/src/config.rs` (one entry, pinned by a test); the author's server was installed and tested on 2026-10-05 (`docs/RUNNING_A_SEED.md`); no diagnostics bundle exists; `docs/SEED_POLICY.md` (the plan) |
 | Memory-hardness is simulated, not proven; the construction has had no review | docs | `docs/KNOWN_ISSUES.md` item 11, `docs/THREAT_MODEL.md` F4 |
 
 **Claims the README must never make (and does not):** money, private in Monero's sense, audited, ASIC-proof, secure, "decentralised", or any date. A check before publishing any change to the README: search it for those words.

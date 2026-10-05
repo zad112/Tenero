@@ -81,11 +81,14 @@ pub enum MineMode {
 }
 
 /// The seed addresses built into the program for the `alpha` network (`ip:port`). A brand-new node starts from these and from any `seed` setting.
-/// **Empty until a seed exists**: nothing may be put here that nobody runs, and the list is only as trustworthy as the number of *independent
-/// operators in different network groups* behind it (`docs/SEED_POLICY.md`; `check_seed_list` refuses a list that breaks the rules that can be
-/// checked). A release carries whatever is here, so a change of address needs a new release (a node's own `seed` settings and `no_builtin_seeds`
-/// are the way round that).
-pub const ALPHA_SEEDS: &[&str] = &[];
+/// **Nothing may be put here that nobody runs**, and the list is only as trustworthy as the number of *independent operators in different network
+/// groups* behind it (`docs/SEED_POLICY.md`; `check_seed_list` refuses a list that breaks the rules that can be checked). A release carries whatever
+/// is here, so a change of address needs a new release (a node's own `seed` settings and `no_builtin_seeds` are the way round that).
+///
+/// Today ONE seed: the author's server (Contabo, 2026-10-05; `docs/RUNNING_A_SEED.md`). **One operator is below the policy's three**: if it is down, a
+/// brand-new node has nowhere to start (an existing one remembers its peers), and whoever runs it could show a new node a false chain
+/// (`THREAT_MODEL.md` C1). That is the state of an experiment, not a launched network.
+pub const ALPHA_SEEDS: &[&str] = &["194.238.27.60:38333"];
 
 impl Network {
     /// The seeds built into the program for this network (none for the private `test` and `dev` networks).

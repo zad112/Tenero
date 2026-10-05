@@ -7,7 +7,7 @@ This guide is for the `alpha` network of the first test release, `v0.1.0-alpha.1
 ## What to expect to break
 
 Plenty. Specifically: the wallet app has been drawn and tested by machines, not used by many people; the difficulty on `alpha` has not settled over a long run; only one node and one miner have ever been
-on the network; **there is no public seed node**; the wallet's privacy is the interim scheme (not Carrot); and a rule change is handled by **resetting the chain**, not upgrading it. If something looks wrong, it
+on the network; **there is one seed server, the author's, built in (one computer, run by one person)**; the wallet's privacy is the interim scheme (not Carrot); and a rule change is handled by **resetting the chain**, not upgrading it. If something looks wrong, it
 may well be; say so (see "Telling the author", below).
 
 ## What you need
@@ -22,7 +22,7 @@ may well be; say so (see "Telling the author", below).
 
 1. Unzip the release somewhere (a folder you own, not the Desktop's root). Start **`tenero-wallet-gui.exe`**. The node and the miner start from it and run hidden; nothing else opens.
 2. Choose the **`alpha`** network in the settings. **Create a wallet**, **write the 24 words on paper**, and type the three it asks for. The words are the wallet; the password only locks the file on this computer. Do not photograph or store the words online.
-3. On the **Node** tab, start the node. It needs peers: **in Settings, add a seed** (the address of another tester's node or of the author's seed server, see "Finding peers"). Optionally tick **"Let other nodes connect to me"** (see "Letting others connect to you" first). A node alone is still a working one-node network.
+3. On the **Node** tab, start the node. It finds its first peer by itself: **the author's seed server is built in** (Settings shows it under Seeds; add others there if you like, see "Finding peers"). Optionally tick **"Let other nodes connect to me"** (see "Letting others connect to you" first). A node alone is still a working one-node network.
 4. On the **Mining** tab, press Start (it says what it will use: the GPU at full load). Rewards from mined blocks are spendable after 60 blocks.
 5. **Receive** shows your address (`tni1...`) and a QR code; **Send** asks for an address and an amount and shows everything before it sends.
 
@@ -47,8 +47,8 @@ app keeps **24 words** and its own files; **they are two different wallets.** Th
 
 ## Finding peers
 
-A node needs at least one address to start from. On `alpha` there is no list built in. Get the address of a node run by someone you trust (a friend who is also testing; the author may name one in the pinned
-issue, but none is promised) and give it with `--seed HOST:PORT` (or `trusted_peer`, for an address you got **outside** the network). To run two nodes on one machine or on one home network, set
+A node needs at least one address to start from. On `alpha` the program carries **one built in: the author's server**, so a new node needs no setting. It is one computer run by one person, so **it can be down, or
+wrong**: if a brand-new node cannot connect, or you do not want to depend on it, get the address of a node run by someone you trust (a friend who is also testing) and give it with `--seed HOST:PORT` (or `trusted_peer`, for an address you got **outside** the network). To run two nodes on one machine or on one home network, set
 `allow_private_peers yes`: `alpha` refuses such addresses by default. If you want others to reach your node, see the next section; **a node that accepts connections from strangers is the least-hardened
 part of this project**, so do it only on a machine you do not mind exposing, and not on the computer that has your wallet.
 

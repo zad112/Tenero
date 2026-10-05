@@ -102,8 +102,9 @@ Its chain **restarts from block 1 whenever a rule changes**, and the author expe
 * **GPU or nothing:** one GPU at about 34,000 attempts a second needs roughly 15 seconds for 524,000 attempts (arithmetic, not a measurement of the network). A 6-thread CPU needs about
   53 minutes at 164 attempts a second (and about 4.6 hours with the default build): **CPU mining of `alpha` is impractical.** The difficulty adjusts, so these change as miners come and go.
 * **Measured so far:** one node and one GPU, 16 blocks in 12 minutes, gaps between blocks 11 to 183 seconds (mean 48 s) while the difficulty was still settling from its start.
-* **There is no public seed node yet.** To try it you run your own nodes and point them at each other (`--seed ip:port`, see [`docs/RUNNING.md`](docs/RUNNING.md)). A seed run by the author
-  would be one computer; the plan wants several independent operators ([`docs/SEED_POLICY.md`](docs/SEED_POLICY.md)).
+* **There is one seed, run by the author, and it is built in** (the source has its address; the first release will carry it): a new `alpha` node finds the network with no setting. It is **one computer run by one
+  person**: if it is down, a brand-new node has nowhere to start (one that has run before remembers its peers), and its operator could show a new node a false chain. The plan wants several independent operators
+  ([`docs/SEED_POLICY.md`](docs/SEED_POLICY.md)). You can add your own (`--seed ip:port`, see [`docs/RUNNING.md`](docs/RUNNING.md)) or drop the built-in one (`no_builtin_seeds`).
 * **If something goes wrong,** the only place a "stop mining" notice is posted is the pinned issue, [issue #1](https://github.com/zad112/Tenero/issues/1), and only the author can post there.
   The plan behind it, and what is not yet rehearsed, is [`docs/EMERGENCY_PLAN.md`](docs/EMERGENCY_PLAN.md).
 * **Trying it as a tester:** [`docs/TESTING.md`](docs/TESTING.md).

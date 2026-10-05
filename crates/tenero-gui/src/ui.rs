@@ -1896,6 +1896,19 @@ impl App {
                         NodeKind::Archive
                     };
                     ui.label("Seeds (other nodes to start from, one host:port per line)");
+                    let built_in = draft.network.builtin_seeds();
+                    ui.label(
+                        RichText::new(if built_in.is_empty() {
+                            "None are built in for this network: add one below, or run a node alone.".to_string()
+                        } else {
+                            format!(
+                                "Already built in for this network (you need not add it): {}. Seeds you add below are used as well.",
+                                built_in.join(", ")
+                            )
+                        })
+                        .small()
+                        .color(GREY),
+                    );
                     ui.add(
                         egui::TextEdit::multiline(seeds)
                             .desired_rows(3)

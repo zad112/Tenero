@@ -514,6 +514,29 @@ fn the_built_in_lists_of_every_network_pass_their_own_check() {
 }
 
 #[test]
+fn alpha_ships_with_the_authors_seed_and_a_node_starts_from_it_by_default() {
+    // the author's server (docs/RUNNING_A_SEED.md); a change of address is a new release
+    assert_eq!(ALPHA_SEEDS, ["194.238.27.60:38333"]);
+    assert_eq!(
+        ok("data=d\nnetwork=alpha").seeds,
+        ["194.238.27.60:38333"],
+        "a new alpha node starts from it with no setting at all"
+    );
+    // one's own seed is added to it, not put in its place, and the same address twice is one
+    assert_eq!(
+        ok("data=d\nnetwork=alpha\nseed=203.0.113.9:1").seeds,
+        ["194.238.27.60:38333", "203.0.113.9:1"]
+    );
+    assert_eq!(
+        ok("data=d\nnetwork=alpha\nseed=194.238.27.60:38333").seeds,
+        ["194.238.27.60:38333"]
+    );
+    // the private networks start from nothing
+    assert!(ok("data=d\nnetwork=test").seeds.is_empty());
+    assert!(ok("data=d\nnetwork=dev").seeds.is_empty());
+}
+
+#[test]
 fn a_node_reads_the_built_in_seed_option_strictly() {
     assert_eq!(ok("data=d\nnetwork=alpha").seeds, ALPHA_SEEDS.to_vec());
     let c = ok("data=d\nnetwork=alpha\nseed=203.0.113.9:1\nno_builtin_seeds=yes");
