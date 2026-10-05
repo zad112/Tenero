@@ -61,6 +61,18 @@ honest one (the worst case). Seeds hang up after answering. The measure is the s
 * Pinned peers (`trusted_peer`), anchors and stale-tip detection (see `THREAT_MODEL.md`) are what remain once a node has run: a node that has
   already connected needs seeds much less, and an operator who got a peer's address from a person they trust is not subject to any of this.
 
+* **A full seed makes room (added 2026-10-05; tested in `crates/tenero-net/tests/discovery.rs`, NOT yet run on a real network).** A node (a seed
+  included) that is full (`max_inbound` 64, `max_peers` 128) and has another inbound peer connect to it drops an INBOUND peer that has done
+  nothing for `idle_evict_after_ms` (10 minutes by default; 0 turns it off), without a ban, and takes the newcomer as a real peer. "Nothing"
+  means no request, announcement, block or transaction: pings, pongs, hellos and address messages do not count, and the time since it
+  connected counts as quiet time, so a new connection has 10 minutes. A peer that follows the chain asks for every new block (one a minute at
+  the target), so it is never quiet for long; a connection that is only kept alive, or has stalled, goes first, the longest quiet first, ties to
+  the lowest peer id. Never dropped: an outbound peer, a feeler, or a visitor given addresses; with no idle peer a newcomer is handled as before
+  (a visitor, or refused). Why: before this nothing ever evicted a peer, so a seed's 64 inbound slots would fill with connections that no longer
+  needed it. **Limits:** an attacker who keeps 64 connections active (a cheap request every few minutes is enough) still holds the slots, as
+  before; and a stalled chain makes every peer idle, so on a full seed during a long stall newcomers would replace old peers (harmless churn).
+  What the rule cannot tell is whether a quiet peer is valuable to the network for some other reason.
+
 ## Checking a seed list
 
 `tenero-seedcheck` (`RUNNING.md`) is the tool that goes with this policy: it checks each seed (reachable, the right chain and protocol, enough routable

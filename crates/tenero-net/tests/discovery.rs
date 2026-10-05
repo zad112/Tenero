@@ -1606,6 +1606,152 @@ fn a_connection_we_dialled_is_refused_when_we_are_full_and_never_treated_as_a_vi
     assert_eq!(e.addr_only_count(), 1);
 }
 
+// ---- a full node makes room by dropping an inbound peer that has done nothing ----------------------------
+
+const MIN: u64 = 60 * SEC;
+const IDLE: &str = "idle: slot needed";
+
+/// A node that holds two inbound peers and no more: peers 1 and 2, connected and greeted at `T0 * 1000`, with eviction after 10 minutes.
+fn full_of_two_inbound(rigs: &[SimRig], max_addr_only: usize) -> Engine<'_> {
+    let mut c = cfg(1, &[]);
+    c.max_inbound = 2;
+    c.max_addr_only = max_addr_only;
+    c.idle_evict_after_ms = 10 * MIN;
+    let mut e = engine_on(&rigs[0], c);
+    let t = T0 * 1000;
+    for i in 1..=2u64 {
+        open(&mut e, i, &format!("6{i}.1.1.1:41000"), true, t);
+        say_hello(&mut e, &rigs[0], i, 10 + i, t);
+    }
+    assert_eq!(e.inbound_count(), 2);
+    e
+}
+
+fn newcomer(e: &mut Engine<'_>, peer: u64, at: u64) -> Vec<Action> {
+    e.handle(
+        at,
+        Event::PeerConnected {
+            peer,
+            addr: format!("7{peer}.1.1.1:41000"),
+            inbound: true,
+        },
+    )
+}
+
+#[test]
+fn a_full_node_drops_the_inbound_peer_that_has_been_quiet_longest_for_a_newcomer() {
+    let rigs = SimRig::rigs("idle1", 1);
+    let mut e = full_of_two_inbound(&rigs, 0);
+    let t = T0 * 1000;
+    // both have said nothing for 11 minutes: the tie goes to the lower id, and the newcomer is a real peer, not a visitor
+    let actions = newcomer(&mut e, 3, t + 11 * MIN);
+    assert_eq!(disconnected(&actions), vec![(1, IDLE.to_string())]);
+    assert_eq!(e.inbound_count(), 2);
+    assert_eq!(e.addr_only_count(), 0);
+    // dropping it is not a ban
+    assert!(!actions.iter().any(|a| matches!(a, Action::Ban { .. })));
+}
+
+#[test]
+fn a_peer_that_asks_for_things_is_kept_and_a_peer_that_only_pings_is_not() {
+    let rigs = SimRig::rigs("idle2", 1);
+    let mut e = full_of_two_inbound(&rigs, 0);
+    let t = T0 * 1000;
+    // peer 1 announces a transaction at 3 minutes (activity); peer 2 only pings at 9 minutes (not activity)
+    e.handle(
+        t + 3 * MIN,
+        Event::Message {
+            peer: 1,
+            msg: Message::NewTx { ids: vec![[1; 32]] },
+        },
+    );
+    e.handle(
+        t + 9 * MIN,
+        Event::Message {
+            peer: 2,
+            msg: Message::Ping(7),
+        },
+    );
+    // at 12 minutes peer 1 has been quiet for 9 (under the limit) and peer 2 for 12: peer 2 goes
+    let actions = newcomer(&mut e, 3, t + 12 * MIN);
+    assert_eq!(disconnected(&actions), vec![(2, IDLE.to_string())]);
+}
+
+#[test]
+fn nobody_is_dropped_while_every_peer_has_been_quiet_for_less_than_the_limit() {
+    let rigs = SimRig::rigs("idle3", 1);
+    let mut e = full_of_two_inbound(&rigs, 4);
+    let t = T0 * 1000;
+    // 5 minutes in, neither has done anything, but a connection made 5 minutes ago is not yet an idle one: the newcomer is a visitor
+    let actions = newcomer(&mut e, 3, t + 5 * MIN);
+    assert!(disconnected(&actions).is_empty(), "{actions:?}");
+    assert_eq!(e.addr_only_count(), 1);
+    assert_eq!(e.inbound_count(), 3);
+}
+
+#[test]
+fn a_connection_we_dialled_never_makes_a_full_node_drop_anybody() {
+    let rigs = SimRig::rigs("idle4", 1);
+    let mut c = cfg(1, &[]);
+    c.max_peers = 2;
+    c.max_addr_only = 0;
+    c.idle_evict_after_ms = 10 * MIN;
+    let mut e = engine_on(&rigs[0], c);
+    let t = T0 * 1000;
+    for i in 1..=2u64 {
+        open(&mut e, i, &format!("6{i}.1.1.1:41000"), true, t);
+        say_hello(&mut e, &rigs[0], i, 10 + i, t);
+    }
+    let actions = e.handle(
+        t + 11 * MIN,
+        Event::PeerConnected {
+            peer: 3,
+            addr: "73.1.1.1:8333".into(),
+            inbound: false,
+        },
+    );
+    assert_eq!(disconnected(&actions), vec![(3, "full".to_string())]);
+    assert_eq!(e.inbound_count(), 2);
+}
+
+#[test]
+fn eviction_can_be_turned_off() {
+    let rigs = SimRig::rigs("idle5", 1);
+    let mut c = cfg(1, &[]);
+    c.max_inbound = 2;
+    c.max_addr_only = 0;
+    c.idle_evict_after_ms = 0;
+    let mut e = engine_on(&rigs[0], c);
+    let t = T0 * 1000;
+    for i in 1..=2u64 {
+        open(&mut e, i, &format!("6{i}.1.1.1:41000"), true, t);
+        say_hello(&mut e, &rigs[0], i, 10 + i, t);
+    }
+    let actions = newcomer(&mut e, 3, t + 60 * MIN);
+    assert_eq!(disconnected(&actions), vec![(3, "full".to_string())]);
+    assert_eq!(e.inbound_count(), 2);
+}
+
+#[test]
+fn a_visitor_given_addresses_is_never_the_one_dropped_to_make_room() {
+    let rigs = SimRig::rigs("idle6", 1);
+    let mut c = cfg(1, &[]);
+    c.max_inbound = 1;
+    c.max_addr_only = 4;
+    c.idle_evict_after_ms = 10 * MIN;
+    let mut e = engine_on(&rigs[0], c);
+    let t = T0 * 1000;
+    open(&mut e, 1, "61.1.1.1:41000", true, t);
+    say_hello(&mut e, &rigs[0], 1, 11, t);
+    // a visitor (over the limit), long connected
+    open(&mut e, 2, "62.1.1.1:41000", true, t);
+    assert_eq!(e.addr_only_count(), 1);
+    // a newcomer an hour later: the real peer 1 goes, the visitor stays (it is not a candidate), the newcomer is a real peer
+    let actions = newcomer(&mut e, 3, t + 60 * MIN);
+    assert_eq!(disconnected(&actions), vec![(1, IDLE.to_string())]);
+    assert_eq!(e.addr_only_count(), 1);
+}
+
 // ---- what a GetAddrs answer reveals --------------------------------------------------------------------
 
 /// An engine whose address book holds exactly `n` fresh routable addresses, learned the way a node learns them: from

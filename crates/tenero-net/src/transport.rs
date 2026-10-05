@@ -37,10 +37,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::addrbook::host_of;
+use crate::addrbook::{host_of, peer_addr_to_string};
 use crate::budget::{Gate, GateConfig, Lane, Throttle, Ticket};
 use crate::engine::{Action, Engine, Event, PeerId};
-use crate::message::{Message, PROTOCOL_VERSION};
+use crate::message::{Message, PeerAddr, PROTOCOL_VERSION};
 use crate::noise::{
     handshake_initiator, handshake_responder, prologue, NodeKey, SecureReader, SecureWriter,
     Secured,
@@ -519,6 +519,30 @@ struct Loop<'c> {
     shutdown: Arc<AtomicBool>,
 }
 
+/// The log line for an address message sent to `peer`: how many, and the first dozen (`peer N connected from ...` says who N is). It
+/// is also what a node says when it announces its own address (one address, once per connection). The addresses are other nodes'
+/// public addresses, which any peer may ask a node for, but a log that holds them is private data like any log.
+fn addrs_log_line(peer: PeerId, addrs: &[PeerAddr]) -> String {
+    const SHOWN: usize = 12;
+    if addrs.is_empty() {
+        return format!("sent 0 address(es) to peer {peer}");
+    }
+    let list: Vec<String> = addrs
+        .iter()
+        .take(SHOWN)
+        .filter_map(peer_addr_to_string)
+        .collect();
+    let more = match addrs.len().saturating_sub(SHOWN) {
+        0 => String::new(),
+        n => format!(" and {n} more"),
+    };
+    format!(
+        "sent {} address(es) to peer {peer}: {}{more}",
+        addrs.len(),
+        list.join(", ")
+    )
+}
+
 impl Loop<'_> {
     fn log(&self, s: &str) {
         (self.cfg.log)(s);
@@ -718,6 +742,10 @@ impl Loop<'_> {
                     let Some(conn) = self.conns.get(&peer) else {
                         continue;
                     };
+                    if let Message::Addrs { addrs } = &msg {
+                        // what this node tells a peer about other nodes (or about itself): the only way to see what a seed announces
+                        self.log(&addrs_log_line(peer, addrs));
+                    }
                     let frame = match encode(&msg) {
                         Ok(f) => f,
                         Err(e) => {

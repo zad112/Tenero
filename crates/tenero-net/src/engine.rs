@@ -108,6 +108,12 @@ pub struct EngineConfig {
     pub ban_ms: u64,
     pub max_peers: usize,
     pub max_inbound: usize,
+    /// When the node is full and another peer connects to it, an inbound peer that has done nothing for this long (no request, no
+    /// announcement, no block or transaction: pings, pongs and address messages do not count, and the time since it connected counts
+    /// as quiet time) is disconnected, without a ban, to make room; the one quiet for longest goes first. A peer that follows the
+    /// chain is never quiet for long, since each new block makes it ask for it. Never evicts an outbound peer, and with no such idle
+    /// peer a newcomer is treated as before (a visitor given addresses, or refused). 0 turns eviction off.
+    pub idle_evict_after_ms: u64,
     pub handshake_timeout_ms: u64,
     /// Idle this long and we send a ping.
     pub ping_after_ms: u64,
@@ -216,6 +222,7 @@ impl Default for EngineConfig {
             ban_ms: 24 * 3600 * 1000,
             max_peers: 128,
             max_inbound: 64,
+            idle_evict_after_ms: 10 * 60 * 1000,
             handshake_timeout_ms: 10_000,
             ping_after_ms: 60_000,
             pong_timeout_ms: 30_000,
@@ -393,6 +400,9 @@ struct Peer {
     score: u32,
     timeouts: u32,
     last_recv: u64,
+    /// When it last did something other than ping, pong, say hello or trade addresses (see `EngineConfig::idle_evict_after_ms`);
+    /// the time it connected until then.
+    last_active: u64,
     ping_sent: Option<u64>,
     milli_tokens: u64,
     last_refill: u64,
@@ -848,6 +858,28 @@ impl<'a> Engine<'a> {
     // ---------------------------------------------------------------------------------------------
     // connections
 
+    /// The inbound peer that has been quiet for longest, if one has been quiet for at least `idle_evict_after_ms` (see there for what
+    /// counts as quiet). Only a peer that said hello is a candidate: a feeler, a visitor given addresses and an outbound peer never are.
+    /// Ties go to the lowest peer id, so the choice does not depend on the order of the map.
+    fn longest_idle_inbound(&self) -> Option<PeerId> {
+        let limit = self.cfg.idle_evict_after_ms;
+        if limit == 0 {
+            return None;
+        }
+        self.peers
+            .iter()
+            .filter(|(_, p)| p.inbound && !p.addr_only && !p.feeler && p.hello.is_some())
+            .map(|(id, p)| {
+                (
+                    self.now.saturating_sub(p.last_active.max(p.connected_at)),
+                    *id,
+                )
+            })
+            .filter(|(quiet, _)| *quiet >= limit)
+            .max_by_key(|(quiet, id)| (*quiet, std::cmp::Reverse(*id)))
+            .map(|(_, id)| id)
+    }
+
     fn on_connected(&mut self, peer: PeerId, addr: String, inbound: bool, out: &mut Vec<Action>) {
         if !inbound {
             self.connecting.remove(&addr);
@@ -859,11 +891,19 @@ impl<'a> Engine<'a> {
             });
             return;
         }
-        let regular = self.peers.values().filter(|p| !p.addr_only);
-        let inbound_now = regular.clone().filter(|p| p.inbound).count();
+        let full = |e: &Engine<'_>| {
+            let regular = e.peers.values().filter(|p| !p.addr_only);
+            let inbound_now = regular.clone().filter(|p| p.inbound).count();
+            regular.count() >= e.cfg.max_peers || (inbound && inbound_now >= e.cfg.max_inbound)
+        };
+        // full, and an inbound peer has been quiet too long: it makes room for this one
+        if inbound && full(self) {
+            if let Some(idle) = self.longest_idle_inbound() {
+                self.drop_peer(idle, "idle: slot needed", false, out);
+            }
+        }
         let mut addr_only = false;
-        if regular.count() >= self.cfg.max_peers || (inbound && inbound_now >= self.cfg.max_inbound)
-        {
+        if full(self) {
             let extra = self.peers.values().filter(|p| p.addr_only).count();
             if inbound && extra < self.cfg.max_addr_only {
                 addr_only = true;
@@ -888,6 +928,7 @@ impl<'a> Engine<'a> {
                 score: 0,
                 timeouts: 0,
                 last_recv: self.now,
+                last_active: self.now,
                 ping_sent: None,
                 milli_tokens: self.cfg.burst * 1000,
                 last_refill: self.now,
@@ -1028,6 +1069,16 @@ impl<'a> Engine<'a> {
             } else {
                 p.milli_tokens -= 1000;
                 p.last_recv = now;
+                if !matches!(
+                    msg,
+                    Message::Hello(_)
+                        | Message::Ping(_)
+                        | Message::Pong(_)
+                        | Message::GetAddrs
+                        | Message::Addrs { .. }
+                ) {
+                    p.last_active = now;
+                }
                 if matches!(
                     msg,
                     Message::Blocks { .. }

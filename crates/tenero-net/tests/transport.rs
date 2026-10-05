@@ -152,6 +152,12 @@ fn a_fresh_node_syncs_a_chain_from_another_over_real_sockets_and_noise() {
     );
     assert!(log_b.contains("connected to"), "{}", log_b.dump());
     assert!(log_a.contains("connected from"), "{}", log_a.dump());
+    // B asked A for addresses when it was ready, and A's log says what it answered (here nothing: its book is empty)
+    assert!(
+        log_a.contains("sent 0 address(es) to peer"),
+        "{}",
+        log_a.dump()
+    );
 }
 
 // ---- a node under test, and hostile clients --------------------------------------------------------------
