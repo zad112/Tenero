@@ -20,7 +20,7 @@ Inspired by Monero's design ideas; not affiliated with or endorsed by the Monero
 | **Tested** | about 900 automated tests (933 passing and 24 skipped when last counted, 2026-10-05), the Rust code checked bit for bit against an independent Python reference, six fuzzing targets run for 30 minutes each with no crash |
 | **Run on `alpha`** | one node and one GPU mined 19 blocks in about 12 minutes; a Windows PC and a rented Linux server (the seed) stayed on one chain, with a third node on the PC. **Not yet seen:** a settled difficulty, a second miner, more than three nodes, an epoch boundary |
 | **Reviewed by anyone else** | **no.** There has been no independent cryptographic, security or hardware review |
-| **Released** | **yes, as a pre-release (2026-10-05):** the first test release, `v0.1.0-alpha.1`, is on the [Releases](../../releases) page; see [Get it](#get-it) |
+| **Released** | **yes, as the first release (2026-10-05): `v0.1.0-alpha.1`, on the [Releases](../../releases) page. It is still a TEST release**: "released" means published for people to try, not finished, reviewed or safe; see [Get it](#get-it) |
 
 What is known to be wrong or missing is written down, including what nobody has fixed: [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) and [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 
@@ -74,8 +74,8 @@ for, and a special-purpose chip would need the same memory to compete. **That is
 
 ## Get it
 
-**The first test release, `v0.1.0-alpha.1`, is on the [Releases](../../releases) page** (published 2026-10-05 as a **pre-release**, because it is an alpha): a Windows zip and a Linux tar.gz with a `SHA256SUMS` file. (GitHub's front-page "Releases" box only
-advertises a repository's latest *non-pre-release*, so open the Releases page itself.) How it is made and checked is in [`docs/RELEASING.md`](docs/RELEASING.md). The files are **not code-signed** (Windows SmartScreen will warn), and the Linux build has been run by hand **only as a node**: in WSL2 on the author's PC, and as a service on a rented Ubuntu 24.04 server (the Linux wallet, wallet app and GPU miner have not been run). Prefer to build it yourself? The next section does that.
+**The first release, `v0.1.0-alpha.1`, is on the [Releases](../../releases) page** (published 2026-10-05): a Windows zip and a Linux tar.gz with a `SHA256SUMS` file. **It is a test release and says so in its name, its notes and
+this page: "released" means published for people to try, not finished, audited or safe, and the network may be reset.** How it is made and checked is in [`docs/RELEASING.md`](docs/RELEASING.md). The files are **not code-signed** (Windows SmartScreen will warn), and the Linux build has been run by hand **only as a node**: in WSL2 on the author's PC, and as a service on a rented Ubuntu 24.04 server (the Linux wallet, wallet app and GPU miner have not been run). Prefer to build it yourself? The next section does that.
 
 **Antivirus warning: your antivirus may flag these programs as a "coin miner".** Some scanners do (the labels vary: "coin miner", "PUA" or "potentially unwanted application", sometimes "trojan"), and **that is partly true: `tenero-miner` is a
 miner**, and the wallet app and the node can start it. It runs your GPU or CPU at full load, which is exactly what those detectors look for. **Nothing mines unless you start it** (the Start button on the wallet app's Mining tab, the `tenero-miner`
