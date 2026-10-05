@@ -18,7 +18,7 @@ Inspired by Monero's design ideas; not affiliated with or endorsed by the Monero
 |---|---|
 | **Built** | a node, a miner (GPU and CPU), a command-line wallet, a wallet app with a window, a seed checker, a network protocol with an encrypted channel, a test network called **`alpha`** with one seed server |
 | **Tested** | about 900 automated tests (933 passing and 24 skipped when last counted, 2026-10-05), the Rust code checked bit for bit against an independent Python reference, six fuzzing targets run for 30 minutes each with no crash |
-| **Run on `alpha`** | one node and one GPU mined 19 blocks in about 12 minutes; a Windows PC and a rented Linux server (the seed) stayed on one chain, with a third node on the PC. **Not yet seen:** a settled difficulty, a second miner, more than three nodes, an epoch boundary |
+| **Run on `alpha`** | one node and one GPU mined 19 blocks in about 12 minutes; a Windows PC and a rented Linux server (the seed) stayed on one chain, with a third node on the PC. **One epoch boundary (block 100) has been crossed once** on the real chain, by a Windows PC node and the server with one GPU miner: both kept to about 4.0 GiB and went on applying blocks (the length of the pause was not measured). **Not yet seen:** a settled difficulty, a second miner, more than three nodes, a second boundary |
 | **Reviewed by anyone else** | **no.** There has been no independent cryptographic, security or hardware review |
 | **Released** | **yes, as the first release (2026-10-05): `v0.1.0-alpha.1`, on the [Releases](../../releases) page. It is still a TEST release**: "released" means published for people to try, not finished, reviewed or safe; see [Get it](#get-it) |
 
