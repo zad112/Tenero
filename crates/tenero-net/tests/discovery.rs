@@ -1874,6 +1874,102 @@ fn a_node_that_only_has_its_seed_makes_the_connection_again_after_a_while_to_hea
     assert_eq!(connects(&actions), vec![THE_SEED.to_string()]);
 }
 
+/// Like `on_a_seed_with_peers`, but the seed (peer 1) is the one that connected to US, from an arbitrary port: what happens to a reachable node
+/// as soon as its seed learns its address and dials it (and the node's own link to the seed is then dropped as a duplicate).
+fn dialled_by_a_seed<'a>(
+    rigs: &'a [SimRig],
+    leave_min: usize,
+    refresh_ms: u64,
+    others: &[&str],
+) -> (Engine<'a>, Vec<Action>) {
+    let mut c = cfg(8, &[]);
+    c.seeds = vec![THE_SEED.to_string()];
+    c.bootstrap_wait_ms = 0;
+    c.seed_leave_min_peers = leave_min;
+    c.addr_refresh_ms = refresh_ms;
+    c.trusted = others.iter().map(|s| s.to_string()).collect();
+    let mut e = engine_on(&rigs[0], c);
+    let t = T0 * 1000;
+    open(&mut e, 1, "60.1.1.1:55555", true, t);
+    let hello_actions = say_hello(&mut e, &rigs[0], 1, 21, t);
+    for (i, a) in others.iter().enumerate() {
+        let peer = 2 + i as u64;
+        open(&mut e, peer, a, false, t);
+        say_hello(&mut e, &rigs[0], peer, 21 + peer, t);
+    }
+    (e, hello_actions)
+}
+
+fn asked_for_addresses(actions: &[Action], peer: u64) -> bool {
+    actions
+        .iter()
+        .any(|a| matches!(a, Action::Send { peer: p, msg: Message::GetAddrs } if *p == peer))
+}
+
+#[test]
+fn a_node_asks_a_seed_that_dialled_it_for_addresses_but_not_a_stranger_that_did() {
+    let rigs = SimRig::rigs("ask1", 1);
+    let (mut e, hello) = dialled_by_a_seed(&rigs, 3, 30 * MIN, &[]);
+    assert!(
+        asked_for_addresses(&hello, 1),
+        "no GetAddrs to the seed: {hello:?}"
+    );
+    // its answer is taken (it was asked for), and the peer is not punished for it
+    let t = T0 * 1000;
+    e.handle(
+        t,
+        Event::Message {
+            peer: 1,
+            msg: Message::Addrs {
+                addrs: vec![string_to_peer_addr(&v4(70, 1, 1, 1, 8333), T0).unwrap()],
+            },
+        },
+    );
+    assert!(e.addr_book().get(&v4(70, 1, 1, 1, 8333)).is_some());
+    assert_eq!(e.peer_count(), 1);
+    // a stranger that connected to us is not asked: we did not choose it
+    open(&mut e, 9, "61.1.1.1:41000", true, t);
+    let stranger = say_hello(&mut e, &rigs[0], 9, 99, t);
+    assert!(
+        !asked_for_addresses(&stranger, 9),
+        "asked a stranger: {stranger:?}"
+    );
+}
+
+#[test]
+fn a_seed_link_that_the_seed_made_is_refreshed_too_when_the_node_has_too_few_peers_of_its_own() {
+    let rigs = SimRig::rigs("ask2", 1);
+    let (mut e, _) = dialled_by_a_seed(&rigs, 3, 30 * MIN, &[]);
+    let t = T0 * 1000;
+    let before = e.handle(t + 29 * MIN, Event::Tick);
+    assert!(
+        !disconnected(&before)
+            .iter()
+            .any(|(_, why)| why == REFRESH_SEED),
+        "{before:?}"
+    );
+    // 30 minutes: the link is closed (no ban) and the node dials the seed itself, in the same step
+    let actions = e.handle(t + 30 * MIN, Event::Tick);
+    assert_eq!(disconnected(&actions), vec![(1, REFRESH_SEED.to_string())]);
+    assert!(!actions.iter().any(|a| matches!(a, Action::Ban { .. })));
+    assert_eq!(connects(&actions), vec![THE_SEED.to_string()]);
+}
+
+#[test]
+fn a_seed_link_that_the_seed_made_is_left_alone_when_the_node_has_enough_peers_of_its_own() {
+    // it is not ours to close: a seed that dialled us would only dial again
+    let rigs = SimRig::rigs("ask3", 1);
+    let (mut e, _) = dialled_by_a_seed(&rigs, 2, 30 * MIN, &["61.1.1.1:8333", "62.1.1.1:8333"]);
+    let t = T0 * 1000;
+    let actions = e.handle(t + 1000, Event::Tick);
+    assert!(disconnected(&actions).is_empty(), "{actions:?}");
+    let later = e.handle(t + 30 * MIN, Event::Tick);
+    assert!(
+        !disconnected(&later).iter().any(|(id, _)| *id == 1),
+        "{later:?}"
+    );
+}
+
 #[test]
 fn leaving_a_seed_and_refreshing_it_can_be_turned_off() {
     let rigs = SimRig::rigs("leave5", 1);

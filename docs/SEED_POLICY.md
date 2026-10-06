@@ -86,6 +86,12 @@ seed for good (it may refuse inbound connections, but it still dials out to othe
 * **Refreshing.** A peer answers `GetAddrs` once per connection, and a node asks once per connection, so a node that stayed connected to its seed would
   never hear of a node that appeared later. A node that holds fewer than three non-seed outbound peers therefore closes and remakes a seed connection
   older than `addr_refresh_ms` (30 minutes), and asks again. It has no peer for a moment when the seed was its only one.
+* **A seed that dials us.** A seed dials every reachable node it has in its book, and our own link to it is then dropped as a duplicate, so a reachable node can end up
+  with only an INBOUND seed link. A node asked for addresses only on connections it made, and the refresh only closed connections it made, so such a node
+  never asked and never refreshed (found on the real network on 2026-10-06 in the first run of alpha.3: the author's PC held one connection, inbound from the
+  seed, and no outbound peer). **Fixed after the alpha.3 release (not in alpha.3):** a node also asks a seed that dialled it for addresses (it still does not ask other
+  peers that dialled it: it did not choose them), and refreshes such a link when it holds fewer than three non-seed outbound peers; it never closes one only because it
+  has enough peers, since the seed would dial again. Tested in `tests/discovery.rs` (three tests, each checked to fail without its part of the fix); NOT tried on the real network.
 * **A fresher answer.** A seed repeats one answer to a network group for **15 minutes** (it was 24 hours: a node that had just become reachable was not passed
   on for up to a day). This weakens the defence against reading the whole book (`THREAT_MODEL.md` C4): one group can take about 96 samples a day, not one.
 * **Retrying and forgetting.** The wait before retrying a failed address doubles from 30 seconds to a **30-minute** cap (it was 6 hours), and an address that never

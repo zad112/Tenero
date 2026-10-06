@@ -120,7 +120,9 @@ pub struct EngineConfig {
     pub seed_leave_min_peers: usize,
     /// While a node holds fewer non-seed outbound peers than `seed_leave_min_peers`, a seed connection older than this is closed and
     /// made again, because a peer answers `GetAddrs` once per connection and so a node that stays connected never hears of the nodes
-    /// that appeared since (the protocol has no other way to learn them). 0 turns this off.
+    /// that appeared since (the protocol has no other way to learn them). This holds for a connection a seed made to us as well (a seed
+    /// dials every reachable node it knows of): the node asks such a seed for addresses and refreshes that link too, but never closes
+    /// one only because it has enough peers, since the seed would dial again. 0 turns this off.
     pub addr_refresh_ms: u64,
     pub handshake_timeout_ms: u64,
     /// Idle this long and we send a ping.
@@ -1047,8 +1049,14 @@ impl<'a> Engine<'a> {
             self.drop_peer(peer, "feeler done", false, out);
             return;
         }
-        if !inbound {
-            self.book.mark_success(&addr, self.secs());
+        // Ask for addresses on a connection WE made, and also on one a seed made to us: a reachable node is dialled by its seed as soon as
+        // the seed knows it, and a node that only asked on its own connections would then never ask (it asks once per connection).
+        // An inbound connection from anyone else is not asked: its owner chose to connect, we did not choose it.
+        let from_seed = inbound && self.is_seed_host(&addr);
+        if !inbound || from_seed {
+            if !inbound {
+                self.book.mark_success(&addr, self.secs());
+            }
             if let Some(p) = self.peers.get_mut(&peer) {
                 p.asked_addrs = true;
             }
@@ -1587,6 +1595,13 @@ impl<'a> Engine<'a> {
         self.cfg.seeds.iter().any(|s| s == addr)
     }
 
+    /// Whether `addr` (as `ip:port`) is on the same host as a seed, whatever the port: what an inbound connection from a seed looks like,
+    /// since its port is an arbitrary one.
+    fn is_seed_host(&self, addr: &str) -> bool {
+        let host = host_of(addr);
+        self.cfg.seeds.iter().any(|s| host_of(s) == host)
+    }
+
     /// How many of the connections WE made are to seeds (a node that has enough peers of its own holds none: `seed_leave_min_peers`).
     pub fn seed_peer_count(&self) -> usize {
         self.peers
@@ -1621,15 +1636,24 @@ impl<'a> Engine<'a> {
         let leave = self.leaving_seeds();
         let refresh = self.cfg.addr_refresh_ms;
         let now = self.now;
+        // a seed connection is one we made to a seed, or one a seed made to us (a seed dials every reachable node it knows of, and then
+        // the node's own link to it is dropped as a duplicate: such a node would otherwise never ask again and never leave)
         let retire: Vec<(PeerId, &'static str)> = self
             .peers
             .iter()
-            .filter(|(_, p)| !p.inbound && !p.addr_only && !p.feeler && p.hello.is_some())
-            .filter(|(_, p)| self.is_seed(&p.addr))
+            .filter(|(_, p)| !p.addr_only && !p.feeler && p.hello.is_some())
+            .filter(|(_, p)| {
+                if p.inbound {
+                    self.is_seed_host(&p.addr)
+                } else {
+                    self.is_seed(&p.addr)
+                }
+            })
             .filter_map(|(id, p)| {
-                if leave {
+                if leave && !p.inbound {
+                    // only our own connections are left: a seed that dials us would only dial again
                     Some((*id, "seed: enough other peers"))
-                } else if refresh > 0 && now.saturating_sub(p.connected_at) >= refresh {
+                } else if !leave && refresh > 0 && now.saturating_sub(p.connected_at) >= refresh {
                     Some((*id, "seed: refreshing addresses"))
                 } else {
                     None
