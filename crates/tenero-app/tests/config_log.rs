@@ -548,3 +548,50 @@ fn a_node_reads_the_built_in_seed_option_strictly() {
             .contains("no_builtin_seeds")
     );
 }
+
+// ---- the miner service (docs/REMOTE_MINING_PLAN.md) ------------------------------------------------------------
+
+const MINER_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+#[test]
+fn the_miner_service_is_off_by_default() {
+    let c = ok("data = d\nnetwork = test");
+    assert_eq!(c.miner_listen, None);
+    assert_eq!(c.miner_key, None);
+    assert_eq!((c.miner_max, c.miner_rate), (8, 120));
+}
+
+#[test]
+fn the_miner_service_needs_a_key_in_this_first_version() {
+    let e = err("data = d\nnetwork = test\nminer_listen = 0.0.0.0:38334");
+    assert!(e.contains("miner_key") && e.contains("required"), "{e}");
+    let c = ok(&format!(
+        "data = d\nnetwork = test\nminer_listen = 0.0.0.0:38334\nminer_key = {MINER_KEY}"
+    ));
+    assert_eq!(c.miner_listen, Some("0.0.0.0:38334".parse().unwrap()));
+    assert_eq!(c.miner_key.unwrap()[..3], [0x00, 0x11, 0x22]);
+}
+
+#[test]
+fn a_key_without_the_service_is_an_error_and_a_bad_key_is_not_repeated_back() {
+    let e = err(&format!(
+        "data = d\nnetwork = test\nminer_key = {MINER_KEY}"
+    ));
+    assert!(e.contains("miner_listen"), "{e}");
+    let secret = "zz112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    let e = err(&format!(
+        "data = d\nnetwork = test\nminer_listen = 0.0.0.0:38334\nminer_key = {secret}"
+    ));
+    assert!(e.contains("64 hexadecimal"), "{e}");
+    assert!(!e.contains(secret), "the key was repeated in the error");
+}
+
+#[test]
+fn the_miner_service_limits_must_be_at_least_one() {
+    for line in ["miner_max = 0", "miner_rate = 0"] {
+        let e = err(&format!(
+            "data = d\nnetwork = test\nminer_listen = 0.0.0.0:38334\nminer_key = {MINER_KEY}\n{line}"
+        ));
+        assert!(e.contains("at least 1"), "{e}");
+    }
+}

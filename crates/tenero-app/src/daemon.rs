@@ -34,6 +34,7 @@ use crate::client::{create_cookie, COOKIE_FILE};
 use crate::config::{Config, MineMode, Network};
 use crate::control::NodeKind;
 use crate::log::{Level, Logger};
+use crate::miner_service::{self, ServiceConfig};
 use crate::server::{self, ControlHook, Meta};
 use crate::ui::{Banner, Event as UiEvent, MiningStatus, NodeStatus, SyncProgress};
 
@@ -923,6 +924,26 @@ pub fn run(
             control: handle.addr.to_string(),
         },
     );
+    // miners on other computers (off unless `miner_listen` is set; `config.rs` makes a key mandatory for now)
+    let miner_service = match cfg.miner_listen {
+        None => None,
+        Some(addr) => {
+            let scfg = ServiceConfig {
+                max_miners: cfg.miner_max,
+                requests_per_minute: cfg.miner_rate,
+                key: cfg.miner_key,
+                ..ServiceConfig::default()
+            };
+            let h = miner_service::start(addr, &handle, scfg)
+                .map_err(|e| format!("cannot start the miner service on {addr}: {e}"))?;
+            log.info(&format!(
+                "miner service on {} ({}): miners on other computers may ask this node for blocks to mine and hand blocks back;                  it answers nothing else",
+                h.addr,
+                if cfg.miner_key.is_some() { "a key is required" } else { "NO key: anyone may connect" },
+            ));
+            Some(h)
+        }
+    };
     if let Some(tx) = ready {
         let _ = tx.send(Ready {
             p2p: net.local_addr(),
@@ -964,6 +985,7 @@ pub fn run(
     if let Err(e) = engine.node().save_pool(&pool_path) {
         log.warn(&format!("could not save the side-branch pool: {e}"));
     }
+    drop(miner_service);
     drop(handle);
     result.map_err(|e| format!("network error: {e}"))?;
     let (height, tip) = store.tip().map_err(|e| e.to_string())?;

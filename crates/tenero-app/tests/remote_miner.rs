@@ -365,7 +365,11 @@ fn a_miner_in_another_process_mines_blocks_the_node_accepts_and_the_wallet_can_s
     let (stats, tip) = thread::scope(|s| {
         let stop2 = Arc::clone(&stop);
         let t = s.spawn(move || {
-            let mut rm = sha_miner(cfg());
+            let mut rm = sha_miner(RemoteMinerConfig {
+                // the node's clock in this test is the pump's, in 2023
+                now_secs: Arc::new(|| T0 + 60 * 500),
+                ..cfg()
+            });
             rm.run(
                 || RemoteNode::connect(addr, &COOKIE),
                 &stop2,
@@ -513,30 +517,37 @@ fn info(height: u64, tip: u8, syncing: bool) -> Response {
     })
 }
 
-/// A template on `tip` for `height` with a target that almost every id meets.
-fn template(height: u64, tip: u8, target: [u8; 32]) -> Response {
+/// A template on `tip` for `height` with a target that almost every id meets, as an honest node builds it for the miner
+/// that asked: its coinbase pays exactly `payout`, the header's transaction root matches the body, and the timestamp is now
+/// (`remote_miner::check_template` refuses anything else).
+fn template(payout: &Payout, height: u64, tip: u8, target: [u8; 32]) -> Response {
+    let coinbase = Coinbase {
+        version: VERSION,
+        height,
+        outputs: vec![CoinbaseOutput {
+            onetime_address: payout.onetime_address,
+            amount: 1,
+            view_tag: payout.view_tag,
+            ephemeral_pubkey: payout.ephemeral_pubkey,
+            anchor_enc: payout.anchor_enc,
+        }],
+        extra: vec![],
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     Response::Template(Template {
         block: Block {
             header: BlockHeader {
                 version: VERSION,
                 prev_id: [tip; 32],
-                timestamp: T0,
-                tx_root: [0; 32],
+                timestamp: now,
+                tx_root: tenero_core::v2::ids::block_tx_root(&coinbase, &[]).unwrap(),
                 nonce: 0,
                 mix: [0; 64],
             },
-            coinbase: Coinbase {
-                version: VERSION,
-                height,
-                outputs: vec![CoinbaseOutput {
-                    onetime_address: [1; 32],
-                    amount: 1,
-                    view_tag: [2; 3],
-                    ephemeral_pubkey: [3; 32],
-                    anchor_enc: [4; 16],
-                }],
-                extra: vec![],
-            },
+            coinbase,
             transactions: vec![],
         },
         height,
@@ -614,7 +625,7 @@ fn verdict_miner(answer: Response) -> (Fake, RemoteMiner, Arc<Mutex<Vec<MinerEve
     let f = fake(Box::new(move |r| {
         Some(match r {
             Request::Info => info(5, 5, false),
-            Request::BlockTemplate { .. } => template(6, 5, EASY),
+            Request::BlockTemplate { payout, .. } => template(payout, 6, 5, EASY),
             Request::SubmitBlock(_) => answer.clone(),
             _ => return None,
         })
@@ -736,7 +747,7 @@ fn a_node_that_is_syncing_gets_no_mining() {
     let f = fake(Box::new(move |r| {
         Some(match r {
             Request::Info => info(5, 5, s2.load(Ordering::SeqCst)),
-            Request::BlockTemplate { .. } => template(6, 5, EASY),
+            Request::BlockTemplate { payout, .. } => template(payout, 6, 5, EASY),
             _ => return None,
         })
     }));
@@ -795,7 +806,7 @@ fn a_moved_tip_replaces_the_job_and_the_old_one_is_stopped() {
         let t = t2.load(Ordering::SeqCst);
         Some(match r {
             Request::Info => info(t, t as u8, false),
-            Request::BlockTemplate { .. } => template(t + 1, t as u8, EASY),
+            Request::BlockTemplate { payout, .. } => template(payout, t + 1, t as u8, EASY),
             _ => return None,
         })
     }));
@@ -826,7 +837,7 @@ fn an_old_template_is_replaced_even_if_the_tip_has_not_moved() {
     let f = fake(Box::new(|r| {
         Some(match r {
             Request::Info => info(5, 5, false),
-            Request::BlockTemplate { .. } => template(6, 5, EASY),
+            Request::BlockTemplate { payout, .. } => template(payout, 6, 5, EASY),
             _ => return None,
         })
     }));
@@ -850,7 +861,7 @@ fn a_template_for_the_wrong_height_is_not_mined() {
     let f = fake(Box::new(|r| {
         Some(match r {
             Request::Info => info(5, 5, false),
-            Request::BlockTemplate { .. } => template(7, 6, EASY),
+            Request::BlockTemplate { payout, .. } => template(payout, 7, 6, EASY),
             _ => return None,
         })
     }));
@@ -870,7 +881,7 @@ fn a_miner_waits_between_blocks_when_told_to() {
         let f = fake(Box::new(|r| {
             Some(match r {
                 Request::Info => info(5, 5, false),
-                Request::BlockTemplate { .. } => template(6, 5, EASY),
+                Request::BlockTemplate { payout, .. } => template(payout, 6, 5, EASY),
                 Request::SubmitBlock(_) => Response::BlockSubmitted {
                     id: [1; 32],
                     in_chain: true,
@@ -917,7 +928,7 @@ fn a_solution_that_does_not_meet_the_target_is_never_submitted() {
     let f = fake(Box::new(|r| {
         Some(match r {
             Request::Info => info(5, 5, false),
-            Request::BlockTemplate { .. } => template(6, 5, IMPOSSIBLE),
+            Request::BlockTemplate { payout, .. } => template(payout, 6, 5, IMPOSSIBLE),
             _ => return None,
         })
     }));
@@ -961,7 +972,7 @@ fn a_late_solution_for_a_replaced_job_is_ignored() {
         let t = t2.load(Ordering::SeqCst);
         Some(match r {
             Request::Info => info(t, t as u8, false),
-            Request::BlockTemplate { .. } => template(t + 1, t as u8, EASY),
+            Request::BlockTemplate { payout, .. } => template(payout, t + 1, t as u8, EASY),
             _ => return None,
         })
     }));
@@ -1004,7 +1015,7 @@ fn a_backend_that_fails_stops_the_miner_with_its_reason() {
     let f = fake(Box::new(|r| {
         Some(match r {
             Request::Info => info(5, 5, false),
-            Request::BlockTemplate { .. } => template(6, 5, EASY),
+            Request::BlockTemplate { payout, .. } => template(payout, 6, 5, EASY),
             _ => return None,
         })
     }));
@@ -1063,7 +1074,7 @@ fn a_miner_whose_node_goes_away_reconnects_and_carries_on() {
         }
         Some(match r {
             Request::Info => info(5, 5, false),
-            Request::BlockTemplate { .. } => template(6, 5, EASY),
+            Request::BlockTemplate { payout, .. } => template(payout, 6, 5, EASY),
             Request::SubmitBlock(_) => Response::BlockSubmitted {
                 id: [1; 32],
                 in_chain: true,
@@ -1128,7 +1139,7 @@ fn a_miner_started_before_its_node_waits_for_it() {
     let f = fake(Box::new(|r| {
         Some(match r {
             Request::Info => info(5, 5, false),
-            Request::BlockTemplate { .. } => template(6, 5, EASY),
+            Request::BlockTemplate { payout, .. } => template(payout, 6, 5, EASY),
             Request::SubmitBlock(_) => Response::BlockSubmitted {
                 id: [1; 32],
                 in_chain: true,
@@ -1224,7 +1235,7 @@ fn the_nonce_and_the_mix_the_backend_found_are_what_is_submitted() {
     let f = fake(Box::new(|r| {
         Some(match r {
             Request::Info => info(5, 5, false),
-            Request::BlockTemplate { .. } => template(6, 5, EASY),
+            Request::BlockTemplate { payout, .. } => template(payout, 6, 5, EASY),
             Request::SubmitBlock(_) => Response::BlockSubmitted {
                 id: [1; 32],
                 in_chain: true,
@@ -1253,8 +1264,8 @@ fn a_template_whose_coinbase_is_for_another_height_is_not_mined_either() {
     let f = fake(Box::new(|r| {
         Some(match r {
             Request::Info => info(5, 5, false),
-            Request::BlockTemplate { .. } => {
-                let Response::Template(mut t) = template(6, 5, EASY) else {
+            Request::BlockTemplate { payout, .. } => {
+                let Response::Template(mut t) = template(payout, 6, 5, EASY) else {
                     unreachable!()
                 };
                 t.block.coinbase.height = 7;
@@ -1280,10 +1291,10 @@ fn a_job_is_stopped_even_when_the_template_that_should_replace_it_is_unusable() 
         Some(match r {
             Request::Info => info(t, t as u8, false),
             // after the tip moves, the template the node gives is for the wrong height
-            Request::BlockTemplate { .. } if w2.load(Ordering::SeqCst) => {
-                template(t + 5, t as u8, EASY)
+            Request::BlockTemplate { payout, .. } if w2.load(Ordering::SeqCst) => {
+                template(payout, t + 5, t as u8, EASY)
             }
-            Request::BlockTemplate { .. } => template(t + 1, t as u8, EASY),
+            Request::BlockTemplate { payout, .. } => template(payout, t + 1, t as u8, EASY),
             _ => return None,
         })
     }));
@@ -1345,4 +1356,126 @@ fn a_stop_is_heard_in_the_middle_of_a_pause() {
         "took {:?} to hear the stop",
         ended.duration_since(asked)
     );
+}
+
+// ------------------------------------------------------------------------------------------------
+// a node that is not to be trusted (one on another computer): the miner checks what it is given
+// ------------------------------------------------------------------------------------------------
+
+use tenero_app::remote_miner::check_template;
+
+fn honest(payout: &Payout, height: u64, tip: u8) -> Template {
+    let Response::Template(t) = template(payout, height, tip, EASY) else {
+        unreachable!()
+    };
+    t
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+#[test]
+fn an_honest_template_passes_the_check() {
+    let t = honest(&payout(), 6, 5);
+    assert_eq!(check_template(&t, 6, &[5; 32], &payout(), now()), Ok(()));
+}
+
+#[test]
+fn a_template_that_pays_someone_else_is_refused_even_when_everything_else_is_in_order() {
+    // the node puts its own address in the coinbase and recomputes the transaction root: only the payout check sees it
+    let mut t = honest(&payout(), 6, 5);
+    t.block.coinbase.outputs[0].onetime_address = [0xee; 32];
+    t.block.header.tx_root =
+        tenero_core::v2::ids::block_tx_root(&t.block.coinbase, &t.block.transactions).unwrap();
+    let e = check_template(&t, 6, &[5; 32], &payout(), now()).unwrap_err();
+    assert!(e.contains("does not pay"), "{e}");
+    // each of the other fields of the payout
+    for i in 0..3 {
+        let mut t = honest(&payout(), 6, 5);
+        match i {
+            0 => t.block.coinbase.outputs[0].view_tag = [9; 3],
+            1 => t.block.coinbase.outputs[0].ephemeral_pubkey = [9; 32],
+            _ => t.block.coinbase.outputs[0].anchor_enc = [9; 16],
+        }
+        t.block.header.tx_root =
+            tenero_core::v2::ids::block_tx_root(&t.block.coinbase, &t.block.transactions).unwrap();
+        assert!(check_template(&t, 6, &[5; 32], &payout(), now()).is_err());
+    }
+}
+
+#[test]
+fn a_coinbase_that_also_pays_a_second_output_or_carries_extra_data_is_refused() {
+    let mut t = honest(&payout(), 6, 5);
+    let o = t.block.coinbase.outputs[0].clone();
+    t.block.coinbase.outputs.push(CoinbaseOutput {
+        onetime_address: [0xee; 32],
+        ..o
+    });
+    t.block.header.tx_root =
+        tenero_core::v2::ids::block_tx_root(&t.block.coinbase, &t.block.transactions).unwrap();
+    assert!(check_template(&t, 6, &[5; 32], &payout(), now()).is_err());
+    let mut t = honest(&payout(), 6, 5);
+    t.block.coinbase.extra = vec![1, 2, 3];
+    t.block.header.tx_root =
+        tenero_core::v2::ids::block_tx_root(&t.block.coinbase, &t.block.transactions).unwrap();
+    let e = check_template(&t, 6, &[5; 32], &payout(), now()).unwrap_err();
+    assert!(e.contains("extra"), "{e}");
+}
+
+#[test]
+fn a_body_that_does_not_match_the_header_is_refused() {
+    let mut t = honest(&payout(), 6, 5);
+    t.block.header.tx_root = [0x99; 32];
+    let e = check_template(&t, 6, &[5; 32], &payout(), now()).unwrap_err();
+    assert!(e.contains("transaction root"), "{e}");
+}
+
+#[test]
+fn a_template_for_another_height_tip_or_clock_or_with_work_already_in_it_is_refused() {
+    let t = honest(&payout(), 6, 5);
+    assert!(check_template(&t, 7, &[5; 32], &payout(), now()).is_err());
+    assert!(check_template(&t, 6, &[4; 32], &payout(), now()).is_err());
+    // a clock a day away
+    assert!(check_template(&t, 6, &[5; 32], &payout(), now() + 86_400).is_err());
+    let mut t = honest(&payout(), 6, 5);
+    t.block.header.nonce = 1;
+    assert!(check_template(&t, 6, &[5; 32], &payout(), now()).is_err());
+    let mut t = honest(&payout(), 6, 5);
+    t.block.header.mix = [1; 64];
+    assert!(check_template(&t, 6, &[5; 32], &payout(), now()).is_err());
+}
+
+#[test]
+fn a_hostile_node_gets_no_hashing_from_the_miner_and_is_never_handed_a_block() {
+    // the node answers every template request with a block that pays itself
+    let f = fake(Box::new(|r| {
+        Some(match r {
+            Request::Info => info(5, 5, false),
+            Request::BlockTemplate { payout, .. } => {
+                let Response::Template(mut t) = template(payout, 6, 5, EASY) else {
+                    unreachable!()
+                };
+                t.block.coinbase.outputs[0].onetime_address = [0xee; 32];
+                t.block.header.tx_root =
+                    tenero_core::v2::ids::block_tx_root(&t.block.coinbase, &t.block.transactions)
+                        .unwrap();
+                Response::Template(t)
+            }
+            _ => return None,
+        })
+    }));
+    let jobs = Jobs::default();
+    let mut rm = idle_miner(&jobs, cfg());
+    let node = f.node();
+    assert!(drive(&mut rm, &node, 10, |m| m.stats.refused_templates >= 3));
+    assert!(
+        jobs.0.lock().unwrap().is_empty(),
+        "the miner hashed a block that pays the node"
+    );
+    assert_eq!(f.count(is_submit), 0);
+    assert_eq!(rm.stats.blocks_found, 0);
 }

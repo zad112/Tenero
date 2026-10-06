@@ -160,6 +160,14 @@ pub struct Config {
     pub max_inbound: usize,
     pub allow_private_peers: bool,
     pub control: SocketAddr,
+    /// The miner service (`miner_service.rs`, `docs/REMOTE_MINING_PLAN.md`): where miners on other computers connect. `None` is off.
+    pub miner_listen: Option<SocketAddr>,
+    /// The key a miner must hold to connect (32 bytes, `miner_key` as 64 hexadecimal digits). Required with `miner_listen` for now.
+    pub miner_key: Option<[u8; 32]>,
+    /// The most miners connected at once.
+    pub miner_max: usize,
+    /// The most requests one address may make in a minute.
+    pub miner_rate: usize,
     /// 0 keeps every block in full (an archive node); N keeps the most recent N blocks' proofs.
     pub prune_keep: u64,
     pub assume_valid: Option<(u64, [u8; 32])>,
@@ -211,6 +219,10 @@ const KEYS: &[&str] = &[
     "max_inbound",
     "allow_private_peers",
     "control",
+    "miner_listen",
+    "miner_key",
+    "miner_max",
+    "miner_rate",
     "prune_keep",
     "assume_valid",
     "mine",
@@ -387,6 +399,50 @@ impl Raw {
         if !control.ip().is_loopback() {
             return Err(bad("control", "must be a loopback address (127.0.0.1): the control interface is for this machine only"));
         }
+        let miner_listen = match self.one("miner_listen") {
+            Some(v) => Some(
+                v.parse::<SocketAddr>()
+                    .map_err(|_| bad("miner_listen", format!("`{v}` is not ip:port")))?,
+            ),
+            None => None,
+        };
+        let miner_key = match self.one("miner_key") {
+            None => None,
+            Some(v) => {
+                if v.len() != 64 || !v.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    // (the value is not repeated: it is a secret)
+                    return Err(bad(
+                        "miner_key",
+                        "must be 64 hexadecimal digits (32 random bytes)",
+                    ));
+                }
+                let mut k = [0u8; 32];
+                for (i, b) in k.iter_mut().enumerate() {
+                    *b = u8::from_str_radix(&v[2 * i..2 * i + 2], 16).expect("checked");
+                }
+                Some(k)
+            }
+        };
+        if miner_listen.is_some() && miner_key.is_none() {
+            return Err(bad(
+                "miner_key",
+                "is required with `miner_listen` (this first version of the miner service is for miners you give the key to, not for strangers)",
+            ));
+        }
+        if miner_key.is_some() && miner_listen.is_none() {
+            return Err(bad(
+                "miner_key",
+                "is the key for the miner service, which is off (set `miner_listen` too)",
+            ));
+        }
+        let miner_max: usize = self.parse("miner_max", 8)?;
+        let miner_rate: usize = self.parse("miner_rate", 120)?;
+        if miner_max == 0 || miner_rate == 0 {
+            return Err(bad(
+                "miner_max",
+                "`miner_max` and `miner_rate` must be at least 1 (leave `miner_listen` unset to turn the service off)",
+            ));
+        }
         let configured_seeds = self.0.get("seed").cloned().unwrap_or_default();
         for s in &configured_seeds {
             if s.parse::<SocketAddr>().is_err() {
@@ -533,6 +589,10 @@ impl Raw {
             max_inbound,
             allow_private_peers: self.flag("allow_private_peers", network == Network::Test)?,
             control,
+            miner_listen,
+            miner_key,
+            miner_max,
+            miner_rate,
             prune_keep,
             assume_valid,
             mine,

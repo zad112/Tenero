@@ -52,8 +52,13 @@ pub enum BlockVerdict {
     Refused(String),
 }
 
+/// A connection to a node: a plain socket (the control interface, on this machine) or an encrypted one (the miner
+/// service, on another machine).
+trait Duplex: io::Read + io::Write + Send {}
+impl<T: io::Read + io::Write + Send> Duplex for T {}
+
 pub struct RemoteNode {
-    stream: Mutex<TcpStream>,
+    stream: Mutex<Box<dyn Duplex>>,
 }
 
 impl RemoteNode {
@@ -75,12 +80,25 @@ impl RemoteNode {
             .set_write_timeout(Some(Duration::from_secs(30)))
             .map_err(|e| e.to_string())?;
         let node = RemoteNode {
-            stream: Mutex::new(stream),
+            stream: Mutex::new(Box::new(stream)),
         };
         match node.request(&Request::Auth { cookie: *cookie })? {
             Response::Authed => Ok(node),
             other => Err(format!("the node did not accept the cookie: {other:?}")),
         }
+    }
+
+    /// Connects to a node's **miner service** (`docs/REMOTE_MINING_PLAN.md`), which may be on another machine: an
+    /// encrypted connection, with the pre-shared `key` if the operator set one. There is no cookie, and the service
+    /// answers only `info`, `block_template` and `submit_block`.
+    pub fn connect_miner_service(
+        addr: SocketAddr,
+        key: Option<&[u8; 32]>,
+    ) -> Result<RemoteNode, String> {
+        let stream = crate::miner_service::SecureStream::connect(addr, key)?;
+        Ok(RemoteNode {
+            stream: Mutex::new(Box::new(stream)),
+        })
     }
 
     /// One request, one answer. An error answer from the node is an `Err` with its message.

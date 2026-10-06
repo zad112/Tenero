@@ -28,6 +28,10 @@ use snow::{Builder, HandshakeState, StatelessTransportState};
 
 /// The Noise pattern and primitives.
 pub const PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
+/// The same pattern with a pre-shared key mixed in at the end of the handshake (the standard `psk3` modifier): used by the
+/// miner service (`docs/REMOTE_MINING_PLAN.md`), where an operator may allow only those who hold the key. A side that does
+/// not hold the key fails the handshake; the key itself is never sent.
+pub const PATTERN_PSK: &str = "Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s";
 /// The most plaintext bytes one encrypted chunk carries (65,535 minus the 16-byte tag).
 pub const MAX_CHUNK: usize = 65_535 - TAG;
 const TAG: usize = 16;
@@ -230,21 +234,31 @@ fn finish(hs: HandshakeState) -> Result<Secured, NoiseError> {
     })
 }
 
+fn configured<'a>(
+    key: &'a NodeKey,
+    prologue: &'a [u8],
+    psk: Option<&'a [u8; 32]>,
+) -> Result<Builder<'a>, NoiseError> {
+    let bad = |e: snow::Error| NoiseError::Handshake(e.to_string());
+    let pattern = if psk.is_some() { PATTERN_PSK } else { PATTERN };
+    let mut b = Builder::new(pattern.parse().expect("the pattern is valid"))
+        .local_private_key(&key.private)
+        .map_err(bad)?
+        .prologue(prologue)
+        .map_err(bad)?;
+    if let Some(k) = psk {
+        b = b.psk(3, k).map_err(bad)?;
+    }
+    Ok(b)
+}
+
 /// The dialling side of the handshake over `stream`. `prologue` must equal the other side's.
 pub fn handshake_initiator<S: Read + Write>(
     stream: &mut S,
     key: &NodeKey,
     prologue: &[u8],
 ) -> Result<Secured, NoiseError> {
-    let mut hs = builder()
-        .local_private_key(&key.private)
-        .and_then(|b| b.prologue(prologue))
-        .and_then(|b| b.build_initiator())
-        .map_err(|e| NoiseError::Handshake(e.to_string()))?;
-    write_handshake_message(stream, &mut hs, &[])?; // -> e
-    read_handshake_message(stream, &mut hs)?; // <- e, ee, s, es
-    write_handshake_message(stream, &mut hs, &[])?; // -> s, se
-    finish(hs)
+    handshake_initiator_psk(stream, key, prologue, None)
 }
 
 /// The accepting side of the handshake over `stream`.
@@ -253,10 +267,35 @@ pub fn handshake_responder<S: Read + Write>(
     key: &NodeKey,
     prologue: &[u8],
 ) -> Result<Secured, NoiseError> {
-    let mut hs = builder()
-        .local_private_key(&key.private)
-        .and_then(|b| b.prologue(prologue))
-        .and_then(|b| b.build_responder())
+    handshake_responder_psk(stream, key, prologue, None)
+}
+
+/// [`handshake_initiator`] with an optional pre-shared key: both sides must use the same pattern, so a side with a key
+/// cannot talk to a side without one.
+pub fn handshake_initiator_psk<S: Read + Write>(
+    stream: &mut S,
+    key: &NodeKey,
+    prologue: &[u8],
+    psk: Option<&[u8; 32]>,
+) -> Result<Secured, NoiseError> {
+    let mut hs = configured(key, prologue, psk)?
+        .build_initiator()
+        .map_err(|e| NoiseError::Handshake(e.to_string()))?;
+    write_handshake_message(stream, &mut hs, &[])?; // -> e
+    read_handshake_message(stream, &mut hs)?; // <- e, ee, s, es
+    write_handshake_message(stream, &mut hs, &[])?; // -> s, se
+    finish(hs)
+}
+
+/// [`handshake_responder`] with an optional pre-shared key.
+pub fn handshake_responder_psk<S: Read + Write>(
+    stream: &mut S,
+    key: &NodeKey,
+    prologue: &[u8],
+    psk: Option<&[u8; 32]>,
+) -> Result<Secured, NoiseError> {
+    let mut hs = configured(key, prologue, psk)?
+        .build_responder()
         .map_err(|e| NoiseError::Handshake(e.to_string()))?;
     read_handshake_message(stream, &mut hs)?; // <- e
     write_handshake_message(stream, &mut hs, &[])?; // -> e, ee, s, es

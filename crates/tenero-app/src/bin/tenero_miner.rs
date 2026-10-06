@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tenero_app::client::RemoteNode;
 use tenero_app::config::Network;
 use tenero_app::daemon::MiningShared;
 use tenero_app::log::{Level, Logger};
@@ -27,6 +28,9 @@ tenero-miner: mines for a Tenero node in another process (EXPERIMENTAL, UNAUDITE
 
   --data DIR         the node's data directory (the miner reads the node's cookie from it)
   --control IP:PORT  the node's control interface (default 127.0.0.1:18332, the test network's)
+  --node HOST:PORT   instead of --data and --control: the miner service of a node on ANOTHER computer (default port 38334),
+  --key HEX          and the key its operator gave you (64 hexadecimal digits). The node builds the blocks and checks yours; this
+                     miner refuses a block that does not pay --address, but cannot tell a stale or wrong chain from the real one
   --address ADDR     the wallet address block rewards are paid to
   --backend B        sha256 (the test network), cpu or gpu (the dev network's matmulhash)
   --cores N          CPU threads for the cpu backend, 1 to 6 (default 6)
@@ -44,6 +48,8 @@ completely. It pauses while the node is syncing and carries on if the node resta
 struct Args {
     data: PathBuf,
     control: std::net::SocketAddr,
+    node: Option<std::net::SocketAddr>,
+    key: Option<[u8; 32]>,
     address: String,
     backend: String,
     cores: usize,
@@ -63,6 +69,8 @@ fn parse() -> Result<Args, String> {
     let mut a = Args {
         data: PathBuf::new(),
         control: "127.0.0.1:18332".parse().expect("valid"),
+        node: None,
+        key: None,
         address: String::new(),
         backend: String::new(),
         cores: 6,
@@ -113,6 +121,22 @@ fn parse() -> Result<Args, String> {
                     .parse()
                     .map_err(|_| format!("--control: `{v}` is not ip:port"))?
             }
+            "node" => {
+                a.node = Some(
+                    v.parse()
+                        .map_err(|_| format!("--node: `{v}` is not ip:port"))?,
+                )
+            }
+            "key" => {
+                if v.len() != 64 || !v.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err("--key must be 64 hexadecimal digits".into());
+                }
+                let mut k = [0u8; 32];
+                for (i, b) in k.iter_mut().enumerate() {
+                    *b = u8::from_str_radix(&v[2 * i..2 * i + 2], 16).expect("checked");
+                }
+                a.key = Some(k);
+            }
             "address" => a.address = v.clone(),
             "backend" => a.backend = v.clone(),
             "cores" => a.cores = num("cores")? as usize,
@@ -135,8 +159,19 @@ fn parse() -> Result<Args, String> {
             other => return Err(format!("unknown option `--{other}`")),
         }
     }
-    if a.data.as_os_str().is_empty() {
-        return Err("--data is required".into());
+    if a.node.is_some() {
+        if seen.contains("data") || seen.contains("control") {
+            return Err("--node replaces --data and --control: give one or the other".into());
+        }
+        if a.key.is_none() {
+            return Err("--node needs --key (the node's operator gives it to you)".into());
+        }
+    } else if a.key.is_some() {
+        return Err("--key is for --node".into());
+    } else if a.data.as_os_str().is_empty() {
+        return Err(
+            "--data is required (or --node HOST:PORT for a node on another computer)".into(),
+        );
     }
     if a.address.is_empty() {
         return Err("--address is required".into());
@@ -232,11 +267,16 @@ fn main() {
         },
         details: {
             let mut d = vec![
-                format!(
-                    "  node     data {}, control {}",
-                    args.data.display(),
-                    args.control
-                ),
+                match args.node {
+                    Some(n) => {
+                        format!("  node     {n} (the miner service of a node on another computer)")
+                    }
+                    None => format!(
+                        "  node     data {}, control {}",
+                        args.data.display(),
+                        args.control
+                    ),
+                },
                 format!("  pays to  {}", args.address),
             ];
             if let Some(f) = &args.log_file {
@@ -247,7 +287,10 @@ fn main() {
     });
 
     // the first connection tells us which network the node is on, so that the backend can be checked against it
-    let connect = || connect_to(&args.data, args.control);
+    let connect = || match args.node {
+        Some(n) => RemoteNode::connect_miner_service(n, args.key.as_ref()),
+        None => connect_to(&args.data, args.control),
+    };
     let info = loop {
         if shutdown.load(Ordering::SeqCst) {
             return;
@@ -423,7 +466,13 @@ fn main() {
             }
         });
     }
-    let result = rm.run(connect, &shutdown, Duration::from_millis(200));
+    // a node on another computer limits how often it is asked (120 requests a minute by default): once a second
+    let poll = if args.node.is_some() {
+        Duration::from_secs(1)
+    } else {
+        Duration::from_millis(200)
+    };
+    let result = rm.run(connect, &shutdown, poll);
     let s = rm.stats;
     log.log_event(
         Level::Info,

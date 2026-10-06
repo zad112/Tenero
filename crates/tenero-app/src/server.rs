@@ -48,9 +48,11 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 /// How long a connection waits for the node's loop to answer.
 pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(60);
 
-struct Job {
-    req: Request,
-    reply: SyncSender<Response>,
+/// One request waiting for the node's loop, and where its answer goes. (Shared with the miner service, which feeds the
+/// same queue: `crate::miner_service`.)
+pub(crate) struct Job {
+    pub(crate) req: Request,
+    pub(crate) reply: SyncSender<Response>,
 }
 
 /// What the answer to `Info` says that the engine does not know.
@@ -66,9 +68,15 @@ pub struct ControlHandle {
     pub addr: SocketAddr,
     stop: Arc<AtomicBool>,
     active: Arc<AtomicUsize>,
+    jobs: SyncSender<Job>,
 }
 
 impl ControlHandle {
+    /// A way to put requests into the node's queue from another listener (the miner service).
+    pub(crate) fn job_sender(&self) -> SyncSender<Job> {
+        self.jobs.clone()
+    }
+
     /// Connections being served now.
     pub fn connections(&self) -> usize {
         self.active.load(Ordering::SeqCst)
@@ -148,6 +156,7 @@ pub fn start_with(
     let (tx, rx) = sync_channel::<Job>(QUEUE);
     let stop = Arc::new(AtomicBool::new(false));
     let active = Arc::new(AtomicUsize::new(0));
+    let jobs = tx.clone();
     {
         let (stop, active) = (Arc::clone(&stop), Arc::clone(&active));
         thread::spawn(move || {
@@ -177,7 +186,12 @@ pub fn start_with(
         });
     }
     Ok((
-        ControlHandle { addr, stop, active },
+        ControlHandle {
+            addr,
+            stop,
+            active,
+            jobs,
+        },
         ControlHook {
             rx,
             shutdown,

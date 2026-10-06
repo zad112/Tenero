@@ -12,6 +12,7 @@ pub mod control;
 pub mod daemon;
 pub mod log;
 pub mod miner_report;
+pub mod miner_service;
 pub mod private_dir;
 pub mod remote_miner;
 pub mod seedcheck;
