@@ -2,7 +2,7 @@
 
 **Read this first.** Tenero is an experiment: **unaudited, one developer, no value, and the network will be reset.** Do not put anything on it that you cannot lose. The only place a
 "stop mining" notice is ever posted is the pinned issue, https://github.com/zad112/Tenero/issues/1 (only the owner can post there): subscribe to it, and look at it before you start a miner.
-This guide is for the `alpha` network of the test releases (the latest is `v0.1.0-alpha.3`). Everything here has been run by the author on one Windows 11 machine; the Linux build has been run once, as a node in WSL2 on that machine (it served and synced the 16-block chain); **the Linux wallet app, the GPU miner on Linux and a native Linux machine are untried**.
+This guide is for the `alpha` network of the test releases (the latest is `v0.1.0-alpha.4`). Everything here has been run by the author on one Windows 11 machine; the Linux build has been run once, as a node in WSL2 on that machine (it served and synced the 16-block chain); **the Linux wallet app, the GPU miner on Linux and a native Linux machine are untried**.
 
 ## What to expect to break
 
