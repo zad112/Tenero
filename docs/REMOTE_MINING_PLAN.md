@@ -1,6 +1,6 @@
 # Remote mining: a miner that uses someone else's node (a PROPOSED design, nothing is built)
 
-**Status: a draft by the author, 2026-10-06, for the owner to decide. Nothing here exists in the code.** Tenero is unaudited and
+**Status (2026-10-06): the first step is BUILT and tested on one computer, not yet tried across a network or with a GPU: the node's miner service (`crates/tenero-app/src/miner_service.rs`, settings `miner_listen`, `miner_key`, `miner_max`, `miner_rate`), the miner's `--node` and `--key`, and the miner's checks of every template (`remote_miner::check_template`). Everything after it (open to anyone, a pool and its shares, asking two nodes) is NOT built.** Tenero is unaudited and
 experimental; this document is a plan and a list of risks, not a promise. Wallet access to a remote node is a later step
 (see "After the miner") and is not designed here.
 
@@ -130,6 +130,8 @@ in ways that change the rules above:
   separate design document, and **a pool does not exist for Tenero today, and no one has said they will run one**.
 
 What stays the same for both: the separate listener, the allowlist idea, Noise, the rate limits and the opt-in operator.
+
+**The pool interface is written down first, as a draft standard: `docs/POOL_PROTOCOL.md`** (owner's rule, 2026-10-06: set the standard before any pool exists, so every pool and every miner that follows it works together). It defines the messages (`hello`, `job`, `submit_share`, `share_result`, `set_share_target`), a nonce range for each miner, the share rules, how the miner tells the solo service from a pool (a different handshake prologue and a different flag, `--pool`), what a miner can and cannot check, and a conformance kit (`tenero-poolcheck`) so that "compatible" can be tested. Nothing in it is built.
 
 ## How the first step is tested
 

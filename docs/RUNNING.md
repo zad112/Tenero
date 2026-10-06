@@ -57,6 +57,7 @@ parse is an error that names the setting; nothing silently falls back to a defau
 | `peers` | how many peers to aim for | 50 |
 | `max_inbound` | the most inbound peers; **0 means no limit set by the program** (your machine's own limits and the per-connection budgets still apply: on Linux raise the open-files limit if you expect many, `LimitNOFILE` in a systemd unit). Set a number if you want a limit. A full node (one with a limit that is reached) drops an inbound peer that has done nothing for 10 minutes to make room for a newcomer | 0 (no limit; it was 64 until 2026-10-05) |
 | `allow_private_peers` | dial and accept addresses such as 127.0.0.2 and 10.x.x.x | yes on `test`, no on `dev` and `alpha` |
+| `miner_listen`, `miner_key`, `miner_max`, `miner_rate` | the **miner service** (`docs/REMOTE_MINING_PLAN.md`): `miner_listen` is an `ip:port` (the port the plan proposes is 38334) where **miners on other computers** may ask this node for a block and hand one back; it answers only `info`, `block_template` and `submit_block`, over an encrypted channel. `miner_key` is 64 hexadecimal digits (32 random bytes, which you make and give to the miners): **required** with `miner_listen` in this first version, so only miners you give the key to can connect. `miner_max` is the most miners at once and `miner_rate` the most requests one address may make in a minute. Off unless `miner_listen` is set. **Do not run it on a node that matters until the limits have been measured: they are not.** | off; 8; 120 |
 | `control` | where the control interface listens (**must be a loopback address**) | `127.0.0.1:18332` (`test`), `127.0.0.1:28332` (`dev`), `127.0.0.1:38332` (`alpha`) |
 | `prune_keep` | `0` keeps every block in full (an **archive** node); `N` (at least 1000; the design proposes 5,500) keeps the proofs of the last `N` blocks only (a **pruned** node). Older blocks are kept in pruned form; a node syncing from scratch will not use a pruned peer that has already thrown away what it needs | 0 |
 | `assume_valid` | `height:blockid` (64 hexadecimal digits): trust that blocks up to there have valid proofs and skip checking them while syncing (`docs/M8_PLAN.md`, M8.3: what this trusts is written there). **Off unless you set it.** | off |
@@ -193,6 +194,12 @@ no node settings.
   (the test network), or `cpu` or `gpu` (the dev network's real proof of work), and a backend that does not fit the node's
   network is refused with a message. `--cores`, `--gpu-device`, `--gpu-batch`, `--pace`, `--log-level`, `--log-file` and
   `--status-every` work as the node's settings of the same names; `tenero-miner help` lists them.
+* **A node on another computer:** `--node HOST:PORT --key HEX` (instead of `--data` and `--control`) connects to that node's miner
+  service (`miner_listen` and `miner_key` above) over an encrypted channel. The miner then **checks every block it is given**: it
+  refuses one whose coinbase does not pay `--address`, whose header does not match its body, or that is for another height or
+  tip, because a node you do not run could otherwise put its own address in the reward. It cannot check that the difficulty is
+  right or that the node's chain is the real one: a bad node can waste your hashing (see `docs/REMOTE_MINING_PLAN.md`). It asks
+  once a second, so the node's default of 120 requests a minute is enough.
 * **The node checks every block completely.** A found block goes to the node as a local block, so the node's own
   proof-of-work and proof checks decide whether it joins the chain; the miner only reports what the node said (in the chain,
   lost a race, or refused).

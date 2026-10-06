@@ -26,6 +26,8 @@ by `crates/tenero-app/tests/control_vectors.rs` and `reference/tests/test_vector
   or is silent for 10 minutes, is closed; at most 64 requests wait for the node (past that the answer is "the node is
   busy"); the node answers at most 32 requests each time it looks, so a flood cannot starve the network code.
 
+**A miner on another computer does not use this port.** It uses the node's separate miner service (`docs/REMOTE_MINING_PLAN.md`, `crates/tenero-app/src/miner_service.rs`), which answers only `info` (trimmed), `block_template` and `submit_block`, with the same encodings as here, over an encrypted channel and behind a pre-shared key. Everything on this page about loopback and the cookie is unchanged.
+
 **What this does not give:** it is not encrypted (the bytes stay on the machine); it cannot tell two programs of the same
 user apart; and anything holding the cookie may read the whole chain, send transactions and ask the node to stop.
 
