@@ -12,6 +12,8 @@
 
 Inspired by Monero's design ideas; not affiliated with or endorsed by the Monero project.
 
+**Alpha testers can join the Discord server: <https://discord.gg/QzfqaGDVcm>.** It is for questions, bug reports and hardware numbers. Nothing said there is an official notice: the only place a "stop mining" notice is posted is the pinned [issue #1](https://github.com/zad112/Tenero/issues/1), and only the author can post there. Only download the programs from this repository's [Releases](../../releases) page, whatever a link on Discord says.
+
 ## Where it stands (2026-10-05)
 
 | | |
