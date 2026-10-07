@@ -238,16 +238,29 @@ fn settings_for_beta() {
     assert_eq!(c.network, Network::Beta);
     assert_eq!(c.control.port(), 38342);
     assert!(!c.allow_private_peers);
-    // the author's beta seed is built in (not the alpha one), and the list passes the checks a program can make
-    assert_eq!(tenero_app::config::BETA_SEEDS, ["195.26.244.245:38343"]);
+    // the author's two beta seeds are built in (not the alpha one: the old alpha seed's machine is the second beta seed, on the beta port),
+    // and the list passes the checks a program can make (public, listed once, no two in one network group)
+    assert_eq!(
+        tenero_app::config::BETA_SEEDS,
+        ["195.26.244.245:38343", "194.238.27.60:38343"]
+    );
     assert!(tenero_app::config::check_seed_list(tenero_app::config::BETA_SEEDS).is_ok());
     assert_eq!(c.seeds, tenero_app::config::BETA_SEEDS.to_vec());
     assert!(!c
         .seeds
         .iter()
         .any(|s| tenero_app::config::ALPHA_SEEDS.contains(&s.as_str())));
+    // the two are on different hosts and in different network groups, so a node can hold a connection to each
+    let seeds = tenero_app::config::BETA_SEEDS;
+    assert_ne!(
+        tenero_net::addrbook::group_of(seeds[0]),
+        tenero_net::addrbook::group_of(seeds[1])
+    );
     let c = config_for("beta", "seed = 203.0.113.9:38343\n").unwrap();
-    assert!(c.seeds.contains(&"203.0.113.9:38343".to_string()) && c.seeds.len() == 2);
+    assert!(
+        c.seeds.contains(&"203.0.113.9:38343".to_string())
+            && c.seeds.len() == tenero_app::config::BETA_SEEDS.len() + 1
+    );
     let c = config_for("beta", "no_builtin_seeds = yes\n").unwrap();
     assert!(c.seeds.is_empty());
     let e = config_for("beta", "mine = sha256\nmine_to = x\n").unwrap_err();

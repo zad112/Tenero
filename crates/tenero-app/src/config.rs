@@ -113,10 +113,11 @@ pub enum MineMode {
 /// (`THREAT_MODEL.md` C1). That is the state of an experiment, not a launched network.
 pub const ALPHA_SEEDS: &[&str] = &["194.238.27.60:38333"];
 
-/// The seed addresses built into the program for the `beta` network: ONE, the author's second server (2026-10-07; 16 GB, `docs/RUNNING_A_SEED.md`), which
-/// serves beta from its first block. As for alpha, **one operator is below the policy's three** (`docs/SEED_POLICY.md`, `THREAT_MODEL.md` C1): an experiment, not a
-/// launched network. The author runs both networks' seeds, so they are one operator.
-pub const BETA_SEEDS: &[&str] = &["195.26.244.245:38343"];
+/// The seed addresses built into the program for the `beta` network: TWO, both the author's servers, in different network groups (`check_seed_list`):
+/// the second server, 195.26.244.245 (2026-10-07; 11 GiB), which serves beta from its first block, and the first one, 194.238.27.60 (the old `alpha` seed's
+/// machine, a beta seed since 2026-10-07; `docs/SERVER_UPGRADE_BETA2.md`). As for alpha, **one operator is below the policy's three** (`docs/SEED_POLICY.md`,
+/// `THREAT_MODEL.md` C1): two servers are two machines, not two independent operators, so if the author is gone both are. An experiment, not a launched network.
+pub const BETA_SEEDS: &[&str] = &["195.26.244.245:38343", "194.238.27.60:38343"];
 
 impl Network {
     /// The seeds built into the program for this network (none for the private `test` and `dev` networks).
