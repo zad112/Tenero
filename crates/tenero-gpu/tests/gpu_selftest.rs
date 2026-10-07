@@ -10,6 +10,7 @@ use tenero_core::hash::{hex_lower, sha256};
 use tenero_core::matmulhash::{self as mh, Dataset, Params};
 use tenero_core::u256::U256;
 use tenero_core::vectors::{hex, load};
+use tenero_gpu::group::SliceGrouper;
 use tenero_gpu::{DeviceDataset, Gpu};
 
 const NEEDS_GPU: &str = "needs an NVIDIA GPU and the CUDA toolkit";
@@ -219,6 +220,57 @@ fn a_large_batch_matches_the_cpu_attempt_for_attempt() {
                 "nonce {nonce}"
             );
         }
+    }
+}
+
+/// What the miner does: nonces chosen in groups that read the same slice, a multiply algorithm picked by timing, and two
+/// batches on the GPU at once. Every attempt must still be the CPU's, bit for bit, and a third batch must be refused.
+#[test]
+#[ignore = "needs an NVIDIA GPU and the CUDA toolkit"]
+fn grouped_and_pipelined_batches_match_the_cpu_whatever_multiply_algorithm_is_chosen() {
+    let g = gpu();
+    let p = Params {
+        m: 32,
+        k: 1024,
+        nb: 1024,
+        num_blocks: 8,
+    };
+    let seed = mh::epoch_seed(2);
+    let cpu = Dataset::build(&p, &seed, p.num_blocks, 1).unwrap();
+    let dev = g.build_dataset(&p, &seed, p.num_blocks).unwrap();
+    let header = [0x5au8; 32];
+    for group in [1usize, 4, 8] {
+        let mut engine = g.attempt_engine(&dev, 32).unwrap();
+        let times = engine.tune(group, 4).unwrap();
+        assert!(
+            times.iter().any(|t| t.is_finite()),
+            "group {group}: no algorithm ran"
+        );
+        let mut grouper = SliceGrouper::new(header, p.num_blocks, group, u64::MAX - 40);
+        let mut sent = vec![];
+        for _ in 0..2 {
+            let b = grouper.next_batch(32 / group);
+            sent.push(b.nonces);
+            engine.submit(b.seeds, b.slices).unwrap();
+        }
+        assert_eq!(engine.in_flight(), 2);
+        let b = grouper.next_batch(1);
+        assert!(
+            engine.submit(b.seeds, b.slices).is_err(),
+            "a third batch in flight"
+        );
+        for nonces in sent {
+            let got = engine.collect().unwrap().unwrap();
+            assert_eq!(got.len(), nonces.len());
+            for (nonce, a) in nonces.iter().zip(&got) {
+                assert_eq!(
+                    *a,
+                    mh::compute_attempt(&cpu, &header, *nonce).unwrap(),
+                    "group {group}, nonce {nonce}"
+                );
+            }
+        }
+        assert!(engine.collect().unwrap().is_none());
     }
 }
 
