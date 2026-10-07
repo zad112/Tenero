@@ -1,6 +1,6 @@
 # The pool protocol: how a miner talks to a mining pool (a DRAFT standard, version 1; nothing is built)
 
-**Status (2026-10-07): a draft by the author; the owner has decided its open points (see "Decisions"). Nothing here exists in the code yet. Tenero is unaudited and experimental; no pool exists and nobody has said they will run one.** The point of writing it now, before any pool exists, is that every pool and every miner that follows this page can work together: a miner written to it connects to any pool written to it. The owner's rule (2026-10-06): *set the standard first.*
+**Status (2026-10-07): a draft by the author; the owner has decided its open points (see "Decisions"). **Only the messages exist in the code** (`crates/tenero-app/src/pool.rs`, checked against golden vectors from an independent Python reference); no pool and no pool miner exists. Tenero is unaudited and experimental; no pool exists and nobody has said they will run one.** The point of writing it now, before any pool exists, is that every pool and every miner that follows this page can work together: a miner written to it connects to any pool written to it. The owner's rule (2026-10-06): *set the standard first.*
 
 This is **not** the miner service of `docs/REMOTE_MINING_PLAN.md`. That service is solo mining on someone else's node: the node builds the whole block and the reward goes to **the miner**. In a pool the reward goes to **the pool**, the miner is paid by the pool later, and the miner works on a header the pool built. The two must never be mistaken for each other (see "Two modes that cannot be confused").
 
@@ -12,27 +12,34 @@ Binary frames, an encrypted channel, jobs, a share target and per-miner nonce ra
 
 * The same **Noise** channel as the peer-to-peer code and the miner service (`Noise_XX_25519_ChaChaPoly_BLAKE2s`, `crates/tenero-net/src/noise.rs`), with its own prologue, `tenero pool v1`, so a pool port cannot be mistaken for any other Tenero port and the handshake fails at once if it is.
 * **No pre-shared key**: a pool is public. The encryption hides the traffic from someone on the path and stops them changing it. It does **not** tell the miner who the pool is: nothing pins the pool's key to anyone (`noise.rs` says so), so a person who sits between a miner and a pool can take the miner's work. A miner may be given the pool's public key out of band (`--pool-key`) to refuse any other; a pool should publish its key.
-* Frames are those of the control protocol (`docs/CONTROL_PROTOCOL.md`): `length u32 little-endian | kind u8 | payload`, integers little-endian, text as UTF-8 with a `u32` length, flags 0 or 1, strict decoding (an unknown kind, a short or long payload, a count over its limit or a bad flag closes the connection). A frame is at most 64 KiB in this protocol.
+* Frames are those of the control protocol (`docs/CONTROL_PROTOCOL.md`): `length u32 little-endian | kind u8 | payload`, integers little-endian, text as UTF-8 with a `u32` length, flags 0 or 1, strict decoding (an unknown kind, a short or long payload, a count over its limit or a bad flag closes the connection). A frame is at most 4 MiB in this protocol.
 
 ## Messages
 
-Miner to pool (kinds 1 to 15), pool to miner (kinds 0x80 and up). The answer to request `k` is `k | 0x80` where there is one.
+**The exact encodings are in `tests/vectors/pool.json` (35 valid messages and 126 malformed ones, made by the independent Python reference `reference/tools/make_vectors_pool.py`) and in `crates/tenero-app/src/pool.rs` (the messages only: no pool and no pool miner exists).** This table says what they are. Integers are little-endian; "text" is a `u32` length then UTF-8; a "flag" is one byte, 0 or 1; "(32)" is a fixed byte string; a coinbase or transaction is the consensus encoding of `docs/CONSENSUS_V2.md`.
+
+Miner to pool: kinds 1 to 5. Pool to miner: 0x80 and up. A pool message is never a valid miner message and the reverse (an unknown kind). The answer to request `k` is `k | 0x80` where there is one.
 
 | kind | message | payload | notes |
 |---|---|---|---|
-| 1 | `hello` | lowest version u16, highest version u16, **capabilities u32**, network (text, at most 32), payout address (text, at most 256), worker (text, at most 32), agent (text, at most 64) | the first message; nothing else is accepted before it. The **payout address** is the miner's own wallet address: the pool uses it to credit the miner. The network is `alpha`, `dev` or `test`; a pool for another network refuses |
-| 0x81 | `hello_ok` | version u16, **capabilities u32**, session u64, nonce prefix bits u8, nonce prefix u64, share target (32, big-endian), pool name (text, at most 64), **pays the pool** flag (always 1), **pool payout** (the coinbase output fields a declared job must pay, see "Job declaration") | the version is the highest both support. The flag is there so a miner can refuse a pool that does not say it plainly |
+| 1 | `hello` | lowest version u16, highest version u16, capabilities u32, network (text, at most 32), payout address (text, at most 256), worker (text, at most 32), agent (text, at most 64) | the first message; nothing else is accepted before it. The versions are 1 <= lowest <= highest. The **payout address** is the miner's own wallet address: the pool uses it to credit the miner. The network is `alpha`, `dev` or `test`; a pool for another network refuses. Unknown capability bits are ignored |
+| 0x81 | `hello_ok` | version u16 (at least 1), capabilities u32, session u64, nonce prefix bits u8 (0 to 32), nonce prefix u64 (must fit in the bits), share target (32, big-endian; **not zero and not all ones**), pool name (text, at most 64), **pays the pool** flag | the version is the highest both support. The flag is always 1 and is there so a miner can refuse a pool that does not say it plainly |
 | 2 | `submit_share` | job id u64, nonce u64, mix (64) | a solution to the share target of a job |
-| 0x82 | `share_result` | job id u64, flag accepted, reason u8, text (at most 128) | reasons below. **Every share gets an answer** |
-| 3 | `ping` | token u64 | the miner may check the pool is alive; the pool answers `pong` (0x83) with the token |
-| 0x90 | `job` | job id u64, height u64, flag **clean**, header (146), block target (32, big-endian), seconds to live u32 | work. `clean = 1` means the tip has moved or the pool has changed its mind: **every earlier job is dead and the miner must drop it at once**. The header has its nonce and mix empty (zero) |
-| 0x91 | `set_share_target` | share target (32, big-endian) | the pool changes how hard a share is for this miner, from the next job on (the pool decides; see "Share difficulty") |
-| 4 | `declare_job` | see "Job declaration" | optional: only if both sides set the capability bit |
-| 0x84 | `declare_result` | see "Job declaration" | |
-| 5 | `provide_txs` | see "Job declaration" | |
-| 0xFF | `error` | text (at most 128) | followed by the pool closing the connection |
+| 0x82 | `share_result` | job id u64, flag accepted, reason u8 (0 to 6), text (at most 128) | **accepted is 1 exactly when the reason is 0.** Every share gets an answer |
+| 3 | `ping` | token u64 | the miner may check the pool is alive; the pool answers `pong` (0x83) with the same token |
+| 0x90 | `job` | job id u64, height u64, flag **clean**, header (146 bytes, **nonce 0 and mix all zero**), block target (32, big-endian), seconds to live u32 (1 to 3600) | work. `clean = 1` means the tip has moved or the pool has changed its mind: **every earlier job is dead and the miner must drop it at once** |
+| 0x91 | `set_share_target` | share target (32, big-endian; not zero, not all ones) | the pool changes how hard a share is for this miner, from the next job on (see "Share difficulty") |
+| 0x92 | `set_payout` | height u64, one-time address (32), view tag (3), ephemeral key (32), anchor (16) | **decided 2026-10-07:** where the reward of a block at `height` goes (the pool's); a declared job must pay exactly this. Sent for each new height to miners that declared the capability |
+| 4 | `declare_job` | declaration id u64, height u64, previous block id (32), timestamp u64, a coinbase, then a count u32 (0 to 8192) and that many transaction ids (32 each) | optional (capability bit 0 on both sides); see "Job declaration" |
+| 0x84 | `declare_result` | declaration id u64, status u8, then: **0 accepted**: job id u64 and a header (146, nonce and mix empty); **1 refused**: reason u8 (1 to 7) and text (at most 128); **2 missing**: a count u32 (1 to 8192) and that many ids (32 each) | the answer to `declare_job` |
+| 5 | `provide_txs` | declaration id u64, a count u32 (1 to 64) and that many whole transactions | the answer to "missing". The pool also limits the total to 2 MB, which is the pool's rule, not the encoding's |
+| 0xFF | `error` | text (at most 128) | the pool then closes the connection |
 
-**Reasons in `share_result`:** 0 accepted, 1 stale (the job is dead: the tip moved or the job expired), 2 duplicate (the same nonce for the same job), 3 above the share target, 4 the mix is wrong (the proof of work does not reproduce it), 5 unknown job, 6 not allowed (for example, too many bad shares in a row: the pool then closes the connection).
+A frame is `length u32 | body` with a length of 1 to **4 MiB** (a `declare_job` of 8192 ids is 262 KB and a `provide_txs` of 64 transactions can be 2 MB).
+
+**Reasons in `share_result`:** 0 accepted, 1 stale (the job is dead: the tip moved or the job expired), 2 duplicate (the same nonce for the same job), 3 above the share target (also: outside the miner's nonce prefix), 4 the mix is wrong (the proof of work does not reproduce it), 5 unknown job, 6 not allowed (for example, too many bad shares in a row: the pool then closes the connection).
+
+**Reasons in a refused `declare_result`:** 1 not on the pool's tip, 2 the coinbase does not pay the pool's payout, 3 too many transactions, 4 against the pool's policy, 5 too many declarations in a minute, 6 a transaction is not valid, 7 anything else.
 
 ### What a share is
 
@@ -56,7 +63,7 @@ The pool recomputes the proof of work for every share (it needs the epoch's data
 
 **Capability:** bit 0 of `capabilities` (0x01) means "can do job declaration". A miner declares only if the pool's `hello_ok` has the bit.
 
-**What the pool tells the miner first:** in `hello_ok` the **pool payout** (a one-time address, view tag, ephemeral key and anchor: the fields of a coinbase output, `crates/tenero-node`'s `Payout`). A declared job's coinbase must pay **exactly this**, the whole reward, as one output with no extra data. This is what lets the pool pay its miners: the reward is the pool's, as in a plain job. (For the key exchange to be readable the pool needs a payout for the HEIGHT: so the pool sends a fresh payout for each height in its `job`-style updates; the exact message is an open point below.)
+**What the pool tells the miner first:** in a `set_payout` message the **pool payout** for a height (a one-time address, view tag, ephemeral key and anchor: the fields of a coinbase output, `crates/tenero-node`'s `Payout`). A declared job's coinbase must pay **exactly this**, the whole reward, as one output with no extra data. This is what lets the pool pay its miners: the reward is the pool's, as in a plain job. (A coinbase's key exchange binds the height, so the pool sends a payout for each height in a `set_payout` message.)
 
 **The flow:**
 1. The miner builds a block template on its own node with the pool's payout (the node's `block_template`, as the miner service does today) and sends **`declare_job`**: a declaration id u64, the height u64, the previous block id (32), the timestamp u64, the whole coinbase (the consensus encoding), and the **transaction ids** (a count of 0 to 8192, then 32 bytes each). The block's `tx_root` is the Merkle root of the coinbase id and these ids (`ids::block_tx_root`), so the pool computes it itself; the miner does not send it.
@@ -115,7 +122,7 @@ Before this is called a standard it needs, in this repository:
 4. **Default port 38335** for a pool; a pool may use any port.
 5. **Job declaration is part of version 1**, as an optional capability (above): decided.
 
-**Still open inside job declaration:** how the pool hands the miner a payout for each new height (a message of its own, or in every `job`); whether the miner may also send the block's transactions in `declare_job` when the pool has none of them (a size and abuse trade-off); and whether a pool must support it to be called compatible (the author suggests not: a pool may refuse it, and `tenero-poolcheck` tests it only if the bit is set).
+**Decided 2026-10-07:** the pool hands the miner the payout for each new height in a **message of its own** (`set_payout`, 0x92), so ordinary jobs stay small. **Still open inside job declaration:** whether the miner may also send the block's transactions in `declare_job` when the pool has none of them (a size and abuse trade-off); and whether a pool must support it to be called compatible (the author suggests not: a pool may refuse it, and `tenero-poolcheck` tests it only if the bit is set).
 
 ## Threat model
 

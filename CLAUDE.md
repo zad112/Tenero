@@ -23,6 +23,7 @@ cd ..; python reference/tools/make_vectors.py --check        # do the golden vec
 python reference/tools/make_vectors_v2.py --check            # the version 2 data-model vectors (a DRAFT design)
 python reference/tools/make_vectors_wire.py --check          # the peer-to-peer wire protocol vectors (a DRAFT)
 python reference/tools/make_vectors_control.py --check       # the control protocol vectors
+python reference/tools/make_vectors_pool.py --check          # the pool protocol vectors (a DRAFT: nothing speaks it yet)
 python reference/tools/make_vectors_interim.py --check       # the interim wallet scheme vectors
 python reference/tools/make_vectors_proofs.py --check        # the message-signature and payment-proof vectors
 $env:TENERO_SLOW_VECTORS = "1"; python -m pytest reference/tests/test_vectors.py -q     # also the deep vectors
