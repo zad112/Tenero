@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use tenero_core::matmulhash::{self as mh, Params};
 use tenero_core::v2::ids;
+use tenero_gpu::gather::GatherEngine;
 use tenero_gpu::group::SliceGrouper;
 use tenero_gpu::{DeviceDataset, Gpu};
 
@@ -35,6 +36,8 @@ pub struct GpuBackend {
     epoch_blocks: u64,
     batch: usize,
     cache: Vec<(u64, Arc<DeviceDataset>)>,
+    /// From this height on, jobs need the GATHERED attempt (the network's gather fork; `u64::MAX`: never).
+    gather_from: u64,
 }
 
 impl GpuBackend {
@@ -56,7 +59,15 @@ impl GpuBackend {
             epoch_blocks,
             batch,
             cache: Vec::new(),
+            gather_from: u64::MAX,
         })
+    }
+
+    /// The same backend, mining the GATHERED attempt for jobs at `height` and above (the network's gather fork height,
+    /// `Network::gather_from`). Without it every job gets the first design, which a gathered chain refuses.
+    pub fn gathered_from(mut self, height: u64) -> GpuBackend {
+        self.gather_from = height;
+        self
     }
 
     pub fn device_name(&self) -> &str {
@@ -106,10 +117,14 @@ impl Backend for GpuBackend {
             params,
             batch,
             cache,
+            gather_from,
             ..
         } = self;
         let (data, _) = ensure_dataset(gpu, cache, params, epoch, counters)?;
         let hh = ids::header_hash(&job.header);
+        if job.height >= *gather_from {
+            return mine_gathered(gpu, &data, *batch, &hh, job, counters);
+        }
         let mut engine = gpu
             .attempt_engine(&data, *batch)
             .map_err(|e| e.to_string())?;
@@ -155,6 +170,43 @@ impl Backend for GpuBackend {
                 }
             }
         }
+    }
+}
+
+/// A job at or above the gather fork: nonces in plain order (grouping cannot help a gathered attempt), one batch at a time.
+fn mine_gathered(
+    gpu: &Gpu,
+    data: &DeviceDataset,
+    batch: usize,
+    hh: &[u8; 32],
+    job: &Job,
+    counters: &Counters,
+) -> Result<Option<Solution>, String> {
+    let mut engine = GatherEngine::new(gpu, data, batch).map_err(|e| e.to_string())?;
+    let mut nonce = job.first_nonce();
+    loop {
+        if job.stale.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        let nonces: Vec<u64> = (0..batch as u64).map(|i| nonce.wrapping_add(i)).collect();
+        let seeds: Vec<[u8; 32]> = nonces.iter().map(|&n| mh::attempt_seed(hh, n)).collect();
+        let attempts = engine.attempts(&seeds, false).map_err(|e| e.to_string())?;
+        counters.attempts.fetch_add(batch as u64, Ordering::Relaxed);
+        for (i, (n, a)) in nonces.iter().zip(&attempts).enumerate() {
+            if mh::meets_target(&a.digest, &job.target) {
+                // the rest of the batch was made, but cannot make another block of this job
+                counters
+                    .discarded
+                    .fetch_add((batch - 1 - i) as u64, Ordering::Relaxed);
+                counters.found.fetch_add(1, Ordering::Relaxed);
+                return Ok(Some(Solution {
+                    job_id: job.id,
+                    nonce: *n,
+                    mix: a.mix,
+                }));
+            }
+        }
+        nonce = nonce.wrapping_add(batch as u64);
     }
 }
 

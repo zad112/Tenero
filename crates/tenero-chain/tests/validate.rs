@@ -787,6 +787,89 @@ fn a_forged_mix_that_meets_the_target_is_caught_by_the_full_matmulhash_check() {
     ));
 }
 
+/// The gather fork (`CONSENSUS.md` 8.3): below the fork height a block needs the first design's mix, from it on the
+/// gathered one, and a block mined with the other design is refused on each side, including right at the boundary.
+#[test]
+fn across_the_gather_fork_each_side_accepts_only_its_own_design() {
+    let small = Params {
+        m: 8,
+        k: 64,
+        nb: 64,
+        num_blocks: 8,
+    };
+    const FORK: u64 = 4;
+    let pow = MatmulPow::new(small, 3, 1).unwrap().gathered_from(FORK);
+    assert_eq!(pow.gather_from(), FORK);
+    let params = ChainParams::version_2(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
+    let db = TempDb::new("gatherfork");
+    let store = Store::open(&db.0, LABEL, PowKind::Matmul).unwrap();
+    let proofs = ProofsNotChecked;
+    let mut rng = Rng(0x0123_4567_89ab_cdef);
+    let mut ts = T0;
+
+    // a block for the next height, mined with the gathered design or the first one
+    let mut make = |v: &Validator<'_>, gathered: bool, ts: u64| -> Block {
+        let next = v.next_block().unwrap();
+        let coinbase = Coinbase {
+            version: VERSION,
+            height: next.height,
+            outputs: vec![CoinbaseOutput {
+                onetime_address: rng.bytes(),
+                amount: next.reward,
+                view_tag: [0; 3],
+                ephemeral_pubkey: rng.bytes(),
+                anchor_enc: [0; 16],
+            }],
+            extra: vec![],
+        };
+        let mut b = Block {
+            header: BlockHeader {
+                version: VERSION,
+                prev_id: next.prev_id,
+                timestamp: ts,
+                tx_root: ids::block_tx_root(&coinbase, &[]).unwrap(),
+                nonce: 0,
+                mix: [0; 64],
+            },
+            coinbase,
+            transactions: vec![],
+        };
+        let data = pow.dataset_for(next.height).unwrap();
+        let hh = ids::header_hash(&b.header);
+        for nonce in 0.. {
+            let a = if gathered {
+                matmulhash::compute_gathered_attempt(&data, &hh, nonce).unwrap()
+            } else {
+                matmulhash::compute_attempt(&data, &hh, nonce).unwrap()
+            };
+            if U256::from_be_bytes(&a.digest) < next.target {
+                b.header.nonce = nonce;
+                b.header.mix = a.mix;
+                break;
+            }
+        }
+        b
+    };
+
+    for h in 1..=6u64 {
+        let v = Validator::new(&store, &params, &pow, &proofs);
+        let before = store.state_digest().unwrap();
+        let wrong = make(&v, h < FORK, ts);
+        assert!(
+            matches!(v.accept_block(&wrong, NOW), Err(BlockError::PowInvalid(_))),
+            "height {h}: the other design was accepted"
+        );
+        assert_eq!(store.state_digest().unwrap(), before);
+        let right = make(&v, h >= FORK, ts);
+        assert!(
+            matches!(v.accept_block(&right, NOW).unwrap(), Accepted::Added(_)),
+            "height {h}: its own design was refused"
+        );
+        ts += 60;
+    }
+    assert_eq!(store.tip().unwrap().0, 6);
+}
+
 // ------------------------------------------------------------------ the body
 
 #[test]

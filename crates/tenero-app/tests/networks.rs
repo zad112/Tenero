@@ -157,6 +157,26 @@ fn beta_has_the_parameters_of_alpha_except_the_old_limits() {
     }
 }
 
+/// The gather fork (decided by the owner 2026-10-07, beta then at height 280): beta and dev blocks need the gathered proof-of-work attempt from
+/// height 500, alpha never; the SHA-256 test network has no matmulhash. Checked on the checker the node really builds.
+#[test]
+fn the_gather_fork_is_at_500_on_beta_and_dev_and_never_on_alpha() {
+    use tenero_app::config::GATHER_FORK_HEIGHT;
+    assert_eq!(GATHER_FORK_HEIGHT, 500);
+    assert_eq!(daemon::gather_fork_of(Network::Beta).unwrap(), Some(500));
+    assert_eq!(daemon::gather_fork_of(Network::Dev).unwrap(), Some(500));
+    assert_eq!(
+        daemon::gather_fork_of(Network::Alpha).unwrap(),
+        Some(u64::MAX)
+    );
+    assert_eq!(daemon::gather_fork_of(Network::Test).unwrap(), None);
+    for n in Network::ALL {
+        if let Some(h) = daemon::gather_fork_of(n).unwrap() {
+            assert_eq!(h, n.gather_from(), "{}", n.name());
+        }
+    }
+}
+
 /// NO PREMINE, checked on the real genesis of every network: it creates no output, so every coin comes from a mined block, the owner's included.
 #[test]
 fn the_genesis_of_every_network_creates_no_output() {

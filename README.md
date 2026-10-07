@@ -63,7 +63,12 @@ Checking a block needs the dataset too: about **4.3 GiB of RAM**, and about 0.1 
 **The argument for ASIC resistance** is that an attempt is limited by how fast memory can be read (it reads a whole 16 MiB slice), which is what a GPU's memory system is built
 for, and a special-purpose chip would need the same memory to compete. **That is an argument, not a proof.** Specifically:
 
-* **Measured:** about **33,000 to 36,000 attempts a second** on one RTX 5070 Ti (batch 128 to 256), which is about 550 to 590 GB/s of slice reads by arithmetic; the CPU rate of a
+* **Found broken, and fixed by a fork at height 500 on `beta` and `dev` (2026-10-07):** in the first design the slice an attempt reads is known from two cheap
+  hashes of its nonce, so a miner can choose nonces 16 to a slice and multiply them against ONE read of it, which makes it limited by int8 multiply speed,
+  not memory. From height 500 an attempt instead gathers 2,048 columns of 8 KiB from the whole dataset, and memory is the limit again
+  ([`docs/CONSENSUS.md`](docs/CONSENSUS.md) 8.3). `alpha` keeps the first design.
+* **Measured** (one RTX 5070 Ti, [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)): about **45,000 attempts a second** with the gathered attempt, at the card's memory
+  bandwidth; with the first design about 120,000 to 130,000 with the grouping (33,000 to 36,000 without it). The CPU rate of a
   6-thread Ryzen 9 5900X is 164 attempts a second with a build tuned for that machine and 31.7 with the default build ([`docs/BENCHMARKS.md`](docs/BENCHMARKS.md); one machine, so
   treat them as examples).
 * **Simulated, not proven:** the dataset's dependency structure was measured on a small version, and the slowdown from keeping only part of the dataset is an estimate

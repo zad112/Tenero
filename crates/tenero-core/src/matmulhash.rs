@@ -265,9 +265,14 @@ pub fn make_x(seed: &[u8; 32], p: &Params) -> Vec<i8> {
 /// `C = X @ W` with exact integer arithmetic: an `m x nb` row-major int32 matrix. With
 /// `W[t][n] = raw[n*k + t]`, entry `(i, n)` is the dot product of row `i` of X with row `n` of `raw`.
 pub fn product(x: &[i8], slice: &[u8], p: &Params) -> Vec<i32> {
+    product_of_columns(x, |n| &slice[n * p.k..(n + 1) * p.k], p)
+}
+
+/// `C = X @ W` where column `n` of W is the `k` bytes `column(n)` (as int8): the product of both designs.
+fn product_of_columns<'a>(x: &[i8], column: impl Fn(usize) -> &'a [u8], p: &Params) -> Vec<i32> {
     let mut c = vec![0i32; p.m * p.nb];
     for n in 0..p.nb {
-        let w = &slice[n * p.k..(n + 1) * p.k];
+        let w = column(n);
         for i in 0..p.m {
             let row = &x[i * p.k..(i + 1) * p.k];
             c[i * p.nb + n] = row
@@ -352,6 +357,100 @@ pub fn compute_attempt(
         mix,
         digest,
     })
+}
+
+// ------------------------------------------------------------------ the gathered attempt (from the fork height)
+//
+// From a network's gather fork height on (beta and dev: 500; `docs/CONSENSUS.md` section 8.3), an attempt multiplies X by
+// `nb` columns picked one by one from the WHOLE dataset instead of one slice. The slice of the first design is two
+// cheap hashes of the nonce, so a miner can try nonces 16 to a slice and read each slice once for all 16, which makes
+// the proof of work limited by multiply speed, not memory (`THREAT_MODEL.md` E11); columns picked one by one from
+// 2^19 leave two attempts sharing about 8 of 2048, each column with different partners. Column `j` of the dataset is
+// bytes `[j*k, (j+1)*k)` of the whole dataset, so column `n` of slice `b` is column `b*nb + n`.
+
+/// The key of a gathered attempt's column picks: `SHA-256(seed || 0x02)`.
+pub fn pick_key(seed: &[u8; 32]) -> [u8; 32] {
+    sha256(&[seed, &[2u8]])
+}
+
+/// The `nb` dataset columns a gathered attempt reads: little-endian u32 word `n` of the ChaCha20 keystream of
+/// `pick_key(seed)` (counter 0, nonce 0, `ceil(nb / 16)` blocks), modulo `num_blocks * nb`.
+pub fn pick_columns(seed: &[u8; 32], p: &Params) -> Vec<u32> {
+    let columns = (p.num_blocks * p.nb) as u64;
+    let stream = chacha20::keystream(&pick_key(seed), p.nb.div_ceil(16), 0, [0; 3]);
+    stream
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .take(p.nb)
+        .map(|w| (u64::from(u32::from_le_bytes(*w)) % columns) as u32)
+        .collect()
+}
+
+/// `C = X @ W` where column `n` of W is dataset column `cols[n]` (`pick_columns`). Needs the whole dataset.
+pub fn gathered_product(x: &[i8], data: &Dataset, cols: &[u32]) -> Result<Vec<i32>, String> {
+    let p = data.params();
+    let columns = p.num_blocks * p.nb;
+    if data.slices() != p.num_blocks
+        || cols.len() != p.nb
+        || cols.iter().any(|&c| c as usize >= columns)
+    {
+        return Err("a gathered product needs the whole dataset and nb columns inside it".into());
+    }
+    let bytes = data.bytes();
+    Ok(product_of_columns(
+        x,
+        |n| {
+            let j = cols[n] as usize;
+            &bytes[j * p.k..(j + 1) * p.k]
+        },
+        p,
+    ))
+}
+
+/// The full recomputation of one GATHERED attempt (`Attempt::slice_index` is 0: there is no slice). Needs the WHOLE
+/// dataset, since the columns are anywhere in it.
+pub fn compute_gathered_attempt(
+    data: &Dataset,
+    header_hash: &[u8; 32],
+    nonce: u64,
+) -> Result<Attempt, String> {
+    let p = data.params();
+    if data.slices() != p.num_blocks {
+        return Err(format!(
+            "a gathered attempt needs the whole dataset ({} of {} slices built)",
+            data.slices(),
+            p.num_blocks
+        ));
+    }
+    let seed = attempt_seed(header_hash, nonce);
+    let c = gathered_product(&make_x(&seed, p), data, &pick_columns(&seed, p))?;
+    let sums = fold_sums(&c);
+    let mix = mix_bytes(&sums);
+    let digest = digest_of(&seed, &mix);
+    Ok(Attempt {
+        seed,
+        slice_index: 0,
+        sums,
+        mix,
+        digest,
+    })
+}
+
+/// The attempt a chain requires at `height`: gathered from `gather_from` on (`u64::MAX`: never), the first design
+/// before it.
+pub fn compute_attempt_at(
+    data: &Dataset,
+    header_hash: &[u8; 32],
+    nonce: u64,
+    height: u64,
+    gather_from: u64,
+) -> Result<Attempt, String> {
+    if height >= gather_from {
+        compute_gathered_attempt(data, header_hash, nonce)
+    } else {
+        compute_attempt(data, header_hash, nonce)
+    }
 }
 
 /// A hash is valid when, as a big-endian integer, it is strictly below the target.

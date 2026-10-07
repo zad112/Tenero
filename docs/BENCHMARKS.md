@@ -20,6 +20,68 @@ is one data point (KNOWN_ISSUES 13). Rerun it before relying on any figure.
 | cheap precheck (no dataset) | 0.2 us | not measured |
 | attempts/s, 6 threads | 31.7 | 164 |
 
+## GPU: attempts grouped by slice (measured on the owner's machine, 2026-10-07)
+
+**About 120,000 to 130,000 attempts/s on the RTX 5070 Ti, against 33,000 to 36,000 before: about 3.5 times.** Measured with
+`cargo run --release -p tenero-gpu --example gpu_bench -- --seconds 3` (and `--groups`, `--batches`, `--no-pipeline`, `--tune`)
+and with the miner's own speed test (`gpu_mining`, `how_many_attempts_per_second...`, 10 s per batch size), the card otherwise
+idle (the owner stopped their miner for it). One machine, one evening, single runs; earlier runs on this card varied by up to
+about 7 %, so read the second digit, not the third. **The proof of work is unchanged**: every attempt is the same attempt, the 12
+GPU tests (golden vectors, the full 256-slice vector, every attempt of grouped and pipelined batches against the CPU) pass, and a
+GPU-mined chain of 20 blocks was accepted in full by the node's CPU check.
+
+**What changed, and what each step gave** (pipelined, batch 256 to 512, except where said):
+
+| step | attempts/s |
+|---|---|
+| before (one multiply per attempt, batch 256) | about 35,000 |
+| attempts of a batch that happen to share a slice multiplied together (batch 256, nonces in plain order) | 47,000 |
+| nonces chosen 16 to a slice (`group::SliceGrouper`) | 97,000 to 98,000 |
+| + keystream and fold kernels with coalesced memory access (`kernels/fast.cu`) | 121,000 to 124,000 |
+| + two batches in flight (the CPU's hashing overlaps the GPU) | 126,000 to 127,000 |
+| groups of 32 instead of 16 | 129,000 to 130,000 (within noise of 16) |
+| the miner backend itself (`GpuBackend`, group 16, batch 32 / 64 / 128 / 256) | 119,966 / 123,888 / 122,210 / 124,847 |
+
+* **Why it works.** An attempt's slice is `attempt_slice(attempt_seed(header, nonce))`, two SHA-256 hashes, known before any
+  matrix work, and the miner chooses its nonces. So it can collect nonces by slice and multiply 16 attempts' X matrices (stacked:
+  a 1024 x 8192 matrix) by one read of the 16 MiB slice. The product of stacked rows is the stacked products, bit for bit.
+* **Where the time goes now** (Nsight Systems, group 16, per 512 attempts): the int8 multiply 3.1 ms (about 6 us an attempt;
+  34 G multiply-adds in about 96 us is about 350 T int8 operations a second, so the tensor cores, not memory, are the limit),
+  the fold 0.34 ms and the keystream 0.30 ms (each about 800 to 900 GB/s of memory traffic), the rest gaps.
+* **Choosing the multiply algorithm by timing** (`AttemptEngine::tune`) does not help at groups of 16 or 32: cuBLASLt's first
+  choice was the fastest once the timing went round different slices. Timed on one slice it picked a worse one (the slice stays
+  in the 48 MB L2 cache), which cost about 7 % in a real run. The miner does not tune.
+* **Video memory:** two sets of batch buffers (2 MiB per attempt of the batch), so 512 MiB at batch 256 on top of the dataset.
+* **This undercuts the README's ASIC argument** ("an attempt is limited by how fast memory can be read"): with grouping, an
+  attempt costs about 1 MiB of slice reads (16 MiB / 16) and its speed is set by int8 multiply throughput. A chip with fast
+  int8 units and modest memory bandwidth gains from this as much as a GPU does. Making it a consensus matter (for example a
+  slice that cannot be known without doing the work) is a design decision, not made here.
+
+## GPU: the gathered attempt (measured on the owner's machine, 2026-10-07, as a prototype; the rule on `beta` and `dev` from height 500, `CONSENSUS.md` 8.3)
+
+`cargo run --release -p tenero-gpu --example gather_bench -- --seconds 3`, the card otherwise idle, one run each. The design
+and why it was adopted are in `CONSENSUS.md` 8.3 and `THREAT_MODEL.md` E11. One batch at a time, no pipeline (as the miner does it).
+The column numbering was settled after these runs (`ceil(nb/16)` keystream blocks, the same at the real parameters), so the
+kernel measured is the one the miner uses.
+
+| | |
+|---|---|
+| device-to-device copy of 1 GiB (reads plus writes) | 823 to 847 GB/s |
+| reading gathered columns only, no multiply: 64 bytes of each column per step | 589 GB/s |
+| the same, 128 / 256 / 512 / 1024 bytes per step | 860 to 878 GB/s |
+| **honest gathered attempts** (batch 32 / 128 / 512) | **40,283 / 44,416 / 45,412 attempts/s** (676 to 762 GB/s of column reads) |
+| impossible best case, every attempt reads the same columns | 69,363 / 79,367 / 80,831 attempts/s |
+| the chain's design, for comparison (from the section above) | about 35,000 ungrouped, about 127,000 grouped |
+
+* **Memory is the limit of the honest gathered attempt**: 45,400 attempts/s is about 16 MiB of column reads plus about 2 MiB of
+  X and C traffic each, roughly 870 GB/s in all, the card's practical bandwidth.
+* **The first kernel read 64 bytes of each column per step** and reached about 28,000 attempts/s; the read-only test above showed
+  why (589 GB/s for that pattern) and the second kernel reads 128.
+* The kernel is hand-written (`kernels/gather.cu`: cp.async, ldmatrix, mma.sync m16n8k32), and its best case is about half of
+  what cuBLAS reaches on the slice design; a better kernel would raise the "same columns" row, not the honest one.
+* Grouping does not apply: no two attempts share more than a few of their 2,048 columns (8 on average), and each column has a
+  different set of sharers.
+
 ## GPU (the Rust engine, `crates/tenero-gpu`)
 
 **Measured** with `cargo run --release -p tenero-gpu --example gpu_bench` on the same machine (RTX 5070 Ti,

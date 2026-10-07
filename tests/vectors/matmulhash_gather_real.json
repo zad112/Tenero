@@ -1,0 +1,169 @@
+{
+ "attempts": [
+  {
+   "c_sha256": "05ca533d031e48e47d6f1f26662d548749ee06b561b424a1258489f976fbc776",
+   "columns_sha256": "61844e88f2dd210dfde9d2b196c8c324d7a7a2bdf08c2b7386d9dc5737f72dfc",
+   "digest": "5d6f56bd2ea35f6363e24b6ffcb6b94e9bc3e94f39c9f844ef2bba59ae10f42a",
+   "first_columns": [
+    252549,
+    10783,
+    308313,
+    315262,
+    480570,
+    233421,
+    191804,
+    481474
+   ],
+   "header_hash": "09cdde1a816a8ee11e52f00484ccaed332452c14b40af861107b1a8dd0d84761",
+   "mix": "8c8ac8481e20000006c30b1d1220000007aad768182000000ed8acf1dd1f0000ac6098ad00200000f4d95225c91f0000e63bac4bec1f0000cbf928083e200000",
+   "nonce": 0,
+   "pick_key": "e002784b64c0a877d5f06fc0d112d10a0886a2c1f5b6237a29ffb92e3b008b5b",
+   "seed": "c26f716f8631c12918f87e21047f5830228869cebaa7f79fb32d65be7ed798b1",
+   "sums": [
+    "0000201e48c88a8c",
+    "000020121d0bc306",
+    "0000201868d7aa07",
+    "00001fddf1acd80e",
+    "00002000ad9860ac",
+    "00001fc92552d9f4",
+    "00001fec4bac3be6",
+    "0000203e0828f9cb"
+   ],
+   "x_sha256": "ec9285e58a6cef13d064409e8eea2ba51ce255d3ef1efc268f78e5f247052f39"
+  },
+  {
+   "c_sha256": "ef08d5b2040bbc63eea552c6040e8c2b4a81f5388addd918a43cdd9a28a26eeb",
+   "columns_sha256": "e4074aa39522360bd61ea5f4a9c0f4dd3625cad15bca0ed364a7231c7cfa0853",
+   "digest": "917fcec63eecdc4f512b991169b2e55385eb0b8ab428190940ae0cdfd8c18199",
+   "first_columns": [
+    89420,
+    522755,
+    420134,
+    464448,
+    260870,
+    425198,
+    102429,
+    392137
+   ],
+   "header_hash": "09cdde1a816a8ee11e52f00484ccaed332452c14b40af861107b1a8dd0d84761",
+   "mix": "d9047bcaf81f00001b3b94c5112000007756b516f41f0000721bef58d61f00001c533f10cb1f00007fbc5aa9df1f0000a804c2dada1f0000631df1b8e01f0000",
+   "nonce": 1,
+   "pick_key": "551e180aafea033f9f0fb2bebf3a5ce885b6972b01e743c3f48ac64e1ee71677",
+   "seed": "6bbdbf0fae78bc117c829a37cb9cea285156fe58279aafd51796ceb23f338e75",
+   "sums": [
+    "00001ff8ca7b04d9",
+    "00002011c5943b1b",
+    "00001ff416b55677",
+    "00001fd658ef1b72",
+    "00001fcb103f531c",
+    "00001fdfa95abc7f",
+    "00001fdadac204a8",
+    "00001fe0b8f11d63"
+   ],
+   "x_sha256": "14fb604fc3310fe94cd99b5319d327a1f33c2e9215f1df2f58b73cb47ad72e7f"
+  },
+  {
+   "c_sha256": "3b7a65901ec373aba48bfb186e9dec1bf31031dcd554464db9f6167c7acee24c",
+   "columns_sha256": "7cfc22561a3a4759f62766a2689f40f9dfc73435db26688b3ec870c3c6a4f495",
+   "digest": "00eb89296dd0dad4cb1bf6cc137ec17cbbc190f71e566394e191ae51880109d1",
+   "first_columns": [
+    389828,
+    504455,
+    499498,
+    324459,
+    101016,
+    162744,
+    471622,
+    238460
+   ],
+   "header_hash": "09cdde1a816a8ee11e52f00484ccaed332452c14b40af861107b1a8dd0d84761",
+   "mix": "69fb7613e51f00006ece14f3fa1f00007df514f00e2000009679c62c06200000119543912e200000b3e8d974c31f0000cb8101a20c20000089da15bd0c200000",
+   "nonce": 2,
+   "pick_key": "dcf8742f8ceb9f64353812447620482d4f5cbcf2129198665f39c3dbc0147144",
+   "seed": "bff4d6f700ec4b49f6ff90aee20ba0b3d1d580e2c96f0d57d7c94101c994641a",
+   "sums": [
+    "00001fe51376fb69",
+    "00001ffaf314ce6e",
+    "0000200ef014f57d",
+    "000020062cc67996",
+    "0000202e91439511",
+    "00001fc374d9e8b3",
+    "0000200ca20181cb",
+    "0000200cbd15da89"
+   ],
+   "x_sha256": "15ca5bfd4314ee4e068c73aa37a3af79cf22557b5ce4eb515ed1595367d7b0d9"
+  },
+  {
+   "c_sha256": "ab4f3f831b08b983a87b9267cfc2e80db28fa9b02a0feafcb50c2fc8708223c5",
+   "columns_sha256": "10f8cfe95bef683d274abbf8ef8fd3eefaad744d043b1947f071c5133aab6afe",
+   "digest": "757eb0eb9c3bab405ed1328becc77ae31985997cc837612d9fdf9b54e8486ab1",
+   "first_columns": [
+    79925,
+    17426,
+    416599,
+    177750,
+    511926,
+    139575,
+    123072,
+    386322
+   ],
+   "header_hash": "09cdde1a816a8ee11e52f00484ccaed332452c14b40af861107b1a8dd0d84761",
+   "mix": "5c8ccf4e30200000d59acac52d200000a6f6b50c19200000c0b82650ed1f00003c0f1862f51f0000c780e2d42f200000daa78460cd1f0000f28a4d0bff1f0000",
+   "nonce": 9223372036854775808,
+   "pick_key": "9816158e2acb58a2038f5298cd97f6593e65529e5b8b3af681847da3843a2707",
+   "seed": "5cf2ccc95f14df561cef87927891b0ee200fd66c46a7de0dbd70dab101c70cfa",
+   "sums": [
+    "000020304ecf8c5c",
+    "0000202dc5ca9ad5",
+    "000020190cb5f6a6",
+    "00001fed5026b8c0",
+    "00001ff562180f3c",
+    "0000202fd4e280c7",
+    "00001fcd6084a7da",
+    "00001fff0b4d8af2"
+   ],
+   "x_sha256": "5a8c498d999d894d67f981d5da7e3df6d149c47be128375f7eeaf22c6b53e1e1"
+  },
+  {
+   "c_sha256": "97d1f965ccb62b36a631c0dc67d7d1214d26223e5179824b9a1f280a38c920bd",
+   "columns_sha256": "90774fa0fd55e4866d10b0dfee385c9657bd3f194c47cbac711e96a4fd46640c",
+   "digest": "e6b2525cd27447c0cd9b2b96e76ea6c2ba97dac751fbfca29b5e47dee72ecc0a",
+   "first_columns": [
+    128811,
+    105845,
+    166884,
+    166629,
+    220777,
+    130661,
+    224476,
+    123727
+   ],
+   "header_hash": "09cdde1a816a8ee11e52f00484ccaed332452c14b40af861107b1a8dd0d84761",
+   "mix": "d4f0be754020000042dadb691620000015b29f210b20000098c651f619200000f423acfc1b2000003a80eb8ce11f000061146109022000001db8590f41200000",
+   "nonce": 18446744073709551615,
+   "pick_key": "f90bc91b54d58a7be87eb6db892d340e7e080e8c24d99f7e2eb7f87b7dd41ffb",
+   "seed": "8136f9ab29d1469842d2ca5f406fbc3bf1f8abcda86ee8c62307c8f139e38c63",
+   "sums": [
+    "0000204075bef0d4",
+    "0000201669dbda42",
+    "0000200b219fb215",
+    "00002019f651c698",
+    "0000201bfcac23f4",
+    "00001fe18ceb803a",
+    "0000200209611461",
+    "000020410f59b81d"
+   ],
+   "x_sha256": "7c37971f98d1a10061577f7b6463d227ac59ce7d4e940a9ea946cbbfacb0990f"
+  }
+ ],
+ "description": "the GATHERED attempt, required from a network's gather fork height on (beta and dev: 500; docs/CONSENSUS.md section 8.3). pick_key = sha256(seed || 0x02); column n of the attempt is little-endian u32 word n of the ChaCha20 keystream of pick_key (counter 0, nonce 0, ceil(nb/16) blocks) modulo num_blocks*nb; dataset column j is bytes [j*k, (j+1)*k) of the whole dataset. columns_sha256 hashes the nb column numbers as u32 little-endian. X, C, the fold, mix and digest are as in matmulhash_small. Real parameters, the epoch-0 dataset of matmulhash_full. Slow and RAM-hungry (4.3 GiB): made with --full, checked only when TENERO_SLOW_VECTORS=1.",
+ "epoch_seed": "6223ba9e4c55807abe7b5679e7759c31361bb36ce8e16f1debfc05b4fd2a5020",
+ "name": "matmulhash_gather_real",
+ "params": {
+  "k": 8192,
+  "m": 64,
+  "nb": 2048,
+  "num_blocks": 256
+ },
+ "schema": 1
+}

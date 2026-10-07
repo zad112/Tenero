@@ -479,7 +479,7 @@ fn main() {
         "sha256" => Miner::spawn(|| Ok(Sha256Backend)),
         "cpu" => {
             let pow = match MatmulPow::new(Params::DEFAULT, epoch, 6) {
-                Ok(p) => Arc::new(p),
+                Ok(p) => Arc::new(p.gathered_from(network.gather_from())),
                 Err(e) => {
                     log.error(&e);
                     std::process::exit(1);
@@ -502,7 +502,11 @@ fn main() {
             } else {
                 args.gpu_batch
             };
-            Miner::spawn(move || GpuBackend::new(device, Params::DEFAULT, epoch, batch))
+            let gather_from = network.gather_from();
+            Miner::spawn(move || {
+                GpuBackend::new(device, Params::DEFAULT, epoch, batch)
+                    .map(|b| b.gathered_from(gather_from))
+            })
         }
     };
     let l = Arc::clone(&log);

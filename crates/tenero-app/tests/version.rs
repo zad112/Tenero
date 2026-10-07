@@ -40,7 +40,7 @@ fn every_program_says_what_build_it_is() {
 #[test]
 fn the_version_is_the_release_version_and_the_commit_is_never_empty() {
     // the tag of a release is `v` + this; a release is built from that tag
-    assert_eq!(VERSION, "0.2.0-beta.1");
+    assert_eq!(VERSION, "0.2.0-beta.2");
     assert!(!COMMIT.is_empty());
 }
 

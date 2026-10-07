@@ -187,6 +187,73 @@ def test_every_slice_of_the_full_dataset():
     assert [sha(data[j].astype("<u4").tobytes()) for j in range(p.num_blocks)] == doc["slice_sha256"]
 
 
+# ---------------------------------------------------------------- the gathered attempt (from the fork height)
+
+def gathered_by_hand(p, data, header_hash, nonce):
+    """The gathered attempt written out step by step, independently of the reference's own functions: the column
+    numbers from raw keystream bytes, the columns from the raw dataset bytes, and an int64 product."""
+    seed = hashlib.sha256(header_hash + nonce.to_bytes(8, "little")).digest()
+    key = hashlib.sha256(seed + b"\x02").digest()
+    raw = chacha.keystream(key, -(-p.nb // 16)).astype("<u4").tobytes()
+    cols = [int.from_bytes(raw[4 * n:4 * n + 4], "little") % (p.num_blocks * p.nb) for n in range(p.nb)]
+    flat = data.astype("<u4").tobytes()
+    W = np.stack([np.frombuffer(flat[c * p.k:(c + 1) * p.k], dtype=np.int8) for c in cols], axis=1)
+    X = mh.make_x(seed, p)
+    C = (X.astype(np.int64) @ W.astype(np.int64)).astype(np.int32)
+    return seed, key, cols, X, C
+
+
+def check_gathered(p, data, a):
+    seed, key, cols, X, C = gathered_by_hand(p, data, h(a["header_hash"]), a["nonce"])
+    assert seed.hex() == a["seed"] and key.hex() == a["pick_key"]
+    assert cols[:8] == a["first_columns"]
+    assert sha(np.asarray(cols, dtype="<u4").tobytes()) == a["columns_sha256"]
+    assert sha(X.astype(np.int8).tobytes()) == a["x_sha256"]
+    assert sha(C.astype("<i4").tobytes()) == a["c_sha256"]
+    sums = mh.fold_sums(C.reshape(1, -1))[0]
+    assert [format(int(x), "016x") for x in sums] == a["sums"]
+    mix = mh.mix_bytes(sums)
+    assert mix.hex() == a["mix"] and mh.digest_of(seed, mix).hex() == a["digest"]
+    assert mh.compute_gathered_attempts(p, data, h(a["header_hash"]), [a["nonce"]])[0] == (h(a["digest"]), mix)
+
+
+def test_gathered_attempts_at_small_sizes():
+    cases = load("matmulhash_gather")["cases"]
+    assert cases
+    for case in cases:
+        p = mh.Params(**case["params"])
+        data = mh.build_dataset(p, h(case["epoch_seed"]), threads=1)
+        assert sha(data.astype("<u4").tobytes()) == case["dataset_sha256"]
+        for a in case["attempts"]:
+            check_gathered(p, data, a)
+
+
+def test_the_height_picks_the_design_and_a_gathered_attempt_needs_the_whole_dataset():
+    case = load("matmulhash_gather")["cases"][1]
+    p, seed = mh.Params(**case["params"]), h(case["epoch_seed"])
+    data = mh.build_dataset(p, seed, threads=1)
+    hh, nonces = bytes(32), [3, 4]
+    old = mh.compute_attempts(p, data, hh, nonces)
+    new = mh.compute_gathered_attempts(p, data, hh, nonces)
+    assert old != new
+    assert mh.attempts_at(p, data, hh, nonces, 499, 500) == old
+    assert mh.attempts_at(p, data, hh, nonces, 500, 500) == new
+    assert mh.attempts_at(p, data, hh, nonces, 10**9, 500) == new
+    with pytest.raises(ValueError):
+        mh.compute_gathered_attempts(p, data[:-1], hh, nonces)
+
+
+@pytest.mark.skipif(not SLOW or not os.path.exists(mv.path_of("matmulhash_gather_real")),
+                    reason="slow and needs 4.3 GiB of RAM: set TENERO_SLOW_VECTORS=1 after `--full`")
+def test_gathered_attempts_at_the_real_parameters():
+    doc = load("matmulhash_gather_real")
+    p = mh.Params(**doc["params"])
+    assert p == mh.Params()
+    data = mh.build_dataset(p, h(doc["epoch_seed"]), threads=4)
+    for a in doc["attempts"]:
+        check_gathered(p, data, a)
+
+
 def test_the_full_vector_builder_works_at_a_small_scale():
     p = mh.Params(m=8, k=64, nb=64, num_blocks=12)
     seed = bytes(range(32))

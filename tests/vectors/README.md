@@ -15,6 +15,8 @@ Read `docs/CONSENSUS.md` for what each rule means. Every file is JSON with `sche
 | `matmulhash_real.json` | the same at the real parameters, for the first 8 of the 256 slices | small |
 | `matmulhash_deep.json` | real parameters, slices up to 77 (each depends on all earlier ones) | slow to check |
 | `matmulhash_full.json` | a hash of every one of the 256 slices (committed; regenerate with `--full`, see below) | slow, 4.3 GiB RAM |
+| `matmulhash_gather.json` | the GATHERED attempt (`docs/CONSENSUS.md` 8.3: beta and dev from height 500) at small sizes: every step (seed, pick key, the column numbers, X, C, fold sums, mix, digest) | small |
+| `matmulhash_gather_real.json` | the gathered attempt at the real parameters on the epoch-0 dataset (committed; regenerate with `--full`) | slow, 4.3 GiB RAM |
 | `pow_misc.json` | epoch seeds and numbering, `bits_to_target`, the cheap pre-check | small |
 | `emission.json` | rewards by height for several schedules (including the edge cases) | small |
 | `difficulty.json` | the difficulty adjustment and the median-time rule over 20 block-time scenarios | small |
