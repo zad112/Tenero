@@ -709,3 +709,33 @@ fn the_tool_fails_cleanly_when_there_is_no_pool_or_the_key_is_wrong() {
     let checks = run_checks(&o);
     assert_eq!(failures(&checks), 1);
 }
+
+// ---- the pool built into the program ---------------------------------------------------------------------------------------
+
+#[test]
+fn the_built_in_pool_is_the_authors_beta_pool_with_its_key_and_no_other_network_has_one() {
+    use tenero_app::config::Network;
+    use tenero_app::pool_miner::{default_pool, DEFAULT_POOLS};
+    let (addr, key) = default_pool(Network::Beta).expect("beta has one");
+    assert_eq!(addr, "195.26.244.245:38335");
+    let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        hex, "027d642dea403070450c70b0bd4b59f01b66b6782b99366e2769a19cff35b259",
+        "the key the pool printed"
+    );
+    for n in [Network::Test, Network::Dev, Network::Alpha] {
+        assert!(
+            default_pool(n).is_none(),
+            "{} has no built-in pool",
+            n.name()
+        );
+    }
+    // the list is checked like the seeds': a public ip:port, the default pool port, no network twice
+    let mut seen = std::collections::BTreeSet::new();
+    for (network, addr, _) in DEFAULT_POOLS {
+        assert!(seen.insert(*network), "{network} listed twice");
+        let sa: SocketAddr = addr.parse().expect("an ip:port");
+        assert!(!sa.ip().is_loopback() && !sa.ip().is_unspecified(), "{sa}");
+        assert_eq!(sa.port(), pool_net::DEFAULT_PORT);
+    }
+}

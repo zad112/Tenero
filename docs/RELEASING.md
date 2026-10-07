@@ -6,8 +6,8 @@ A release is made by the `release` workflow (`.github/workflows/release.yml`) fr
 ## 1. Before the tag (on your machine)
 
 1. `main` is green in CI (all of `rust`, `tests`, `supply-chain`).
-2. The version in `Cargo.toml` (`[workspace.package]`) is the one you want, and the numbers in `crates/tenero-gui/tenero.rc` follow it (FILEVERSION `0,1,0,1` for
-   `0.1.0-alpha.1`). `crates/tenero-app/tests/version.rs` pins the version; change it with the version.
+2. The version in `Cargo.toml` (`[workspace.package]`) is the one you want, and the numbers in `crates/tenero-gui/tenero.rc` follow it (FILEVERSION `0,2,0,1` for
+   `0.2.0-beta.1`). `crates/tenero-app/tests/version.rs` pins the version; change it with the version.
 3. The notes exist: `docs/releases/v<version>.md`. Read them: every sentence must still be true of this build.
 4. **Run the GPU checks** (CUDA 13.4 `bin\x64` on PATH), from a clean checkout of the commit you will tag, and write down the card and the result:
 
@@ -31,7 +31,7 @@ pre-release** release.
 2. In the notes, replace "GPU test status ... NOT YET DONE" with the card, the driver, the date and the commit you tested; copy the glibc floor from the workflow log
    ("the oldest glibc the Linux programs need") into the Linux paragraph.
 3. Press **Publish release** only when you are satisfied. A published release is public and the file names are in people's hands.
-4. If something is wrong after publishing: say so in the pinned issue (https://github.com/zad112/Tenero/issues/1), then fix and release the next alpha. Do not replace
+4. If something is wrong after publishing: say so in the pinned issue (https://github.com/zad112/Tenero/issues/1), then fix and release the next one. Do not replace
    files in a published release under the same name.
 
 ## What a release does not promise

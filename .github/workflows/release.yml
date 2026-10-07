@@ -93,18 +93,19 @@ jobs:
           NAME="tenero-$VERSION-${{ matrix.name }}-x64"
           echo "NAME=$NAME" >> "$GITHUB_ENV"
           mkdir "$NAME"
-          for b in tenerod tenero-miner tenero-wallet tenero-seedcheck tenero-wallet-gui; do
+          for b in tenerod tenero-miner tenero-wallet tenero-seedcheck tenero-pool tenero-poolcheck tenero-wallet-gui; do
             cp "target/release/$b${{ matrix.exe }}" "$NAME/"
           done
           cp LICENSE THIRD-PARTY-LICENCES.txt README.md "$NAME/"
           cp docs/RUNNING.md "$NAME/RUNNING.md"
+          cp docs/RUNNING_A_POOL.md "$NAME/RUNNING_A_POOL.md"
           if [ -f "docs/releases/v$VERSION.md" ]; then cp "docs/releases/v$VERSION.md" "$NAME/RELEASE-NOTES.md"; fi
           ls -l "$NAME"
       # the packaged programs must run and say which build they are (the exact version and the commit this run is building)
       - name: run what was packaged
         shell: bash
         run: |
-          for b in tenerod tenero-miner tenero-wallet tenero-seedcheck; do
+          for b in tenerod tenero-miner tenero-wallet tenero-seedcheck tenero-pool tenero-poolcheck; do
             out=$("$NAME/$b${{ matrix.exe }}" --version)
             echo "$out"
             case "$out" in
@@ -116,7 +117,7 @@ jobs:
         if: matrix.name == 'linux'
         shell: bash
         run: |
-          for b in tenerod tenero-miner tenero-wallet tenero-seedcheck tenero-wallet-gui; do
+          for b in tenerod tenero-miner tenero-wallet tenero-seedcheck tenero-pool tenero-poolcheck tenero-wallet-gui; do
             echo "$b: needs glibc $(objdump -T "$NAME/$b" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
           done
       - name: the file properties of the Windows app (icon and version information are embedded)

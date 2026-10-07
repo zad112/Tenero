@@ -237,7 +237,8 @@ nothing in the protocol or the chain makes a pool pay.** The program says so eve
   by itself. `--network NET` says which network the pool must serve (a pool of another is refused); `--worker NAME` is a name for this computer (default: its name).
 * **The pool's key is pinned.** `--pool-key` is the pool's public key (64 hexadecimal digits, from the pool's operator, by a way an attacker cannot also change). A pool that
   proves another key is refused before anything is sent. `--pool-unpinned` goes without (a person between you and the pool would not be noticed). `--pool default` is the pool
-  built into the program for `--network` (none yet: it says so).
+  built into the program for `--network`: **one, the author's test pool on `beta`** (`195.26.244.245:38335`, its key built in and pinned), none for the other networks (it says so). It is one computer run by one
+  person, and it keeps the block rewards.
 * A share is checked before it is sent (it must meet the share target); the pool checks every one again. The status shows shares, not blocks: handed in, accepted, too late, refused.
 * The app does the same from the **Mining tab**: "On a pool" (no node needed) or "Alone, on my own node".
 
