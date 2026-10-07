@@ -35,13 +35,16 @@ All as `root` on an Ubuntu 22.04 or newer server. The names are a choice; change
 
 1. **A user with no login and no privileges** for the pool and its node: `useradd --system --create-home --home-dir /var/lib/tenero-pool --shell /usr/sbin/nologin tenero-pool`.
 2. **The programs**, from a release or a build: `tenerod`, `tenero-pool`, `tenero-wallet` and `tenero-poolcheck` into `/opt/tenero-pool/` (`install -o root -g root -m 755 FILE /opt/tenero-pool/`). Nothing there may be writable by the pool's user.
-3. **The node's settings**, `/var/lib/tenero-pool/node.conf` (the control port is **different from the seed's** and the node does **not listen**: it only dials out):
+3. **The node's settings**, `/var/lib/tenero-pool/node.conf` (the control port is **different from the seed's**; the node **dials out** and, if you want other nodes to find it, also listens: see the last three lines below and "Beside a seed"):
 
        data = /var/lib/tenero-pool/node
        network = beta
        control = 127.0.0.1:38352
        prune_keep = 0
        log_file = /var/lib/tenero-pool/node.log
+       listen = 0.0.0.0:38336
+       advertise = 0.0.0.0:38336
+       max_inbound = 16
 
 4. **The wallet.** Make a passphrase and the wallet (`create` prints the seed once: write it down if the coins matter to you):
 
@@ -65,7 +68,7 @@ All as `root` on an Ubuntu 22.04 or newer server. The names are a choice; change
        payout-every = 3600
        log-file = /var/lib/tenero-pool/pool.log
 
-6. **The firewall**: allow the pool's port and nothing new besides it: `ufw allow 38335/tcp`. The node's control port is on loopback and is not opened.
+6. **The firewall**: allow the pool's port and the node's: `ufw allow 38335/tcp` and `ufw allow 38336/tcp`. The node's control port is on loopback and is not opened.
 7. **Two services** (these files have **not** been run; `MemoryMax`, `CPUWeight` and `Nice` are what keep the pool from taking a seed's room: see "Beside a seed"). `/etc/systemd/system/tenero-pool-node.service`:
 
        [Unit]
@@ -115,7 +118,7 @@ All as `root` on an Ubuntu 22.04 or newer server. The names are a choice; change
        WantedBy=multi-user.target
 
 8. **Start the node first and let it catch up** (`systemctl enable --now tenero-pool-node`; the log says `syncing` until it has the chain; the pool hands out no job while the node is syncing). Then `systemctl enable --now tenero-pool`.
-9. **The pool's key.** The pool makes it at its first start; `tenero-pool key --data /var/lib/tenero-pool/pool` prints it again (64 hexadecimal digits). **Miners pin it**: give it to them by a way an attacker cannot also change (the pool's page, the README, the project's issue), not only on the pool's own screen.
+9. **The pool's key.** The pool makes it at its first start, **with the default file mode (readable by every user of the machine: found on the author's server, 2026-10-07)**, so run `chmod 600 /var/lib/tenero-pool/pool/pool.key /var/lib/tenero-pool/pool/pool-state.dat` after it; the folder's mode 700 (step 4) is what protects it until then, and `node.key` and `control.cookie` in the node's folder are the same. `tenero-pool key --data /var/lib/tenero-pool/pool` prints it again (64 hexadecimal digits). **Miners pin it**: give it to them by a way an attacker cannot also change (the pool's page, the README, the project's issue), not only on the pool's own screen.
 10. **Check it from outside**: `tenero-poolcheck --pool IP:38335 --network beta --pool-key KEY`. Every check should pass (two are skipped on a network with the real proof of work: they need a valid share and so the 4 GiB dataset; try those with a real miner).
 
 ## Beside a seed on one machine
@@ -125,7 +128,7 @@ A seed is a public node that must stay up. A pool beside it must not take its ro
 * **Separate users, folders, services, ports.** The seed's data, key and ports (38343 and, on loopback, 38342) are never touched; the pool node uses control 38352 and does not listen; the pool listens on 38335. The pool never talks to the seed's control interface (it has its own node).
 * **Memory.** Each service has `MemoryMax=6G`: if the pool or its node grew without bound, the system kills **it**, not the seed. The seed has the room it had.
 * **CPU.** `CPUWeight=50` and `Nice=5`: under load the seed is served first. The proof-of-work check of a share is one attempt, done **on the pool node's own thread** (about 36 ms of one CPU core on the real proof of work: from the CPU speed measured in `docs/BENCHMARKS.md`, an estimate for this use). **At the default difficulty each miner sends a share about every 15 seconds**, so 256 miners are about 17 shares a second, which would keep the pool's node thread about 60 % busy: **an estimate to check, and the limit of one pool node**. The seed's node is not touched: only the pool's own node does the checking.
-* **The pool's node dials the seed** like any other node (the seed's address is built in). Look at the pool node's log for `peers 1`. If a server cannot dial its own public address, give the node `seed = ` another node's address.
+* **The pool's node dials the seed** like any other node (the seed's address is built in). Look at the pool node's log for `peers 1`. If a server cannot dial its own public address, give the node `seed = ` another node's address. **The pool still depends on that seed today.** The author's pool node listens on 38336 (`listen`, `advertise = 0.0.0.0:38336`, `max_inbound = 16` in its `node.conf`, and `ufw allow 38336/tcp`), so another node CAN connect to it (a TCP connection to 38336 from another computer on the internet succeeded, and a fresh node on a Windows PC, given only this node's address as its seed, synced the chain from it, 2026-10-07), **but a node never dials a host it already holds a connection to, whatever the port (`engine.rs`, `maintain_connections` and `dial_trusted`), so a node connected to the seed will not also dial a pool node on the seed's IP**; the pool node is reached only by a node that has no connection to that IP, and while the seed is the only other node on the network the pool node has no other peer (`peers 1 (in 0, out 1)` was read on the author's server, 2026-10-07, after it began to listen; no inbound peer had yet been seen). If the seed is down and no other node has connected, the blocks the pool finds reach nobody, and when the node can dial the seed again the blocks of the shorter chain are dropped. A pool beside a seed run by the same person fails with it. A second public node, run by someone else, is the real fix and does not exist yet. A listening node is also a public target: **keep the pool's wallet and passphrase files out of the node's reach** (a systemd `InaccessiblePaths=` for the wallet's folder in the node's unit, checked with `nsenter`; not yet done on the author's server as of this edit).
 * If memory is short, **stop the pool first**: `systemctl stop tenero-pool tenero-pool-node`. The seed does not depend on it.
 
 ## Running it, and what it logs
