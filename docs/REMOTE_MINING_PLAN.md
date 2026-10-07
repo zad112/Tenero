@@ -1,6 +1,6 @@
 # Remote mining: a miner that uses someone else's node (a PROPOSED design, nothing is built)
 
-**Status (2026-10-06): the first step is BUILT and tested on one computer, not yet tried across a network or with a GPU: the node's miner service (`crates/tenero-app/src/miner_service.rs`, settings `miner_listen`, `miner_key`, `miner_max`, `miner_rate`), the miner's `--node` and `--key`, and the miner's checks of every template (`remote_miner::check_template`). Everything after it (open to anyone, a pool and its shares, asking two nodes) is NOT built.** Tenero is unaudited and
+**Status (2026-10-07): the first step is BUILT, tested, and was run with a real GPU on one computer and across the internet to a rented server (a private `dev` chain, one miner, one address; `docs/README_FACTS.md` has the numbers and what was NOT measured). Earlier status (2026-10-06): built and tested on one computer: the node's miner service (`crates/tenero-app/src/miner_service.rs`, settings `miner_listen`, `miner_key`, `miner_max`, `miner_rate`), the miner's `--node` and `--key`, and the miner's checks of every template (`remote_miner::check_template`). Everything after it (open to anyone, a pool and its shares, asking two nodes) is NOT built.** Tenero is unaudited and
 experimental; this document is a plan and a list of risks, not a promise. Wallet access to a remote node is a later step
 (see "After the miner") and is not designed here.
 
