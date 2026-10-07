@@ -566,6 +566,10 @@ pub enum NodeLink {
     Connected,
     /// Connected, but the node is catching up, so mining waits.
     Syncing,
+    /// (A miner working for a pool.) Connected to the pool: the height is that of the job it is searching.
+    PoolConnected,
+    /// (A miner working for a pool.) Not connected to the pool: trying again.
+    PoolDown,
 }
 
 /// What the separate miner program shows.
@@ -596,10 +600,20 @@ pub fn render_miner_block(s: &MinerStatus, t: &Theme) -> Vec<String> {
             group_digits(s.node_height)
         )),
         NodeLink::Down => t.red("not reachable: trying again"),
+        NodeLink::PoolConnected => t.green(&format!(
+            "connected (searching height {})",
+            group_digits(s.node_height)
+        )),
+        NodeLink::PoolDown => t.red("not reachable: trying again"),
+    };
+    let label = if matches!(s.link, NodeLink::PoolConnected | NodeLink::PoolDown) {
+        "pool "
+    } else {
+        "node "
     };
     vec![
         t.dim("-- status ------------------------------------------------------------"),
-        cut(&format!("  node     {node}")),
+        cut(&format!("  {label}    {node}")),
         cut(&format!("  mining   {}", short_backend(&s.backend))),
         cut(&rates_row(&s.rates)),
     ]
@@ -643,6 +657,10 @@ pub fn render_miner_line(s: &MinerStatus) -> String {
             group_digits(s.node_height)
         ),
         NodeLink::Down => "node not reachable".to_string(),
+        NodeLink::PoolConnected => {
+            format!("pool connected (height {})", group_digits(s.node_height))
+        }
+        NodeLink::PoolDown => "pool not reachable".to_string(),
     };
     let rate = format!(
         "hashrate {}{}",
@@ -842,6 +860,10 @@ pub fn miner_event_to_ui(e: &tenero_miner::MinerEvent) -> Option<Event> {
         )),
         M::NodeConnected => Event::Connected("the node".to_string()),
         M::NodeLost { .. } => Event::Lost("the node".to_string()),
+        // shares come every few seconds: the status block counts them, and a line each would bury everything else
+        M::ShareAccepted { .. } | M::ShareRejected { .. } => return None,
+        M::PoolConnected { .. } => Event::Connected("the pool".to_string()),
+        M::PoolLost { .. } => Event::Lost("the pool".to_string()),
     })
 }
 

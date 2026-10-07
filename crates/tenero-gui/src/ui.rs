@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 
 use crate::backend::Backend;
 use crate::procs::tail_of;
-use crate::settings::{MinerBackend, NodeKind, Settings};
+use crate::settings::{MinerBackend, MiningMode, NodeKind, Settings};
 use crate::text;
 use crate::view::*;
 
@@ -181,6 +181,8 @@ pub struct App {
     /// The secret of a sent payment, shown on request in a window until closed.
     tx_key_window: Option<Zeroizing<String>>,
     miner_tail: (Instant, String),
+    /// The pool fields of the Mining tab as typed: (address, key, worker), and the settings they were read from.
+    pool_form: Option<(String, String, String)>,
 }
 
 impl App {
@@ -249,6 +251,7 @@ impl App {
             proof_window: None,
             tx_key_window: None,
             miner_tail: (now, String::new()),
+            pool_form: None,
         };
         if let Some(n) = notice {
             app.toast(n, true);
@@ -1791,9 +1794,101 @@ impl App {
         };
         ui.add_space(6.0);
         ui.heading("Mining");
-        ui.label("Mining searches for blocks. A block found pays its reward to one of your accounts. It is off until you press Start, and it stops when you lock the wallet or close this window.");
+        ui.label("Mining searches for blocks. It is off until you press Start, and it stops when you lock the wallet or close this window.");
         ui.add_space(6.0);
         let s = self.snap.settings.clone();
+        let miner_now = self.snap.miner.clone();
+        let busy = !matches!(miner_now, MinerView::Off | MinerView::Failed { .. });
+        // where to mine: for a pool, or alone on this computer's own node
+        ui.label(RichText::new("Where to mine").strong());
+        let mut mode = s.mining_mode;
+        ui.add_enabled_ui(!busy, |ui| {
+            ui.radio_value(&mut mode, MiningMode::Pool, "On a pool: you need no node to mine, and the pool pays you for your share of its work");
+            ui.radio_value(&mut mode, MiningMode::Solo, "Alone, on my own node: a block I find pays me directly, but I may wait a long time for one");
+        });
+        if mode != s.mining_mode {
+            let mut n = s.clone();
+            n.mining_mode = mode;
+            self.backend.send(Cmd::SetSettings(Box::new(n)));
+        }
+        if s.mining_mode == MiningMode::Pool {
+            let (default_pool, key_ok) = (
+                tenero_app::pool_miner::default_pool(s.network).is_some(),
+                crate::settings::is_key_hex(&s.pool_key),
+            );
+            let form = self
+                .pool_form
+                .get_or_insert_with(|| (s.pool.clone(), s.pool_key.clone(), s.pool_worker.clone()));
+            let mut committed = false;
+            ui.add_enabled_ui(!busy, |ui| {
+                egui::Grid::new("poolform")
+                    .num_columns(2)
+                    .spacing([12.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Pool address");
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut form.0)
+                                .hint_text(if default_pool {
+                                    "empty: this program's own pool"
+                                } else {
+                                    "HOST:PORT"
+                                })
+                                .desired_width(300.0),
+                        );
+                        committed |= r.lost_focus();
+                        ui.end_row();
+                        ui.label("Pool key");
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut form.1)
+                                .hint_text(if form.0.trim().is_empty() && default_pool {
+                                    "not needed for the built-in pool"
+                                } else {
+                                    "64 hexadecimal digits, from the pool's operator"
+                                })
+                                .desired_width(300.0),
+                        );
+                        committed |= r.lost_focus();
+                        ui.end_row();
+                        ui.label("Name of this computer");
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut form.2)
+                                .hint_text("optional")
+                                .desired_width(300.0),
+                        );
+                        committed |= r.lost_focus();
+                        ui.end_row();
+                    });
+            });
+            if committed {
+                let (a, k, w) = (
+                    form.0.trim().to_string(),
+                    form.1.trim().to_ascii_lowercase(),
+                    form.2.trim().to_string(),
+                );
+                if (a.clone(), k.clone(), w.clone())
+                    != (s.pool.clone(), s.pool_key.clone(), s.pool_worker.clone())
+                {
+                    let mut n = s.clone();
+                    (n.pool, n.pool_key, n.pool_worker) = (a, k, w);
+                    self.backend.send(Cmd::SetSettings(Box::new(n)));
+                }
+            }
+            if s.pool.is_empty() && !default_pool {
+                ui.colored_label(AMBER, "No pool is built into this program for this network yet: type the address and key of a pool, or mine alone.");
+            } else if !s.pool.is_empty() && !key_ok {
+                ui.colored_label(AMBER, "A pool you type in needs its key (64 hexadecimal digits). The miner refuses a pool that proves another key, which stops someone between you and the pool.");
+            }
+            ui.colored_label(
+                AMBER,
+                "On a pool, the block rewards go to the POOL, which someone else runs. It pays you by its own rules, and nothing makes any pool pay. The pool also sees your address and your internet address. Nothing on this network has any value.",
+            );
+        }
+        ui.add_space(6.0);
+        if s.mining_mode == MiningMode::Solo {
+            ui.label("A block found pays its reward to one of your accounts.");
+        } else {
+            ui.label("The pool will pay the account chosen below.");
+        }
         let notice = match s.miner_backend {
             MinerBackend::Gpu => "This uses your GPU at full load: the card gets hot and loud, and anything else using the GPU slows down.".to_string(),
             MinerBackend::Cpu => format!("This uses {} CPU core(s) at full load.", s.miner_cores),
@@ -1817,12 +1912,14 @@ impl App {
                     }
                 });
             if acct != s.miner_account {
-                let mut n = s;
+                let mut n = s.clone();
                 n.miner_account = acct;
                 self.backend.send(Cmd::SetSettings(Box::new(n)));
             }
         });
-        let node_up = matches!(self.snap.node, NodeView::Running { .. });
+        // mining for a pool needs no node; mining alone does
+        let node_up =
+            matches!(self.snap.node, NodeView::Running { .. }) || s.mining_mode == MiningMode::Pool;
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(!running && node_up, egui::Button::new("Start mining"))
@@ -1890,14 +1987,24 @@ impl App {
                         row("Last minute", rate(r.s60));
                         row("Last 15 minutes", rate(r.m15));
                         row("Since start", rate(r.average));
-                        row(
-                            "Blocks found",
-                            format!(
-                                "{} (in the chain {}, lost a race {}, refused {})",
-                                r.found, r.accepted, r.lost_race, r.refused
-                            ),
-                        );
-                        row("Expected by luck", format!("{:.2}", r.expected_blocks));
+                        if s.mining_mode == MiningMode::Pool {
+                            row(
+                                "Shares handed in",
+                                format!(
+                                    "{} (accepted {}, too late {}, refused {})",
+                                    r.found, r.accepted, r.lost_race, r.refused
+                                ),
+                            );
+                        } else {
+                            row(
+                                "Blocks found",
+                                format!(
+                                    "{} (in the chain {}, lost a race {}, refused {})",
+                                    r.found, r.accepted, r.lost_race, r.refused
+                                ),
+                            );
+                            row("Expected by luck", format!("{:.2}", r.expected_blocks));
+                        }
                         row("Running for", text::duration(r.uptime_secs));
                         if let Some(t) = r.gpu_temp_c {
                             row("GPU temperature", format!("{t} °C"));

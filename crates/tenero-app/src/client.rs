@@ -119,6 +119,21 @@ impl RemoteNode {
         Response::from_body(&answer).map_err(|e| e.to_string())
     }
 
+    /// Asks the node to run the full proof-of-work check of a header (see `Request::CheckPow`): `Ok(true)` if the mix is right.
+    pub fn check_pow(
+        &self,
+        height: u64,
+        header: &tenero_core::v2::BlockHeader,
+    ) -> Result<bool, String> {
+        match self.request(&Request::CheckPow {
+            height,
+            header: header.clone(),
+        })? {
+            Response::PowChecked(b) => Ok(b),
+            other => Err(format!("unexpected answer: {other:?}")),
+        }
+    }
+
     pub fn info(&self) -> Result<NodeInfo, String> {
         match self.request(&Request::Info)? {
             Response::Info(i) => Ok(i),

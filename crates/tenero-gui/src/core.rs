@@ -1044,8 +1044,8 @@ impl Core {
         if self.node.is_none() && self.node_proc.is_none() {
             return Err("the node is not running".into());
         }
-        // the miner works for the node: it goes first
-        self.stop_miner();
+        // a miner that mines alone works for the node: it goes first. One that works for a pool needs no node and carries on.
+        self.stop_solo_miner();
         self.pending_stop = true;
         self.node_view = NodeView::Stopping;
         Ok(())
@@ -1102,7 +1102,7 @@ impl Core {
                 self.node_proc = None;
                 self.node = None;
                 self.node_started = None;
-                self.stop_miner();
+                self.stop_solo_miner();
                 self.node_view = NodeView::Failed {
                     why: format!("the node {how}"),
                     output,
@@ -1126,7 +1126,7 @@ impl Core {
             Some(Err(_)) => {
                 // the node went away (or hung): forget the connection and look again next time
                 self.node = None;
-                self.stop_miner();
+                self.stop_solo_miner();
                 self.node_view = if self.node_proc.is_some() {
                     NodeView::Starting
                 } else {
@@ -1177,13 +1177,27 @@ impl Core {
         if self.miner_proc.is_some() {
             return Err("the miner is already running".into());
         }
-        if self.node_info().is_none() {
+        let pool = self.settings.mining_mode == crate::settings::MiningMode::Pool;
+        if pool {
+            // a miner that works for a pool needs no node; it needs a pool and, unless the pool is the program's own, that pool's key
+            if self.settings.pool.is_empty() {
+                if tenero_app::pool_miner::default_pool(self.settings.network).is_none() {
+                    return Err(format!(
+                        "no pool is built into this program for the {} network yet: type a pool's address and key in the Mining tab, or mine alone",
+                        self.settings.network.name()
+                    ));
+                }
+            } else if !crate::settings::is_key_hex(&self.settings.pool_key) {
+                return Err("a pool you type in needs its key (64 hexadecimal digits, from the pool's operator): the miner refuses a pool that proves another".into());
+            }
+        } else if self.node_info().is_none() {
             return Err("the node is not running: start it first".into());
         }
-        let purse = self
-            .purse
-            .as_ref()
-            .ok_or("unlock the wallet first: the miner pays its rewards to one of your accounts")?;
+        let purse = self.purse.as_ref().ok_or(if pool {
+            "unlock the wallet first: the pool pays your accounts"
+        } else {
+            "unlock the wallet first: the miner pays its rewards to one of your accounts"
+        })?;
         let account = purse.account(self.settings.miner_account).map_err(|_| {
             format!(
                 "account {} does not exist: choose another in the settings",
@@ -1219,6 +1233,14 @@ impl Core {
         self.miner_started = Some(Instant::now());
         self.miner_view = MinerView::Starting;
         Ok(())
+    }
+
+    /// Stops the miner if it mines alone, because it works for the node and the node is gone. A miner that works for a pool does not need the node
+    /// (it talks to the pool, never to a node), so it is left alone.
+    fn stop_solo_miner(&mut self) {
+        if self.settings.mining_mode == crate::settings::MiningMode::Solo {
+            self.stop_miner();
+        }
     }
 
     fn stop_miner(&mut self) {
@@ -1418,7 +1440,7 @@ impl Core {
         self.poll_node(false);
         self.poll_miner();
         if self.node.is_none() && self.miner_proc.is_some() {
-            self.stop_miner();
+            self.stop_solo_miner();
         }
         if let Err(e) = self.scan_slice() {
             events.push(Event::Notice(format!("scanning stopped for now: {e}")));

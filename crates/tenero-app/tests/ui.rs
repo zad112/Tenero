@@ -884,6 +884,33 @@ fn miner_status() -> MinerStatus {
 }
 
 #[test]
+fn a_miner_working_for_a_pool_says_pool_and_not_node() {
+    let mut s = miner_status();
+    s.link = NodeLink::PoolConnected;
+    let block = render_miner_block(&s, &OFF);
+    assert_eq!(block[1], "  pool     connected (searching height 1,204)");
+    s.link = NodeLink::PoolDown;
+    assert_eq!(
+        render_miner_block(&s, &OFF)[1],
+        "  pool     not reachable: trying again"
+    );
+    assert!(render_miner_line(&s).contains("pool not reachable"));
+    assert!(!render_miner_line(&s).contains("node"));
+    // and the file the app reads says so too
+    for link in [NodeLink::PoolConnected, NodeLink::PoolDown] {
+        let mut st = miner_status();
+        st.link = link;
+        let r = tenero_app::miner_report::MinerReport::from_status(&st, 1_700_000_000);
+        assert_eq!(
+            tenero_app::miner_report::MinerReport::parse(&r.to_text())
+                .unwrap()
+                .link,
+            link
+        );
+    }
+}
+
+#[test]
 fn the_miners_status_block_in_each_state_of_its_link_to_the_node() {
     let got = render_miner_block(&miner_status(), &OFF).join(
         "

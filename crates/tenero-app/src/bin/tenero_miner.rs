@@ -10,6 +10,7 @@ use tenero_app::client::RemoteNode;
 use tenero_app::config::Network;
 use tenero_app::daemon::MiningShared;
 use tenero_app::log::{Level, Logger};
+use tenero_app::pool_miner::{PoolMiner, PoolMinerConfig};
 use tenero_app::remote_miner::{connect_to, RemoteMiner, RemoteMinerConfig};
 use tenero_app::ui::{
     miner_event_to_ui, Banner, ColorChoice, Event as UiEvent, MinerStatus, NodeLink, Screen,
@@ -31,7 +32,13 @@ tenero-miner: mines for a Tenero node in another process (EXPERIMENTAL, UNAUDITE
   --node HOST:PORT   instead of --data and --control: the miner service of a node on ANOTHER computer (default port 38334),
   --key HEX          and the key its operator gave you (64 hexadecimal digits). The node builds the blocks and checks yours; this
                      miner refuses a block that does not pay --address, but cannot tell a stale or wrong chain from the real one
-  --address ADDR     the wallet address block rewards are paid to
+  --address ADDR     the wallet address block rewards are paid to (with --pool: where the pool is to pay you)
+  --pool HOST:PORT   instead of a node: work for a MINING POOL (or `default`: the pool built into this program, if any). The pool keeps the
+  --pool-key HEX     block rewards and pays you by its own rules; nothing makes it pay. The pool's public key (64 hexadecimal digits, from its
+                     operator) is PINNED: the miner refuses a pool that proves another. `--pool-unpinned` goes without (a person between
+                     you and the pool would not be noticed)
+  --network NET      with --pool: the network the pool serves (test, dev, beta or alpha), so that a pool of another network is refused
+  --worker NAME      with --pool: a name for this machine, shown to the pool (default: the computer's name, at most 32 characters)
   --backend B        sha256 (the test network), cpu or gpu (the dev network's matmulhash)
   --cores N          CPU threads for the cpu backend, 1 to 6 (default 6)
   --gpu-device N     which GPU (default 0)       --gpu-batch N|auto   attempts per batch (default 128; auto measures at start-up)
@@ -50,6 +57,11 @@ struct Args {
     control: std::net::SocketAddr,
     node: Option<std::net::SocketAddr>,
     key: Option<[u8; 32]>,
+    pool: Option<String>,
+    pool_key: Option<[u8; 32]>,
+    pool_unpinned: bool,
+    network: Option<String>,
+    worker: String,
     address: String,
     backend: String,
     cores: usize,
@@ -71,6 +83,11 @@ fn parse() -> Result<Args, String> {
         control: "127.0.0.1:18332".parse().expect("valid"),
         node: None,
         key: None,
+        pool: None,
+        pool_key: None,
+        pool_unpinned: false,
+        network: None,
+        worker: String::new(),
         address: String::new(),
         backend: String::new(),
         cores: 6,
@@ -91,6 +108,14 @@ fn parse() -> Result<Args, String> {
         let Some(key) = flag.strip_prefix("--") else {
             return Err(format!("unexpected argument `{flag}`"));
         };
+        // `--pool-unpinned` stands alone
+        if key == "pool-unpinned" {
+            if !seen.insert(key.to_string()) {
+                return Err(format!("--{key} given twice"));
+            }
+            a.pool_unpinned = true;
+            continue;
+        }
         // `--quiet` and `--verbose` stand alone
         if matches!(key, "quiet" | "verbose") {
             if !seen.insert(key.to_string()) {
@@ -137,6 +162,24 @@ fn parse() -> Result<Args, String> {
                 }
                 a.key = Some(k);
             }
+            "pool" => a.pool = Some(v.clone()),
+            "pool-key" => {
+                if v.len() != 64 || !v.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err("--pool-key must be 64 hexadecimal digits".into());
+                }
+                let mut k = [0u8; 32];
+                for (i, b) in k.iter_mut().enumerate() {
+                    *b = u8::from_str_radix(&v[2 * i..2 * i + 2], 16).expect("checked");
+                }
+                a.pool_key = Some(k);
+            }
+            "network" => a.network = Some(v.clone()),
+            "worker" => {
+                if v.is_empty() || v.chars().count() > 32 || v.chars().any(char::is_control) {
+                    return Err("--worker: 1 to 32 characters, no control characters".into());
+                }
+                a.worker = v.clone()
+            }
             "address" => a.address = v.clone(),
             "backend" => a.backend = v.clone(),
             "cores" => a.cores = num("cores")? as usize,
@@ -159,7 +202,33 @@ fn parse() -> Result<Args, String> {
             other => return Err(format!("unknown option `--{other}`")),
         }
     }
-    if a.node.is_some() {
+    if a.pool.is_some() {
+        if a.node.is_some() || a.key.is_some() || seen.contains("data") || seen.contains("control")
+        {
+            return Err("--pool replaces --data, --control, --node and --key: a miner works for a pool OR mines on a node, never both".into());
+        }
+        if a.pool_unpinned && a.pool_key.is_some() {
+            return Err("--pool-key and --pool-unpinned cannot be combined".into());
+        }
+        if a.pool.as_deref() != Some("default") && a.pool_key.is_none() && !a.pool_unpinned {
+            return Err("--pool needs --pool-key (the pool's operator gives it to you), or --pool-unpinned to go without".into());
+        }
+        if a.pool.as_deref() != Some("default") && a.network.is_none() {
+            return Err("--pool needs --network (the network the pool serves)".into());
+        }
+        if a.worker.is_empty() {
+            a.worker = std::env::var("COMPUTERNAME")
+                .or_else(|_| std::env::var("HOSTNAME"))
+                .unwrap_or_else(|_| "miner".to_string())
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(32)
+                .collect();
+        }
+    } else if a.pool_key.is_some() || a.pool_unpinned || a.network.is_some() || !a.worker.is_empty()
+    {
+        return Err("--pool-key, --pool-unpinned, --network and --worker are for --pool".into());
+    } else if a.node.is_some() {
         if seen.contains("data") || seen.contains("control") {
             return Err("--node replaces --data and --control: give one or the other".into());
         }
@@ -170,7 +239,8 @@ fn parse() -> Result<Args, String> {
         return Err("--key is for --node".into());
     } else if a.data.as_os_str().is_empty() {
         return Err(
-            "--data is required (or --node HOST:PORT for a node on another computer)".into(),
+            "--data is required (or --node HOST:PORT for a node on another computer, or --pool)"
+                .into(),
         );
     }
     if a.address.is_empty() {
@@ -186,6 +256,51 @@ fn parse() -> Result<Args, String> {
         return Err("--gpu-batch must be at least 1".into());
     }
     Ok(a)
+}
+
+/// Where a pool is and what to pin.
+struct PoolTarget {
+    addr: std::net::SocketAddr,
+    pin: Option<[u8; 32]>,
+    network: Network,
+}
+
+/// The pool the arguments name: an address (a name is looked up) and the key to pin, or the pool built into the program.
+fn resolve_pool(spec: &str, args: &Args) -> Result<PoolTarget, String> {
+    use std::net::ToSocketAddrs;
+    if spec == "default" {
+        let network = match &args.network {
+            Some(n) => Network::parse(n)
+                .ok_or_else(|| format!("--network: `{n}` is not test, dev, beta or alpha"))?,
+            None => Network::Beta,
+        };
+        let Some((addr, key)) = tenero_app::pool_miner::default_pool(network) else {
+            return Err(format!(
+                "no pool is built into this program for the {} network yet: give --pool HOST:PORT and --pool-key",
+                network.name()
+            ));
+        };
+        let addr: std::net::SocketAddr = addr
+            .parse()
+            .map_err(|_| "the built-in pool address is not valid".to_string())?;
+        return Ok(PoolTarget {
+            addr,
+            pin: Some(key),
+            network,
+        });
+    }
+    let network = Network::parse(args.network.as_deref().unwrap_or(""))
+        .ok_or("--network must be test, dev, beta or alpha")?;
+    let addr = spec
+        .to_socket_addrs()
+        .map_err(|e| format!("--pool: cannot look up `{spec}`: {e} (it must be HOST:PORT)"))?
+        .next()
+        .ok_or_else(|| format!("--pool: `{spec}` has no address"))?;
+    Ok(PoolTarget {
+        addr,
+        pin: args.pool_key,
+        network,
+    })
 }
 
 fn main() {
@@ -267,11 +382,14 @@ fn main() {
         },
         details: {
             let mut d = vec![
-                match args.node {
-                    Some(n) => {
+                match (&args.pool, args.node) {
+                    (Some(p), _) => format!(
+                        "  pool     {p} (the rewards go to the POOL, which pays you by its own rules)"
+                    ),
+                    (None, Some(n)) => {
                         format!("  node     {n} (the miner service of a node on another computer)")
                     }
-                    None => format!(
+                    (None, None) => format!(
                         "  node     data {}, control {}",
                         args.data.display(),
                         args.control
@@ -286,36 +404,56 @@ fn main() {
         },
     });
 
+    // a pool miner never talks to a node: it needs only the network's name (to refuse a pool of another network)
+    let pool_target: Option<PoolTarget> = match &args.pool {
+        None => None,
+        Some(spec) => match resolve_pool(spec, &args) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                log.error(&e);
+                std::process::exit(2);
+            }
+        },
+    };
     // the first connection tells us which network the node is on, so that the backend can be checked against it
     let connect = || match args.node {
         Some(n) => RemoteNode::connect_miner_service(n, args.key.as_ref()),
         None => connect_to(&args.data, args.control),
     };
-    let info = loop {
-        if shutdown.load(Ordering::SeqCst) {
-            return;
-        }
-        match connect().and_then(|n| n.info()) {
-            Ok(i) => break i,
-            Err(e) => {
-                log.warn(&format!("cannot reach the node: {e} (trying again)"));
-                std::thread::sleep(Duration::from_secs(2));
+    let network = if let Some(t) = &pool_target {
+        t.network
+    } else {
+        let info = loop {
+            if shutdown.load(Ordering::SeqCst) {
+                return;
             }
-        }
-    };
-    let Some(network) = Network::parse(&info.network) else {
-        log.error(&format!(
-            "the node is on a network this miner does not know: {}",
-            info.network
+            match connect().and_then(|n| n.info()) {
+                Ok(i) => break i,
+                Err(e) => {
+                    log.warn(&format!("cannot reach the node: {e} (trying again)"));
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+            }
+        };
+        let Some(network) = Network::parse(&info.network) else {
+            log.error(&format!(
+                "the node is on a network this miner does not know: {}",
+                info.network
+            ));
+            std::process::exit(2);
+        };
+        log.info(&format!(
+            "node: network {}, height {}, version {}; backend {}",
+            info.network, info.height, info.version, args.backend
         ));
-        std::process::exit(2);
+        network
     };
     let pow = match (network, args.backend.as_str()) {
         (Network::Test, "sha256") => PowKind::Sha256,
         (n, "cpu" | "gpu") if n.real_pow() => PowKind::Matmul,
         _ => {
             log.error(&format!(
-                "the node is on the {} network, which needs {}, not --backend {}",
+                "the {} network needs {}, not --backend {}",
                 network.name(),
                 if network == Network::Test {
                     "sha256"
@@ -327,10 +465,15 @@ fn main() {
             std::process::exit(2);
         }
     };
-    log.info(&format!(
-        "node: network {}, height {}, version {}; backend {}",
-        info.network, info.height, info.version, args.backend
-    ));
+    if let Some(t) = &pool_target {
+        log.info(&format!(
+            "pool: {} on the {} network; backend {}",
+            t.addr,
+            network.name(),
+            args.backend
+        ));
+        log.warn("the block rewards of a pool go to the POOL, which pays you by its own rules: nothing makes it pay. To keep the rewards, mine on your own node.");
+    }
     let epoch = network.epoch_blocks();
     let miner = match args.backend.as_str() {
         "sha256" => Miner::spawn(|| Ok(Sha256Backend)),
@@ -373,18 +516,86 @@ fn main() {
             }
         })
     };
-    let cfg = RemoteMinerConfig {
-        min_block_interval: Duration::from_secs(args.pace),
-        log: Arc::new(move |line| l.info(&format!("miner: {line}"))),
-        events,
-        ..RemoteMinerConfig::default()
-    };
-    let mut rm = RemoteMiner::new(miner, payout, pow, cfg);
+    let cfg_events = events;
+    // what the status thread reads, whichever way this miner works: the backend's counters, and (connected, syncing, height)
+    type View = Arc<dyn Fn() -> (bool, bool, u64) + Send + Sync>;
+    type Runner = Box<dyn FnOnce(&AtomicBool) -> (Result<(), String>, String)>;
+    let (counters, view, runner): (Arc<tenero_miner::Counters>, View, Runner) =
+        if let Some(target) = pool_target {
+            let mut pcfg = PoolMinerConfig::new(network.name(), &args.address, &args.worker);
+            let l2 = Arc::clone(&l);
+            pcfg.log = Arc::new(move |line| l2.info(&format!("miner: {line}")));
+            pcfg.events = cfg_events;
+            let mut pm = PoolMiner::new(miner, pow, pcfg);
+            let progress = pm.progress();
+            let view: View = Arc::new(move || {
+                (
+                    progress.connected.load(Ordering::Relaxed),
+                    false,
+                    progress.height.load(Ordering::Relaxed),
+                )
+            });
+            let counters = pm.counters();
+            let (addr, pin) = (target.addr, target.pin);
+            let runner: Runner = Box::new(move |shutdown| {
+                let result = pm.run(|| tenero_app::pool_miner::connect(addr, pin), shutdown);
+                let s = pm.stats;
+                (
+                    result,
+                    format!(
+                        "stopped: {} shares sent, {} accepted, {} stale, {} refused",
+                        s.shares_sent, s.shares_accepted, s.shares_stale, s.shares_rejected
+                    ),
+                )
+            });
+            (counters, view, runner)
+        } else {
+            let cfg = RemoteMinerConfig {
+                min_block_interval: Duration::from_secs(args.pace),
+                log: Arc::new(move |line| l.info(&format!("miner: {line}"))),
+                events: cfg_events,
+                ..RemoteMinerConfig::default()
+            };
+            let mut rm = RemoteMiner::new(miner, payout, pow, cfg);
+            let progress = rm.progress();
+            let view: View = Arc::new(move || {
+                (
+                    progress.connected.load(Ordering::Relaxed),
+                    progress.syncing.load(Ordering::Relaxed),
+                    progress.height.load(Ordering::Relaxed),
+                )
+            });
+            let counters = rm.counters();
+            // a node on another computer limits how often it is asked (120 requests a minute by default): once a second
+            let poll = if args.node.is_some() {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_millis(200)
+            };
+            let (node, key, data, control) = (args.node, args.key, args.data.clone(), args.control);
+            let runner: Runner = Box::new(move |shutdown| {
+                let connect = move || match node {
+                    Some(n) => RemoteNode::connect_miner_service(n, key.as_ref()),
+                    None => connect_to(&data, control),
+                };
+                let result = rm.run(connect, shutdown, poll);
+                let s = rm.stats;
+                (
+                    result,
+                    format!(
+                        "stopped: found {} blocks (in chain {}, lost a race {}, refused {})",
+                        s.blocks_found, s.blocks_accepted, s.blocks_lost_race, s.blocks_refused
+                    ),
+                )
+            });
+            (counters, view, runner)
+        };
     // the status, from a thread of its own (the miner is busy in `run`): the screen once a second, and a line of the log now and then
     {
-        let (counters, progress, tally) = (rm.counters(), rm.progress(), Arc::clone(&tally));
+        let tally = Arc::clone(&tally);
         let (l, screen, s) = (Arc::clone(&log), Arc::clone(&screen), Arc::clone(&shutdown));
         let (backend, every) = (args.backend.clone(), Duration::from_secs(args.status_every));
+        let pool_mode = args.pool.is_some();
         let status_file = args.status_file.clone();
         // the card's health for the screen (GPU only); if NVML cannot be read the miner is not affected
         let probe = if args.backend == "gpu" {
@@ -416,12 +627,13 @@ fn main() {
                     attempts,
                     counters.searching(),
                 );
-                let link = if !progress.connected.load(Ordering::Relaxed) {
-                    NodeLink::Down
-                } else if progress.syncing.load(Ordering::Relaxed) {
-                    NodeLink::Syncing
-                } else {
-                    NodeLink::Connected
+                let (connected, syncing, height) = view();
+                let link = match (pool_mode, connected, syncing) {
+                    (true, true, _) => NodeLink::PoolConnected,
+                    (true, false, _) => NodeLink::PoolDown,
+                    (false, false, _) => NodeLink::Down,
+                    (false, true, true) => NodeLink::Syncing,
+                    (false, true, false) => NodeLink::Connected,
                 };
                 let name = tally
                     .backend
@@ -433,7 +645,7 @@ fn main() {
                 let status = MinerStatus {
                     backend: name,
                     link,
-                    node_height: progress.height.load(Ordering::Relaxed),
+                    node_height: height,
                     rates: meter.rates(),
                     gpu: gpu.clone(),
                     luck: tally
@@ -466,25 +678,8 @@ fn main() {
             }
         });
     }
-    // a node on another computer limits how often it is asked (120 requests a minute by default): once a second
-    let poll = if args.node.is_some() {
-        Duration::from_secs(1)
-    } else {
-        Duration::from_millis(200)
-    };
-    let result = rm.run(connect, &shutdown, poll);
-    let s = rm.stats;
-    log.log_event(
-        Level::Info,
-        &format!(
-            "stopped: found {} blocks (in chain {}, lost a race {}, refused {})",
-            s.blocks_found, s.blocks_accepted, s.blocks_lost_race, s.blocks_refused
-        ),
-        UiEvent::Info(format!(
-            "stopped: {} blocks found, {} in the chain, {} lost a race, {} refused",
-            s.blocks_found, s.blocks_accepted, s.blocks_lost_race, s.blocks_refused
-        )),
-    );
+    let (result, summary) = runner(&shutdown);
+    log.log_event(Level::Info, &summary, UiEvent::Info(summary.clone()));
     if let Err(e) = result {
         log.error(&e);
         std::process::exit(1);

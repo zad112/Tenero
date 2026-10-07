@@ -8,8 +8,8 @@
 
 use tenero_core::v2::codec::{DecodeError, EncodeError, Reader, Wire, Writer};
 use tenero_core::v2::{
-    Block, Coinbase, CoinbaseOutput, Transaction, TxPrefix, MAX_BLOCK_TXS, MAX_COINBASE_OUTPUTS,
-    MAX_EXTRA,
+    Block, BlockHeader, Coinbase, CoinbaseOutput, Transaction, TxPrefix, MAX_BLOCK_TXS,
+    MAX_COINBASE_OUTPUTS, MAX_EXTRA,
 };
 use tenero_node::Payout;
 use tenero_store::StoredOutput;
@@ -61,6 +61,13 @@ pub enum Request {
         index: u64,
     },
     OutputCount,
+    /// The full proof-of-work check of a header at a height (`PowCheck::check_full`): the answer says whether the mix is the one the proof of work gives for the
+    /// header's nonce. The node does the work on its own thread with the dataset it already holds, so a program that checks many headers (a mining pool) needs no
+    /// dataset of its own. It does NOT say the id meets any target: that is a comparison the asker makes.
+    CheckPow {
+        height: u64,
+        header: BlockHeader,
+    },
     /// Many outputs by global index (1 to [`MAX_OUTPUTS_PER_REQUEST`]), in one round trip: the ring members of a payment. The
     /// answer has one entry for each index, in order. Asked one by one (about 15 ms each) a payment of 32 coins waited
     /// more than twenty seconds.
@@ -115,6 +122,8 @@ pub enum Response {
     Block(Option<ScanBlock>),
     Output(Option<StoredOutput>),
     OutputCount(u64),
+    /// The answer to `CheckPow`: the mix is right, or not.
+    PowChecked(bool),
     /// One entry for each index asked about, in order.
     OutputsMany(Vec<Option<StoredOutput>>),
     Spent(bool),
@@ -183,6 +192,8 @@ pub const K_OUTPUT_COUNT: u8 = 5;
 pub const K_KEY_IMAGE_SPENT: u8 = 6;
 pub const K_KEY_IMAGES_SPENT: u8 = 14;
 pub const K_OUTPUTS: u8 = 15;
+/// `check_pow`: is this header's mix what the proof of work gives (the full check, with the node's own dataset)? A pool asks it so that it needs no 4 GiB dataset of its own.
+pub const K_CHECK_POW: u8 = 16;
 /// The most outputs one `Outputs` request may ask for (a payment of 32 coins with rings of 16 needs 512).
 pub const MAX_OUTPUTS_PER_REQUEST: usize = 1024;
 /// The most key images one `KeyImagesSpent` request may ask about (and the most flags one answer carries).
@@ -226,6 +237,7 @@ impl Request {
             Request::Output { .. } => K_OUTPUT,
             Request::OutputCount => K_OUTPUT_COUNT,
             Request::Outputs { .. } => K_OUTPUTS,
+            Request::CheckPow { .. } => K_CHECK_POW,
             Request::KeyImageSpent { .. } => K_KEY_IMAGE_SPENT,
             Request::KeyImagesSpent { .. } => K_KEY_IMAGES_SPENT,
             Request::Rules => K_RULES,
@@ -251,6 +263,10 @@ impl Request {
             | Request::Stop => {}
             Request::Block { height } => w.u64(*height),
             Request::Output { index } => w.u64(*index),
+            Request::CheckPow { height, header } => {
+                w.u64(*height);
+                header.write(&mut w)?;
+            }
             Request::Outputs { indexes } => {
                 w.count(indexes.len(), 1, MAX_OUTPUTS_PER_REQUEST)?;
                 for i in indexes {
@@ -292,6 +308,10 @@ impl Request {
             K_TIP => Request::Tip,
             K_BLOCK => Request::Block { height: r.u64()? },
             K_OUTPUT => Request::Output { index: r.u64()? },
+            K_CHECK_POW => Request::CheckPow {
+                height: r.u64()?,
+                header: BlockHeader::read(&mut r)?,
+            },
             K_OUTPUTS => {
                 let n = r.count(1, MAX_OUTPUTS_PER_REQUEST)?;
                 let indexes = (0..n).map(|_| r.u64()).collect::<Result<Vec<u64>, _>>()?;
@@ -382,6 +402,7 @@ impl Response {
             Response::Output(_) => K_OUTPUT | ANSWER,
             Response::OutputCount(_) => K_OUTPUT_COUNT | ANSWER,
             Response::OutputsMany(_) => K_OUTPUTS | ANSWER,
+            Response::PowChecked(_) => K_CHECK_POW | ANSWER,
             Response::Spent(_) => K_KEY_IMAGE_SPENT | ANSWER,
             Response::SpentMany(_) => K_KEY_IMAGES_SPENT | ANSWER,
             Response::Rules(_) => K_RULES | ANSWER,
@@ -419,6 +440,7 @@ impl Response {
                 None => put_flag(&mut w, false),
             },
             Response::OutputCount(n) => w.u64(*n),
+            Response::PowChecked(b) => put_flag(&mut w, *b),
             Response::OutputsMany(v) => {
                 w.count(v.len(), 1, MAX_OUTPUTS_PER_REQUEST)?;
                 for o in v {
@@ -514,6 +536,7 @@ impl Response {
                 None
             }),
             x if x == K_OUTPUT_COUNT | ANSWER => Response::OutputCount(r.u64()?),
+            x if x == K_CHECK_POW | ANSWER => Response::PowChecked(flag(&mut r)?),
             x if x == K_OUTPUTS | ANSWER => {
                 let n = r.count(1, MAX_OUTPUTS_PER_REQUEST)?;
                 let mut v = Vec::with_capacity(n);

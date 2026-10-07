@@ -1,8 +1,10 @@
-# The pool protocol: how a miner talks to a mining pool (a DRAFT standard, version 1; nothing is built)
+# The pool protocol: how a miner talks to a mining pool (version 1, a DRAFT standard; a pool, a pool miner and a conformance tool are built, for the test network)
 
 **Status (2026-10-07): a draft by the author; the owner has decided its open points (see "Decisions"). **Only the messages exist in the code** (`crates/tenero-app/src/pool.rs`, checked against golden vectors from an independent Python reference); no pool and no pool miner exists. Tenero is unaudited and experimental; no pool exists and nobody has said they will run one.** The point of writing it now, before any pool exists, is that every pool and every miner that follows this page can work together: a miner written to it connects to any pool written to it. The owner's rule (2026-10-06): *set the standard first.*
 
 This is **not** the miner service of `docs/REMOTE_MINING_PLAN.md`. That service is solo mining on someone else's node: the node builds the whole block and the reward goes to **the miner**. In a pool the reward goes to **the pool**, the miner is paid by the pool later, and the miner works on a header the pool built. The two must never be mistaken for each other (see "Two modes that cannot be confused").
+
+**Built 2026-10-07:** `tenero-pool` (`crates/tenero-app/src/pool_server.rs`, `pool_core.rs`, `bin/tenero_pool.rs`: `docs/RUNNING_A_POOL.md`), the miner's `--pool` mode (`pool_miner.rs`) and the app's pool option, and **`tenero-poolcheck`** (`pool_check.rs`), the conformance tool of "A conformance kit" below. **Not built:** job declaration (this pool says so: its `hello_ok` has no capability bits, and a miner that sends `declare_job` is disconnected), the optional tip witness, and the reference pool for other implementers (this pool is the reference for now). What a share is worth, the PPLNS window, the payout rules and the difficulty adjustment are the pool's own rules, not the protocol's: they are in `docs/RUNNING_A_POOL.md`.
 
 ## What it is modelled on, and what it is not
 

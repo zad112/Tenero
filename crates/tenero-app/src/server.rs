@@ -349,6 +349,11 @@ impl ControlHook {
                 Ok(b) => Response::Spent(b),
                 Err(e) => err(e),
             },
+            Request::CheckPow { height, header } => match node.check_proof_of_work(&header, height)
+            {
+                Ok(b) => Response::PowChecked(b),
+                Err(e) => err(e),
+            },
             Request::Rules => match ChainView::rules(node) {
                 Ok(r) => Response::Rules(r),
                 Err(e) => err(e),

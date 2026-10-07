@@ -1585,3 +1585,196 @@ fn the_wallet_program_pays_many_sweeps_and_combines_through_a_real_node() {
         .contains("--pieces"));
     node.stop();
 }
+
+/// The whole thing, with the real programs: a node that mines nothing, the pool program in front of it with its own wallet, and the miner program
+/// working for the pool. The miner's address ends up with coins the POOL paid it.
+#[test]
+fn the_pool_program_pays_a_miner_program_through_a_real_node() {
+    use tenero_wallet::KdfParams;
+    let (dn, dp) = (Dir::new("pool-node"), Dir::new("pool-data"));
+    let node = Running::start(config(&dn.0, ""));
+    // the pool's wallet, and the miner's address
+    let pool_wallet = tenero_wallet::Wallet::from_seed(&[3; 32], 0);
+    let wallet_file = dp.path("pool.wallet");
+    let pass_file = dp.path("pass.txt");
+    std::fs::write(&pass_file, "correct horse battery\n").unwrap();
+    pool_wallet
+        .save(
+            &wallet_file,
+            b"correct horse battery",
+            KdfParams::TEST_ONLY_WEAK,
+            &mut rand_core::OsRng,
+        )
+        .unwrap();
+    let mut miner_wallet = tenero_wallet::Wallet::from_seed(&[2; 32], 0);
+    let miner_address = miner_wallet.address().to_text();
+    // the pool's key, made once and then used by the pool
+    let pool_bin = env!("CARGO_BIN_EXE_tenero-pool");
+    let key = std::process::Command::new(pool_bin)
+        .args(["key", "--data", dp.0.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        key.status.success(),
+        "{}",
+        String::from_utf8_lossy(&key.stderr)
+    );
+    let key_hex = String::from_utf8(key.stdout).unwrap().trim().to_string();
+    assert_eq!(key_hex.len(), 64);
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let pool_log = dp.path("pool.log");
+    let mut pool = Child(
+        std::process::Command::new(pool_bin)
+            .args(["--data", dp.0.to_str().unwrap()])
+            .args(["--network", "test", "--node-data", dn.0.to_str().unwrap()])
+            .args(["--control", &node.ready.control.to_string()])
+            .args(["--wallet", wallet_file.to_str().unwrap()])
+            .args(["--passphrase-file", pass_file.to_str().unwrap()])
+            .args(["--listen", &format!("127.0.0.1:{port}")])
+            .args(["--min-payout", "0.001", "--payout-every", "10"])
+            .args(["--log-file", pool_log.to_str().unwrap()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let read_log = || std::fs::read_to_string(&pool_log).unwrap_or_default();
+    let end = Instant::now() + Duration::from_secs(30);
+    while !read_log().contains("listening for miners") {
+        assert!(
+            Instant::now() < end,
+            "the pool did not start:\n{}",
+            read_log()
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        read_log().contains(&key_hex),
+        "the pool says the key it has"
+    );
+    // a miner that was given a WRONG key never works for it
+    let mut wrong = key_hex.clone();
+    wrong.replace_range(0..2, if &key_hex[0..2] == "00" { "01" } else { "00" });
+    let mut refused = std::process::Command::new(env!("CARGO_BIN_EXE_tenero-miner"))
+        .args(["--pool", &format!("127.0.0.1:{port}"), "--pool-key", &wrong])
+        .args([
+            "--network",
+            "test",
+            "--address",
+            &miner_address,
+            "--backend",
+            "sha256",
+        ])
+        .arg("--verbose")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    thread::sleep(Duration::from_secs(3));
+    let _ = refused.kill();
+    let out = refused.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        err.contains("different key") || err.contains("not the pool you meant"),
+        "{err}"
+    );
+    assert_eq!(
+        node.height(),
+        0,
+        "a miner that refused the pool mined nothing"
+    );
+    // the right key: the miner works, and the chain grows with blocks that pay the POOL
+    let _miner = Child(
+        std::process::Command::new(env!("CARGO_BIN_EXE_tenero-miner"))
+            .args([
+                "--pool",
+                &format!("127.0.0.1:{port}"),
+                "--pool-key",
+                &key_hex,
+            ])
+            .args([
+                "--network",
+                "test",
+                "--address",
+                &miner_address,
+                "--backend",
+                "sha256",
+            ])
+            .args(["--worker", "test-rig"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    node.wait_height(10, 90);
+    // the pool was paid by the blocks, the miner was not
+    {
+        let c = node.client();
+        let mut p = tenero_wallet::Wallet::from_seed(&[3; 32], 0);
+        p.sync(&c).unwrap();
+        assert!(
+            p.owned().len() >= 8,
+            "the blocks pay the pool: {} outputs",
+            p.owned().len()
+        );
+        miner_wallet.sync(&c).unwrap();
+        assert!(
+            miner_wallet.owned().iter().all(|o| !o.coinbase),
+            "the miner is paid by the pool in ordinary transactions, never by a block reward"
+        );
+    }
+    // and then the pool pays the miner, once the blocks have matured and the interval has passed
+    let end = Instant::now() + Duration::from_secs(120);
+    loop {
+        let c = node.client();
+        miner_wallet.sync(&c).unwrap();
+        if miner_wallet.balance(&c).unwrap().total > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < end,
+            "the miner was never paid:\n{}",
+            read_log()
+        );
+        thread::sleep(Duration::from_secs(2));
+    }
+    let paid = miner_wallet.balance(&node.client()).unwrap().total;
+    assert!(paid >= 100_000, "{paid}");
+    // the pool kept a record a miner can check against the chain
+    let payments = std::fs::read_to_string(dp.path("payments.log")).unwrap();
+    assert!(
+        payments.lines().any(|l| l.contains(&miner_address)),
+        "{payments}"
+    );
+    assert!(dp.path("pool-state.dat").exists());
+    let _ = pool.0.kill();
+    let _ = pool.0.wait();
+}
+
+/// A client (a pool) asks a real node for the full proof-of-work check of a header: right mix yes, wrong mix no. The node does the work with the dataset it
+/// already has, so the client needs none.
+#[test]
+fn a_real_node_checks_the_mix_of_a_header_for_a_client() {
+    let dir = Dir::new("checkpow");
+    let node = Running::start(config(&dir.0, ""));
+    let c = node.client();
+    let header = tenero_core::v2::BlockHeader {
+        version: tenero_core::v2::VERSION,
+        prev_id: [1; 32],
+        timestamp: 1_700_000_000,
+        tx_root: [2; 32],
+        nonce: 5,
+        mix: [0; 64],
+    };
+    assert_eq!(
+        c.check_pow(1, &header),
+        Ok(true),
+        "the test chain's mix is all zeros"
+    );
+    let mut wrong = header.clone();
+    wrong.mix[7] = 1;
+    assert_eq!(c.check_pow(1, &wrong), Ok(false));
+}

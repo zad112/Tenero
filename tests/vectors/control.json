@@ -47,10 +47,10 @@
    "note": "unknown request kind 0"
   },
   {
-   "body": "10",
+   "body": "11",
    "direction": "request",
    "error": "kind",
-   "note": "unknown request kind 16"
+   "note": "unknown request kind 17"
   },
   {
    "body": "80",
@@ -113,10 +113,10 @@
    "note": "unknown response kind 15"
   },
   {
-   "body": "90",
+   "body": "91",
    "direction": "response",
    "error": "kind",
-   "note": "unknown response kind 144"
+   "note": "unknown response kind 145"
   },
   {
    "body": "fe",
@@ -207,6 +207,30 @@
    "direction": "request",
    "error": "trailing",
    "note": "the rules: with a trailing byte"
+  },
+  {
+   "body": "104d0000000000000002002bd7e4a3e1ce2fcb7d29c4bf553a3cc9c9a87627ff5f0485801e9ec570b30e6e3cf1536500000000e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495",
+   "direction": "request",
+   "error": "malformed",
+   "note": "check pow: a header: cut in the middle"
+  },
+  {
+   "body": "104d0000000000000002002bd7e4a3e1ce2fcb7d29c4bf553a3cc9c9a87627ff5f0485801e9ec570b30e6e3cf1536500000000e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8552a00000000000000fa870e9295e5359825c90145bf0ce19507040ba8cf64ade789b4c0795f90acf2dfd8b7736f241498bd63c969cf0505458b4ada556c0aa84408f3bf12caeac2bc00",
+   "direction": "request",
+   "error": "trailing",
+   "note": "check pow: a header: with a trailing byte"
+  },
+  {
+   "body": "10ffffffffffffffff0200932693162fd37a18b2c75717990ae55b9d04a0c498dd7ab1d3be3c7b5f4f12613cf1536500000000e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495",
+   "direction": "request",
+   "error": "malformed",
+   "note": "check pow: the largest height and nonce: cut in the middle"
+  },
+  {
+   "body": "10ffffffffffffffff0200932693162fd37a18b2c75717990ae55b9d04a0c498dd7ab1d3be3c7b5f4f12613cf1536500000000e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff00",
+   "direction": "request",
+   "error": "trailing",
+   "note": "check pow: the largest height and nonce: with a trailing byte"
   },
   {
    "body": "0f010000000c",
@@ -489,6 +513,18 @@
    "direction": "response",
    "error": "trailing",
    "note": "not spent: with a trailing byte"
+  },
+  {
+   "body": "900100",
+   "direction": "response",
+   "error": "trailing",
+   "note": "the mix is right: with a trailing byte"
+  },
+  {
+   "body": "900000",
+   "direction": "response",
+   "error": "trailing",
+   "note": "the mix is wrong: with a trailing byte"
   },
   {
    "body": "8f0100",
@@ -923,6 +959,30 @@
    "note": "outputs_many: an output that is not a coinbase flag 0 or 1"
   },
   {
+   "body": "10050000000000000002002bd7e4a3e1ce2fcb7d29c4bf553a3cc9c9a87627ff5f0485801e9ec570b30e6e3cf1536500000000e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8552a00000000000000fa870e9295e5359825c90145bf0ce19507040ba8cf64ade789b4c0795f90acf2dfd8b7736f241498bd63c969cf0505458b4ada556c0aa84408f3bf12caeac2",
+   "direction": "request",
+   "error": "malformed",
+   "note": "check_pow: a header one byte short"
+  },
+  {
+   "body": "10",
+   "direction": "request",
+   "error": "malformed",
+   "note": "check_pow: no height"
+  },
+  {
+   "body": "9002",
+   "direction": "response",
+   "error": "malformed",
+   "note": "pow_checked: a flag of 2"
+  },
+  {
+   "body": "90",
+   "direction": "response",
+   "error": "malformed",
+   "note": "pow_checked: no flag"
+  },
+  {
    "body": "0b01000000000000000000",
    "direction": "request",
    "error": "malformed",
@@ -972,6 +1032,7 @@
    "block": 3,
    "block_template": 12,
    "blocks": 11,
+   "check_pow": 16,
    "info": 9,
    "key_image_spent": 6,
    "key_images_spent": 14,
@@ -993,6 +1054,7 @@
    "output": 132,
    "output_count": 133,
    "outputs_many": 143,
+   "pow_checked": 144,
    "rules": 135,
    "spent": 134,
    "spent_many": 142,
@@ -1079,6 +1141,42 @@
     "type": "rules"
    },
    "note": "the rules"
+  },
+  {
+   "body": "104d0000000000000002002bd7e4a3e1ce2fcb7d29c4bf553a3cc9c9a87627ff5f0485801e9ec570b30e6e3cf1536500000000e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8552a00000000000000fa870e9295e5359825c90145bf0ce19507040ba8cf64ade789b4c0795f90acf2dfd8b7736f241498bd63c969cf0505458b4ada556c0aa84408f3bf12caeac2bc",
+   "direction": "request",
+   "frame": "9b000000104d0000000000000002002bd7e4a3e1ce2fcb7d29c4bf553a3cc9c9a87627ff5f0485801e9ec570b30e6e3cf1536500000000e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8552a00000000000000fa870e9295e5359825c90145bf0ce19507040ba8cf64ade789b4c0795f90acf2dfd8b7736f241498bd63c969cf0505458b4ada556c0aa84408f3bf12caeac2bc",
+   "message": {
+    "header": {
+     "mix": "fa870e9295e5359825c90145bf0ce19507040ba8cf64ade789b4c0795f90acf2dfd8b7736f241498bd63c969cf0505458b4ada556c0aa84408f3bf12caeac2bc",
+     "nonce": 42,
+     "prev_id": "2bd7e4a3e1ce2fcb7d29c4bf553a3cc9c9a87627ff5f0485801e9ec570b30e6e",
+     "timestamp": 1700000060,
+     "tx_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "version": 2
+    },
+    "height": 77,
+    "type": "check_pow"
+   },
+   "note": "check pow: a header"
+  },
+  {
+   "body": "10ffffffffffffffff0200932693162fd37a18b2c75717990ae55b9d04a0c498dd7ab1d3be3c7b5f4f12613cf1536500000000e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "direction": "request",
+   "frame": "9b00000010ffffffffffffffff0200932693162fd37a18b2c75717990ae55b9d04a0c498dd7ab1d3be3c7b5f4f12613cf1536500000000e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "message": {
+    "header": {
+     "mix": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+     "nonce": 18446744073709551615,
+     "prev_id": "932693162fd37a18b2c75717990ae55b9d04a0c498dd7ab1d3be3c7b5f4f1261",
+     "timestamp": 1700000060,
+     "tx_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "version": 2
+    },
+    "height": 18446744073709551615,
+    "type": "check_pow"
+   },
+   "note": "check pow: the largest height and nonce"
   },
   {
    "body": "0f010000000c00000000000000",
@@ -1762,6 +1860,26 @@
     "type": "spent"
    },
    "note": "not spent"
+  },
+  {
+   "body": "9001",
+   "direction": "response",
+   "frame": "020000009001",
+   "message": {
+    "ok": true,
+    "type": "pow_checked"
+   },
+   "note": "the mix is right"
+  },
+  {
+   "body": "9000",
+   "direction": "response",
+   "frame": "020000009000",
+   "message": {
+    "ok": false,
+    "type": "pow_checked"
+   },
+   "note": "the mix is wrong"
   },
   {
    "body": "8f0100000000",

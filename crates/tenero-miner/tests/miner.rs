@@ -567,6 +567,7 @@ fn job_for(rig: &SimRig, target: U256, id: u64) -> (Job, Arc<AtomicBool>) {
             height: 1,
             target,
             stale: Arc::clone(&stale),
+            nonce_start: None,
         },
         stale,
     )
@@ -821,6 +822,7 @@ fn bare_job(id: u64) -> (Job, Arc<AtomicBool>) {
             height: 1,
             target: U256::ZERO,
             stale: Arc::clone(&stale),
+            nonce_start: None,
         },
         stale,
     )

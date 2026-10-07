@@ -16,7 +16,7 @@ use tenero_core::matmulhash::{self as mh, Params};
 use tenero_core::v2::ids;
 use tenero_gpu::{DeviceDataset, Gpu};
 
-use crate::{start_nonce, Backend, Counters, Job, Solution};
+use crate::{Backend, Counters, Job, Solution};
 
 pub struct GpuBackend {
     gpu: Gpu,
@@ -102,7 +102,7 @@ impl Backend for GpuBackend {
         let mut engine = gpu
             .attempt_engine(&data, *batch)
             .map_err(|e| e.to_string())?;
-        let mut nonce = start_nonce(job.id);
+        let mut nonce = job.first_nonce();
         loop {
             if job.stale.load(Ordering::SeqCst) {
                 return Ok(None);
@@ -189,6 +189,7 @@ pub fn measure_batches(
             height: 1,
             target: U256::ZERO, // never met
             stale: Arc::clone(&stale),
+            nonce_start: None,
         };
         let counters = Arc::new(Counters::default());
         let c = Arc::clone(&counters);

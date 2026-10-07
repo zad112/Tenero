@@ -124,6 +124,10 @@ fn requests() -> Vec<Request> {
         Request::Outputs {
             indexes: vec![3, 1, 4],
         },
+        Request::CheckPow {
+            height: 9,
+            header: sample_block().header,
+        },
         Request::Rules,
         Request::SubmitTx(sample_tx()),
         Request::Info,
@@ -160,6 +164,8 @@ fn responses() -> Vec<Response> {
             coinbase: true,
         })),
         Response::OutputCount(99),
+        Response::PowChecked(true),
+        Response::PowChecked(false),
         Response::Spent(true),
         Response::Spent(false),
         Response::Rules(Rules {
@@ -251,6 +257,13 @@ fn an_answer_has_its_requests_kind_with_the_top_bit_set() {
             Request::Outputs { indexes: vec![0] },
             Response::OutputsMany(vec![None]),
         ),
+        (
+            Request::CheckPow {
+                height: 1,
+                header: sample_block().header,
+            },
+            Response::PowChecked(true),
+        ),
         (Request::Info, Response::Info(sample_info())),
         (Request::Stop, Response::Stopping),
     ];
@@ -267,7 +280,7 @@ fn malformed_requests_are_refused_not_guessed() {
         Request::from_body(&[]),
         Err(ControlError::BadLength(0))
     ));
-    for kind in [0u8, 16, 0x80, 0xFF] {
+    for kind in [0u8, 17, 0x80, 0xFF] {
         assert_eq!(
             Request::from_body(&[kind]),
             Err(ControlError::UnknownKind(kind))

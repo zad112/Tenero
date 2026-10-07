@@ -19,6 +19,14 @@ name = "tenero-miner"
 path = "src/bin/tenero_miner.rs"
 
 [[bin]]
+name = "tenero-pool"
+path = "src/bin/tenero_pool.rs"
+
+[[bin]]
+name = "tenero-poolcheck"
+path = "src/bin/tenero_poolcheck.rs"
+
+[[bin]]
 name = "tenero-seedcheck"
 path = "src/bin/tenero_seedcheck.rs"
 

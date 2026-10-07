@@ -42,6 +42,8 @@ fn link_text(l: NodeLink) -> &'static str {
         NodeLink::Down => "down",
         NodeLink::Connected => "connected",
         NodeLink::Syncing => "syncing",
+        NodeLink::PoolConnected => "pool_connected",
+        NodeLink::PoolDown => "pool_down",
     }
 }
 
@@ -143,6 +145,8 @@ impl MinerReport {
             link: match map.get("link").copied() {
                 Some("connected") => NodeLink::Connected,
                 Some("syncing") => NodeLink::Syncing,
+                Some("pool_connected") => NodeLink::PoolConnected,
+                Some("pool_down") => NodeLink::PoolDown,
                 _ => NodeLink::Down,
             },
             node_height: num("node_height"),

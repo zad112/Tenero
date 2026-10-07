@@ -204,6 +204,18 @@ fn every_other_request_closes_the_connection_with_no_answer_and_the_node_goes_on
         Request::OutputCount,
         Request::KeyImageSpent { key_image: [0; 32] },
         Request::Rules,
+        // the full proof-of-work check is the pool's own node's business, never a stranger's (it costs the node an attempt each time)
+        Request::CheckPow {
+            height: 1,
+            header: tenero_core::v2::BlockHeader {
+                version: 2,
+                prev_id: [0; 32],
+                timestamp: 0,
+                tx_root: [0; 32],
+                nonce: 0,
+                mix: [0; 64],
+            },
+        },
         Request::Stop,
     ];
     let n = others.len();

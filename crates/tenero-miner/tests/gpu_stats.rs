@@ -173,6 +173,7 @@ fn on_a_real_card_one_dataset_is_held_in_video_memory_across_epoch_boundaries() 
             height,
             target: U256::ZERO, // never met: it mines until it is told to stop
             stale: Arc::new(AtomicBool::new(false)),
+            nonce_start: None,
         };
         std::thread::scope(|s| {
             let t = s.spawn(|| backend.mine(&job, &counters));
@@ -236,6 +237,7 @@ fn on_a_real_card_at_an_easy_target_the_blocks_found_match_the_blocks_expected()
             height: 1,
             target,
             stale: Arc::new(AtomicBool::new(false)),
+            nonce_start: None,
         });
         let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {

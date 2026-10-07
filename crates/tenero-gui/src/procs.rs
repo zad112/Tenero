@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use tenero_app::client::{read_cookie, RemoteNode, COOKIE_FILE};
 use tenero_app::config::Network;
 
-use crate::settings::{MinerBackend, NodeKind, Settings};
+use crate::settings::{MinerBackend, MiningMode, NodeKind, Settings};
 
 /// A child process this program started. Cloning gives another handle to the same child (the window keeps one so that it
 /// can still end what it started if the worker thread is stuck).
@@ -185,11 +185,34 @@ pub fn miner_args(s: &Settings, address: &str, status_file: &Path) -> Vec<OsStri
         a.push(format!("--{k}").into());
         a.push(v);
     };
-    push("data", s.data_dir.clone().into_os_string());
-    push("control", s.control.to_string().into());
+    match s.mining_mode {
+        MiningMode::Solo => {
+            push("data", s.data_dir.clone().into_os_string());
+            push("control", s.control.to_string().into());
+            push("pace", s.miner_pace_secs.to_string().into());
+        }
+        // for a pool the miner needs no node: the pool (its address, and the key that is pinned), the network the pool must serve, and a name
+        MiningMode::Pool => {
+            push(
+                "pool",
+                if s.pool.is_empty() {
+                    "default"
+                } else {
+                    s.pool.as_str()
+                }
+                .into(),
+            );
+            if !s.pool_key.is_empty() {
+                push("pool-key", s.pool_key.clone().into());
+            }
+            push("network", s.network.name().into());
+            if !s.pool_worker.is_empty() {
+                push("worker", s.pool_worker.clone().into());
+            }
+        }
+    }
     push("address", address.into());
     push("backend", s.miner_backend.name().into());
-    push("pace", s.miner_pace_secs.to_string().into());
     match s.miner_backend {
         MinerBackend::Cpu => push("cores", s.miner_cores.to_string().into()),
         MinerBackend::Gpu => {

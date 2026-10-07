@@ -63,6 +63,36 @@ impl MinerBackend {
     }
 }
 
+/// Where the miner works: for itself on a node of its own (a block found pays the miner's own address), or for a pool (the reward goes to the
+/// POOL, which pays the miner by its own rules).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MiningMode {
+    Solo,
+    Pool,
+}
+
+impl MiningMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            MiningMode::Solo => "solo",
+            MiningMode::Pool => "pool",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<MiningMode> {
+        match s {
+            "solo" => Some(MiningMode::Solo),
+            "pool" => Some(MiningMode::Pool),
+            _ => None,
+        }
+    }
+}
+
+/// Whether `text` is 64 hexadecimal digits (a pool's public key).
+pub fn is_key_hex(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub network: Network,
@@ -88,6 +118,14 @@ pub struct Settings {
     pub miner_pace_secs: u64,
     /// Which account the block rewards are paid to.
     pub miner_account: usize,
+    /// Mining alone on this node (the default) or for a pool.
+    pub mining_mode: MiningMode,
+    /// The pool to mine for: `HOST:PORT`, or empty for the pool built into the program (if it has one).
+    pub pool: String,
+    /// That pool's public key, 64 hexadecimal digits (pinned: the miner refuses a pool that proves another). Empty for the built-in pool.
+    pub pool_key: String,
+    /// A name for this computer, shown to the pool (empty: the miner picks one).
+    pub pool_worker: String,
     /// The folder with `tenerod` and `tenero-miner`; empty = next to this program.
     pub program_dir: Option<PathBuf>,
     /// Overrides for where things are; empty = the defaults under the app folder.
@@ -144,6 +182,10 @@ impl Settings {
             miner_gpu_auto_batch: false,
             miner_pace_secs: if network == Network::Test { 5 } else { 0 },
             miner_account: 0,
+            mining_mode: MiningMode::Solo,
+            pool: String::new(),
+            pool_key: String::new(),
+            pool_worker: String::new(),
             program_dir: None,
             data_dir: app_dir.join(network.name()).join("node"),
             wallet_file: app_dir.join(format!("wallet-{}.twl", network.name())),
@@ -246,6 +288,31 @@ impl Settings {
                 "miner_account" => {
                     s.miner_account = v.parse().map_err(|_| bad("is not a number"))?
                 }
+                "mining_mode" => {
+                    s.mining_mode =
+                        MiningMode::parse(&v).ok_or_else(|| bad("is not solo or pool"))?
+                }
+                "pool" => {
+                    if v.len() > 255
+                        || v.chars().any(char::is_whitespace)
+                        || (!v.is_empty() && !v.contains(':'))
+                    {
+                        return Err(bad("is not HOST:PORT (or empty for the built-in pool)"));
+                    }
+                    s.pool = v.clone();
+                }
+                "pool_key" => {
+                    if !v.is_empty() && !is_key_hex(&v) {
+                        return Err(bad("is not 64 hexadecimal digits"));
+                    }
+                    s.pool_key = v.to_ascii_lowercase();
+                }
+                "pool_worker" => {
+                    if v.chars().count() > 32 || v.chars().any(char::is_control) {
+                        return Err(bad("is more than 32 characters or has a control character"));
+                    }
+                    s.pool_worker = v.clone();
+                }
                 "program_dir" => s.program_dir = (!v.is_empty()).then(|| PathBuf::from(&v)),
                 "data_dir" => s.data_dir = PathBuf::from(&v),
                 "wallet_file" => s.wallet_file = PathBuf::from(&v),
@@ -287,6 +354,10 @@ impl Settings {
             miner_gpu_auto_batch,
             miner_pace_secs,
             miner_account,
+            mining_mode,
+            pool,
+            pool_key,
+            pool_worker,
             program_dir,
             data_dir,
             wallet_file,
@@ -327,6 +398,16 @@ impl Settings {
         ));
         t.push_str(&format!("miner_pace_secs = {}\n", self.miner_pace_secs));
         t.push_str(&format!("miner_account = {}\n", self.miner_account));
+        t.push_str(&format!("mining_mode = {}\n", self.mining_mode.name()));
+        if !self.pool.is_empty() {
+            t.push_str(&format!("pool = {}\n", self.pool));
+        }
+        if !self.pool_key.is_empty() {
+            t.push_str(&format!("pool_key = {}\n", self.pool_key));
+        }
+        if !self.pool_worker.is_empty() {
+            t.push_str(&format!("pool_worker = {}\n", self.pool_worker));
+        }
         if let Some(d) = &self.program_dir {
             t.push_str(&format!("program_dir = {}\n", d.display()));
         }

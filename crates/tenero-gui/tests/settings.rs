@@ -226,3 +226,104 @@ fn the_node_is_started_with_no_mining_and_the_miner_gets_only_what_its_backend_u
         g.contains("--gpu-device 0") && g.contains("--gpu-batch auto") && !g.contains("--cores")
     );
 }
+
+// ---- mining for a pool ----------------------------------------------------------------------------------------------------
+
+use tenero_gui::settings::MiningMode;
+
+const KEY: &str = "0f0e0d0c0b0a09080706050403020100ffeeddccbbaa99887766554433221100";
+
+#[test]
+fn the_pool_settings_default_to_mining_alone_and_survive_the_text_form() {
+    let s = Settings::defaults(app(), Network::Beta);
+    assert_eq!(
+        s.mining_mode,
+        MiningMode::Solo,
+        "a person who has chosen nothing mines alone"
+    );
+    assert!(s.pool.is_empty() && s.pool_key.is_empty() && s.pool_worker.is_empty());
+    let mut p = s.clone();
+    p.mining_mode = MiningMode::Pool;
+    p.pool = "pool.example:38335".into();
+    p.pool_key = KEY.into();
+    p.pool_worker = "garage rig".into();
+    let text = p.to_text();
+    assert!(text.contains("mining_mode = pool") && text.contains("pool = pool.example:38335"));
+    assert_eq!(Settings::parse(app(), &text).unwrap(), p);
+    // a pool setting is not written when it is empty
+    assert!(!s.to_text().contains("pool ="));
+}
+
+#[test]
+fn a_mistake_in_a_pool_setting_is_an_error_that_names_it() {
+    let bad = |t: &str| Settings::parse(app(), t).unwrap_err();
+    assert!(bad("mining_mode = both").contains("mining_mode"));
+    assert!(bad("pool = no-port-here").contains("pool"));
+    assert!(bad("pool = a b:1").contains("pool"));
+    assert!(bad("pool_key = 1234").contains("pool_key"));
+    assert!(bad(&format!("pool_key = {}z", &KEY[..63])).contains("pool_key"));
+    assert!(bad(&format!("pool_worker = {}", "w".repeat(33))).contains("pool_worker"));
+    assert!(bad("pool_worker = a\u{7}b").contains("pool_worker"));
+    // an empty pool means the built-in one, and the key may be written in capitals
+    let s = Settings::parse(app(), &format!("pool =\npool_key = {}", KEY.to_uppercase())).unwrap();
+    assert!(s.pool.is_empty());
+    assert_eq!(s.pool_key, KEY);
+}
+
+#[test]
+fn only_the_pool_fields_the_person_changed_are_taken_from_the_screen() {
+    let base = Settings::defaults(app(), Network::Beta);
+    let mut now = base.clone();
+    now.miner_account = 2; // changed meanwhile, on another screen
+    let mut draft = base.clone();
+    draft.mining_mode = MiningMode::Pool;
+    draft.pool = "p:1".into();
+    let merged = now.with_changes(&base, &draft);
+    assert_eq!(
+        (merged.mining_mode, merged.pool.as_str()),
+        (MiningMode::Pool, "p:1")
+    );
+    assert_eq!(merged.miner_account, 2, "what changed elsewhere stays");
+}
+
+#[test]
+fn a_pool_miner_is_given_a_pool_a_network_and_no_node() {
+    let mut s = Settings::defaults(app(), Network::Beta);
+    s.mining_mode = MiningMode::Pool;
+    s.miner_backend = MinerBackend::Gpu;
+    // the program's own pool: no address, no key
+    let a: Vec<String> = miner_args(&s, "tni1abc", Path::new("st.txt"))
+        .iter()
+        .map(|x| x.to_string_lossy().into_owned())
+        .collect();
+    let at = |k: &str| a.iter().position(|x| x == k).map(|i| a[i + 1].clone());
+    assert_eq!(at("--pool").as_deref(), Some("default"));
+    assert_eq!(at("--network").as_deref(), Some("beta"));
+    assert_eq!(at("--address").as_deref(), Some("tni1abc"));
+    assert!(at("--pool-key").is_none() && at("--worker").is_none());
+    for node_only in ["--data", "--control", "--pace"] {
+        assert!(
+            !a.iter().any(|x| x == node_only),
+            "{node_only} is for a node: {a:?}"
+        );
+    }
+    // a pool of the person's choosing, with its key pinned and a name for this computer
+    s.pool = "pool.example:38335".into();
+    s.pool_key = KEY.into();
+    s.pool_worker = "garage".into();
+    let a: Vec<String> = miner_args(&s, "tni1abc", Path::new("st.txt"))
+        .iter()
+        .map(|x| x.to_string_lossy().into_owned())
+        .collect();
+    let at = |k: &str| a.iter().position(|x| x == k).map(|i| a[i + 1].clone());
+    assert_eq!(at("--pool").as_deref(), Some("pool.example:38335"));
+    assert_eq!(at("--pool-key").as_deref(), Some(KEY));
+    assert_eq!(at("--worker").as_deref(), Some("garage"));
+    // and mining alone still gets a node and no pool
+    s.mining_mode = MiningMode::Solo;
+    let a: Vec<String> = miner_args(&s, "tni1abc", Path::new("st.txt"))
+        .iter()
+        .map(|x| x.to_string_lossy().into_owned())
+        .collect();
+    assert!(a.iter().any(|x| x == "--data") && !a.iter().any(|x| x == "--pool"));
+}

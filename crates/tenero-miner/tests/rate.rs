@@ -269,6 +269,7 @@ fn a_real_backend_is_searching_while_it_has_a_job_and_not_after() {
         height: 1,
         target: U256::ZERO, // never met
         stale: Arc::new(AtomicBool::new(false)),
+        nonce_start: None,
     });
     let until = Instant::now() + Duration::from_secs(10);
     while c.attempts.load(Ordering::Relaxed) == 0 && Instant::now() < until {
@@ -455,6 +456,7 @@ fn a_real_backend_at_an_easy_target_finds_about_what_was_expected() {
             height: 1,
             target,
             stale: Arc::new(AtomicBool::new(false)),
+            nonce_start: None,
         });
         let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {

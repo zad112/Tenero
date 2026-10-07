@@ -1511,3 +1511,57 @@ fn combining_coins_is_previewed_cancelled_sent_and_never_shown_as_money_received
         .is_some_and(|n| n.starts_with("Combined")));
     c.handle(Cmd::StopNode);
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// mining for a pool needs no node
+// ---------------------------------------------------------------------------------------------------------------
+
+#[test]
+fn a_miner_for_a_pool_starts_with_no_node_and_the_reasons_it_does_not_start_are_said() {
+    let rig = Rig::new("poolmine", 18493);
+    let mut c = rig.core();
+    c.handle(Cmd::CreateWallet {
+        name: None,
+        password: Password::Set(pw("a long enough password")),
+    });
+    let mut s = c.snapshot().settings;
+    s.mining_mode = tenero_gui::settings::MiningMode::Pool;
+    c.handle(Cmd::SetSettings(Box::new(s.clone())));
+    assert_eq!(
+        c.snapshot().settings.mining_mode,
+        tenero_gui::settings::MiningMode::Pool
+    );
+    // no pool is built in, so with nothing typed in it says so (and not "start the node")
+    let ev = c.handle(Cmd::StartMiner);
+    let e = errors(&ev);
+    assert_eq!(e.len(), 1, "{e:?}");
+    assert!(
+        e[0].contains("no pool is built into this program"),
+        "{}",
+        e[0]
+    );
+    // a pool typed in needs its key
+    s.pool = "127.0.0.1:1".into();
+    c.handle(Cmd::SetSettings(Box::new(s.clone())));
+    let ev = c.handle(Cmd::StartMiner);
+    assert!(
+        errors(&ev)[0].contains("needs its key"),
+        "{:?}",
+        errors(&ev)
+    );
+    // with a key it starts, although no node is running: the miner program tries the pool and keeps trying
+    s.pool_key = "ab".repeat(32);
+    c.handle(Cmd::SetSettings(Box::new(s)));
+    assert!(matches!(c.snapshot().node, NodeView::Stopped));
+    let ev = c.handle(Cmd::StartMiner);
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    wait(&mut c, 60, "the miner's report", |s| {
+        matches!(&s.miner, MinerView::Running { .. })
+    });
+    assert!(
+        matches!(c.snapshot().node, NodeView::Stopped),
+        "mining for a pool started no node"
+    );
+    c.handle(Cmd::StopMiner);
+    assert!(matches!(c.snapshot().miner, MinerView::Off));
+}

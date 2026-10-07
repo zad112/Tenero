@@ -56,6 +56,17 @@ pub struct Job {
     /// Set when the job is no longer worth working on (the tip moved, or it was replaced): a backend looks at it
     /// between batches and returns.
     pub stale: Arc<AtomicBool>,
+    /// Where the search starts: `None` starts from a number worked out from `id` (a solo miner may start anywhere). A **pool** miner gives the
+    /// pool's nonce prefix here, so it searches only its own slice of the nonces (`docs/POOL_PROTOCOL.md`), and after a share it gives the next nonce
+    /// so that the same one is not found twice.
+    pub nonce_start: Option<u64>,
+}
+
+impl Job {
+    /// The first nonce a backend tries.
+    pub fn first_nonce(&self) -> u64 {
+        self.nonce_start.unwrap_or_else(|| start_nonce(self.id))
+    }
 }
 
 /// A nonce (and mix) a backend says meets the target. The hook checks it before using it.
@@ -188,7 +199,7 @@ impl Backend for Sha256Backend {
 
     fn mine(&mut self, job: &Job, counters: &Counters) -> Result<Option<Solution>, String> {
         let mut header = job.header.clone();
-        let mut nonce = start_nonce(job.id);
+        let mut nonce = job.first_nonce();
         let (mut tried, mut counted) = (0u64, 0u64);
         loop {
             if tried % 1024 == 0 {
@@ -272,7 +283,7 @@ impl Backend for CpuMatmulBackend {
             counters.dataset_builds.fetch_add(1, Ordering::Relaxed);
         }
         let hh = ids::header_hash(&job.header);
-        let base = start_nonce(job.id);
+        let base = job.first_nonce();
         let here = mh::epoch_of(job.height, self.epoch_blocks);
         let mut prefetched: Option<u64> = None;
         let mut round = 0u64;
@@ -540,6 +551,21 @@ pub enum MinerEvent {
     NodeLost {
         why: String,
     },
+    /// (A miner working for a pool.) The pool took a share: the work its target stands for.
+    ShareAccepted {
+        work: f64,
+    },
+    /// The pool refused a share, for this reason of the pool protocol (1 stale, 2 duplicate, 3 above the target, 4 wrong mix, 5 unknown job, 6 not allowed).
+    ShareRejected {
+        reason: u8,
+    },
+    /// Connected to the pool (its name), or lost it.
+    PoolConnected {
+        name: String,
+    },
+    PoolLost {
+        why: String,
+    },
 }
 
 pub type EventSink = Arc<dyn Fn(MinerEvent) + Send + Sync>;
@@ -804,6 +830,7 @@ impl<P: PayoutSource> Hooks for MinerHook<P> {
                 height: next.height,
                 target: next.target,
                 stale: Arc::new(AtomicBool::new(false)),
+                nonce_start: None,
             });
             self.current = Some(Current {
                 job_id: id,

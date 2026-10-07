@@ -222,6 +222,28 @@ no node settings.
   miner together need about 9 GiB on the dev network, or more: the miner keeps the last two epochs. `--backend gpu` keeps its datasets in video memory instead.
 * Stop it with Ctrl-C (it prints how many blocks it found and what became of them).
 
+### Mining for a pool: `--pool` (no node needed)
+
+```powershell
+.\target\release\tenero-miner.exe --pool pool.example:38335 --pool-key 64HEXDIGITS --network beta --address tni1... --backend gpu
+```
+
+A miner that works for a **pool** needs **no node at all**: it connects to the pool over an encrypted channel, is given block headers to search in its own slice of the
+nonces, and hands in every *share* it finds (a solution to an easier target than a block's). **The block rewards go to the pool, which pays `--address` by its own rules;
+nothing in the protocol or the chain makes a pool pay.** The program says so every time it connects. A wallet to receive the payments still needs a node to scan the chain
+(`docs/REMOTE_MINING_PLAN.md`: a wallet on someone else's node is for later).
+
+* `--pool HOST:PORT` (a name is looked up) replaces `--data`, `--control`, `--node` and `--key`: a miner works for a pool **or** mines on a node, never both, and never switches
+  by itself. `--network NET` says which network the pool must serve (a pool of another is refused); `--worker NAME` is a name for this computer (default: its name).
+* **The pool's key is pinned.** `--pool-key` is the pool's public key (64 hexadecimal digits, from the pool's operator, by a way an attacker cannot also change). A pool that
+  proves another key is refused before anything is sent. `--pool-unpinned` goes without (a person between you and the pool would not be noticed). `--pool default` is the pool
+  built into the program for `--network` (none yet: it says so).
+* A share is checked before it is sent (it must meet the share target); the pool checks every one again. The status shows shares, not blocks: handed in, accepted, too late, refused.
+* The app does the same from the **Mining tab**: "On a pool" (no node needed) or "Alone, on my own node".
+
+**The pool itself** is `tenero-pool` (`docs/RUNNING_A_POOL.md`), and `tenero-poolcheck --pool HOST:PORT --network NET --pool-key HEX` checks any pool against the protocol
+(`docs/POOL_PROTOCOL.md`).
+
 ## The wallet app: `tenero-wallet-gui` (M10.3)
 
 A desktop window (not a web page) for the wallet that also starts and stops the node and the miner. **Experimental, unaudited; nothing on the networks it uses has value.** The banner "TEST NETWORK. NO VALUE. UNAUDITED." is on every screen.

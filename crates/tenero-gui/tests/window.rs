@@ -712,6 +712,67 @@ fn the_words_are_shown_on_request_and_never_copied_and_the_mining_notice_is_alwa
 }
 
 #[test]
+fn the_mining_screen_offers_a_pool_or_mining_alone_and_a_pool_needs_no_node() {
+    let mut rig = Rig::new();
+    rig.app.goto("Mining");
+    // no node running, mining alone: it cannot start
+    let mut s = snap(
+        &rig,
+        wallet(true, true),
+        NodeView::Stopped,
+        MinerView::Off,
+        None,
+    );
+    rig.app.set_snapshot(s.clone());
+    let (t, _) = rig.frame();
+    for needle in [
+        "Where to mine",
+        "On a pool",
+        "Alone, on my own node",
+        "start the node first",
+    ] {
+        assert!(
+            t.contains(needle),
+            "`{needle}` missing:
+{t}"
+        );
+    }
+    assert!(
+        !t.contains("Pool address"),
+        "the pool fields are for pool mode:
+{t}"
+    );
+    // for a pool: the fields, the plain statement of where the reward goes, and no word about starting a node
+    s.settings.mining_mode = tenero_gui::settings::MiningMode::Pool;
+    rig.app.set_snapshot(s.clone());
+    let (t, _) = rig.frame();
+    for needle in [
+        "Pool address",
+        "Pool key",
+        "Name of this computer",
+        "the block rewards go to the POOL",
+        "nothing makes any pool pay",
+        "Start mining",
+    ] {
+        assert!(
+            t.contains(needle),
+            "`{needle}` missing:
+{t}"
+        );
+    }
+    assert!(
+        !t.contains("start the node first"),
+        "a pool miner needs no node:
+{t}"
+    );
+    // a pool typed in without its key is said to need it
+    s.settings.pool = "pool.example:38335".into();
+    rig.app.set_snapshot(s);
+    let (t, _) = rig.frame();
+    assert!(t.contains("needs its key"), "{t}");
+}
+
+#[test]
 fn the_mining_screen_shows_the_card_and_marks_old_readings() {
     let mut rig = Rig::new();
     rig.app.goto("Mining");

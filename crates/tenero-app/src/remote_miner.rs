@@ -417,6 +417,7 @@ impl RemoteMiner {
             height,
             target: U256::from_be_bytes(&t.target),
             stale: Arc::new(AtomicBool::new(false)),
+            nonce_start: None,
         });
         self.current = Some(Current {
             job_id: id,

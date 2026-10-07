@@ -35,10 +35,10 @@ ERROR = 0xFF
 
 REQUESTS = {"auth": 1, "tip": 2, "block": 3, "output": 4, "output_count": 5, "key_image_spent": 6, "rules": 7,
             "submit_tx": 8, "info": 9, "stop": 10, "blocks": 11, "block_template": 12, "submit_block": 13,
-            "key_images_spent": 14, "outputs": 15}
+            "key_images_spent": 14, "outputs": 15, "check_pow": 16}
 RESPONSES = {"authed": 1, "tip": 2, "block": 3, "output": 4, "output_count": 5, "spent": 6, "rules": 7,
              "tx_accepted": 8, "info": 9, "stopping": 10, "blocks": 11, "template": 12, "block_submitted": 13,
-             "spent_many": 14, "outputs_many": 15}
+             "spent_many": 14, "outputs_many": 15, "pow_checked": 16}
 
 
 class ControlError(Exception):
@@ -137,6 +137,8 @@ def enc_request(m):
         body += u64(m["index"])
     elif t == "key_image_spent":
         body += fixed(m["key_image"], 32)
+    elif t == "check_pow":
+        body += u64(m["height"]) + v2.enc_header(m["header"])
     elif t == "outputs":
         assert 1 <= len(m["indexes"]) <= MAX_OUTPUTS_PER_REQUEST
         body += u32(len(m["indexes"])) + b"".join(u64(i) for i in m["indexes"])
@@ -176,6 +178,9 @@ def dec_request(body):
             m["index"] = r.u64()
         elif t == "key_image_spent":
             m["key_image"] = r.fixed(32)
+        elif t == "check_pow":
+            m["height"] = r.u64()
+            m["header"] = v2.dec_header(r)
         elif t == "outputs":
             m["indexes"] = [r.u64() for _ in range(r.count(1, MAX_OUTPUTS_PER_REQUEST))]
         elif t == "key_images_spent":
@@ -219,6 +224,8 @@ def enc_response(m):
         body += u64(m["count"])
     elif t == "spent":
         body += flag(m["spent"])
+    elif t == "pow_checked":
+        body += flag(m["ok"])
     elif t == "outputs_many":
         assert 1 <= len(m["outputs"]) <= MAX_OUTPUTS_PER_REQUEST
         body += u32(len(m["outputs"])) + b"".join(
@@ -268,6 +275,8 @@ def dec_response(body):
                 m["count"] = r.u64()
             elif t == "spent":
                 m["spent"] = dec_flag(r)
+            elif t == "pow_checked":
+                m["ok"] = dec_flag(r)
             elif t == "outputs_many":
                 m["outputs"] = [dec_stored_output(r) if dec_flag(r) else None
                                 for _ in range(r.count(1, MAX_OUTPUTS_PER_REQUEST))]
@@ -382,6 +391,8 @@ def valid_requests():
         ("the number of outputs", {"type": "output_count"}),
         ("is a key image spent", {"type": "key_image_spent", "key_image": "08" * 32}),
         ("the rules", {"type": "rules"}),
+        ("check pow: a header", {"type": "check_pow", "height": 77, "header": v2.sample_header("cp")}),
+        ("check pow: the largest height and nonce", {"type": "check_pow", "height": 2 ** 64 - 1, "header": v2.sample_header("cp2", nonce=2 ** 64 - 1, mix="ff" * 64)}),
         ("many outputs: one", {"type": "outputs", "indexes": [12]}),
         ("many outputs: the largest index and a repeat", {"type": "outputs", "indexes": [2 ** 64 - 1, 5, 5, 0]}),
         ("many outputs: sixty-four", {"type": "outputs", "indexes": list(range(100, 164))}),
@@ -417,6 +428,8 @@ def valid_responses():
         ("the number of outputs", {"type": "output_count", "count": 99}),
         ("spent", {"type": "spent", "spent": True}),
         ("not spent", {"type": "spent", "spent": False}),
+        ("the mix is right", {"type": "pow_checked", "ok": True}),
+        ("the mix is wrong", {"type": "pow_checked", "ok": False}),
         ("many outputs: none of them exists", {"type": "outputs_many", "outputs": [None]}),
         ("many outputs: a mix", {"type": "outputs_many", "outputs": [out_rec, None, dict(out_rec, coinbase=False, public_amount=0), None]}),
         ("many outputs: thirty-two", {"type": "outputs_many", "outputs": [dict(out_rec, height=i) for i in range(32)]}),
@@ -478,9 +491,9 @@ def invalid_cases():
     # nothing, and kinds that do not exist
     for d in ("request", "response"):
         out.append(bad(d, "an empty body", b"", "length"))
-    for k in (0, 16, 0x80, 0x8F, 0xFE):
+    for k in (0, 17, 0x80, 0x8F, 0xFE):
         out.append(bad("request", f"unknown request kind {k}", bytes([k]), "kind"))
-    for k in (0, 1, 11, 12, 13, 14, 15, 0x90, 0xFE):
+    for k in (0, 1, 11, 12, 13, 14, 15, 0x91, 0xFE):
         out.append(bad("response", f"unknown response kind {k}", bytes([k]), "kind"))
     # every message cut short and with a byte too many
     for note, m in valid_requests():
@@ -525,6 +538,12 @@ def invalid_cases():
     out.append(bad("response", "outputs_many: an output cut short", u8(15 | ANSWER) + u32(1) + bytes([1]) + bytes(10), "malformed"))
     out.append(bad("response", "outputs_many: an output that is not a coinbase flag 0 or 1",
                    u8(15 | ANSWER) + u32(1) + bytes([1]) + enc_stored_output({"onetime_address": "01" * 32, "amount_commitment": "02" * 32, "public_amount": 3, "height": 4, "coinbase": True})[:-1] + bytes([2]), "malformed"))
+    # check_pow: a header cut short, a trailing byte, a flag that is not 0 or 1
+    good = u8(16) + u64(5) + v2.enc_header(v2.sample_header("cp"))
+    out.append(bad("request", "check_pow: a header one byte short", good[:-1], "malformed"))
+    out.append(bad("request", "check_pow: no height", u8(16), "malformed"))
+    out.append(bad("response", "pow_checked: a flag of 2", u8(16 | ANSWER) + bytes([2]), "malformed"))
+    out.append(bad("response", "pow_checked: no flag", u8(16 | ANSWER), "malformed"))
     # Blocks: how many
     for count in (0, 65, 65535):
         out.append(bad("request", f"blocks: a count of {count}", u8(11) + u64(1) + u16(count), "malformed"))

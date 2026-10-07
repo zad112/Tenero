@@ -427,9 +427,28 @@ impl MiningShared {
             }
             MinerEvent::Paused => self.paused.store(true, Ordering::Relaxed),
             MinerEvent::Resumed => self.paused.store(false, Ordering::Relaxed),
+            // for a pool miner a share is what a block is for a solo miner: found, and then accepted or not
+            MinerEvent::ShareAccepted { work } => {
+                if let Ok(mut w) = self.accepted_work.lock() {
+                    *w += *work;
+                }
+                one(&self.found);
+                one(&self.accepted);
+            }
+            MinerEvent::ShareRejected { reason } => {
+                one(&self.found);
+                // a stale share was a share that came too late, as a block that lost a race
+                if *reason == 1 {
+                    one(&self.lost_race);
+                } else {
+                    one(&self.refused);
+                }
+            }
             MinerEvent::BackendFailed { .. }
             | MinerEvent::NodeConnected
-            | MinerEvent::NodeLost { .. } => {}
+            | MinerEvent::NodeLost { .. }
+            | MinerEvent::PoolConnected { .. }
+            | MinerEvent::PoolLost { .. } => {}
         }
     }
 

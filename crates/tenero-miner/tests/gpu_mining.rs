@@ -238,6 +238,7 @@ fn how_many_attempts_per_second_the_gpu_backend_does_at_each_batch_size() {
             height: 1,
             target: U256::ZERO, // never met
             stale: Arc::clone(&stale),
+            nonce_start: None,
         };
         let counters = Arc::new(Counters::default());
         let c = Arc::clone(&counters);

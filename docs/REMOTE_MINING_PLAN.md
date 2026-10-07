@@ -165,6 +165,12 @@ The owner asked how, since the seed is not to serve miners. The author's suggest
 * **What the README and the screens must say, plainly:** in pool mode the reward goes to the **pool**, run by the author; the pool pays you on its own rules, and you trust it to; this is a test network and the coins have **no value**; the pool is **unaudited** and one person's server, and a pool makes the network less decentralised.
 * **What the pool owner owes:** a page that publishes the fee, the scheme and the smallest payout, and a record of payments that miners can check against the chain.
 
+## Status of stages 2 and 3 (2026-10-07)
+
+**Built, and tested on the SHA-256 test chain with real sockets and the real programs:** the pool (`tenero-pool`: PPLNS accounts, per-miner difficulty, payouts in batches from its own wallet, `docs/RUNNING_A_POOL.md`), the miner's `--pool` mode and the app's pool option on the Mining tab (a miner for a pool needs **no node**: the app no longer stops it when the node is not running), and the conformance tool `tenero-poolcheck` (it passes this pool and fails a pool that breaks the rules). The 12 rules of the pool that are checked by mutation (each broken on purpose, each caught) are in `tests/pool_server.rs` and `tests/pool_core.rs`.
+
+**Not built or not measured:** job declaration; the real proof of work against the pool (a share check needs the 4 GiB dataset: not run); more than one miner at a time; the pool on a server; the memory of a seed, a pool node and a pool on one machine (estimated 12 GiB); the cost of checking shares under load; a built-in pool address and key in the program (**none yet**, so `--pool default` and an empty pool field in the app say so, and the app mines alone unless the person chooses a pool); the app's default mode (it stays **alone**).
+
 ## The pool option in the miner and the app (CLI and GUI)
 
 The owner's requirement: the miner can mine on a pool, **ours is the default, and any other pool can be entered.** Nothing is built. The design:

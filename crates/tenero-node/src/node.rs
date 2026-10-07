@@ -118,6 +118,16 @@ impl<'a> Node<'a> {
         self.params
     }
 
+    /// The full proof-of-work check of a header at a height (`PowCheck::check_full`): is the mix the one the proof of work gives for the header's nonce? Needs the
+    /// epoch's dataset, which the node already holds for checking blocks. `Err` is "could not check" (no memory for the dataset).
+    pub fn check_proof_of_work(
+        &self,
+        header: &tenero_core::v2::BlockHeader,
+        height: u64,
+    ) -> Result<bool, String> {
+        self.pow.check_full(header, height)
+    }
+
     /// Tells the proof of work that blocks about `lookahead` blocks past the tip will be checked soon, so that one
     /// that needs a dataset for a new epoch builds it in the background now (it never blocks, and does nothing when
     /// the dataset is already there or the proof of work needs none). Call it when the tip moves.

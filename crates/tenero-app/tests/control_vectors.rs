@@ -163,6 +163,17 @@ fn request(m: &Value) -> Request {
             indexes: m["indexes"].as_array().unwrap().iter().map(u).collect(),
         },
         "output_count" => Request::OutputCount,
+        "check_pow" => Request::CheckPow {
+            height: u(&m["height"]),
+            header: BlockHeader {
+                version: u(&m["header"]["version"]) as u16,
+                prev_id: arr(&m["header"]["prev_id"]),
+                timestamp: u(&m["header"]["timestamp"]),
+                tx_root: arr(&m["header"]["tx_root"]),
+                nonce: u(&m["header"]["nonce"]),
+                mix: arr(&m["header"]["mix"]),
+            },
+        },
         "key_image_spent" => Request::KeyImageSpent {
             key_image: arr(&m["key_image"]),
         },
@@ -241,6 +252,7 @@ fn response(m: &Value) -> Response {
                 .collect(),
         ),
         "output_count" => Response::OutputCount(u(&m["count"])),
+        "pow_checked" => Response::PowChecked(m["ok"].as_bool().unwrap()),
         "spent" => Response::Spent(m["spent"].as_bool().unwrap()),
         "spent_many" => Response::SpentMany(
             m["spent"]
