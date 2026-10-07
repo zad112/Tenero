@@ -1479,3 +1479,97 @@ fn a_hostile_node_gets_no_hashing_from_the_miner_and_is_never_handed_a_block() {
     assert_eq!(f.count(is_submit), 0);
     assert_eq!(rm.stats.blocks_found, 0);
 }
+
+// ------------------------------------------------------------------------------------------------
+// a node that asks the miner to slow down (found by running a GPU miner against the miner service: it used to count that as a
+// lost connection and reconnect in a loop, dropping its job each time)
+// ------------------------------------------------------------------------------------------------
+
+#[test]
+fn a_node_that_says_slow_down_keeps_the_connection_and_the_job_and_mining_resumes() {
+    let n = Arc::new(AtomicU64::new(0));
+    let n2 = Arc::clone(&n);
+    let f = fake(Box::new(move |r| {
+        Some(match r {
+            Request::Info if n2.fetch_add(1, Ordering::SeqCst) < 4 => {
+                Response::Error("too many requests: slow down".into())
+            }
+            Request::Info => info(5, 5, false),
+            Request::BlockTemplate { payout, .. } => template(payout, 6, 5, EASY),
+            Request::SubmitBlock(_) => Response::BlockSubmitted {
+                id: [1; 32],
+                in_chain: true,
+            },
+            _ => return None,
+        })
+    }));
+    let addr = f.addr;
+    let stop = Arc::new(AtomicBool::new(false));
+    let connects = Arc::new(AtomicU64::new(0));
+    let stats = thread::scope(|s| {
+        let (stop2, c2) = (Arc::clone(&stop), Arc::clone(&connects));
+        let t = s.spawn(move || {
+            let mut rm = sha_miner(RemoteMinerConfig {
+                slow_down_pause: Duration::from_millis(20),
+                ..cfg()
+            });
+            rm.run(
+                || {
+                    c2.fetch_add(1, Ordering::SeqCst);
+                    RemoteNode::connect(addr, &COOKIE)
+                },
+                &stop2,
+                Duration::from_millis(5),
+            )
+            .unwrap();
+            rm.stats
+        });
+        let end = Instant::now() + Duration::from_secs(20);
+        while f.count(is_submit) < 1 {
+            assert!(Instant::now() < end, "mining never resumed");
+            thread::sleep(Duration::from_millis(20));
+        }
+        thread::sleep(Duration::from_millis(300));
+        stop.store(true, Ordering::SeqCst);
+        t.join().unwrap()
+    });
+    assert_eq!(
+        connects.load(Ordering::SeqCst),
+        1,
+        "the miner reconnected instead of waiting"
+    );
+    assert_eq!(stats.connections_lost, 0, "{stats:?}");
+    assert!(stats.slowed_down >= 4, "{stats:?}");
+    assert!(stats.blocks_accepted >= 1, "{stats:?}");
+}
+
+#[test]
+fn a_block_the_node_would_not_take_for_being_asked_too_often_is_handed_in_again_not_given_up() {
+    let n = Arc::new(AtomicU64::new(0));
+    let n2 = Arc::clone(&n);
+    let f = fake(Box::new(move |r| {
+        Some(match r {
+            Request::Info => info(5, 5, false),
+            Request::BlockTemplate { payout, .. } => template(payout, 6, 5, EASY),
+            Request::SubmitBlock(_) if n2.fetch_add(1, Ordering::SeqCst) < 2 => {
+                Response::Error("too many requests: slow down".into())
+            }
+            Request::SubmitBlock(_) => Response::BlockSubmitted {
+                id: [1; 32],
+                in_chain: true,
+            },
+            _ => return None,
+        })
+    }));
+    let jobs = Jobs::default();
+    let _ = jobs;
+    let mut rm = sha_miner(RemoteMinerConfig {
+        slow_down_pause: Duration::from_millis(10),
+        ..cfg()
+    });
+    let node = f.node();
+    assert!(drive(&mut rm, &node, 20, |m| m.stats.blocks_accepted >= 1));
+    assert_eq!(rm.stats.blocks_refused, 0, "{:?}", rm.stats);
+    assert!(rm.stats.slowed_down >= 2, "{:?}", rm.stats);
+    assert!(f.count(is_submit) >= 3);
+}

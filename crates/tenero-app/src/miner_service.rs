@@ -37,6 +37,12 @@ use tenero_net::noise::{
 use crate::control::{Request, Response};
 use crate::server::Job;
 
+/// What the service says when an address is over its rate limit (the miner recognises it: `remote_miner::is_slow_down`).
+pub const RATE_LIMITED: &str = "too many requests: slow down";
+/// The most blocks one address may hand in a minute. Handing in a block is limited apart from everything else, so that a miner
+/// that has been told to slow down on `info` and `block_template` can still deliver a block it has found; the limit exists
+/// because each block handed in costs the node a full check.
+pub const SUBMITS_PER_MINUTE: usize = 30;
 /// The default port of the miner service (38333 is the peer port, 38332 the control port).
 pub const DEFAULT_PORT: u16 = 38334;
 /// Bound into the handshake, so the miner service cannot be mistaken for the peer-to-peer protocol.
@@ -224,15 +230,16 @@ impl Write for SecureStream {
 /// Requests per address in the last minute.
 #[derive(Default)]
 struct Limits {
-    requests: HashMap<IpAddr, Vec<Instant>>,
+    /// (address, is it a block handed in): the two kinds are counted apart
+    requests: HashMap<(IpAddr, bool), Vec<Instant>>,
     connections: HashMap<IpAddr, usize>,
 }
 
 impl Limits {
     /// Records a request; false if the address is over its limit for the last minute.
-    fn request(&mut self, ip: IpAddr, limit: usize) -> bool {
+    fn request(&mut self, ip: IpAddr, submit: bool, limit: usize) -> bool {
         let now = Instant::now();
-        let v = self.requests.entry(ip).or_default();
+        let v = self.requests.entry((ip, submit)).or_default();
         v.retain(|t| now.duration_since(*t) < Duration::from_secs(60));
         if v.len() >= limit {
             return false;
@@ -389,13 +396,19 @@ fn serve(
                 return Ok(());
             }
         };
+        let submit = matches!(req, Request::SubmitBlock(_));
+        let limit = if submit {
+            SUBMITS_PER_MINUTE
+        } else {
+            cfg.requests_per_minute
+        };
         let within = limits
             .lock()
-            .map(|mut l| l.request(ip, cfg.requests_per_minute))
+            .map(|mut l| l.request(ip, submit, limit))
             .unwrap_or(false);
         let response = if !within {
             stats.rate_limited.fetch_add(1, Ordering::Relaxed);
-            Response::Error("too many requests: slow down".into())
+            Response::Error(RATE_LIMITED.into())
         } else {
             let (reply, wait) = sync_channel(1);
             match jobs.try_send(Job { req, reply }) {

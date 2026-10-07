@@ -504,3 +504,51 @@ fn a_miner_on_the_service_mines_blocks_the_node_accepts_and_the_wallet_can_see()
     );
     assert!(svc.stats().served.load(Ordering::Relaxed) > 0);
 }
+
+#[test]
+fn handing_in_a_block_is_limited_apart_from_info_so_a_slowed_down_miner_can_still_deliver() {
+    let rig = Rig::new("submit");
+    let mut engine = rig.engine();
+    let mut up = node();
+    let svc = service(
+        &up,
+        ServiceConfig {
+            requests_per_minute: 1,
+            ..cfg()
+        },
+    );
+    let addr = svc.addr;
+    let (second_info, first_submit, last_submit) =
+        with_client(&mut engine, &mut up.hook, move || {
+            let n = RemoteNode::connect_miner_service(addr, Some(&KEY)).unwrap();
+            let t = n.block_template(payout(), 1_000_000).unwrap();
+            // (the one request a minute is spent: the next is told to slow down)
+            let second = n.info().map(|_| ());
+            // a block that is not valid (its timestamp is zero): what matters is that it is not turned away for being asked too often
+            let mut b = t.block;
+            b.header.timestamp = 0;
+            let first = n.submit_block(b.clone()).unwrap();
+            let mut last = first.clone();
+            for _ in 0..miner_service::SUBMITS_PER_MINUTE {
+                last = n.submit_block(b.clone()).unwrap();
+            }
+            (second, first, last)
+        });
+    assert!(
+        second_info.unwrap_err().contains("too many requests"),
+        "info was not limited"
+    );
+    match first_submit {
+        tenero_app::client::BlockVerdict::Refused(why) => {
+            assert!(!why.contains("too many requests"), "{why}")
+        }
+        other => panic!("{other:?}"),
+    }
+    // and handing in blocks does have a limit of its own
+    match last_submit {
+        tenero_app::client::BlockVerdict::Refused(why) => {
+            assert!(why.contains("too many requests"), "{why}")
+        }
+        other => panic!("{other:?}"),
+    }
+}

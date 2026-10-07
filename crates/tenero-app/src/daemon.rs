@@ -937,7 +937,7 @@ pub fn run(
             let h = miner_service::start(addr, &handle, scfg)
                 .map_err(|e| format!("cannot start the miner service on {addr}: {e}"))?;
             log.info(&format!(
-                "miner service on {} ({}): miners on other computers may ask this node for blocks to mine and hand blocks back;                  it answers nothing else",
+                "miner service on {} ({}): miners on other computers may ask this node for blocks to mine and hand blocks back; it answers nothing else",
                 h.addr,
                 if cfg.miner_key.is_some() { "a key is required" } else { "NO key: anyone may connect" },
             ));

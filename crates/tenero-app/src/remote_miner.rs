@@ -98,6 +98,13 @@ pub struct RemoteMinerConfig {
     /// This computer's clock in seconds since 1970 (the system clock by default; a test may give another), for the check
     /// of a template's timestamp.
     pub now_secs: Arc<dyn Fn() -> u64 + Send + Sync>,
+    /// How long to wait when the node says to slow down (its rate limit, or "busy"): the connection and the job are kept.
+    pub slow_down_pause: Duration,
+}
+
+/// Whether a node's error answer means "too many requests" or "busy" (not a lost connection, and not a refused block).
+pub fn is_slow_down(why: &str) -> bool {
+    why.starts_with("too many requests") || why.starts_with("the node is busy")
 }
 
 fn system_now() -> u64 {
@@ -116,6 +123,7 @@ impl Default for RemoteMinerConfig {
             log: Arc::new(|_| {}),
             events: Arc::new(|_| {}),
             now_secs: Arc::new(system_now),
+            slow_down_pause: Duration::from_secs(5),
         }
     }
 }
@@ -136,6 +144,8 @@ pub struct RemoteStats {
     pub stale_templates: u64,
     /// A template that failed [`check_template`] (the node is hostile or broken): refused, not mined.
     pub refused_templates: u64,
+    /// Times the node asked the miner to slow down (a rate limit or "busy"); the miner waited and carried on.
+    pub slowed_down: u64,
     pub blocks_found: u64,
     pub blocks_accepted: u64,
     /// Found and valid, but another block took its place first.
@@ -168,6 +178,7 @@ pub struct RemoteMiner {
     next_id: u64,
     last_found: Option<Instant>,
     last_refusal_log: Option<Instant>,
+    last_slow_log: Option<Instant>,
     failed: Option<String>,
     /// Whether the node was last seen syncing (mining paused), and whether the loss of the node has been reported.
     paused: bool,
@@ -193,6 +204,7 @@ impl RemoteMiner {
             next_id: 1,
             last_found: None,
             last_refusal_log: None,
+            last_slow_log: None,
             failed: None,
             paused: false,
             reported_down: false,
@@ -261,7 +273,19 @@ impl RemoteMiner {
             sol.nonce,
             cur.started.elapsed().as_secs_f64()
         ));
-        match node.submit_block(block)? {
+        let mut verdict = node.submit_block(block.clone())?;
+        // a block the node would not take because it was asked too often is NOT an invalid block: it is handed in again
+        for _ in 0..5 {
+            match &verdict {
+                BlockVerdict::Refused(why) if is_slow_down(why) => {
+                    self.stats.slowed_down += 1;
+                    std::thread::sleep(self.cfg.slow_down_pause);
+                    verdict = node.submit_block(block.clone())?;
+                }
+                _ => break,
+            }
+        }
+        match verdict {
             BlockVerdict::InChain(_) => {
                 self.stats.blocks_accepted += 1;
                 self.log(&format!("block {height} is in the chain"));
@@ -443,6 +467,22 @@ impl RemoteMiner {
             }
             if let Some(n) = &node {
                 if let Err(e) = self.step(n) {
+                    if is_slow_down(&e) {
+                        // the node is not gone, it wants fewer requests: keep the connection and the job, wait, ask again
+                        self.stats.slowed_down += 1;
+                        if self
+                            .last_slow_log
+                            .is_none_or(|t| t.elapsed() >= Duration::from_secs(30))
+                        {
+                            self.last_slow_log = Some(Instant::now());
+                            self.log(&format!(
+                                "the node asked this miner to slow down ({e}): waiting {} s",
+                                self.cfg.slow_down_pause.as_secs_f32()
+                            ));
+                        }
+                        sleep_until(shutdown, self.cfg.slow_down_pause);
+                        continue;
+                    }
                     self.stats.connections_lost += 1;
                     self.log(&format!("lost the node: {e}"));
                     self.reported_down = true;
