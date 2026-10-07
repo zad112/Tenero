@@ -8,19 +8,26 @@
 //! Unsafe code is confined to the calls into CUDA, each with a `SAFETY` comment.
 
 pub mod gemm;
+pub mod group;
 
 use cudarc::cublaslt::result::CublasError;
 use cudarc::driver::{
-    CudaContext, CudaFunction, CudaSlice, CudaStream, DriverError, LaunchConfig, PushKernelArg,
+    CudaContext, CudaFunction, CudaSlice, CudaStream, DriverError, LaunchConfig, PinnedHostSlice,
+    PushKernelArg,
 };
 use cudarc::nvrtc::{compile_ptx_with_opts, CompileError, CompileOptions};
 use gemm::Int8Gemm;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tenero_core::matmulhash::{self as mh, Attempt, Params};
 use tenero_core::u256::U256;
 
-/// The CUDA source: three kernels (keystream, dataset fill, fold).
+/// The CUDA source: three kernels (keystream, dataset fill, fold), the same text as the Python reference's.
 pub const KERNEL_SOURCE: &str = include_str!("../kernels/matmulhash.cu");
+
+/// Faster versions of the keystream and the fold (the same values, better memory access), for this engine only.
+/// Compiled after `KERNEL_SOURCE`, in one program, because it uses its ChaCha20 functions.
+pub const FAST_KERNEL_SOURCE: &str = include_str!("../kernels/fast.cu");
 
 const THREADS: u32 = 256;
 const FOLD_BLOCKS: u32 = 4;
@@ -76,7 +83,7 @@ fn key_words_i64(key: &[u8; 32]) -> [i64; 8] {
     w.map(i64::from)
 }
 
-/// A CUDA device with the three kernels compiled and loaded.
+/// A CUDA device with the kernels compiled and loaded.
 pub struct Gpu {
     stream: Arc<CudaStream>,
     keystream_fn: CudaFunction,
@@ -96,7 +103,7 @@ impl Gpu {
             format!("compute_{}{}", compute_capability.0, compute_capability.1).into_boxed_str(),
         );
         let ptx = compile_ptx_with_opts(
-            KERNEL_SOURCE,
+            format!("{KERNEL_SOURCE}\n{FAST_KERNEL_SOURCE}"),
             CompileOptions {
                 arch: Some(arch),
                 ..Default::default()
@@ -105,9 +112,10 @@ impl Gpu {
         let module = ctx.load_module(ptx)?;
         Ok(Gpu {
             stream: ctx.new_stream()?,
-            keystream_fn: module.load_function("keystream_kernel")?,
+            // the fast versions: the same arguments and results as keystream_kernel and fold_kernel
+            keystream_fn: module.load_function("keystream_fast")?,
             fill_fn: module.load_function("fill_kernel")?,
-            fold_fn: module.load_function("fold_kernel")?,
+            fold_fn: module.load_function("fold_fast")?,
             name,
             compute_capability,
         })
@@ -216,7 +224,7 @@ impl Gpu {
         if x.len() != m * k || w.len() != nb * k {
             return Err(GpuError::new("x must be m*k and w nb*k"));
         }
-        let gemm = Int8Gemm::new(self.stream.clone(), m, k, nb)?;
+        let mut gemm = Int8Gemm::new(self.stream.clone(), m, k, nb)?;
         let x_dev = self
             .stream
             .clone_htod(&x.iter().map(|&v| v as u8).collect::<Vec<u8>>())?;
@@ -284,23 +292,48 @@ impl Gpu {
             .clone_dtoh(&data.buf.slice(j * sb..(j + 1) * sb))?)
     }
 
-    /// Buffers and a prepared GEMM for batches of up to `batch` attempts.
+    /// Buffers and a prepared GEMM for batches of up to `batch` attempts (two sets of buffers: one batch can be
+    /// computed while the next is prepared, `AttemptEngine::submit`).
     pub fn attempt_engine<'a>(
         &'a self,
         data: &'a DeviceDataset,
         batch: usize,
     ) -> Result<AttemptEngine<'a>, GpuError> {
         let p = data.params;
+        if batch == 0 {
+            return Err(GpuError::new("the batch must be at least 1"));
+        }
         let gemm = Int8Gemm::new(self.stream.clone(), p.m, p.k, p.nb)?;
+        let ctx = self.stream.context();
+        let mut slots = Vec::new();
+        for _ in 0..2 {
+            // SAFETY: page-locked host memory that is not read before it is written: `keys_host` is filled before each
+            // copy to the GPU, and `sums_host` is read only after a copy from the GPU into it has finished.
+            #[allow(unsafe_code)]
+            let (keys_host, sums_host) = unsafe {
+                (
+                    ctx.alloc_pinned_with_flags::<i64>(batch * 8, 0)?,
+                    ctx.alloc_pinned_with_flags::<u64>(batch * 8, 0)?,
+                )
+            };
+            slots.push(Slot {
+                keys: self.stream.alloc_zeros::<i64>(batch * 8)?,
+                keys_host,
+                x: self.stream.alloc_zeros::<u8>(batch * p.m * p.k)?,
+                c: self.stream.alloc_zeros::<i32>(batch * p.m * p.nb)?,
+                sums: self.stream.alloc_zeros::<u64>(batch * 8)?,
+                sums_host,
+                pending: None,
+            });
+        }
         Ok(AttemptEngine {
             gpu: self,
             data,
             gemm,
             batch,
-            keys: self.stream.alloc_zeros::<i64>(batch * 8)?,
-            x: self.stream.alloc_zeros::<u8>(batch * p.m * p.k)?,
-            c: self.stream.alloc_zeros::<i32>(batch * p.m * p.nb)?,
-            sums: self.stream.alloc_zeros::<u64>(batch * 8)?,
+            slots,
+            next: 0,
+            queue: VecDeque::new(),
         })
     }
 }
@@ -329,21 +362,74 @@ pub struct Found {
     pub attempt: Attempt,
 }
 
+/// The buffers of one batch: device memory, and page-locked host memory for the copies (a copy from ordinary host
+/// memory waits for the whole stream, which would stop the next batch from being queued while one runs).
+struct Slot {
+    keys: CudaSlice<i64>,
+    keys_host: PinnedHostSlice<i64>,
+    x: CudaSlice<u8>,
+    c: CudaSlice<i32>,
+    sums: CudaSlice<u64>,
+    sums_host: PinnedHostSlice<u64>,
+    /// The batch in these buffers, submitted and not yet collected.
+    pending: Option<Pending>,
+}
+
+struct Pending {
+    seeds: Vec<[u8; 32]>,
+    slices: Vec<usize>,
+    /// Position `j` on the GPU is attempt `order[j]` of the batch (the batch sorted by slice).
+    order: Vec<usize>,
+}
+
 /// Runs batches of attempts against a device dataset.
+///
+/// Either one batch at a time (`attempts`, `attempts_of_seeds`), or as a pipeline: `submit` queues a batch on the GPU
+/// and returns at once, `collect` waits for the oldest one. With two submitted, the GPU starts the second as soon as
+/// the first is done, while the CPU works out the first one's hashes and the next batch's nonces.
 pub struct AttemptEngine<'a> {
     gpu: &'a Gpu,
     data: &'a DeviceDataset,
     gemm: Int8Gemm,
     batch: usize,
-    keys: CudaSlice<i64>,
-    x: CudaSlice<u8>,
-    c: CudaSlice<i32>,
-    sums: CudaSlice<u64>,
+    slots: Vec<Slot>,
+    /// The slot the next `submit` uses.
+    next: usize,
+    /// Submitted batches, oldest first (slot numbers).
+    queue: VecDeque<usize>,
 }
 
 impl AttemptEngine<'_> {
     pub fn batch(&self) -> usize {
         self.batch
+    }
+
+    /// Picks the fastest of cuBLASLt's algorithms for a multiply of `group` attempts against one slice
+    /// (`Int8Gemm::tune`, `reps` multiplies each, on this engine's own buffers, going round the built slices); returns
+    /// the times.
+    /// Nothing may be in flight. The results do not depend on the algorithm, only the speed does.
+    pub fn tune(&mut self, group: usize, reps: usize) -> Result<Vec<f64>, GpuError> {
+        let p = self.data.params;
+        if group == 0 || group > self.batch {
+            return Err(GpuError::new("the group must be 1..=batch"));
+        }
+        if !self.queue.is_empty() {
+            return Err(GpuError::new("a submitted batch was not collected"));
+        }
+        let rows = group * p.m;
+        let slot = &mut self.slots[0];
+        let sb = p.slice_bytes();
+        let ws: Vec<_> = (0..self.data.slices)
+            .map(|j| self.data.buf.slice(j * sb..(j + 1) * sb))
+            .collect();
+        let x = slot.x.slice(0..rows * p.k);
+        let mut c = slot.c.slice_mut(0..rows * p.nb);
+        self.gemm.tune(rows, &ws, &x, &mut c, reps)
+    }
+
+    /// How many batches are submitted and not yet collected (0, 1 or 2).
+    pub fn in_flight(&self) -> usize {
+        self.queue.len()
     }
 
     /// The full recomputation of these nonces on the GPU, in order.
@@ -352,27 +438,70 @@ impl AttemptEngine<'_> {
         header_hash: &[u8; 32],
         nonces: &[u64],
     ) -> Result<Vec<Attempt>, GpuError> {
-        let p = self.data.params;
-        let n = nonces.len();
-        if n == 0 || n > self.batch {
-            return Err(GpuError::new("between 1 and `batch` nonces"));
-        }
-        let stream = &self.gpu.stream;
+        let num_blocks = self.data.params.num_blocks;
         let seeds: Vec<[u8; 32]> = nonces
             .iter()
             .map(|&nonce| mh::attempt_seed(header_hash, nonce))
             .collect();
-        let slice_of: Vec<usize> = seeds
+        let slices: Vec<usize> = seeds
             .iter()
-            .map(|s| mh::attempt_slice(s, p.num_blocks))
+            .map(|s| mh::attempt_slice(s, num_blocks))
             .collect();
-        if slice_of.iter().any(|&b| b >= self.data.slices) {
+        self.attempts_of_seeds(&seeds, &slices)
+    }
+
+    /// The same, from each attempt's seed (`attempt_seed`) and slice (`attempt_slice` of that seed), for a caller that
+    /// has already worked them out. **They are trusted**: a slice that is not the seed's gives a wrong attempt.
+    /// Nothing may be in flight (`submit` without `collect`).
+    pub fn attempts_of_seeds(
+        &mut self,
+        seeds: &[[u8; 32]],
+        slices: &[usize],
+    ) -> Result<Vec<Attempt>, GpuError> {
+        if !self.queue.is_empty() {
+            return Err(GpuError::new("a submitted batch was not collected"));
+        }
+        self.submit(seeds.to_vec(), slices.to_vec())?;
+        Ok(self.collect()?.expect("one batch was submitted"))
+    }
+
+    /// Queues a batch on the GPU and returns without waiting (seeds and slices as in `attempts_of_seeds`). At most two
+    /// can be in flight: `collect` one before submitting a third.
+    ///
+    /// The attempts are multiplied grouped by slice (one multiply per slice in the batch, `Int8Gemm::run_rows`), so a
+    /// batch whose attempts share few slices reads less of the dataset (`group::SliceGrouper` makes such batches).
+    pub fn submit(&mut self, seeds: Vec<[u8; 32]>, slices: Vec<usize>) -> Result<(), GpuError> {
+        let p = self.data.params;
+        let n = seeds.len();
+        if n == 0 || n > self.batch {
+            return Err(GpuError::new("between 1 and `batch` nonces"));
+        }
+        if slices.len() != n {
+            return Err(GpuError::new("one slice for each seed"));
+        }
+        if slices.iter().any(|&b| b >= self.data.slices) {
             return Err(GpuError::new("an attempt reads a slice that was not built"));
         }
+        if self.queue.len() >= self.slots.len() {
+            return Err(GpuError::new(
+                "two batches are in flight: collect one first",
+            ));
+        }
+        let stream = &self.gpu.stream;
+        let slot = &mut self.slots[self.next];
+        // the attempts in slice order: position j on the GPU is attempt order[j]
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by_key(|&i| slices[i]);
 
         // 1. X for every attempt: the keystream keyed by its seed
-        let host_keys: Vec<i64> = seeds.iter().flat_map(key_words_i64).collect();
-        stream.memcpy_htod(&host_keys, &mut self.keys.slice_mut(0..n * 8))?;
+        {
+            // waits until the last copy out of these buffers has finished (it has: the batch was collected)
+            let keys_host = slot.keys_host.as_mut_slice()?;
+            for (j, &i) in order.iter().enumerate() {
+                keys_host[j * 8..j * 8 + 8].copy_from_slice(&key_words_i64(&seeds[i]));
+            }
+        }
+        stream.memcpy_htod(&slot.keys_host, &mut slot.keys)?;
         let bpk = (p.m * p.k / 64) as u64;
         let total = n as u64 * bpk;
         let cfg = LaunchConfig {
@@ -381,8 +510,8 @@ impl AttemptEngine<'_> {
             shared_mem_bytes: 0,
         };
         let mut b = stream.launch_builder(&self.gpu.keystream_fn);
-        b.arg(&self.keys)
-            .arg(&self.x)
+        b.arg(&slot.keys)
+            .arg(&slot.x)
             .arg(&bpk)
             .arg(&0u64)
             .arg(&total);
@@ -393,37 +522,63 @@ impl AttemptEngine<'_> {
             b.launch(cfg)?;
         }
 
-        // 2. C = X @ W_b for each attempt, against its own slice
+        // 2. C = X @ W_b, one multiply for each run of attempts against the same slice
         let (sb, mk, mnb) = (p.slice_bytes(), p.m * p.k, p.m * p.nb);
-        for (i, &slice) in slice_of.iter().enumerate() {
+        let mut start = 0;
+        while start < n {
+            let slice = slices[order[start]];
+            let mut end = start + 1;
+            while end < n && slices[order[end]] == slice {
+                end += 1;
+            }
             let w = self.data.buf.slice(slice * sb..(slice + 1) * sb);
-            let x = self.x.slice(i * mk..(i + 1) * mk);
-            let mut c = self.c.slice_mut(i * mnb..(i + 1) * mnb);
-            self.gemm.run(&w, &x, &mut c)?;
+            let x = slot.x.slice(start * mk..end * mk);
+            let mut c = slot.c.slice_mut(start * mnb..end * mnb);
+            self.gemm.run_rows((end - start) * p.m, &w, &x, &mut c)?;
+            start = end;
         }
 
-        // 3. the fold of every product, into the sums
-        stream.memset_zeros(&mut self.sums)?;
+        // 3. the fold of every product, into the sums, and the sums to the host (without waiting)
+        stream.memset_zeros(&mut slot.sums)?;
         self.gpu
-            .launch_fold(&self.c, &self.sums, (mnb / 16) as u64, n as u32)?;
-        let sums = stream.clone_dtoh(&self.sums.slice(0..n * 8))?;
+            .launch_fold(&slot.c, &slot.sums, (mnb / 16) as u64, n as u32)?;
+        stream.memcpy_dtoh(&slot.sums, &mut slot.sums_host)?;
 
-        Ok(seeds
-            .iter()
-            .zip(&slice_of)
-            .zip(sums.chunks(8))
-            .map(|((seed, &slice_index), s)| {
-                let sums: [u64; 8] = s.try_into().expect("8 sums");
-                let mix = mh::mix_bytes(&sums);
-                Attempt {
-                    seed: *seed,
-                    slice_index,
-                    sums,
-                    mix,
-                    digest: mh::digest_of(seed, &mix),
-                }
-            })
-            .collect())
+        slot.pending = Some(Pending {
+            seeds,
+            slices,
+            order,
+        });
+        self.queue.push_back(self.next);
+        self.next = (self.next + 1) % self.slots.len();
+        Ok(())
+    }
+
+    /// Waits for the oldest submitted batch and returns its attempts, in the order they were submitted; `None` if
+    /// nothing is in flight.
+    pub fn collect(&mut self) -> Result<Option<Vec<Attempt>>, GpuError> {
+        let Some(s) = self.queue.pop_front() else {
+            return Ok(None);
+        };
+        let slot = &mut self.slots[s];
+        let pending = slot.pending.take().expect("a queued slot has a batch");
+        let sums = slot.sums_host.as_slice()?; // waits for the copy, so for the whole batch
+        let n = pending.seeds.len();
+        let mut out: Vec<Option<Attempt>> = vec![None; n];
+        for (&i, s) in pending.order.iter().zip(sums.chunks(8)) {
+            let sums: [u64; 8] = s.try_into().expect("8 sums");
+            let mix = mh::mix_bytes(&sums);
+            out[i] = Some(Attempt {
+                seed: pending.seeds[i],
+                slice_index: pending.slices[i],
+                sums,
+                mix,
+                digest: mh::digest_of(&pending.seeds[i], &mix),
+            });
+        }
+        Ok(Some(
+            out.into_iter().map(|a| a.expect("every attempt")).collect(),
+        ))
     }
 
     /// Searches nonces `start_nonce, start_nonce + 1, ...` in batches until one meets the target or

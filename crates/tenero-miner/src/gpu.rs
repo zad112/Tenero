@@ -3,20 +3,31 @@
 //! **This code is checked only by compiling it anywhere and by running it on the owner's machine** (the tests that
 //! need a GPU are `#[ignore]`d). Nothing about its speed is claimed here: the owner measures it (CLAUDE.md rule 5).
 //!
+//! Speed: the nonces of a job are tried in groups of `GROUP` that read the same dataset slice (`tenero_gpu::group`), so a
+//! 16 MiB slice is read once for the whole group, and two batches are kept on the GPU at once (`AttemptEngine::submit`).
+//! Each attempt is exactly the attempt it always was; only the order of trying nonces changes.
+//!
 //! Video memory: a dataset is 4 GiB, and ONE is kept: the epoch being mined. The next epoch's dataset is built when the
 //! first job of that epoch arrives (a build takes about 0.12 s on the GPU, so nothing is built ahead of time), and the old
 //! one is freed BEFORE the new one is allocated, so one is the most that ever exists at once (plus the attempt buffers,
-//! which are small). This was two (the previous epoch kept, the next one built ahead): on Windows that showed as about
-//! 9.2 GiB of committed memory for the miner process, with 0.36 GiB of it in use as RAM.
+//! two sets of them for the pipeline: X and C are 512 KiB each per attempt, so 2 MiB per attempt of the batch, 512 MiB
+//! at batch 256). This was two (the previous epoch kept, the next one built ahead): on Windows that showed as about 9.2 GiB of committed memory for the miner process, with 0.36 GiB of it in use as RAM.
 
+use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tenero_core::matmulhash::{self as mh, Params};
 use tenero_core::v2::ids;
+use tenero_gpu::group::SliceGrouper;
 use tenero_gpu::{DeviceDataset, Gpu};
 
 use crate::{Backend, Counters, Job, Solution};
+
+/// Attempts per slice group: the GPU multiplies this many attempts against one read of a slice. **Measured on the owner's
+/// RTX 5070 Ti (2026-10-07, `gpu_bench`): about 110,000 attempts/s at 8, 127,000 at 16 and 130,000 at 32** (against about
+/// 35,000 with no grouping); 32 is within the run-to-run noise of 16 and keeps twice as many nonces waiting, so 16.
+pub const GROUP: usize = 16;
 
 pub struct GpuBackend {
     gpu: Gpu,
@@ -102,31 +113,47 @@ impl Backend for GpuBackend {
         let mut engine = gpu
             .attempt_engine(&data, *batch)
             .map_err(|e| e.to_string())?;
-        let mut nonce = job.first_nonce();
+        // nonces are tried in groups that read the same slice (see `tenero_gpu::group`): the same attempts, in another
+        // order, with the slice read once for each group
+        let group = GROUP.min(*batch);
+        let groups = (*batch / group).max(1);
+        let mut grouper = SliceGrouper::new(hh, params.num_blocks, group, job.first_nonce());
+        // the nonces of the batches on the GPU, oldest first: two are kept in flight, so the GPU starts the next one
+        // while this thread hashes the last one's results and picks the nonces after it
+        let mut in_flight: VecDeque<Vec<u64>> = VecDeque::new();
         loop {
             if job.stale.load(Ordering::SeqCst) {
                 return Ok(None);
             }
-            let nonces: Vec<u64> = (0..*batch as u64).map(|i| nonce.wrapping_add(i)).collect();
-            let attempts = engine.attempts(&hh, &nonces).map_err(|e| e.to_string())?;
-            counters
-                .attempts
-                .fetch_add(*batch as u64, Ordering::Relaxed);
-            for (i, (n, a)) in nonces.iter().zip(&attempts).enumerate() {
+            while engine.in_flight() < 2 {
+                let b = grouper.next_batch(groups);
+                in_flight.push_back(b.nonces);
+                engine
+                    .submit(b.seeds, b.slices)
+                    .map_err(|e| e.to_string())?;
+            }
+            let attempts = engine
+                .collect()
+                .map_err(|e| e.to_string())?
+                .ok_or("the GPU engine lost a batch")?;
+            let nonces = in_flight.pop_front().ok_or("the GPU engine lost a batch")?;
+            let n = nonces.len();
+            counters.attempts.fetch_add(n as u64, Ordering::Relaxed);
+            for (i, (nonce, a)) in nonces.iter().zip(&attempts).enumerate() {
                 if mh::meets_target(&a.digest, &job.target) {
-                    // the rest of the batch was made, but cannot make another block of this job
+                    // the rest of the batch was made, but cannot make another block of this job (the batch still on
+                    // the GPU is not counted at all)
                     counters
                         .discarded
-                        .fetch_add((*batch - 1 - i) as u64, Ordering::Relaxed);
+                        .fetch_add((n - 1 - i) as u64, Ordering::Relaxed);
                     counters.found.fetch_add(1, Ordering::Relaxed);
                     return Ok(Some(Solution {
                         job_id: job.id,
-                        nonce: *n,
+                        nonce: *nonce,
                         mix: a.mix,
                     }));
                 }
             }
-            nonce = nonce.wrapping_add(*batch as u64);
         }
     }
 }
