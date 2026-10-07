@@ -99,11 +99,10 @@ fn chain_of(network: Network) -> Result<Chain, String> {
                 ),
                 label,
                 kind: PowKind::Matmul,
-                matmul: Some(Arc::new(MatmulPow::low_memory(
-                    Params::DEFAULT,
-                    DEV_EPOCH_BLOCKS,
-                    6,
-                )?)),
+                matmul: Some(Arc::new(
+                    MatmulPow::low_memory(Params::DEFAULT, DEV_EPOCH_BLOCKS, 6)?
+                        .gathered_from(network.gather_from()),
+                )),
             })
         }
         Network::Alpha | Network::Beta => {
@@ -124,11 +123,10 @@ fn chain_of(network: Network) -> Result<Chain, String> {
                 params,
                 label,
                 kind: PowKind::Matmul,
-                matmul: Some(Arc::new(MatmulPow::low_memory(
-                    Params::DEFAULT,
-                    network.epoch_blocks(),
-                    6,
-                )?)),
+                matmul: Some(Arc::new(
+                    MatmulPow::low_memory(Params::DEFAULT, network.epoch_blocks(), 6)?
+                        .gathered_from(network.gather_from()),
+                )),
             })
         }
     }
@@ -168,6 +166,12 @@ pub fn address_answer_ttl_ms(allow_private_peers: bool) -> u64 {
 /// The consensus parameters of a network (its genesis label, proof of work, starting target, block time and so on), for tests and tools.
 pub fn params_of(network: Network) -> Result<ChainParams, String> {
     Ok(chain_of(network)?.params)
+}
+
+/// The gather fork height of the proof-of-work check the node builds for a network (`None`: no matmulhash, the SHA-256 `test` network;
+/// `u64::MAX`: never). What the node enforces, as opposed to `Network::gather_from`, which says what it should be.
+pub fn gather_fork_of(network: Network) -> Result<Option<u64>, String> {
+    Ok(chain_of(network)?.matmul.map(|m| m.gather_from()))
 }
 
 /// The chain id (the genesis block id) of a network. Every node of the network works it out the same way, from the label of the network, and
@@ -789,8 +793,12 @@ fn miner_hook(
                 }
                 Err(e) => log.info(&format!("GPU readings are not available: {e}")),
             }
+            let gather_from = cfg.network.gather_from();
             seen(MinerHook::new(
-                Miner::spawn(move || GpuBackend::new(device, Params::DEFAULT, epoch, batch)),
+                Miner::spawn(move || {
+                    GpuBackend::new(device, Params::DEFAULT, epoch, batch)
+                        .map(|b| b.gathered_from(gather_from))
+                }),
                 payout,
                 mcfg,
             ))

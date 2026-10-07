@@ -219,6 +219,141 @@ fn full_dataset_every_slice() {
     assert_eq!(sha_hex(data.bytes()), v["dataset_sha256"].as_str().unwrap());
 }
 
+// ------------------------------------------------------------------ matmulhash_gather.json (from the fork height)
+
+/// Checks every step of one recorded GATHERED attempt.
+fn check_gathered(data: &Dataset, a: &Value, what: &str) {
+    let p = data.params();
+    let header_hash = bytes32(&a["header_hash"]);
+    let nonce = a["nonce"].as_u64().unwrap();
+    let got = mh::compute_gathered_attempt(data, &header_hash, nonce).unwrap();
+    assert_eq!(
+        hex_lower(&got.seed),
+        a["seed"].as_str().unwrap(),
+        "{what}: seed"
+    );
+    assert_eq!(
+        hex_lower(&mh::pick_key(&got.seed)),
+        a["pick_key"].as_str().unwrap(),
+        "{what}: pick key"
+    );
+    let cols = mh::pick_columns(&got.seed, p);
+    let first: Vec<u64> = a["first_columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_u64().unwrap())
+        .collect();
+    let mine: Vec<u64> = cols
+        .iter()
+        .take(first.len())
+        .map(|&c| u64::from(c))
+        .collect();
+    assert_eq!(mine, first, "{what}: first columns");
+    let col_bytes: Vec<u8> = cols.iter().flat_map(|c| c.to_le_bytes()).collect();
+    assert_eq!(
+        sha_hex(&col_bytes),
+        a["columns_sha256"].as_str().unwrap(),
+        "{what}: columns"
+    );
+    let x = mh::make_x(&got.seed, p);
+    let x_bytes: Vec<u8> = x.iter().map(|&v| v as u8).collect();
+    assert_eq!(
+        sha_hex(&x_bytes),
+        a["x_sha256"].as_str().unwrap(),
+        "{what}: X"
+    );
+    let c = mh::gathered_product(&x, data, &cols).unwrap();
+    let c_bytes: Vec<u8> = c.iter().flat_map(|v| v.to_le_bytes()).collect();
+    assert_eq!(
+        sha_hex(&c_bytes),
+        a["c_sha256"].as_str().unwrap(),
+        "{what}: C"
+    );
+    let sums: Vec<String> = got.sums.iter().map(|s| format!("{s:016x}")).collect();
+    let want: Vec<&str> = a["sums"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap())
+        .collect();
+    assert_eq!(sums, want, "{what}: fold sums");
+    assert_eq!(
+        hex_lower(&got.mix),
+        a["mix"].as_str().unwrap(),
+        "{what}: mix"
+    );
+    assert_eq!(
+        hex_lower(&got.digest),
+        a["digest"].as_str().unwrap(),
+        "{what}: digest"
+    );
+}
+
+#[test]
+fn gathered_attempts_at_small_sizes() {
+    let v = load("matmulhash_gather").unwrap();
+    let cases = v["cases"].as_array().unwrap();
+    assert!(!cases.is_empty());
+    for (n, case) in cases.iter().enumerate() {
+        let p = params_of(&case["params"]);
+        let data = Dataset::build(&p, &bytes32(&case["epoch_seed"]), p.num_blocks, 2).unwrap();
+        assert_eq!(
+            sha_hex(data.bytes()),
+            case["dataset_sha256"].as_str().unwrap(),
+            "case {n}: dataset"
+        );
+        for (i, a) in case["attempts"].as_array().unwrap().iter().enumerate() {
+            check_gathered(&data, a, &format!("gather case {n} attempt {i}"));
+        }
+    }
+}
+
+#[test]
+fn a_gathered_attempt_needs_the_whole_dataset_and_the_height_picks_the_design() {
+    let v = load("matmulhash_gather").unwrap();
+    let case = &v["cases"][0];
+    let p = params_of(&case["params"]);
+    let seed = bytes32(&case["epoch_seed"]);
+    let part = Dataset::build(&p, &seed, p.num_blocks - 1, 1).unwrap();
+    assert!(mh::compute_gathered_attempt(&part, &[0; 32], 0).is_err());
+    let data = Dataset::build(&p, &seed, p.num_blocks, 1).unwrap();
+    let (hh, nonce) = ([5u8; 32], 9u64);
+    let old = mh::compute_attempt(&data, &hh, nonce).unwrap();
+    let new = mh::compute_gathered_attempt(&data, &hh, nonce).unwrap();
+    assert_ne!(old.mix, new.mix);
+    assert_eq!(
+        mh::compute_attempt_at(&data, &hh, nonce, 499, 500).unwrap(),
+        old
+    );
+    assert_eq!(
+        mh::compute_attempt_at(&data, &hh, nonce, 500, 500).unwrap(),
+        new
+    );
+    assert_eq!(
+        mh::compute_attempt_at(&data, &hh, nonce, 501, 500).unwrap(),
+        new
+    );
+    assert_eq!(
+        mh::compute_attempt_at(&data, &hh, nonce, u64::MAX - 1, u64::MAX).unwrap(),
+        old
+    );
+}
+
+#[test]
+fn gathered_attempts_at_the_real_parameters() {
+    if !slow() {
+        eprintln!("skipped: set TENERO_SLOW_VECTORS=1 (needs about 4.3 GiB of RAM)");
+        return;
+    }
+    let v = load("matmulhash_gather_real").unwrap();
+    let p = params_of(&v["params"]);
+    let data = Dataset::build(&p, &bytes32(&v["epoch_seed"]), p.num_blocks, 6).unwrap();
+    for (i, a) in v["attempts"].as_array().unwrap().iter().enumerate() {
+        check_gathered(&data, a, &format!("real gather attempt {i}"));
+    }
+}
+
 // ------------------------------------------------------------------ pow_misc.json
 
 #[test]

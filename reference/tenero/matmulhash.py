@@ -343,6 +343,62 @@ def compute_attempts(params, data, header_hash, nonces):
     return out
 
 
+# ---------------------------------------------------------------- the gathered attempt (from the fork height)
+#
+# From a network's gather fork height on (beta and dev: 500; docs/CONSENSUS.md section 8.3), an attempt does not read one
+# slice: it multiplies X by `nb` columns picked one by one from the WHOLE dataset. Why: the slice of the first design is
+# two cheap hashes of the nonce, so a miner can try nonces 16 to a slice and read each slice once for all of them, which
+# makes the proof of work limited by multiply speed, not memory (docs/THREAT_MODEL.md E11). Columns picked one by one
+# from 2^19 leave two attempts sharing about 8 of 2048, each with different partners.
+#
+# Column j of the dataset is bytes [j*k, (j+1)*k) of the whole dataset (all slices one after the other), so column n of
+# slice b is column b*nb + n. Everything else (seed, X, the fold, mix, digest) is as in the first design.
+
+def pick_key(seed):
+    return hashlib.sha256(seed + b"\x02").digest()
+
+
+def pick_columns(seed, params):
+    """The nb dataset columns a gathered attempt reads: little-endian u32 word n of the ChaCha20 keystream of
+    pick_key(seed) (counter 0, nonce 0), modulo num_blocks * nb."""
+    columns = params.num_blocks * params.nb
+    words = chacha.keystream(pick_key(seed), -(-params.nb // 16)).astype("<u4").reshape(-1)[:params.nb]
+    return [int(w) % columns for w in words]
+
+
+def gathered_matrix(data, cols, params):
+    """The (k, nb) int8 matrix of a gathered attempt: column n is dataset column cols[n]."""
+    flat = np.ascontiguousarray(data, dtype="<u4").reshape(-1).view(np.int8)
+    k = params.k
+    return np.stack([flat[c * k:(c + 1) * k] for c in cols], axis=1)
+
+
+def compute_gathered_attempts(params, data, header_hash, nonces):
+    """The gathered attempt for a list of nonces: [(digest, mix)]. `data` is the WHOLE dataset."""
+    if data.shape[0] != params.num_blocks:
+        raise ValueError("a gathered attempt needs the whole dataset")
+    seeds = [attempt_seed(header_hash, n) for n in nonces]
+    products = []
+    for seed in seeds:
+        W = gathered_matrix(data, pick_columns(seed, params), params)
+        # float64 matmul is exact here: every product and partial sum is an integer < 2**53
+        c = make_x(seed, params).astype(np.float64) @ W.astype(np.float64)
+        products.append(c.astype(np.int64).astype(np.int32).reshape(-1))
+    sums = fold_sums(np.stack(products))
+    out = []
+    for seed, row in zip(seeds, sums):
+        mix = mix_bytes(row)
+        out.append((digest_of(seed, mix), mix))
+    return out
+
+
+def attempts_at(params, data, header_hash, nonces, height, gather_from):
+    """The attempt the chain requires at `height`: gathered from `gather_from` on, the first design before."""
+    if height >= gather_from:
+        return compute_gathered_attempts(params, data, header_hash, nonces)
+    return compute_attempts(params, data, header_hash, nonces)
+
+
 def meets_target(digest, target):
     return int.from_bytes(digest, "big") < target
 

@@ -313,10 +313,13 @@ impl Backend for CpuMatmulBackend {
                 let handles: Vec<_> = (0..self.cores as u64)
                     .map(|t| {
                         let (data, hh, target) = (&data, &hh, &job.target);
+                        let (height, gather_from) = (job.height, self.pow.gather_from());
                         s.spawn(move || -> Result<NonceAndMix, String> {
                             for i in 0..PER_THREAD_ROUND {
                                 let nonce = first.wrapping_add(t * PER_THREAD_ROUND + i);
-                                let a = mh::compute_attempt(data, hh, nonce)?;
+                                // the attempt the chain requires at this height (the gather fork)
+                                let a =
+                                    mh::compute_attempt_at(data, hh, nonce, height, gather_from)?;
                                 counters.attempts.fetch_add(1, Ordering::Relaxed);
                                 if mh::meets_target(&a.digest, target) {
                                     return Ok(Some((nonce, a.mix)));

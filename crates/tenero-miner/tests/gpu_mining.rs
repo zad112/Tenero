@@ -12,7 +12,8 @@
 //! Settings (environment variables): `TENERO_POW_BLOCKS` blocks to mine (default 20), `TENERO_POW_EPOCH` blocks per
 //! dataset (default 100; 5 makes the run cross epoch boundaries, which is the point of the second run),
 //! `TENERO_MINER_BATCH` attempts per batch (default 128), `TENERO_MINER_PREFETCH` blocks ahead at which the NODE's CPU
-//! check builds the next dataset (default 5; the GPU backend does not build ahead), `TENERO_MINER_SECONDS` seconds per batch size in the speed test (default 15).
+//! check builds the next dataset (default 5; the GPU backend does not build ahead), `TENERO_MINER_SECONDS` seconds per batch size in the speed test (default 15),
+//! `TENERO_GATHER_FROM` the gather fork height for the node and the miner (default: never; 10 with 20 blocks mines across it).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -69,10 +70,14 @@ fn the_gpu_mines_blocks_a_cpu_node_verifies_in_full() {
     let epoch = env_u64("TENERO_POW_EPOCH", 100);
     let batch = env_u64("TENERO_MINER_BATCH", 128) as usize;
     let prefetch = env_u64("TENERO_MINER_PREFETCH", 5);
+    let gather_from = env_u64("TENERO_GATHER_FROM", u64::MAX);
     let params = Params::DEFAULT;
     eprintln!();
     eprintln!("=== GPU mining, verified by the node's CPU check ===");
     eprintln!("  real parameters; {blocks} blocks; {epoch} blocks per dataset; batch {batch}; the node's check looks {prefetch} blocks ahead");
+    if gather_from != u64::MAX {
+        eprintln!("  the gather fork at height {gather_from}: blocks from there on need the gathered attempt");
+    }
 
     let db = TempDb::new("gpu");
     let store = Store::open(&db.0, LABEL, PowKind::Matmul).unwrap();
@@ -80,7 +85,11 @@ fn the_gpu_mines_blocks_a_cpu_node_verifies_in_full() {
     // GPU's speed and the node's checking, not luck
     let chain = ChainParams::version_2(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
     // the node's own CPU proof of work: every block the GPU finds goes through this, bit for bit
-    let pow = Arc::new(MatmulPow::new(params, epoch, 6).unwrap());
+    let pow = Arc::new(
+        MatmulPow::new(params, epoch, 6)
+            .unwrap()
+            .gathered_from(gather_from),
+    );
     let node = Node::with_proof_check(
         &store,
         &chain,
@@ -106,7 +115,9 @@ fn the_gpu_mines_blocks_a_cpu_node_verifies_in_full() {
         ..MinerConfig::default()
     };
     let mut hook = MinerHook::new(
-        Miner::spawn(move || GpuBackend::new(0, params, epoch, batch)),
+        Miner::spawn(move || {
+            GpuBackend::new(0, params, epoch, batch).map(|b| b.gathered_from(gather_from))
+        }),
         PlaceholderPayout { seed: [3; 32] },
         cfg,
     );

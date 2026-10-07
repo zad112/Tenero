@@ -7,6 +7,7 @@
 //!
 //! Unsafe code is confined to the calls into CUDA, each with a `SAFETY` comment.
 
+pub mod gather;
 pub mod gemm;
 pub mod group;
 
@@ -279,6 +280,26 @@ impl Gpu {
             slices,
             buf,
         })
+    }
+
+    /// The device's practical memory bandwidth: copies `bytes` from one device buffer to another for about `seconds`.
+    /// Returns GB/s counting the reads and the writes, and the number of copies made.
+    pub fn copy_bandwidth(&self, bytes: usize, seconds: f64) -> Result<(f64, u64), GpuError> {
+        let src = self.stream.alloc_zeros::<u8>(bytes)?;
+        let mut dst = self.stream.alloc_zeros::<u8>(bytes)?;
+        self.stream.memcpy_dtod(&src, &mut dst)?; // warm up
+        self.stream.synchronize()?;
+        let start = std::time::Instant::now();
+        let mut copies = 0u64;
+        while start.elapsed().as_secs_f64() < seconds {
+            for _ in 0..8 {
+                self.stream.memcpy_dtod(&src, &mut dst)?;
+            }
+            self.stream.synchronize()?;
+            copies += 8;
+        }
+        let secs = start.elapsed().as_secs_f64();
+        Ok((2.0 * bytes as f64 * copies as f64 / secs / 1e9, copies))
     }
 
     /// One slice of the dataset, copied to the host.

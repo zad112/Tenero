@@ -258,6 +258,44 @@ while writing the Rust version; neither changes a rule or a vector):
   three blocks below 2^32). The parameter rules keep every counter the proof of work uses below 2^32, so
   consensus never depends on the wrap.
 
+### 8.3 The gather fork (beta and dev, from height 500)
+
+**Decided by the owner on 2026-10-07** (beta was then at height 280). A network has a **gather fork height** `G`:
+**500 on `beta` and `dev`**, none on `alpha` (it keeps 8.2 for ever), and none on the SHA-256 `test` network. A block at
+height `>= G` must carry the mix of the **gathered attempt** below; a block below `G` must carry the mix of 8.2. Each side
+refuses the other's mix (`tenero-chain/tests/validate.rs`, `across_the_gather_fork_each_side_accepts_only_its_own_design`).
+The height is the block's own (its parent's height + 1), the dataset is the epoch's dataset of 8.2, unchanged, and the
+cheap pre-check is unchanged (it never depended on the slice). **A node without this rule refuses every beta block from
+height 500 on and is left on a chain of its own.** There is no activation mechanism: the height is fixed in the program
+(`GATHER_FORK_HEIGHT`).
+
+**Why.** In 8.2 the slice an attempt reads (step 4) is two SHA-256 hashes of the nonce, known before any matrix work, and a
+miner chooses its nonces. It can try them 16 to a slice and multiply all 16 X matrices by ONE read of the slice: the
+proof of work is then limited by int8 multiply speed and not by memory (measured on an RTX 5070 Ti: about 35,000
+attempts a second without that, about 127,000 with it), which is where data-centre GPUs and special chips lead most
+(`THREAT_MODEL.md` E11 and E12, `BENCHMARKS.md`). The same freedom lets a miner keep only the nonces whose slice is 0
+and mine with that one 16 MiB slice, which depends on no other: the 4 GiB is not needed at all (reported privately by a
+tester). The gathered attempt picks its columns one by one from the whole dataset,
+so attempts share almost no reads, and the same card does about 45,000 a second, at its memory bandwidth.
+
+**The gathered attempt** for `header_hash` and `nonce` (steps 1 to 3 and 6 to 8 are those of 8.2):
+
+1 to 3. `seed`, `X` as in 8.2.
+
+4. `pick_key = sha256(seed + 0x02)`. Take the ChaCha20 keystream of key `pick_key`, counter starting at 0, nonce
+   `(0,0,0)`, `ceil(nb / 16)` blocks; for `n = 0 .. nb-1`, `idx[n]` = **little-endian uint32 word `n`** of it,
+   **mod `num_blocks * nb`**. (At the real parameters: 2,048 numbers below 524,288.)
+5. **Dataset column `j`** is the `k` bytes at offset `j * k` of the whole dataset (all slices one after the other), read
+   as signed int8; so column `n` of slice `b` is column `b * nb + n`. `W` is the `k x nb` matrix whose column `n` is
+   dataset column `idx[n]` (a column may be picked more than once), and `C = X @ W` with exact integer arithmetic, an
+   `m x nb` array of int32.
+
+6 to 8. The fold, `mix`, `digest` and the target test of 8.2, on this `C`.
+
+**Verification** needs the **whole** epoch dataset (any column can be picked), which the node already holds; one check
+costs about what an 8.2 check costs. Checked in `matmulhash_gather.json` (small sizes: every step, including the column
+numbers, X and C) and `matmulhash_gather_real.json` (the real parameters, the epoch-0 dataset; slow).
+
 ## 9. Validating a chain
 
 The reference `is_valid()` walks blocks `1..tip` in order, keeping `balances`, the set of signatures seen,
@@ -293,5 +331,5 @@ bit-identical), CLI text, the `chain.json` file layout, and all storage.
 | 5 emission | `emission.json` |
 | 6 size, penalty, fees | `fees_and_size.json`, the `size:` cases in `chains.json` |
 | 7 difficulty and timestamps | `difficulty.json`, the timestamp cases in `chains.json` |
-| 8 proof of work | `chacha20.json`, `matmulhash_small.json`, `matmulhash_real.json`, `matmulhash_deep.json`, `matmulhash_full.json`, `pow_misc.json`, the `matmul:` cases in `chains.json` |
+| 8 proof of work | `chacha20.json`, `matmulhash_small.json`, `matmulhash_real.json`, `matmulhash_deep.json`, `matmulhash_full.json`, `pow_misc.json`, the `matmul:` cases in `chains.json`; 8.3 (the gather fork): `matmulhash_gather.json`, `matmulhash_gather_real.json` |
 | 9 validation | `chains.json` (every `rule:` case is a properly mined block that breaks exactly one rule) |

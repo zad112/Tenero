@@ -63,6 +63,16 @@ impl Network {
         self != Network::Test
     }
 
+    /// The height from which this network's blocks need the GATHERED proof-of-work attempt (`CONSENSUS.md` section 8.3,
+    /// `THREAT_MODEL.md` E11): `GATHER_FORK_HEIGHT` on `beta` and `dev` (decided by the owner, 2026-10-07), never (`u64::MAX`) on `alpha`
+    /// (it keeps the first design) and on the SHA-256 `test` network (no matmulhash at all).
+    pub fn gather_from(self) -> u64 {
+        match self {
+            Network::Beta | Network::Dev => GATHER_FORK_HEIGHT,
+            Network::Alpha | Network::Test => u64::MAX,
+        }
+    }
+
     /// The proof-of-work epoch in blocks (the real proof of work's; the test chain has none, and the number is not used there).
     pub fn epoch_blocks(self) -> u64 {
         REAL_POW_EPOCH_BLOCKS
@@ -79,6 +89,11 @@ impl Network {
         }
     }
 }
+
+/// The gather fork: from this height on, `beta` and `dev` blocks need the gathered proof-of-work attempt. **A consensus rule**: a node
+/// without it refuses every beta block from this height on (and is left on a chain of its own). Decided by the owner, 2026-10-07, when
+/// beta was at height 280.
+pub const GATHER_FORK_HEIGHT: u64 = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MineMode {

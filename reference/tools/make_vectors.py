@@ -47,7 +47,7 @@ from tenero.wallet import Wallet, address_from_pubkey_hex  # noqa: E402
 
 VECTOR_DIR = os.path.join(ROOT, "tests", "vectors")
 SCHEMA = 1
-FAST_FILES = ("chacha20", "matmulhash_small", "matmulhash_real", "pow_misc", "emission",
+FAST_FILES = ("chacha20", "matmulhash_small", "matmulhash_real", "matmulhash_gather", "pow_misc", "emission",
               "difficulty", "fees_and_size", "units", "legacy_account_model", "chains")
 
 
@@ -216,6 +216,59 @@ def small_vectors():
                 {"cases": cases, "fold": folds})
 
 
+def gathered_record(params, data, header_hash, nonce):
+    seed = mh.attempt_seed(header_hash, nonce)
+    cols = mh.pick_columns(seed, params)
+    X = mh.make_x(seed, params)
+    W = mh.gathered_matrix(data, cols, params)
+    C = (X.astype(np.float64) @ W.astype(np.float64)).astype(np.int64).astype(np.int32)
+    sums = mh.fold_sums(C.reshape(1, -1))[0]
+    mix = mh.mix_bytes(sums)
+    digest = mh.digest_of(seed, mix)
+    assert (digest, mix) == mh.compute_gathered_attempts(params, data, header_hash, [nonce])[0]
+    rec = {"header_hash": header_hash.hex(), "nonce": nonce, "seed": seed.hex(),
+           "pick_key": mh.pick_key(seed).hex(),
+           "columns_sha256": sha(np.asarray(cols, dtype="<u4").tobytes()),
+           "first_columns": cols[:8], "x_sha256": sha(X.astype(np.int8).tobytes()),
+           "c_sha256": sha(C.astype("<i4").tobytes()),
+           "sums": [format(int(s), "016x") for s in sums], "mix": mix.hex(), "digest": digest.hex()}
+    return rec
+
+
+GATHER_DESCRIPTION = ("the GATHERED attempt, required from a network's gather fork height on (beta and dev: 500; "
+                      "docs/CONSENSUS.md section 8.3). pick_key = sha256(seed || 0x02); column n of the attempt is "
+                      "little-endian u32 word n of the ChaCha20 keystream of pick_key (counter 0, nonce 0, "
+                      "ceil(nb/16) blocks) modulo num_blocks*nb; dataset column j is bytes [j*k, (j+1)*k) of the "
+                      "whole dataset. columns_sha256 hashes the nb column numbers as u32 little-endian. X, C, the "
+                      "fold, mix and digest are as in matmulhash_small.")
+
+
+def gather_vectors():
+    cases = []
+    for i, p in enumerate(SMALL_PARAMS):
+        seed = det_bytes(f"small epoch seed {i}", 32)
+        data = mh.build_dataset(p, seed, threads=1)
+        attempts = []
+        for n, nonce in enumerate(SMALL_NONCES):
+            header = hashlib.sha256(f"gather header {i} {n % 3}".encode()).digest()
+            attempts.append(gathered_record(p, data, header, nonce))
+        cases.append({"params": params_dict(p), "epoch_seed": seed.hex(),
+                      "dataset_sha256": sha(data.astype("<u4").tobytes()), "attempts": attempts})
+    return wrap("matmulhash_gather", GATHER_DESCRIPTION + " Small sizes; the datasets are matmulhash_small's.",
+                {"cases": cases})
+
+
+def gather_real_vectors(data):
+    """Gathered attempts at the real parameters: needs the WHOLE 4 GiB dataset (a gathered attempt reads anywhere)."""
+    p = mh.Params()
+    header = hashlib.sha256(b"tenero vectors gather header").digest()
+    attempts = [gathered_record(p, data, header, nonce) for nonce in (0, 1, 2, 2**63, 2**64 - 1)]
+    return wrap("matmulhash_gather_real", GATHER_DESCRIPTION + " Real parameters, the epoch-0 dataset of "
+                "matmulhash_full. Slow and RAM-hungry (4.3 GiB): made with --full, checked only when "
+                "TENERO_SLOW_VECTORS=1.",
+                {"params": params_dict(p), "epoch_seed": powmod.epoch_seed(0).hex(), "attempts": attempts})
+
+
 REAL_HEADER = hashlib.sha256(b"tenero vectors real header").digest()
 
 
@@ -250,11 +303,12 @@ def deep_vectors():
                 real_case(78, (0, 1, 2, 3, 7, 15, 31, 63, 77), 8, 77))
 
 
-def full_vectors(params=None, seed=None, threads=4, progress=None):
+def full_vectors(params=None, seed=None, threads=4, progress=None, data=None):
     """A hash of EVERY slice of the real dataset. Needs the whole dataset in RAM (4.3 GiB)."""
     p = params or mh.Params()
     seed = seed or powmod.epoch_seed(0)
-    data = mh.build_dataset(p, seed, progress=progress, threads=threads)
+    if data is None:
+        data = mh.build_dataset(p, seed, progress=progress, threads=threads)
     return wrap("matmulhash_full", "matmulhash v2 at the real parameters: the sha256 of every one of "
                 "the 256 slices of the epoch-0 dataset. Slow and RAM-hungry (4.3 GiB): checked only "
                 "when TENERO_SLOW_VECTORS=1.",
@@ -850,6 +904,7 @@ def chains_vectors():
 # ---------------------------------------------------------------- driver
 
 BUILDERS = {"chacha20": chacha_vectors, "matmulhash_small": small_vectors, "matmulhash_real": real_vectors,
+            "matmulhash_gather": gather_vectors,
             "pow_misc": pow_misc_vectors, "emission": emission_vectors, "difficulty": difficulty_vectors,
             "fees_and_size": fees_and_size_vectors, "units": units_vectors,
             "legacy_account_model": legacy_vectors, "chains": chains_vectors}
@@ -881,8 +936,10 @@ def main(argv=None):
             docs["matmulhash_deep"] = deep_vectors()
     if args.full:
         print(f"building the full 4 GiB dataset on {args.threads} threads (needs about 4.3 GiB of RAM)...")
-        docs["matmulhash_full"] = full_vectors(threads=args.threads,
-                                               progress=lambda d, n: print(f"  {d}/{n} slices", flush=True))
+        data = mh.build_dataset(mh.Params(), powmod.epoch_seed(0), threads=args.threads,
+                                progress=lambda d, n: print(f"  {d}/{n} slices", flush=True))
+        docs["matmulhash_full"] = full_vectors(data=data)
+        docs["matmulhash_gather_real"] = gather_real_vectors(data)
     bad = 0
     os.makedirs(VECTOR_DIR, exist_ok=True)
     for name, doc in docs.items():

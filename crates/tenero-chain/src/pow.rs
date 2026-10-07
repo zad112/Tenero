@@ -84,6 +84,9 @@ struct Inner {
 /// that goes back across an epoch boundary), instead of a build done ahead of time.
 pub struct MatmulPow {
     inner: Arc<Inner>,
+    /// From this height on, blocks need the GATHERED attempt (`matmulhash::compute_gathered_attempt`, `CONSENSUS.md`
+    /// section 8.3); below it, the first design. `u64::MAX` (the default): never.
+    gather_from: u64,
 }
 
 fn poisoned<T>(_: T) -> String {
@@ -179,7 +182,19 @@ impl MatmulPow {
                 built: Condvar::new(),
                 builds: AtomicU64::new(0),
             }),
+            gather_from: u64::MAX,
         })
+    }
+
+    /// The same checker, requiring the gathered attempt from `height` on (the network's fork height).
+    pub fn gathered_from(mut self, height: u64) -> MatmulPow {
+        self.gather_from = height;
+        self
+    }
+
+    /// The height from which blocks need the gathered attempt (`u64::MAX`: never).
+    pub fn gather_from(&self) -> u64 {
+        self.gather_from
     }
 
     pub fn params(&self) -> &Params {
@@ -289,7 +304,13 @@ impl PowCheck for MatmulPow {
 
     fn check_full(&self, header: &BlockHeader, height: u64) -> Result<bool, String> {
         let data = self.dataset_for(height)?;
-        let attempt = matmulhash::compute_attempt(&data, &ids::header_hash(header), header.nonce)?;
+        let attempt = matmulhash::compute_attempt_at(
+            &data,
+            &ids::header_hash(header),
+            header.nonce,
+            height,
+            self.gather_from,
+        )?;
         Ok(attempt.mix == header.mix)
     }
 
