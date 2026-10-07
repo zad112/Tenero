@@ -741,7 +741,7 @@ fn a_block_another_one_replaced_pays_nobody() {
 
 #[test]
 fn the_pools_fee_stays_with_the_pool() {
-    let r = rig_with(|c| c.fee_percent = 10);
+    let r = rig_with(|c| c.fee_ppm = 100_000);
     let job = job_of(&r);
     let (mut s, _) = r.pool.open_session(&hello(1), ip(1)).unwrap();
     r.pool.retarget(&mut s, &job.block_target);

@@ -190,8 +190,9 @@ pub struct PoolConfig {
     pub idle_timeout: Duration,
     /// Where each miner's difficulty starts: its share target is this many times the block target.
     pub initial_ratio: u64,
-    /// What the pool keeps of every block, in percent. **A number the pool publishes.**
-    pub fee_percent: u64,
+    /// What the pool keeps of every block, in parts per million of the reward (10,000 is 1 %; `pool_core::parse_fee_percent`).
+    /// **A number the pool publishes.**
+    pub fee_ppm: u64,
     /// The PPLNS window, as a multiple of a block's work.
     pub window_factor: u64,
     /// How many blocks deep a block must be before its reward is credited (the coinbase maturity of the network).
@@ -226,7 +227,7 @@ impl PoolConfig {
             handshake_timeout: Duration::from_secs(10),
             idle_timeout: Duration::from_secs(300),
             initial_ratio: 16,
-            fee_percent: 0,
+            fee_ppm: 0,
             window_factor: 2,
             maturity,
             min_payout: 10_000_000,
@@ -815,7 +816,7 @@ impl Pool {
             Ok(BlockVerdict::InChain(id)) => {
                 self.stats.blocks_in_chain.fetch_add(1, Ordering::Relaxed);
                 let credits = self.with_accounts(|a| {
-                    a.block_found(job.height, id, reward, self.cfg.fee_percent, need)
+                    a.block_found(job.height, id, reward, self.cfg.fee_ppm, need)
                 });
                 self.log(&format!(
                     "block {} is in the chain: {} miners will be credited when it is {} blocks deep",

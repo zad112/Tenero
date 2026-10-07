@@ -15,12 +15,26 @@
 | **Scheme** | **PPLNS**, pay per last N shares (the owner's choice, 2026-10-07): when a block is found, its reward is shared among the newest shares whose work adds up to **`window` times the block's work** (default 2), in proportion to each share's work, whatever rounds they fell in. A miner who joins late or leaves early is paid for the shares he has in the window. |
 | **A share's worth** | the attempts its target stands for: `floor(2^256 / share target)`. A share at a target 16 times easier than the block's is worth a sixteenth of a block of work, whatever the miner's speed. |
 | **Difficulty** | each miner has its own share target, the block target times a ratio that starts at 16 and is looked at every 30 seconds: it moves by the factor by which the shares came faster or slower than one every 15 seconds, at most 4 times either way. (So a CPU and a GPU both find their level in a few minutes.) |
-| **Fee** | `fee` percent of every block, **default 0** (a test pool). It comes off first. Publish it. |
+| **Fee** | `fee` percent of every block, **default 0** (a test pool). It comes off first. Publish it. A percentage with **up to four decimals** (`0.5` is a half of one percent, `0.05` a twentieth of one percent; the pool keeps it in parts per million of the reward, so the smallest step is 0.0001 %); anything else is refused at start. It is **rounded down**: the odd unit goes to the miners. It applies to blocks found after it is set; the credits of blocks already found are not changed. (Before this change only whole percents could be set.) |
 | **When a reward counts** | a block is credited to the miners only when it is **as deep as the coinbase maturity** (60 blocks on `beta`) **and is still the node's block at its height**. A block another one replaced pays nobody, because the pool never received the coins. |
 | **Payouts** | once every `payout-every` seconds (**default 3600: an hour**; the next time is kept in the state file, so a restart does not bring a payout forward), every miner owed at least `min-payout` (**default 0.1 coins**) is paid, largest first, at most 500 a round, in as many transactions as it takes (15 recipients to a transaction; `Wallet::build_batch`). Coins that come back as change are spendable after 10 blocks, so a round that runs out of separate coins pays what it can and the rest waits for the next round (10 minutes later). |
 | **Network fees** | **paid by the pool**, out of its wallet, not taken from the miners. |
 | **What a miner needs** | an address to be paid at. Anyone may use anyone's address: the pool does not know who a miner is. |
 | **The record** | `payments.log` in the pool's data folder: one line for every payment, `time transaction-id address amount-in-units`, so a miner can check what it was paid against the chain. |
+
+## What fee to set (an estimate, to be replaced by a measurement)
+
+**Recommended for a small pool: `fee = 0.05`** (a twentieth of one percent). **It is an estimate** built from the two payouts the author's test pool has made (2026-10-07: 0.031 and 0.029 coins of network fee on 21.97 and 18.03 coins paid, about 0.015 %, each transaction about 9 KB to one recipient) and the fee rule, **not a measurement of a busy pool**:
+
+* **Why a fee at all:** the pool pays the network fee of every payout out of its own wallet (a miner is paid the full amount), and at a fee of 0 it credits miners the whole reward, so its wallet ends up short by exactly the fees it has paid. A small fee keeps a reserve in the wallet.
+* **Why the fee never has to be a guess about a rise:** the minimum fee falls when the block-size median rises and when the reward halves, and the median never goes below 150,000 bytes, so **under today's rules the price of a byte is already the highest it can be** (`docs/CONSENSUS_V2.md` 8.1).
+* **What it costs, assuming 0.03 to 0.04 coins a transaction of 15 recipients (not measured for 15 recipients) and 1,200 coins of rewards an hour:** one miner paid each hour about 0.0025 % of the rewards; 100 miners about 0.02 %; **500 miners about 0.09 to 0.12 %**. So `0.05` covers a pool of up to about 250 miners paid every hour, and a pool of 500 should start at `0.1` and re-measure. Nothing here is a reason to charge more than the pool needs: publish the fee.
+* **Many small payments cost the most:** a payment at the minimum payout (0.1 coins) costs the pool about as much as a large one, so a pool with many miners near the minimum should raise `min-payout` or `payout-every` before it raises its fee.
+* **Measure it:** every payout round logs `payout: N payments in N transactions, X units paid, fees F`. This prints what the fees were as a share of what was paid, over the whole log:
+
+      grep "payout:" /var/lib/tenero-pool/pool.log | awk '{for(i=1;i<=NF;i++){if($i=="units"){p+=$(i-1)} if($i=="fees"){f+=$(i+1)+0}}} END{printf "paid %d units, fees %d units, fees are %.4f%% of paid\n",p,f,100*f/p}'
+
+  The fee must be at least that share, with room to spare. A fee is **kept by the pool in its wallet**; it is not a reserve anyone else can draw on.
 
 ## What it needs
 

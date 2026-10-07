@@ -228,17 +228,17 @@ fn the_pools_fee_comes_off_first_and_rounding_goes_to_the_biggest_miner_so_nothi
         a.add_share(*who, 10, 30);
     }
     // a reward of 100 with 10% fee: 90 to share three ways: 30 each
-    let c = a.block_found(1, [1; 32], 100, 10, 30);
+    let c = a.block_found(1, [1; 32], 100, 100_000, 30);
     assert_eq!(c.iter().map(|x| x.1).sum::<u64>(), 90);
     assert!(c.iter().all(|x| x.1 == 30));
     // a reward that does not divide: the credits still add up to exactly the reward less the fee
     let c = a.block_found(2, [2; 32], 101, 0, 30);
     assert_eq!(c.iter().map(|x| x.1).sum::<u64>(), 101);
-    let c = a.block_found(3, [3; 32], 1_000_000_007, 3, 30);
+    let c = a.block_found(3, [3; 32], 1_000_000_007, 30_000, 30);
     let fee = (1_000_000_007u128 * 3 / 100) as u64;
     assert_eq!(c.iter().map(|x| x.1).sum::<u64>(), 1_000_000_007 - fee);
     // a fee over 100% is 100%: nobody is paid, and nothing underflows
-    let c = a.block_found(4, [4; 32], 50, 250, 30);
+    let c = a.block_found(4, [4; 32], 50, 2_500_000, 30);
     assert!(c.is_empty());
 }
 
@@ -342,7 +342,7 @@ fn busy() -> Accounts {
     for k in 0..20u64 {
         a.add_share(id[(k % 3) as usize], 10 + k, 150);
     }
-    a.block_found(77, [5; 32], 12_345, 2, 150);
+    a.block_found(77, [5; 32], 12_345, 20_000, 150);
     a.settle(0, 60, &mut |_| None);
     a.add_share(id[0], 5, 150);
     let mut a2 = a.clone();
@@ -383,4 +383,87 @@ fn a_damaged_or_foreign_file_is_refused_and_every_byte_is_protected() {
         Accounts::from_bytes(b"not a pool file at all, but long enough to have a checksum")
             .is_err()
     );
+}
+
+// ---- the pool's fee in parts per million -----------------------------------------------------------------------------------
+
+#[test]
+fn a_fee_is_written_as_a_percentage_of_up_to_four_decimals_and_kept_in_parts_per_million() {
+    for (text, ppm) in [
+        ("0", 0),
+        ("1", 10_000),
+        ("0.5", 5_000),
+        ("0.05", 500),
+        ("0.0001", 1),
+        ("2.5", 25_000),
+        ("100", 1_000_000),
+        ("100.0000", 1_000_000),
+    ] {
+        assert_eq!(parse_fee_percent(text), Some(ppm), "{text}");
+    }
+}
+
+#[test]
+fn a_fee_that_is_not_a_plain_percentage_is_refused() {
+    for text in [
+        "",
+        ".",
+        ".5",
+        "5.",
+        "-1",
+        "+1",
+        "1e2",
+        "0,5",
+        "0.00001",
+        "100.0001",
+        "101",
+        " 1",
+        "1 ",
+        "abc",
+        "0.5%",
+        "0x10",
+        "99999999999999999999999",
+    ] {
+        assert_eq!(parse_fee_percent(text), None, "`{text}` must be refused");
+    }
+}
+
+#[test]
+fn a_fee_written_out_and_read_back_is_the_same_number_for_every_value() {
+    for ppm in 0..=FEE_ALL {
+        let text = fee_percent_text(ppm);
+        assert_eq!(
+            parse_fee_percent(&text),
+            Some(ppm),
+            "{ppm} written as `{text}`"
+        );
+    }
+    assert_eq!(fee_percent_text(0), "0");
+    assert_eq!(fee_percent_text(5_000), "0.5");
+    assert_eq!(fee_percent_text(500), "0.05");
+    assert_eq!(fee_percent_text(1), "0.0001");
+    assert_eq!(fee_percent_text(10_000), "1");
+    assert_eq!(
+        fee_percent_text(FEE_ALL + 5),
+        "100",
+        "above the whole reward is shown as the whole reward"
+    );
+}
+
+#[test]
+fn a_half_percent_fee_comes_off_a_block_and_a_part_per_million_rounds_in_the_miners_favour() {
+    let (mut a, id) = books(1);
+    a.add_share(id[0], 10, 30);
+    // 0.5 % of 1,000,000,007 is 5,000,000.035: the pool keeps 5,000,000 and the miner gets the rest, to the last unit
+    let c = a.block_found(1, [1; 32], 1_000_000_007, 5_000, 30);
+    assert_eq!(
+        c.iter().map(|x| x.1).sum::<u64>(),
+        1_000_000_007 - 5_000_000
+    );
+    // the smallest fee, one part in a million, on a reward that is a million units: the pool keeps one unit
+    let c = a.block_found(2, [2; 32], 1_000_000, 1, 30);
+    assert_eq!(c.iter().map(|x| x.1).sum::<u64>(), 999_999);
+    // on a reward of 999,999 units it would be less than one unit: the pool keeps nothing, never rounding up
+    let c = a.block_found(3, [3; 32], 999_999, 1, 30);
+    assert_eq!(c.iter().map(|x| x.1).sum::<u64>(), 999_999);
 }

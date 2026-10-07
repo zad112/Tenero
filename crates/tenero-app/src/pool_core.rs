@@ -332,18 +332,20 @@ impl Accounts {
         }
     }
 
-    /// A block was found: fixes who is owed what for it (the newest shares adding up to `need` work, the pool's `fee_percent` taken off
+    /// A block was found: fixes who is owed what for it (the newest shares adding up to `need` work, the pool's fee (`fee_ppm`, parts per million of the reward) taken off
     /// first) and keeps that as pending until the block matures. Returns the credits.
     pub fn block_found(
         &mut self,
         height: u64,
         id: [u8; 32],
         reward: u64,
-        fee_percent: u64,
+        fee_ppm: u64,
         need: u128,
     ) -> Vec<(AddrId, u64)> {
         self.blocks_found += 1;
-        let fee = (u128::from(reward) * u128::from(fee_percent.min(100)) / 100) as u64;
+        // rounded down: the odd unit goes to the miners, not to the pool
+        let fee =
+            (u128::from(reward) * u128::from(fee_ppm.min(FEE_ALL)) / u128::from(FEE_ALL)) as u64;
         let net = reward - fee;
         // the newest shares first, until they add up to `need`: the last one counts only for what is still missing
         let mut weights: BTreeMap<AddrId, u128> = BTreeMap::new();
@@ -561,4 +563,43 @@ impl Accounts {
         r.finish().map_err(bad)?;
         Ok(a)
     }
+}
+
+/// One percent of a block's reward, in the unit the pool's fee is kept in: parts per million of the reward. So 0.5 % is 5,000 and
+/// the smallest step is 0.0001 % (one part in a million). Whole percents were the only fee the first version could take.
+pub const FEE_ONE_PERCENT: u64 = 10_000;
+/// The whole reward (100 %), in the same unit.
+pub const FEE_ALL: u64 = 1_000_000;
+
+/// A fee as a person writes it, a percentage of at most four decimals (`0`, `1`, `0.5`, `0.05`, `0.0001`), in parts per million of the
+/// reward. `None` for anything else: a sign, an exponent, a comma, more than four decimals, a missing digit (`.5`, `5.`), more than 100.
+pub fn parse_fee_percent(text: &str) -> Option<u64> {
+    let (whole, frac) = text.split_once('.').unwrap_or((text, ""));
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    if whole.is_empty()
+        || !digits(whole)
+        || !digits(frac)
+        || frac.len() > 4
+        || (text.contains('.') && frac.is_empty())
+    {
+        return None;
+    }
+    let mut ppm = whole.parse::<u64>().ok()?.checked_mul(FEE_ONE_PERCENT)?;
+    let mut step = FEE_ONE_PERCENT;
+    for b in frac.bytes() {
+        step /= 10;
+        ppm = ppm.checked_add(u64::from(b - b'0') * step)?;
+    }
+    (ppm <= FEE_ALL).then_some(ppm)
+}
+
+/// A fee in parts per million written as a percentage, for the log and the screen: `0`, `0.5`, `0.05`, `1`, no trailing zeros.
+pub fn fee_percent_text(ppm: u64) -> String {
+    let ppm = ppm.min(FEE_ALL);
+    let (whole, frac) = (ppm / FEE_ONE_PERCENT, ppm % FEE_ONE_PERCENT);
+    if frac == 0 {
+        return whole.to_string();
+    }
+    let f = format!("{frac:04}");
+    format!("{whole}.{}", f.trim_end_matches('0'))
 }

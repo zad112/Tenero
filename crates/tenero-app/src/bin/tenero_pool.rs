@@ -10,7 +10,7 @@ use rand_core::OsRng;
 use tenero_app::client::RemoteNode;
 use tenero_app::config::Network;
 use tenero_app::log::{Level, Logger};
-use tenero_app::pool_core::Accounts;
+use tenero_app::pool_core::{fee_percent_text, parse_fee_percent, Accounts};
 use tenero_app::pool_net::DEFAULT_PORT;
 use tenero_app::pool_server::{NodePow, Pool, PoolConfig, ReconnectingNode};
 use tenero_chain::PowCheck;
@@ -32,7 +32,7 @@ tenero-pool: a mining pool (EXPERIMENTAL, UNAUDITED; nothing on any network it s
   --passphrase-file F   the wallet's passphrase, in a file only the pool's user can read
   --listen ADDR         where miners connect (default 0.0.0.0:38335)
   --name TEXT           what the pool calls itself (default \"Tenero test pool\")
-  --fee PERCENT         what the pool keeps of every block, 0 to 100 (default 0). Publish it.
+  --fee PERCENT         what the pool keeps of every block, 0 to 100, up to four decimals: 0.5 is a half of one percent (default 0). Publish it.
   --min-payout COINS    the least a miner is paid (default 0.1)
   --payout-every SECS   seconds between payouts (default 3600)
   --max-miners N        miners connected at once (default 256)   --per-address N   connections from one address (default 4)
@@ -52,6 +52,7 @@ struct Args {
     passphrase_file: Option<PathBuf>,
     listen: std::net::SocketAddr,
     name: String,
+    /// parts per million of the reward (`--fee 0.5` is 5,000)
     fee: u64,
     min_payout: u64,
     payout_every: u64,
@@ -144,10 +145,9 @@ fn parse() -> Result<Args, String> {
                 a.name = v.clone()
             }
             "fee" => {
-                a.fee = num("fee")?;
-                if a.fee > 100 {
-                    return Err("fee: a percentage, 0 to 100".into());
-                }
+                a.fee = parse_fee_percent(&v).ok_or_else(|| {
+                    format!("fee: `{v}` is not a percentage from 0 to 100 with at most four decimals (0.5 is a half of one percent)")
+                })?
             }
             "min-payout" | "min_payout" => {
                 a.min_payout = tenero_wallet::amount::parse_coins(&v)
@@ -290,7 +290,7 @@ fn main() {
     let pool_address = wallet.address();
     let mut cfg = PoolConfig::new(network.name(), pool_address, params.coinbase_maturity);
     cfg.name = args.name.clone();
-    cfg.fee_percent = args.fee;
+    cfg.fee_ppm = args.fee;
     cfg.min_payout = args.min_payout;
     cfg.payout_interval = args.payout_every;
     cfg.max_miners = args.max_miners;
@@ -313,7 +313,7 @@ fn main() {
     log.info(&format!(
         "pays blocks to {} ; fee {} % ; minimum payout {} units every {} s ; PPLNS window {} blocks of work",
         pool_address.to_text(),
-        args.fee,
+        fee_percent_text(args.fee),
         args.min_payout,
         args.payout_every,
         args.window
