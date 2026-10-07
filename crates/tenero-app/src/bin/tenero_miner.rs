@@ -258,7 +258,7 @@ fn main() {
         network: if implied == Network::Test {
             implied.name().to_string()
         } else {
-            "real proof of work (dev or alpha: the node says which)".to_string()
+            "real proof of work (dev, beta or alpha: the node says which)".to_string()
         },
         network_note: if implied == Network::Test {
             "SHA-256 test chain, no real proof of work".to_string()

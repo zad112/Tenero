@@ -1427,3 +1427,161 @@ fn rewind_takes_the_newest_blocks_off_a_stopped_node_and_the_chain_goes_on_from_
     assert!(after.height >= 6);
     assert_ne!(after.tip_id, before.tip_id);
 }
+
+/// `pay-many`, `sweep` and `combine` through a real node: twenty recipients need two transactions that spend different coins, a sweep and a combine
+/// only preview until `--yes`, and the bad files are refused before anything is built.
+#[test]
+fn the_wallet_program_pays_many_sweeps_and_combines_through_a_real_node() {
+    let (wd, dn) = (Dir::new("many-wallet"), Dir::new("many-node"));
+    let (alice_file, bob_file) = (wd.path("alice.wallet"), wd.path("bob.wallet"));
+    let pass = wd.path("pass.txt");
+    std::fs::write(&pass, "correct horse battery\n").unwrap();
+    let pass_s = pass.to_str().unwrap();
+    let make = |file: &std::path::Path| {
+        let (r, said) = cli(
+            &[
+                "create",
+                "--wallet",
+                file.to_str().unwrap(),
+                "--birth",
+                "0",
+                "--passphrase-file",
+                pass_s,
+            ],
+            &[],
+        );
+        r.unwrap();
+        find(&said, "address:")
+    };
+    let (alice_addr, bob_addr) = (make(&alice_file), make(&bob_file));
+    let node = Running::start(config(
+        &dn.0,
+        &format!("mine = sha256\nmine_to = {alice_addr}\nmine_pace = 1\n"),
+    ));
+    node.wait_height(14, 60);
+    let (control, data) = (
+        node.ready.control.to_string(),
+        dn.0.to_str().unwrap().to_string(),
+    );
+    let args = |c: &str, wallet: &std::path::Path, extra: &[&str]| -> Vec<String> {
+        let mut v: Vec<String> = [
+            c,
+            "--wallet",
+            wallet.to_str().unwrap(),
+            "--data",
+            &data,
+            "--control",
+            &control,
+            "--passphrase-file",
+            pass_s,
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        v.extend(extra.iter().map(|s| s.to_string()));
+        v
+    };
+    let run = |a: Vec<String>| {
+        let refs: Vec<&str> = a.iter().map(String::as_str).collect();
+        cli(&refs, &[])
+    };
+
+    // twenty payments of 0.01: more than one transaction can pay, so two transactions
+    let list = wd.path("payments.txt");
+    let mut text = String::from("# the miners of the last block\n\n");
+    for _ in 0..20 {
+        text.push_str(&format!("{bob_addr} 0.01\n"));
+    }
+    std::fs::write(&list, text).unwrap();
+    let (r, said) = run(args(
+        "pay-many",
+        &alice_file,
+        &["--file", list.to_str().unwrap()],
+    ));
+    r.unwrap_or_else(|e| panic!("{e}\n{}", node.log()));
+    let line = said
+        .iter()
+        .find(|l| l.starts_with("sent "))
+        .expect("a summary");
+    assert!(line.contains("in 2 transactions"), "{line}");
+    assert!(line.starts_with("sent 0.2 "), "{line}");
+    assert_eq!(
+        said.iter()
+            .filter(|l| l.starts_with("transaction "))
+            .count(),
+        2,
+        "{said:#?}"
+    );
+    assert!(!said.iter().any(|l| l.contains("NOT SENT")), "{said:#?}");
+
+    // a sweep and a combine are previews without --yes: nothing is sent
+    let pool_before = node.client().info().unwrap().mempool_txs;
+    let (r, said) = run(args("combine", &alice_file, &["--pieces", "3"]));
+    r.unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        said.iter().any(|l| l.contains("only a preview")),
+        "{said:#?}"
+    );
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("combine: 3 pieces in 1 transaction")),
+        "{said:#?}"
+    );
+    let (r, said) = run(args("sweep", &alice_file, &[]));
+    r.unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        said.iter().any(|l| l.contains("only a preview")),
+        "{said:#?}"
+    );
+    // (the node's own miner may take transactions out of the pool meanwhile, so the pool may only shrink)
+    assert!(
+        node.client().info().unwrap().mempool_txs <= pool_before,
+        "a preview sends nothing"
+    );
+    assert!(
+        !said.iter().any(|l| l.starts_with("transaction ")),
+        "a preview shows no transaction: {said:#?}"
+    );
+    // with --yes the combine is sent
+    let (r, said) = run(args("combine", &alice_file, &["--pieces", "3", "--yes"]));
+    r.unwrap_or_else(|e| panic!("{e}\n{}", node.log()));
+    assert!(
+        said.iter().any(|l| l.starts_with("transaction ")),
+        "{said:#?}"
+    );
+    assert!(
+        node.client().info().unwrap().mempool_txs > pool_before || node.height() > 14,
+        "it reached the node"
+    );
+
+    // bad requests, refused before a node is asked: a file with a bad line, an empty file, a missing option, a number that is not a number
+    let bad = wd.path("bad.txt");
+    for (text, want) in [
+        (format!("{bob_addr} 0.01\nnonsense\n"), "line 2"),
+        (format!("{bob_addr} 0\n"), "an amount of nothing"),
+        (format!("{bob_addr} 1 extra\n"), "expected `ADDRESS AMOUNT`"),
+        ("# nothing\n".to_string(), "lists no payments"),
+    ] {
+        std::fs::write(&bad, text).unwrap();
+        let (r, _) = run(args(
+            "pay-many",
+            &alice_file,
+            &["--file", bad.to_str().unwrap()],
+        ));
+        let e = r.unwrap_err();
+        assert!(e.contains(want), "{e}");
+    }
+    assert!(run(args("pay-many", &alice_file, &[]))
+        .0
+        .unwrap_err()
+        .contains("--file"));
+    assert!(run(args("combine", &alice_file, &[]))
+        .0
+        .unwrap_err()
+        .contains("--pieces"));
+    assert!(run(args("combine", &alice_file, &["--pieces", "x"]))
+        .0
+        .unwrap_err()
+        .contains("--pieces"));
+    node.stop();
+}

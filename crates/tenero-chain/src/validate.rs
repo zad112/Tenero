@@ -477,6 +477,22 @@ impl<'a> Validator<'a> {
                 version: t.prefix.version,
             });
         }
+        if self.params.legacy_tx_limits {
+            if t.prefix.inputs.len() > crate::params::LEGACY_MAX_INPUTS {
+                return Err(BlockError::Malformed(format!(
+                    "transaction {i}: {} inputs, over the {} this network allows",
+                    t.prefix.inputs.len(),
+                    crate::params::LEGACY_MAX_INPUTS
+                )));
+            }
+            if t.prunable.proof_data.len() > crate::params::LEGACY_MAX_PROOF {
+                return Err(BlockError::Malformed(format!(
+                    "transaction {i}: a proof of {} bytes, over the {} this network allows",
+                    t.prunable.proof_data.len(),
+                    crate::params::LEGACY_MAX_PROOF
+                )));
+            }
+        }
         let min =
             fees::dynamic_min_fee(size, next.reward, next.median).map_err(BlockError::Malformed)?;
         if t.prefix.fee < min {

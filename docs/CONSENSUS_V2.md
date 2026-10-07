@@ -166,13 +166,13 @@ is the fixed value defined by the specification for a public amount.
 Transaction = prefix  ‖  prunable
 
 prefix   = version        u16
-           inputs         list<Input>     1 ..= MAX_INPUTS
+           inputs         list<Input>     1 ..= INPUT_COUNT_GUARD   (a decoder's bound, NOT a rule: the rule is MAX_TX_SIZE, below)
            outputs        list<Output>    2 ..= MAX_OUTPUTS        (at least 2: see below)
            fee            u64             units, public
            extra          bytes           <= MAX_EXTRA
 prunable = rings          list<list<u64>> exactly one ring per input, in the order of the inputs; each ring is
                                           at most MAX_RING global output indexes (P1, 6.3)
-           proof_data     bytes           <= MAX_PROOF: the range proof, the pseudo-output commitments and
+           proof_data     bytes           <= MAX_PROOF (64 KiB): the range proof, the pseudo-output commitments and
                                           the membership proofs, in the format of `version`
 Input    = key_image      [32]            the spend-once tag: the ONLY thing an input holds in the prefix
 ```
@@ -187,8 +187,28 @@ Input    = key_image      [32]            the spend-once tag: the ONLY thing an 
   from about 620 to **356 bytes**.
 - **At least two outputs** in every spend (the second is the sender's own "change", possibly worth zero), as
   the Carrot design requires, so that every spend has a self-send output.
+- **A transaction is limited by its SIZE, not by how many inputs it has** (**DECIDED 2026-10-06, the Beta.1 hard fork; before it
+  there was a count limit of 32 inputs**). The whole transaction, in the serialized form above (prefix and prunable part), may take at most
+  **`MAX_TX_SIZE = 75,000` bytes**: a transaction that is longer cannot be encoded or decoded, so it cannot be in a block, in a
+  mempool or on the wire. There is **no rule about the number of inputs**; each costs about 780 bytes (a 32-byte key image, a ring
+  of 16 indexes, a CLSAG and a pseudo-output commitment), so **93 inputs with 16 outputs, or 95 with 2 outputs, fit** (measured: 74,630 bytes and,
+  for the wallet's two-output payment, 74,258 bytes; `tests/ringct.rs` and the wallet's `pay.rs`). The decoder still reads the input count before the inputs and
+  refuses a count that could not fit (`INPUT_COUNT_GUARD = MAX_TX_SIZE / 32 = 2,343`, because an input is at least 32 bytes), so that
+  it never reserves memory for a count no transaction could have; that is a guard, not a limit anyone can reach.
+  *Why this number:* half of the block-size floor (8.2), as Monero does, so a block always has room for several of them and one
+  transaction cannot fill a penalty-free block alone. *What it costs:* a payment is limited by the coins it spends, not their value,
+  so a wallet holding thousands of small coins (a miner's block rewards) must combine them in steps; the fee rises with the size
+  (8.1), so a large transaction pays for the room it takes. *Verification cost* grows with the inputs (a CLSAG check each);
+  it is bounded by the size and has not been measured as a denial-of-service risk beyond the tests in this repository.
+- **The `alpha` network keeps the old limits** (the owner's decision, 2026-10-06, so that people can move over while the older nodes are still running): its
+  nodes of this version refuse a transaction with more than **32 inputs** or a `proof_data` over **32 KiB**, as alpha.4 does, in addition to `MAX_TX_SIZE`
+  (`ChainParams::legacy_tx_limits`; `tenero-chain`'s validator, with a test). Without it a node of this version would accept a transaction the older nodes refuse, and the
+  network would split. The wallet is told the limit through the rules (`Rules::max_inputs`, control protocol `rules`) and never builds more. No other network has it.
+- **What the wallet does with the limit** (wallet policy, not consensus): it splits a payment that needs more coins than fit, or more than 15 recipients, into several
+  transactions that spend different coins (`Wallet::build_batch`), and can combine many coins into one (`build_sweep`, `build_combine`); see `docs/RUNNING.md`.
 - **PROVISIONAL constants** (approved by the owner for now, to be re-measured once real proofs exist in M7):
-  `MAX_INPUTS = 32`, `MAX_OUTPUTS = 16`, `MAX_EXTRA = 128`, `MAX_PROOF = 32 KiB`, `MAX_RING = 16`,
+  `MAX_TX_SIZE = 75,000`, `MAX_OUTPUTS = 16`, `MAX_EXTRA = 128`, `MAX_PROOF = 64 KiB` (raised from 32 KiB: the proof of 93 inputs is
+  57,378 bytes), `MAX_RING = 16`,
   `MAX_BLOCK_TXS = 8192`, `MAX_COINBASE_OUTPUTS = 16`. They bound memory and verification cost and are
   consensus once set (a later change is a new rules version, section 10).
 - **Payment ids** and the transaction's ephemeral data live in `extra`, encrypted per the Carrot rules.
@@ -263,8 +283,9 @@ A coinbase output used as a ring member has the commitment `1*G + amount*H`. The
 **provisional until Carrot's own test vectors are imported** (M7, Carrot).
 
 Measured sizes (real proofs, `tests/ringct.rs`): a 2-input, 2-output transaction has **1,858 bytes** of
-`proof_data`; the largest allowed transaction (32 inputs, 16 outputs, rings of 16) has **20,290 bytes**, inside
-`MAX_PROOF` (32,768). So `MAX_PROOF` has room, and the typical figure matches the estimate in 14.4.
+`proof_data`; the largest allowed transaction (**93 inputs**, 16 outputs, rings of 16: the most that fit in `MAX_TX_SIZE`, 6.2) has **57,378 bytes**
+of it (a transaction of 74,630), inside `MAX_PROOF` (65,536). (Before the Beta.1 fork the largest had 32 inputs and 20,290 bytes.) The typical
+figure matches the estimate in 14.4.
 
 ## 8. Validating a block (the order of the checks)
 
@@ -492,6 +513,7 @@ Decided by the owner on 2026-09-29:
 | 7 | CLSAG and Bulletproofs+ (section 2) | **the `monero-oxide` crates**, after the audit is read and a version is pinned (M7) |
 | 8 | pruning (section 14) | **required**: the chain must be able to run pruned so nobody has to download hundreds of gigabytes |
 | 9 | block-size floor (8.2) | **150,000 bytes** (v1: 300,000), to bound the free growth of the chain |
+| 10 | inputs of a transaction (6.2) | **no count limit; a size limit of 75,000 bytes** (2026-10-06, Beta.1; was a count of 32). Outputs stay at 16 |
 
 Still open, none of which blocks M6:
 

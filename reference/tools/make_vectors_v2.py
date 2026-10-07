@@ -31,14 +31,18 @@ SCHEMA = 1
 FILES = ("v2_serialization", "v2_ids", "v2_merkle", "v2_genesis", "v2_fees", "v2_emission", "v2_work")
 
 # ---------------------------------------------------------------- consensus limits (PROVISIONAL)
-MAX_INPUTS, MIN_INPUTS = 32, 1
+MIN_INPUTS = 1
+# What limits the inputs is the SIZE of the transaction (about 780 bytes an input), not a count (CONSENSUS_V2.md 6.2).
+MAX_TX_SIZE = 75_000
+# A bound on the count a decoder believes before reading it; not a rule: an input is at least 32 bytes.
+INPUT_COUNT_GUARD = MAX_TX_SIZE // 32
 MAX_OUTPUTS, MIN_OUTPUTS = 16, 2
 MAX_COINBASE_OUTPUTS, MIN_COINBASE_OUTPUTS = 16, 1
 MAX_EXTRA = 128
-MAX_PROOF = 32 * 1024
+MAX_PROOF = 64 * 1024
 MAX_RING = 16
 MAX_BLOCK_TXS = 8192
-LIMITS = {"MAX_INPUTS": MAX_INPUTS, "MIN_INPUTS": MIN_INPUTS, "MAX_OUTPUTS": MAX_OUTPUTS,
+LIMITS = {"MAX_TX_SIZE": MAX_TX_SIZE, "INPUT_COUNT_GUARD": INPUT_COUNT_GUARD, "MIN_INPUTS": MIN_INPUTS, "MAX_OUTPUTS": MAX_OUTPUTS,
           "MIN_OUTPUTS": MIN_OUTPUTS, "MAX_COINBASE_OUTPUTS": MAX_COINBASE_OUTPUTS,
           "MIN_COINBASE_OUTPUTS": MIN_COINBASE_OUTPUTS, "MAX_EXTRA": MAX_EXTRA,
           "MAX_PROOF": MAX_PROOF, "MAX_RING": MAX_RING, "MAX_BLOCK_TXS": MAX_BLOCK_TXS}
@@ -50,8 +54,10 @@ COINBASE_TAG = b"tenero coinbase v2"
 GENESIS_TAG = b"tenero genesis"
 GENESIS_ID_TAG = b"tenero genesis id v2"
 NETWORK_LABEL = "tenero experimental network 1"
-# the labels of the networks the program knows (M11.2): the release network "alpha", chosen once; and the development network
+# the labels of the networks the program knows (M11.2): the release network "beta", chosen once; and the development network
 ALPHA_LABEL = "tenero alpha network 1"
+# the beta network (0.2.0-beta.1): a fresh genesis after the hard fork that limits a transaction by its size, not by a count of inputs
+BETA_LABEL = "tenero beta network 1"
 DEV_LABEL = "tenero development network"
 VERSION = 2
 
@@ -197,7 +203,7 @@ def enc_tx_prefix(t):
 
 def dec_tx_prefix(r):
     version = r.u16()
-    inputs = [dec_input(r) for _ in range(r.count(MIN_INPUTS, MAX_INPUTS))]
+    inputs = [dec_input(r) for _ in range(r.count(MIN_INPUTS, INPUT_COUNT_GUARD))]
     outputs = [dec_output(r) for _ in range(r.count(MIN_OUTPUTS, MAX_OUTPUTS))]
     fee = r.u64()
     return {"version": version, "inputs": inputs, "outputs": outputs, "fee": fee, "extra": r.var(MAX_EXTRA)}
@@ -219,8 +225,11 @@ def dec_prunable(r, n_inputs):
 
 
 def dec_tx(r):
+    start = r.pos
     t = dec_tx_prefix(r)
     t.update(dec_prunable(r, len(t["inputs"])))
+    if r.pos - start > MAX_TX_SIZE:       # the whole transaction, checked once it is read
+        raise DecodeError("length over maximum")
     return t
 
 
@@ -432,6 +441,14 @@ def sample_tx(tag, n_in=2, n_out=2, proof=200, extra=24, fee=123456, ring_size=1
             "proof_data": h(tag + " proof", proof)}
 
 
+def sized_tx(tag, size, n_in=94):
+    """A transaction of exactly `size` bytes: the proof bytes make up the difference (n_in inputs, so that the proof fits MAX_PROOF)."""
+    base = len(enc_tx(sample_tx(tag, n_in=n_in, n_out=MAX_OUTPUTS, proof=0)))
+    t = sample_tx(tag, n_in=n_in, n_out=MAX_OUTPUTS, proof=size - base)
+    assert len(enc_tx(t)) == size
+    return t
+
+
 def sample_cb_output(tag, amount):
     return {"onetime_address": h(tag + " ko", 32), "amount": amount, "view_tag": h(tag + " vt", 3),
             "ephemeral_pubkey": h(tag + " de", 32), "anchor_enc": h(tag + " anchor", 16)}
@@ -461,7 +478,9 @@ def wrap(name, description, body):
 
 
 def valid_case(kind, obj, note=""):
-    return {"kind": kind, "note": note, "object": obj, "hex": encode(kind, obj).hex()}
+    data = encode(kind, obj)
+    decode(kind, data)          # the reference itself must accept what it calls valid (this also checks MAX_TX_SIZE)
+    return {"kind": kind, "note": note, "object": obj, "hex": data.hex()}
 
 
 def invalid_case(kind, data, error, note):
@@ -498,8 +517,11 @@ def serialization_vectors():
                    "largest nonce and timestamp, zero mix"),
         valid_case("transaction", sample_tx("a"), "2 inputs, 2 outputs"),
         valid_case("transaction", sample_tx("b", n_in=1, n_out=2, proof=0, extra=0), "empty extra and proof"),
-        valid_case("transaction", sample_tx("c", n_in=MAX_INPUTS, n_out=MAX_OUTPUTS, proof=1000, extra=MAX_EXTRA),
-                   "the maximum number of inputs and outputs and the maximum extra"),
+        valid_case("transaction", sample_tx("c", n_in=32, n_out=MAX_OUTPUTS, proof=1000, extra=MAX_EXTRA),
+                   "32 inputs, the maximum number of outputs and the maximum extra"),
+        valid_case("transaction", sized_tx("m", MAX_TX_SIZE), "a transaction of exactly the maximum size, MAX_TX_SIZE"),
+        valid_case("transaction", sized_tx("n", MAX_TX_SIZE - 1), "a transaction one byte under the maximum size"),
+        valid_case("transaction", sample_tx("p", n_in=93, n_out=MAX_OUTPUTS, proof=93 * 608 + 1000), "93 inputs and 16 outputs: under the size limit"),
         valid_case("transaction", sample_tx("d", proof=MAX_PROOF), "the maximum proof length"),
         valid_case("transaction", sample_tx("f", ring_size=0), "empty rings encode (validation rejects them later)"),
         valid_case("transaction", sample_tx("g", n_in=3, ring_size=MAX_RING), "three inputs, a full ring each"),
@@ -516,7 +538,7 @@ def serialization_vectors():
                             "no transactions besides the coinbase"))
     # the pruned forms: the same prefix, the rings and proofs replaced by their 32-byte hash
     valid.append(valid_case("pruned_transaction", prune(sample_tx("a")), "the pruned form of the first transaction"))
-    valid.append(valid_case("pruned_transaction", prune(sample_tx("c", n_in=MAX_INPUTS, n_out=MAX_OUTPUTS, proof=1000,
+    valid.append(valid_case("pruned_transaction", prune(sample_tx("c", n_in=32, n_out=MAX_OUTPUTS, proof=1000,
                                                                   extra=MAX_EXTRA)), "the pruned form at the size limits"))
     valid.append(valid_case("pruned_block", {"header": hdr, "coinbase": cb, "transactions": [prune(t) for t in txs]},
                             "the pruned form of the block above"))
@@ -534,8 +556,12 @@ def serialization_vectors():
         invalid_case("transaction", good + b"\x00", "trailing bytes", "a transaction with a trailing byte"),
         invalid_case("transaction", good + good, "trailing bytes", "two transactions in a row"),
         invalid_case("transaction", enc_tx({**tx, "inputs": []}), "count out of range", "no inputs"),
-        invalid_case("transaction", enc_tx({**tx, "inputs": [sample_input(f"i{i}") for i in range(MAX_INPUTS + 1)]}),
-                     "count out of range", "one input too many"),
+        invalid_case("transaction", enc_tx({**tx, "inputs": [sample_input(f"i{i}") for i in range(INPUT_COUNT_GUARD + 1)]}),
+                     "count out of range", "one input over the decoder's bound"),
+        invalid_case("transaction", enc_tx(sized_tx("o", MAX_TX_SIZE + 1)), "length over maximum",
+                     "a transaction one byte over MAX_TX_SIZE"),
+        invalid_case("transaction", enc_tx(sample_tx("q", n_in=200, n_out=MAX_OUTPUTS, proof=60_000)), "length over maximum",
+                     "200 inputs: the transaction is far over MAX_TX_SIZE"),
         invalid_case("transaction", enc_tx({**tx, "outputs": [sample_output("o")]}), "count out of range",
                      "only one output (at least two are required)"),
         invalid_case("transaction", enc_tx({**tx, "outputs": [sample_output(f"o{i}") for i in range(MAX_OUTPUTS + 1)]}),
@@ -645,7 +671,7 @@ def merkle_vectors():
 
 
 def genesis_vectors():
-    labels = [NETWORK_LABEL, "tenero test network 2", "", ALPHA_LABEL, DEV_LABEL]
+    labels = [NETWORK_LABEL, "tenero test network 2", "", ALPHA_LABEL, BETA_LABEL, DEV_LABEL]
     cases = []
     for label in labels:
         hd = genesis_header(label)

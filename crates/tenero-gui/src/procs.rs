@@ -235,7 +235,10 @@ pub fn network_words(n: Network) -> &'static str {
         Network::Test => "test network (SHA-256, a CPU can mine it)",
         Network::Dev => "development network (the real GPU proof of work)",
         Network::Alpha => {
-            "alpha network (the first test release: the real proof of work, no premine, no value)"
+            "alpha network (the first test release, kept for a short time: the real proof of work, no premine, no value)"
+        }
+        Network::Beta => {
+            "beta network (the second test release: the real proof of work, no premine, no value)"
         }
     }
 }

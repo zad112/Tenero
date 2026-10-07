@@ -60,7 +60,7 @@ The answer to request `k` has kind `k | 0x80`. Any request may instead be answer
 | 4 | `output` | global index u64 | `output`: flag, then (if 1) a *stored output* |
 | 5 | `output_count` | | `output_count`: u64 |
 | 6 | `key_image_spent` | key image (32) | `spent`: flag |
-| 7 | `rules` | | `rules`: chain id (32), ring size u32, coinbase maturity u64, spend maturity u64, next height u64, reward u64, median u64 |
+| 7 | `rules` | | `rules`: chain id (32), ring size u32, coinbase maturity u64, spend maturity u64, next height u64, reward u64, median u64, **max inputs u32** (0 = no limit besides the size of a transaction; 32 on the `alpha` network, which keeps the limits of the first test release; **added 2026-10-06**) |
 | 8 | `submit_tx` | a whole transaction | `tx_accepted`: id (32), or an error saying why not |
 | 9 | `info` | | `info`: height u64, tip id (32), peers u32, inbound u32, pruned-below u64, mempool transactions u32, syncing flag, node kind u8 (0 archive, 1 pruned), network (text, at most 64 bytes), version (text, at most 64 bytes) |
 | 10 | `stop` | | `stopping`: asks the node to shut down cleanly |

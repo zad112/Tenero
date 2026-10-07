@@ -873,3 +873,109 @@ fn a_transaction_key_and_an_address_are_checked_by_finding_the_output_the_key_ma
         Err(ProofError::NotFound { .. })
     ));
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// batches and combining
+// ---------------------------------------------------------------------------------------------------------------
+
+#[test]
+fn a_batch_is_recorded_one_payment_at_a_time_with_the_fee_once_and_the_history_shows_each() {
+    let rig = Rig::new("batchrec");
+    let mut node = rig.node();
+    let mut alice = Purse::from_seed(&[21; 32], 0);
+    let a = alice.accounts()[0].address();
+    let others: Vec<Address> = (30..50u8)
+        .map(|i| Purse::from_seed(&[i; 32], 0).accounts()[0].address())
+        .collect();
+    (0..30).for_each(|_| {
+        mine(&mut node, &a);
+    });
+    alice.sync(&node).unwrap();
+    let dests: Vec<(Address, u64)> = others.iter().map(|o| (*o, 100_000_000)).collect();
+    let plan = alice
+        .build_batch(0, &node, &mut OsRng, &dests, FeeLevel::Low)
+        .unwrap();
+    assert_eq!(plan.txs.len(), 2, "twenty recipients: fifteen and five");
+    let sent = alice
+        .send_batch(0, &mut node, &plan.txs, FeeLevel::Low, 1_700_000_500)
+        .unwrap();
+    assert_eq!((sent.sent, sent.failed.is_none()), (2, true));
+    // twenty records, the fee of each transaction on its first record only
+    let records = alice.sent_records();
+    assert_eq!(records.len(), 20);
+    let fees: u64 = records.iter().map(|r| r.fee).sum();
+    assert_eq!(fees, plan.txs.iter().map(|t| t.fee).sum::<u64>());
+    for r in records {
+        assert!(r.tx_secret.is_some() && r.payment_onetime.is_some());
+    }
+    let h = alice.history(&node).unwrap();
+    let paid: Vec<_> = h
+        .iter()
+        .filter(|e| matches!(e.kind, EntryKind::Sent { .. }))
+        .collect();
+    assert_eq!(paid.len(), 20);
+    assert!(paid.iter().all(|e| e.amount == 100_000_000));
+    // the file keeps them
+    let path = tmp("batchrec");
+    alice
+        .save(&path, b"pw", KdfParams::TEST_ONLY_WEAK, &mut OsRng)
+        .unwrap();
+    let back = Purse::load(&path, b"pw").unwrap();
+    assert_eq!(back.sent_records().len(), 20);
+    let _ = std::fs::remove_file(&path);
+    // and a block takes both transactions
+    mine(&mut node, &a);
+    assert_eq!(node.pool().len(), 0);
+}
+
+#[test]
+fn a_combine_is_recorded_as_a_payment_to_oneself_and_its_coin_is_not_money_received() {
+    let rig = Rig::new("combinerec");
+    let mut node = rig.node();
+    let mut p = Purse::from_seed(&[22; 32], 0);
+    let a = p.accounts()[0].address();
+    (0..12).for_each(|_| {
+        mine(&mut node, &a);
+    });
+    p.sync(&node).unwrap();
+    let before = p.total_balance(&node).unwrap().total;
+    let built = p
+        .build_combine(0, &node, &mut OsRng, 5, FeeLevel::Low)
+        .unwrap();
+    let sent = p
+        .send_own(
+            0,
+            &mut node,
+            std::slice::from_ref(&built),
+            FeeLevel::Low,
+            "combined 5 coins",
+            1_700_000_900,
+        )
+        .unwrap();
+    assert_eq!(sent.sent, 1);
+    for _ in 0..4 {
+        mine(
+            &mut node,
+            &Purse::from_seed(&[99; 32], 0).accounts()[0].address(),
+        );
+    }
+    p.sync(&node).unwrap();
+    assert_eq!(
+        p.total_balance(&node).unwrap().total,
+        before - built.fee,
+        "only the fee is gone"
+    );
+    let h = p.history(&node).unwrap();
+    // the block rewards are listed as mined, and the combined coin is not listed at all as received
+    let received_like: Vec<_> = h
+        .iter()
+        .filter(|e| matches!(e.kind, EntryKind::Received))
+        .collect();
+    assert!(
+        received_like.is_empty(),
+        "the combined coin shown as received: {received_like:?}"
+    );
+    let rec = &p.sent_records()[0];
+    assert_eq!(rec.note.as_deref(), Some("combined 5 coins"));
+    assert_eq!((rec.to, rec.amount, rec.fee), (a, built.amount, built.fee));
+}

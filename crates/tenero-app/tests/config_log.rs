@@ -131,7 +131,7 @@ fn the_command_line_overrides_the_file() {
 fn the_network_and_the_data_directory_are_required() {
     assert!(err("network=dev").contains("`data`"));
     assert!(err("data=d").contains("`network`"));
-    assert!(err("data=d\nnetwork=main").contains("not `test`, `dev` or `alpha`"));
+    assert!(err("data=d\nnetwork=main").contains("not `test`, `dev`, `beta` or `alpha`"));
 }
 
 #[test]

@@ -22,8 +22,13 @@ pub enum Network {
     Dev,
     /// The **release network** of the first test release (M11.2): the real matmulhash proof of work, a fresh genesis with no premine
     /// ("tenero alpha network 1"), a real starting difficulty (2^237: about 524,000 attempts a block) and 100-block epochs. It is still a
-    /// test network: unaudited, and nothing on it has value.
+    /// test network: unaudited, and nothing on it has value. **Kept after Beta.1 for a short time** so that people can move over: a node of this version
+    /// judges its transactions by the limits of alpha.4 (`ChainParams::legacy_tx_limits`), as the older nodes still on it do.
     Alpha,
+    /// The **beta network** of 0.2.0-beta.1: the release network after the hard fork of Beta.1 (a transaction is limited by its size, not by a count of
+    /// inputs; `CONSENSUS_V2.md` 6.2). A fresh genesis ("tenero beta network 1"), the same real proof of work, difficulty and 100-block epochs as alpha.
+    /// Still a test network: unaudited, and nothing on it has value.
+    Beta,
 }
 
 /// The proof-of-work epoch of the networks that use the real proof of work, in blocks (the owner's choice for M11.2; the same value the
@@ -36,6 +41,7 @@ impl Network {
             "test" => Some(Network::Test),
             "dev" => Some(Network::Dev),
             "alpha" => Some(Network::Alpha),
+            "beta" => Some(Network::Beta),
             _ => None,
         }
     }
@@ -45,11 +51,12 @@ impl Network {
             Network::Test => "test",
             Network::Dev => "dev",
             Network::Alpha => "alpha",
+            Network::Beta => "beta",
         }
     }
 
     /// Every network, in the order the screens list them.
-    pub const ALL: [Network; 3] = [Network::Test, Network::Dev, Network::Alpha];
+    pub const ALL: [Network; 4] = [Network::Test, Network::Dev, Network::Beta, Network::Alpha];
 
     /// Whether the network uses the real matmulhash proof of work (a CPU or a GPU mines it) and not SHA-256.
     pub fn real_pow(self) -> bool {
@@ -68,6 +75,7 @@ impl Network {
             Network::Test => 18332,
             Network::Dev => 28332,
             Network::Alpha => 38332,
+            Network::Beta => 38342,
         }
     }
 }
@@ -90,11 +98,17 @@ pub enum MineMode {
 /// (`THREAT_MODEL.md` C1). That is the state of an experiment, not a launched network.
 pub const ALPHA_SEEDS: &[&str] = &["194.238.27.60:38333"];
 
+/// The seed addresses built into the program for the `beta` network: ONE, the author's second server (2026-10-07; 16 GB, `docs/RUNNING_A_SEED.md`), which
+/// serves beta from its first block. As for alpha, **one operator is below the policy's three** (`docs/SEED_POLICY.md`, `THREAT_MODEL.md` C1): an experiment, not a
+/// launched network. The author runs both networks' seeds, so they are one operator.
+pub const BETA_SEEDS: &[&str] = &["195.26.244.245:38343"];
+
 impl Network {
     /// The seeds built into the program for this network (none for the private `test` and `dev` networks).
     pub fn builtin_seeds(self) -> &'static [&'static str] {
         match self {
             Network::Alpha => ALPHA_SEEDS,
+            Network::Beta => BETA_SEEDS,
             Network::Test | Network::Dev => &[],
         }
     }
@@ -360,13 +374,13 @@ impl Raw {
         let network = self.one("network").ok_or_else(|| {
             bad(
                 "network",
-                "is required: `test` (a CPU-mined test chain), `dev` (the development network) or `alpha` (the test release's network)",
+                "is required: `test` (a CPU-mined test chain), `dev` (the development network), `beta` (the current test release's network) or `alpha` (the first test release's network)",
             )
         })?;
         let network = Network::parse(network).ok_or_else(|| {
             bad(
                 "network",
-                format!("`{network}` is not `test`, `dev` or `alpha`"),
+                format!("`{network}` is not `test`, `dev`, `beta` or `alpha`"),
             )
         })?;
         let listen = match self.one("listen") {

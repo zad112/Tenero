@@ -27,7 +27,11 @@ pub use interim::{Address, AddressError, Keys, TxSecret, BANNER};
 pub use mnemonic::{phrase_of, seed_of, PhraseError};
 pub use purse::{Entry, EntryKind, Purse, PurseError, SavedRequest, SentRecord, SentStatus};
 pub use request::{PaymentRequest, RequestError};
-pub use wallet::{Balance, Built, FeeLevel, Owned, SyncReport, Wallet, WalletError};
+pub use wallet::{
+    max_inputs_for, max_payment_inputs, payment_input_limit, payment_size, transaction_size,
+    Balance, BatchSent, Built, FeeLevel, Owned, PaymentPart, Plan, SyncReport, Wallet, WalletError,
+    MAX_RECIPIENTS,
+};
 
 /// [`coinbase_payout`] with the operating system's randomness.
 pub fn coinbase_payout_random(to: &Address, height: u64) -> Option<Payout> {

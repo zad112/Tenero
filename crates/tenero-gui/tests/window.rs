@@ -254,6 +254,24 @@ fn quote() -> Quote {
         change: 749_397_331,
         level: FeeLevel::Normal,
         note: Some("Rent".into()),
+        transactions: 1,
+        coins: 1,
+        unsent_payments: 0,
+        unsent_total: 0,
+        own: None,
+    }
+}
+
+fn combine_quote() -> Quote {
+    Quote {
+        to: String::new(),
+        amount: 1_999_000_000,
+        change: 0,
+        note: None,
+        transactions: 1,
+        coins: 12,
+        own: Some("Combined 12 pieces".into()),
+        ..quote()
     }
 }
 
@@ -387,6 +405,32 @@ fn states(rig: &Rig) -> Vec<(&'static str, Snapshot)> {
                 run(false),
                 MinerView::Off,
                 Some(quote()),
+            ),
+        ),
+        (
+            "payment made of several transactions, part of it waiting",
+            snap(
+                rig,
+                wallet(true, true),
+                run(false),
+                MinerView::Off,
+                Some(Quote {
+                    transactions: 3,
+                    coins: 190,
+                    unsent_payments: 1,
+                    unsent_total: 400_000_000,
+                    ..quote()
+                }),
+            ),
+        ),
+        (
+            "combine waiting for a yes",
+            snap(
+                rig,
+                wallet(true, true),
+                run(false),
+                MinerView::Off,
+                Some(combine_quote()),
             ),
         ),
     ]
@@ -524,6 +568,85 @@ fn the_confirmation_screen_shows_everything_before_anything_is_sent() {
         );
     }
     assert!(t.contains("Send") && t.contains("Back"));
+}
+
+#[test]
+fn the_confirmation_screen_of_a_combine_says_nobody_is_paid_and_a_split_payment_says_how_many_transactions(
+) {
+    let mut rig = Rig::new();
+    rig.app.goto("Send");
+    let running = || NodeView::Running {
+        info: info(false, 3),
+        ours: true,
+    };
+    let s = snap(
+        &rig,
+        wallet(true, true),
+        running(),
+        MinerView::Off,
+        Some(combine_quote()),
+    );
+    rig.app.set_snapshot(s);
+    let (t, _) = rig.frame();
+    for needle in [
+        "Check the combine",
+        "nobody is paid",
+        "Combined 12 pieces",
+        "Fee (Normal)",
+        "The account keeps",
+        "Combine",
+        "Back",
+    ] {
+        assert!(t.contains(needle), "`{needle}` missing:\n{t}");
+    }
+    assert!(
+        !t.contains("Check the payment"),
+        "a combine is not a payment:\n{t}"
+    );
+    let s = snap(
+        &rig,
+        wallet(true, true),
+        running(),
+        MinerView::Off,
+        Some(Quote {
+            transactions: 3,
+            coins: 190,
+            unsent_payments: 1,
+            unsent_total: 400_000_000,
+            ..quote()
+        }),
+    );
+    rig.app.set_snapshot(s);
+    let (t, _) = rig.frame();
+    for needle in [
+        "made as 3 transactions",
+        "190 pieces in all",
+        "Only part of this payment can be sent now",
+        "4 TNR",
+    ] {
+        assert!(t.contains(needle), "`{needle}` missing:\n{t}");
+    }
+}
+
+#[test]
+fn the_send_screen_has_a_combine_coins_section() {
+    let mut rig = Rig::new();
+    rig.app.goto("Send");
+    let s = snap(
+        &rig,
+        wallet(true, true),
+        NodeView::Running {
+            info: info(false, 3),
+            ours: true,
+        },
+        MinerView::Off,
+        None,
+    );
+    rig.app.set_snapshot(s);
+    let (t, _) = rig.frame();
+    for needle in ["Combine pieces", "Pieces to combine", "Combine all"] {
+        assert!(t.contains(needle), "`{needle}` missing:\n{t}");
+    }
 }
 
 #[test]

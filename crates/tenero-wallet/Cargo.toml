@@ -10,6 +10,7 @@ publish.workspace = true
 tenero-core = { path = "../tenero-core" }
 tenero-store = { path = "../tenero-store" }
 tenero-node = { path = "../tenero-node" }
+tenero-chain = { path = "../tenero-chain" }
 tenero-crypto = { path = "../tenero-crypto" }
 
 # already in the tree through tenero-crypto
@@ -27,7 +28,6 @@ bip39 = { version = "3", default-features = false, features = ["alloc", "zeroize
 [dev-dependencies]
 serde_json = "1"
 tenero-net = { path = "../tenero-net" }
-tenero-chain = { path = "../tenero-chain" }
 rand_chacha = "0.3"
 
 [lints]

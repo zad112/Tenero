@@ -9,7 +9,7 @@ use tenero_net::{encode, split_blocks, EngineConfig, Message, BLOCKS_REPLY_BYTES
 
 const T0: u64 = 1_700_000_000;
 
-/// A block of about `txs` * 33 KB: the vector block with copies of the longest transaction the format allows added.
+/// A block of about `txs` * 75 KB: the vector block with copies of the longest transaction the format allows (MAX_TX_SIZE - 1 bytes) added.
 fn big_block(txs: usize, salt: u8) -> Block {
     let v = load("v2_serialization").unwrap();
     let cases = v["valid"].as_array().unwrap();
@@ -22,7 +22,8 @@ fn big_block(txs: usize, salt: u8) -> Block {
     };
     let mut b =
         Block::from_bytes(&find("block", "a header, a coinbase and two transactions")).unwrap();
-    let tx = Transaction::from_bytes(&find("transaction", "the maximum proof length")).unwrap();
+    let tx =
+        Transaction::from_bytes(&find("transaction", "one byte under the maximum size")).unwrap();
     b.transactions = vec![tx; txs];
     b.header.nonce = u64::from(salt);
     b
@@ -34,7 +35,7 @@ fn size_of(b: &Block) -> usize {
 
 #[test]
 fn three_blocks_of_ten_megabytes_cannot_be_one_message_but_can_be_three() {
-    let blocks: Vec<Block> = (0..3).map(|i| big_block(300, i)).collect();
+    let blocks: Vec<Block> = (0..3).map(|i| big_block(140, i)).collect();
     assert!(size_of(&blocks[0]) > 9_000_000 && size_of(&blocks[0]) < 11_000_000);
     // the old behaviour: one reply with all of them does not fit a frame
     assert!(
@@ -65,15 +66,15 @@ fn three_blocks_of_ten_megabytes_cannot_be_one_message_but_can_be_three() {
 #[test]
 fn a_block_as_large_as_the_rules_allow_is_sent_in_a_reply_of_its_own() {
     use tenero_core::fees::V2_MAX_BLOCK_BODY;
-    // 125 transactions of the longest the format allows: just under the ceiling
-    let b = big_block(125, 1);
+    // 55 transactions of the longest the format allows: just under the ceiling
+    let b = big_block(55, 1);
     let body: usize = b
         .transactions
         .iter()
         .map(|t| t.to_bytes().unwrap().len())
         .sum();
     assert!(
-        body as u64 <= V2_MAX_BLOCK_BODY && body as u64 > V2_MAX_BLOCK_BODY - 40_000,
+        body as u64 <= V2_MAX_BLOCK_BODY && body as u64 > V2_MAX_BLOCK_BODY - 80_000,
         "{body}"
     );
     let frame = encode(&Message::Blocks {

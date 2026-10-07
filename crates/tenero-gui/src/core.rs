@@ -89,11 +89,21 @@ impl ChainView for Capped<'_> {
     }
 }
 
+/// What a prepared set of transactions is.
+enum PreparedKind {
+    /// A payment to `to`.
+    Pay { to_text: String },
+    /// A combining of the account's own coins; `what` is the note it is recorded with.
+    Own { what: String },
+}
+
 struct Prepared {
     account: usize,
-    to: Address,
-    to_text: String,
-    built: Built,
+    kind: PreparedKind,
+    /// One transaction, or several that spend different coins.
+    txs: Vec<Built>,
+    /// The payments that could not be made now.
+    unsent: Vec<(Address, u64)>,
     level: FeeLevel,
     note: Option<String>,
 }
@@ -263,12 +273,23 @@ impl Core {
             miner: self.miner_view.clone(),
             prepared: self.prepared.as_ref().map(|p| Quote {
                 account: p.account,
-                to: p.to_text.clone(),
-                amount: p.built.amount,
-                fee: p.built.fee,
-                change: p.built.change,
+                to: match &p.kind {
+                    PreparedKind::Pay { to_text } => to_text.clone(),
+                    PreparedKind::Own { .. } => String::new(),
+                },
+                amount: p.txs.iter().map(|t| t.amount).sum(),
+                fee: p.txs.iter().map(|t| t.fee).sum(),
+                change: p.txs.iter().map(|t| t.change).sum(),
                 level: p.level,
                 note: p.note.clone(),
+                transactions: p.txs.len(),
+                coins: p.txs.iter().map(|t| t.tx.prefix.inputs.len()).sum(),
+                unsent_payments: p.unsent.len(),
+                unsent_total: p.unsent.iter().map(|(_, v)| *v).sum(),
+                own: match &p.kind {
+                    PreparedKind::Own { what } => Some(what.clone()),
+                    PreparedKind::Pay { .. } => None,
+                },
             }),
             busy: None,
             moving: self.move_job.as_ref().map(|j| MoveView {
@@ -384,6 +405,11 @@ impl Core {
                 message,
             } => self.add_request(account, &amount, &label, &message),
             Cmd::DeleteRequest { index } => self.delete_request(index),
+            Cmd::PrepareCombine {
+                account,
+                coins,
+                level,
+            } => self.prepare_combine(account, coins, level),
             Cmd::SendPrepared => self.send_prepared(&mut events),
             Cmd::SignMessage { account, message } => {
                 self.sign_message(account, &message, &mut events)
@@ -717,17 +743,20 @@ impl Core {
         self.ready_to_pay()?;
         let node = self.node.as_ref().expect("checked");
         let purse = self.purse.as_mut().ok_or("the wallet is locked")?;
-        let built = purse
-            .build_payment(account, node, &mut OsRng, &addr, units, FeeLevel::Low)
+        let plan = purse
+            .build_batch(account, node, &mut OsRng, &[(addr, units)], FeeLevel::Low)
             .map_err(purse_err)?;
-        let size = tenero_core::v2::Wire::to_bytes(&built.tx)
-            .map_err(|e| e.to_string())?
-            .len() as u64;
         let rules = node.rules()?;
-        let min = tenero_core::fees::dynamic_min_fee(size, rules.reward, rules.median)?;
+        // a payment that needs several transactions pays the fee of each
         let mut fees = [0u64; 3];
-        for (f, level) in fees.iter_mut().zip(FeeLevel::ALL) {
-            *f = min.saturating_mul(level.percent_of_minimum()) / 100 + 1;
+        for built in &plan.txs {
+            let size = tenero_core::v2::Wire::to_bytes(&built.tx)
+                .map_err(|e| e.to_string())?
+                .len() as u64;
+            let min = tenero_core::fees::dynamic_min_fee(size, rules.reward, rules.median)?;
+            for (f, level) in fees.iter_mut().zip(FeeLevel::ALL) {
+                *f += min.saturating_mul(level.percent_of_minimum()) / 100 + 1;
+            }
         }
         events.push(Event::Estimate { fees });
         Ok(())
@@ -746,16 +775,51 @@ impl Core {
         self.ready_to_pay()?;
         let node = self.node.as_ref().expect("checked");
         let purse = self.purse.as_mut().ok_or("the wallet is locked")?;
-        let built = purse
-            .build_payment(account, node, &mut OsRng, &addr, units, level)
+        let plan = purse
+            .build_batch(account, node, &mut OsRng, &[(addr, units)], level)
             .map_err(purse_err)?;
         self.prepared = Some(Prepared {
             account,
-            to: addr,
-            to_text: addr.to_text(),
-            built,
+            kind: PreparedKind::Pay {
+                to_text: addr.to_text(),
+            },
+            txs: plan.txs,
+            unsent: plan.unsent,
             level,
             note: note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()),
+        });
+        Ok(())
+    }
+
+    /// Prepares combining an account's own coins (see `Cmd::PrepareCombine`).
+    fn prepare_combine(
+        &mut self,
+        account: usize,
+        coins: Option<usize>,
+        level: FeeLevel,
+    ) -> Result<(), String> {
+        self.prepared = None;
+        self.ready_to_pay()?;
+        let node = self.node.as_ref().expect("checked");
+        let purse = self.purse.as_mut().ok_or("the wallet is locked")?;
+        let txs = match coins {
+            Some(n) => vec![purse
+                .build_combine(account, node, &mut OsRng, n, level)
+                .map_err(purse_err)?],
+            None => purse
+                .build_sweep(account, node, &mut OsRng, None, level)
+                .map_err(purse_err)?,
+        };
+        let n: usize = txs.iter().map(|t| t.tx.prefix.inputs.len()).sum();
+        self.prepared = Some(Prepared {
+            account,
+            kind: PreparedKind::Own {
+                what: format!("Combined {n} pieces"),
+            },
+            txs,
+            unsent: Vec::new(),
+            level,
+            note: None,
         });
         Ok(())
     }
@@ -770,23 +834,46 @@ impl Core {
         let mut node = self.node.take().ok_or("the node is not running")?;
         let result = {
             let purse = self.purse.as_mut().ok_or("the wallet is locked")?;
-            purse
-                .send(p.account, &mut node, &p.built, &p.to, p.level, now_unix())
-                .map_err(purse_err)
+            match &p.kind {
+                PreparedKind::Pay { .. } => {
+                    purse.send_batch(p.account, &mut node, &p.txs, p.level, now_unix())
+                }
+                PreparedKind::Own { what } => {
+                    purse.send_own(p.account, &mut node, &p.txs, p.level, what, now_unix())
+                }
+            }
+            .map_err(purse_err)
         };
         self.node = Some(node);
-        result?;
-        if let (Some(note), Some(purse)) = (&p.note, self.purse.as_mut()) {
-            // a note that cannot be kept (too long) must not undo a payment that has been sent
-            let _ = purse.annotate_sent(&p.built.id, note);
+        let sent = result?;
+        if sent.sent == 0 {
+            if let Some(e) = sent.failed {
+                return Err(purse_err(tenero_wallet::PurseError::Wallet(e)));
+            }
         }
-        // the reservation and the record must reach the file, or a restart would pick the same coins
-        self.save_wallet()?;
-        self.refresh_due = true;
-        events.push(Event::Sent {
-            id: p.built.id,
-            fee: p.built.fee,
-        });
+        if sent.sent > 0 {
+            if let (Some(note), Some(purse), PreparedKind::Pay { .. }) =
+                (&p.note, self.purse.as_mut(), &p.kind)
+            {
+                // a note that cannot be kept (too long) must not undo a payment that has been sent
+                let _ = purse.annotate_sent(&p.txs[0].id, note);
+            }
+            // the reservation and the record must reach the file, or a restart would pick the same coins
+            self.save_wallet()?;
+            self.refresh_due = true;
+            events.push(Event::Sent {
+                id: p.txs[0].id,
+                fee: p.txs[..sent.sent].iter().map(|t| t.fee).sum(),
+                transactions: sent.sent,
+            });
+        }
+        if let Some(e) = sent.failed {
+            return Err(format!(
+                "{} of {} transactions were sent; the node refused the next one: {e}",
+                sent.sent,
+                p.txs.len()
+            ));
+        }
         Ok(())
     }
 

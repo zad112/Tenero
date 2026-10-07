@@ -1387,3 +1387,127 @@ fn payment_requests_are_made_kept_in_the_wallet_file_and_removed() {
     assert_eq!(d.requests.len(), 1);
     assert_eq!(d.requests[0].account_label, "Savings");
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// combining coins, through the same screen logic
+// ---------------------------------------------------------------------------------------------------------------
+
+#[test]
+fn combining_coins_is_previewed_cancelled_sent_and_never_shown_as_money_received() {
+    let rig = Rig::new("combine", 18491);
+    let mut c = rig.core();
+    c.handle(Cmd::CreateWallet {
+        name: None,
+        password: Password::Set(pw("a long enough password")),
+    });
+    // no node: refused with the reason
+    let ev = c.handle(Cmd::PrepareCombine {
+        account: 0,
+        coins: Some(3),
+        level: FeeLevel::Low,
+    });
+    assert!(
+        errors(&ev)[0].contains("node is not running"),
+        "{:?}",
+        errors(&ev)
+    );
+    c.handle(Cmd::StartNode);
+    wait(&mut c, 90, "the node", |s| {
+        matches!(s.node, NodeView::Running { .. })
+    });
+    let ev = c.handle(Cmd::StartMiner);
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    wait(&mut c, 180, "a dozen block rewards", |s| match &s.wallet {
+        WalletView::Unlocked(d) => {
+            d.synced
+                && d.history
+                    .iter()
+                    .filter(|h| h.kind == EntryKind::Mined)
+                    .count()
+                    >= 12
+        }
+        _ => false,
+    });
+    c.handle(Cmd::StopMiner);
+
+    // a number that cannot be combined is refused before anything is built
+    let ev = c.handle(Cmd::PrepareCombine {
+        account: 0,
+        coins: Some(1),
+        level: FeeLevel::Low,
+    });
+    assert!(!errors(&ev).is_empty());
+    assert!(c.snapshot().prepared.is_none());
+
+    // three coins: a preview that says what it is, and nothing is sent by looking
+    let ev = c.handle(Cmd::PrepareCombine {
+        account: 0,
+        coins: Some(3),
+        level: FeeLevel::Normal,
+    });
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    let q = c.snapshot().prepared.expect("a combine waits for a yes");
+    assert_eq!((q.transactions, q.coins), (1, 3));
+    assert!(q.own.is_some() && q.to.is_empty());
+    assert!(q.fee > 0 && q.amount > 0);
+    assert_eq!((q.unsent_payments, q.unsent_total), (0, 0));
+    assert!(unlocked(&c)
+        .history
+        .iter()
+        .all(|h| !matches!(h.kind, EntryKind::Sent { .. })));
+    c.handle(Cmd::CancelPrepared);
+    assert!(c.snapshot().prepared.is_none());
+
+    // all of them: the same, and then it is sent
+    let ev = c.handle(Cmd::PrepareCombine {
+        account: 0,
+        coins: None,
+        level: FeeLevel::Low,
+    });
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    let q = c.snapshot().prepared.expect("a combine waits for a yes");
+    assert!(q.coins >= 3 && q.own.is_some(), "{} coins", q.coins);
+    let (coins, fee) = (q.coins, q.fee);
+    let ev = c.handle(Cmd::SendPrepared);
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    assert!(ev
+        .iter()
+        .any(|e| matches!(e, Event::Sent { transactions: 1, fee: f, .. } if *f == fee)));
+    assert!(c.snapshot().prepared.is_none());
+    assert!(coins >= 3);
+
+    // the node's own miner is stopped, so the pool holds it until a block comes: start the miner again for a moment
+    c.handle(Cmd::StartMiner);
+    wait(&mut c, 180, "the combine to be confirmed", |s| {
+        match &s.wallet {
+            WalletView::Unlocked(d) => d.history.iter().any(|h| {
+                matches!(
+                    h.kind,
+                    EntryKind::Sent {
+                        status: SentStatus::Confirmed,
+                        ..
+                    }
+                )
+            }),
+            _ => false,
+        }
+    });
+    c.handle(Cmd::StopMiner);
+    let d = unlocked(&c);
+    // the combined coin is not listed as money that arrived from someone
+    assert!(
+        d.history.iter().all(|h| h.kind != EntryKind::Received),
+        "{:?}",
+        d.history
+    );
+    let row = d
+        .history
+        .iter()
+        .find(|h| matches!(h.kind, EntryKind::Sent { .. }))
+        .unwrap();
+    assert!(row
+        .note
+        .as_deref()
+        .is_some_and(|n| n.starts_with("Combined")));
+    c.handle(Cmd::StopNode);
+}

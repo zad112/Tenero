@@ -56,7 +56,9 @@ impl MinerBackend {
     pub fn for_network(n: Network) -> &'static [MinerBackend] {
         match n {
             Network::Test => &[MinerBackend::Sha256],
-            Network::Dev | Network::Alpha => &[MinerBackend::Gpu, MinerBackend::Cpu],
+            Network::Dev | Network::Beta | Network::Alpha => {
+                &[MinerBackend::Gpu, MinerBackend::Cpu]
+            }
         }
     }
 }
@@ -120,6 +122,7 @@ pub fn default_inbound_port(n: Network) -> u16 {
         Network::Test => 18331,
         Network::Dev => 28333,
         Network::Alpha => 38333,
+        Network::Beta => 38343,
     }
 }
 
@@ -165,7 +168,7 @@ impl Settings {
             let (k, v) = (k.trim().to_string(), v.trim().to_string());
             if k == "network" {
                 network = Network::parse(&v)
-                    .ok_or_else(|| format!("network: `{v}` is not test, dev or alpha"))?;
+                    .ok_or_else(|| format!("network: `{v}` is not test, dev, beta or alpha"))?;
             }
             pairs.push((k, v));
         }

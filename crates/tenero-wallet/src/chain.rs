@@ -21,6 +21,9 @@ pub struct Rules {
     /// dynamic minimum fee.
     pub reward: u64,
     pub median: u64,
+    /// A limit on the number of inputs of a transaction besides its size (`MAX_TX_SIZE`): `Some(32)` on the `alpha` network, which keeps the limits of
+    /// the first test release, `None` everywhere else.
+    pub max_inputs: Option<usize>,
 }
 
 /// A block as the wallet scans it.
@@ -136,6 +139,9 @@ impl ChainView for Node<'_> {
             next_height: next.height,
             reward: next.reward,
             median: next.median,
+            max_inputs: p
+                .legacy_tx_limits
+                .then_some(tenero_chain::params::LEGACY_MAX_INPUTS),
         })
     }
 }

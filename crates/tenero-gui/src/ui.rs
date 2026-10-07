@@ -90,6 +90,8 @@ struct PhraseModal {
 #[derive(Default)]
 struct SendForm {
     account: usize,
+    /// The "Pieces to combine" field.
+    combine_coins: String,
     to: String,
     amount: String,
     level: Option<FeeLevel>,
@@ -316,10 +318,17 @@ impl App {
                     self.send.error = Some(m);
                     self.send.working = None;
                 }
-                Event::Sent { fee, .. } => {
+                Event::Sent {
+                    fee, transactions, ..
+                } => {
+                    let what = if transactions > 1 {
+                        format!("{transactions} transactions sent")
+                    } else {
+                        "Payment sent".to_string()
+                    };
                     self.toast(
                         format!(
-                            "Payment sent (fee {}). It counts once a block takes it in.",
+                            "{what} (fee {}). It counts once a block takes it in.",
                             text::coins(fee)
                         ),
                         false,
@@ -1167,9 +1176,93 @@ impl App {
                     .filter(|_| self.send.to.trim() == self.send.note_for),
             });
         }
+        ui.add_space(18.0);
+        ui.separator();
+        ui.heading("Combine pieces");
+        ui.label(
+            RichText::new("Your balance is made of separate pieces: one for each payment you received, and each block reward is one piece. One payment can only use about 95 pieces, so if you hold many small ones, combine them into fewer, larger pieces first. It costs a fee, and the new piece can be spent after about 10 blocks. Nobody is paid: you see a summary first.")
+                .small()
+                .color(GREY),
+        );
+        ui.horizontal(|ui| {
+            ui.label("Pieces to combine");
+            ui.add(egui::TextEdit::singleline(&mut self.send.combine_coins).desired_width(60.0));
+            let count = self.send.combine_coins.trim().parse::<usize>().ok();
+            let idle = d.synced && self.send.working.is_none();
+            if ui
+                .add_enabled(
+                    idle && count.is_some_and(|c| c >= 2),
+                    egui::Button::new("Combine these…"),
+                )
+                .clicked()
+            {
+                self.send.working = Some(Instant::now());
+                self.backend.send(Cmd::PrepareCombine {
+                    account: self.send.account,
+                    coins: count,
+                    level: current,
+                });
+            }
+            if ui
+                .add_enabled(idle, egui::Button::new("Combine all…"))
+                .on_hover_text("every piece worth more than the fee it adds, in as many transactions as it takes")
+                .clicked()
+            {
+                self.send.working = Some(Instant::now());
+                self.backend.send(Cmd::PrepareCombine {
+                    account: self.send.account,
+                    coins: None,
+                    level: current,
+                });
+            }
+        });
     }
 
     fn review(&mut self, ui: &mut egui::Ui, d: &WalletData, q: &Quote) {
+        if let Some(what) = &q.own {
+            ui.heading("Check the combine");
+            ui.label("Nothing has been sent yet. This moves your own pieces into fewer, larger ones: nobody is paid.");
+            ui.add_space(6.0);
+            egui::Grid::new("review_own")
+                .num_columns(2)
+                .spacing([20.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label("Account");
+                    ui.label(account_text(d, q.account));
+                    ui.end_row();
+                    ui.label("What");
+                    ui.label(what);
+                    ui.end_row();
+                    ui.label("Transactions");
+                    ui.label(q.transactions.to_string());
+                    ui.end_row();
+                    ui.label(format!("Fee ({})", q.level.name()));
+                    ui.label(text::coins(q.fee));
+                    ui.end_row();
+                    ui.label("The account keeps");
+                    ui.label(RichText::new(text::coins(q.amount)).strong());
+                    ui.end_row();
+                });
+            ui.add_space(4.0);
+            ui.colored_label(
+                AMBER,
+                "The new pieces can be spent after about 10 blocks. Until then the balance still counts them, but they are not spendable.",
+            );
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(self.send.working.is_none(), egui::Button::new("Combine"))
+                    .clicked()
+                {
+                    self.send.working = Some(Instant::now());
+                    self.backend.send(Cmd::SendPrepared);
+                }
+                if ui.button("Back").clicked() {
+                    self.backend.send(Cmd::CancelPrepared);
+                }
+            });
+            return;
+        }
         ui.heading("Check the payment");
         ui.label("Nothing has been sent yet.");
         ui.add_space(6.0);
@@ -1201,6 +1294,23 @@ impl App {
                 ui.label(text::coins(q.change));
                 ui.end_row();
             });
+        if q.transactions > 1 {
+            ui.add_space(4.0);
+            ui.label(format!(
+                "This payment needs more pieces than one transaction can carry, so it is made as {} transactions that spend different pieces ({} pieces in all). Each pays a fee; the fee shown is the total. The person paid receives several amounts that add up to the payment.",
+                q.transactions, q.coins
+            ));
+        }
+        if q.unsent_payments > 0 {
+            ui.add_space(4.0);
+            ui.colored_label(
+                AMBER,
+                format!(
+                    "Only part of this payment can be sent now: {} of it has to wait, because the pieces that are free ran out. The change of these transactions can be spent after about 10 blocks; send the rest then.",
+                    text::coins(q.unsent_total)
+                ),
+            );
+        }
         ui.add_space(4.0);
         ui.colored_label(AMBER, "Payments cannot be taken back. Check the address: a wrong address loses the coins (they have no value, but the habit matters).");
         ui.add_space(6.0);
@@ -1283,7 +1393,7 @@ impl App {
         ui.add_space(8.0);
         ui.label(
             RichText::new(
-                "This address works on the test networks only (the SHA-256 test, development and alpha networks, none of which has value), and it is an interim format: it will change when the real privacy scheme replaces it. Every payment to it can be linked to it by anyone reading the chain.",
+                "This address works on the test networks only (the SHA-256 test, development, beta and alpha networks, none of which has value), and it is an interim format: it will change when the real privacy scheme replaces it. Every payment to it can be linked to it by anyone reading the chain.",
             )
             .small()
             .color(GREY),
@@ -2154,7 +2264,7 @@ impl App {
         ui.add_space(6.0);
         for line in [
             "Tenero is an experimental proof-of-work coin, a learning project: unaudited, one developer, not for real value.",
-            "Nothing on the test, development or alpha network has any value. Do not treat these coins as money.",
+            "Nothing on the test, development, beta or alpha network has any value. Do not treat these coins as money.",
             "The output scheme is an INTERIM one, not private in Monero's sense. Anyone reading the chain can link payments to an address.",
             "Nothing cryptographic here has been audited as used.",
         ] {

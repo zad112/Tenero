@@ -12,7 +12,10 @@ use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 use tenero_chain::proofs::{ProofCheck, TxContext};
 use tenero_core::v2::codec::Wire;
 use tenero_core::v2::ids::tx_id;
-use tenero_core::v2::{Input, Output, Prunable, Transaction, TxPrefix, MAX_PROOF};
+use tenero_core::v2::{Input, Output, Prunable, Transaction, TxPrefix, MAX_PROOF, MAX_TX_SIZE};
+
+/// The most inputs a transaction with 16 outputs and rings of 16 can have within `MAX_TX_SIZE` (found by building them).
+const LARGEST_INPUTS_WITH_16_OUTPUTS: usize = 93;
 use tenero_crypto::ringct::{
     commit, key_image, prove, public_amount_commitment, public_key, verify_tx, OutputSecret,
     ProofError, RingCtProofs, SpendInput,
@@ -191,20 +194,41 @@ fn the_real_proof_size_of_a_typical_transaction_is_within_the_limit() {
     assert!(n <= MAX_PROOF);
 }
 
+/// The biggest transaction the rules allow: 16 outputs and as many inputs as fit in `MAX_TX_SIZE` bytes (CONSENSUS_V2.md 6.2,
+/// there is no limit on their number besides the size). Real proofs, rings of 16: it is within the limit, its proof is within
+/// `MAX_PROOF`, it verifies, and one input more is a transaction no node can encode or decode.
 #[test]
-fn the_largest_allowed_transaction_fits_in_max_proof_and_verifies() {
-    // 32 inputs, 16 outputs, all rings of 16: the limits of CONSENSUS_V2 section 6.2
-    let inputs = vec![100u64; 32];
-    let mut outputs = vec![200u64; 15];
-    outputs.push(3200 - 15 * 200 - 7);
-    let f = build(4, &inputs, &outputs, 16, false);
-    let n = f.tx.prunable.proof_data.len();
+fn the_largest_allowed_transaction_fits_in_max_tx_size_and_verifies() {
+    let make = |n: usize| {
+        let inputs = vec![100u64; n];
+        let mut outputs = vec![100u64; 15];
+        outputs.push(100 * n as u64 - 15 * 100 - 7);
+        build(4, &inputs, &outputs, 16, false)
+    };
+    let n = LARGEST_INPUTS_WITH_16_OUTPUTS;
+    let f = make(n);
+    let size =
+        f.tx.to_bytes()
+            .expect("the largest allowed transaction encodes")
+            .len();
+    let proof = f.tx.prunable.proof_data.len();
+    eprintln!(
+        "{n} inputs, 16 outputs: {size} bytes of {MAX_TX_SIZE}, proof_data {proof} of {MAX_PROOF}"
+    );
+    assert!(size <= MAX_TX_SIZE, "{size} bytes, limit {MAX_TX_SIZE}");
     assert!(
-        n <= MAX_PROOF,
-        "the biggest proof_data is {n} bytes, limit {MAX_PROOF}"
+        proof <= MAX_PROOF,
+        "proof_data {proof} bytes, limit {MAX_PROOF}"
     );
     assert_eq!(verify(&f), Ok(()));
-    eprintln!("largest proof_data: {n} bytes of {MAX_PROOF}");
+    // one more input would not fit: the bytes of one more are what the size limit forbids
+    let bigger = make(n + 1);
+    assert_eq!(
+        bigger.tx.to_bytes().unwrap_err(),
+        tenero_core::v2::EncodeError::LengthOverMaximum,
+        "{} inputs must be over {MAX_TX_SIZE} bytes",
+        n + 1
+    );
 }
 
 #[test]

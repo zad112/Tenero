@@ -228,7 +228,7 @@ def enc_response(m):
         body += u32(len(m["spent"])) + b"".join(flag(b) for b in m["spent"])
     elif t == "rules":
         body += (fixed(m["chain_id"], 32) + u32(m["ring_size"]) + u64(m["coinbase_maturity"]) + u64(m["spend_maturity"])
-                 + u64(m["next_height"]) + u64(m["reward"]) + u64(m["median"]))
+                 + u64(m["next_height"]) + u64(m["reward"]) + u64(m["median"]) + u32(m["max_inputs"]))
     elif t == "tx_accepted":
         body += fixed(m["id"], 32)
     elif t == "info":
@@ -275,7 +275,8 @@ def dec_response(body):
                 m["spent"] = [dec_flag(r) for _ in range(r.count(1, MAX_KEY_IMAGES))]
             elif t == "rules":
                 m.update({"chain_id": r.fixed(32), "ring_size": r.u32(), "coinbase_maturity": r.u64(),
-                          "spend_maturity": r.u64(), "next_height": r.u64(), "reward": r.u64(), "median": r.u64()})
+                          "spend_maturity": r.u64(), "next_height": r.u64(), "reward": r.u64(), "median": r.u64(),
+                          "max_inputs": r.u32()})
             elif t == "tx_accepted":
                 m["id"] = r.fixed(32)
             elif t == "info":
@@ -423,7 +424,9 @@ def valid_responses():
         ("many: a mix of answers", {"type": "spent_many", "spent": [True, False, False, True, False]}),
         ("many: sixty-four answers", {"type": "spent_many", "spent": [i % 3 == 0 for i in range(64)]}),
         ("the rules", {"type": "rules", "chain_id": "07" * 32, "ring_size": 16, "coinbase_maturity": 60,
-                       "spend_maturity": 10, "next_height": 11, "reward": 2000000000, "median": 150000}),
+                       "spend_maturity": 10, "next_height": 11, "reward": 2000000000, "median": 150000, "max_inputs": 0}),
+        ("the rules of a network with a limit on inputs", {"type": "rules", "chain_id": "08" * 32, "ring_size": 16, "coinbase_maturity": 60,
+                       "spend_maturity": 10, "next_height": 11, "reward": 2000000000, "median": 150000, "max_inputs": 32}),
         ("a transaction was accepted", {"type": "tx_accepted", "id": "03" * 32}),
         ("a pruned node's status", info()),
         ("an archive node's status", info(kind="archive", syncing=False)),

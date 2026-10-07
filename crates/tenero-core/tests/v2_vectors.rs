@@ -120,7 +120,8 @@ fn decode_error(kind: &str, bytes: &[u8]) -> DecodeError {
 fn the_limits_are_the_ones_the_vectors_were_made_with() {
     let l = &load("v2_serialization").unwrap()["limits"];
     let g = |k: &str| usize::try_from(l[k].as_u64().unwrap()).unwrap();
-    assert_eq!(g("MAX_INPUTS"), MAX_INPUTS);
+    assert_eq!(g("MAX_TX_SIZE"), MAX_TX_SIZE);
+    assert_eq!(g("INPUT_COUNT_GUARD"), INPUT_COUNT_GUARD);
     assert_eq!(g("MIN_INPUTS"), MIN_INPUTS);
     assert_eq!(g("MAX_OUTPUTS"), MAX_OUTPUTS);
     assert_eq!(g("MIN_OUTPUTS"), MIN_OUTPUTS);
@@ -538,7 +539,7 @@ fn genesis_and_the_chain_id() {
     assert_eq!(cases[0]["label"].as_str().unwrap(), ids::NETWORK_LABEL);
     // the release network's label is in the vectors, so that its chain id is checked against the reference
     assert!(
-        cases.iter().any(|c| c["label"] == "tenero alpha network 1"),
+        cases.iter().any(|c| c["label"] == "tenero beta network 1"),
         "the alpha label is vectored"
     );
     let mut seen = std::collections::BTreeSet::new();

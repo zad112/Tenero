@@ -740,8 +740,8 @@ pub fn parse_args(
             other => return Err(format!("unknown option `--{other}`")),
         }
     }
-    if !matches!(o.network.as_str(), "test" | "dev" | "alpha") {
-        return Err("--network must be test, dev or alpha".into());
+    if !matches!(o.network.as_str(), "test" | "dev" | "beta" | "alpha") {
+        return Err("--network must be test, dev, beta or alpha".into());
     }
     if o.seeds.is_empty() {
         return Err("no seeds: give --seed or --seeds-file".into());

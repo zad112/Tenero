@@ -11,13 +11,20 @@ pub const VERSION: u16 = 2;
 
 // The consensus limits. PROVISIONAL (docs/CONSENSUS_V2.md 6.2): to be re-measured once real proofs exist.
 pub const MIN_INPUTS: usize = 1;
-pub const MAX_INPUTS: usize = 32;
+/// The most bytes one transaction may take, in its full serialized form (CONSENSUS_V2.md 6.2). **This is what limits the
+/// number of inputs**: there is no rule about how many a transaction has, and each one costs about 780 bytes (a key image, a
+/// ring of 16 indexes, a CLSAG and a pseudo-output commitment), so about 95 fit (93 with 16 outputs). Half the block-size floor (8.2), so that
+/// a block always has room for several of them.
+pub const MAX_TX_SIZE: usize = 75_000;
+/// A bound on the number of inputs a decoder will believe before it reads them, so that it never reserves memory for a count
+/// no transaction could have. **Not a rule**: an input is at least 32 bytes, so more than this cannot fit in `MAX_TX_SIZE`.
+pub const INPUT_COUNT_GUARD: usize = MAX_TX_SIZE / 32;
 pub const MIN_OUTPUTS: usize = 2;
 pub const MAX_OUTPUTS: usize = 16;
 pub const MIN_COINBASE_OUTPUTS: usize = 1;
 pub const MAX_COINBASE_OUTPUTS: usize = 16;
 pub const MAX_EXTRA: usize = 128;
-pub const MAX_PROOF: usize = 32 * 1024;
+pub const MAX_PROOF: usize = 64 * 1024;
 pub const MAX_RING: usize = 16;
 pub const MAX_BLOCK_TXS: usize = 8192;
 
@@ -88,7 +95,7 @@ pub struct TxPrefix {
 impl Wire for TxPrefix {
     fn write(&self, w: &mut Writer) -> Result<(), EncodeError> {
         w.u16(self.version);
-        w.count(self.inputs.len(), MIN_INPUTS, MAX_INPUTS)?;
+        w.count(self.inputs.len(), MIN_INPUTS, INPUT_COUNT_GUARD)?;
         for i in &self.inputs {
             i.write(w)?;
         }
@@ -102,7 +109,7 @@ impl Wire for TxPrefix {
 
     fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         let version = r.u16()?;
-        let inputs = r.list(MIN_INPUTS, MAX_INPUTS, Input::read)?;
+        let inputs = r.list(MIN_INPUTS, INPUT_COUNT_GUARD, Input::read)?;
         let outputs = r.list(MIN_OUTPUTS, MAX_OUTPUTS, Output::read)?;
         Ok(TxPrefix {
             version,
@@ -175,13 +182,22 @@ pub struct Transaction {
 
 impl Wire for Transaction {
     fn write(&self, w: &mut Writer) -> Result<(), EncodeError> {
+        let start = w.len();
         self.prefix.write(w)?;
-        self.prunable.write(w, self.prefix.inputs.len())
+        self.prunable.write(w, self.prefix.inputs.len())?;
+        if w.len() - start > MAX_TX_SIZE {
+            return Err(EncodeError::LengthOverMaximum);
+        }
+        Ok(())
     }
 
     fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let start = r.position();
         let prefix = TxPrefix::read(r)?;
         let prunable = Prunable::read(r, prefix.inputs.len())?;
+        if r.position() - start > MAX_TX_SIZE {
+            return Err(DecodeError::LengthOverMaximum);
+        }
         Ok(Transaction { prefix, prunable })
     }
 }

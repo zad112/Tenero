@@ -29,7 +29,7 @@ use crate::file::{open, seal, FileError, KdfParams, MAGIC_PURSE};
 use crate::interim::{Address, TxSecret};
 use crate::proofs::{self, MessageSignature, PaymentProof, ProofError, ProofKind};
 use crate::request::{check_text, PaymentRequest, MAX_LABEL as MAX_REQUEST_LABEL, MAX_MESSAGE};
-use crate::wallet::{Balance, Built, FeeLevel, SyncReport, Wallet, WalletError};
+use crate::wallet::{Balance, BatchSent, Built, FeeLevel, Plan, SyncReport, Wallet, WalletError};
 
 /// The most accounts one purse holds.
 pub const MAX_ACCOUNTS: usize = 64;
@@ -444,6 +444,151 @@ impl Purse {
         let built = self.build_payment(index, &*node, rng, to, amount, level)?;
         self.send(index, node, &built, to, level, now)?;
         Ok(built)
+    }
+
+    /// Builds a payment to any number of recipients from one account, as several transactions that spend different coins when it takes them
+    /// (`Wallet::build_batch`). Nothing is sent, nothing is reserved.
+    pub fn build_batch(
+        &mut self,
+        index: usize,
+        chain: &impl ChainView,
+        rng: &mut (impl RngCore + CryptoRng),
+        dests: &[(Address, u64)],
+        level: FeeLevel,
+    ) -> Result<Plan, PurseError> {
+        let a = self
+            .accounts
+            .get_mut(index)
+            .ok_or(PurseError::NoSuchAccount(index))?;
+        Ok(a.wallet.build_batch(chain, rng, dests, level)?)
+    }
+
+    /// Sends the transactions of a [`Purse::build_batch`] one after another, reserves their coins and writes a record for every payment in them (a
+    /// transaction that pays several recipients has a record for each, with the fee on the first; **a payment proof for such a transaction covers the
+    /// first recipient only**). It stops at the first transaction the node refuses. `now` is the time in seconds since 1970.
+    pub fn send_batch<C: ChainView + Submitter>(
+        &mut self,
+        index: usize,
+        node: &mut C,
+        txs: &[Built],
+        level: FeeLevel,
+        now: u64,
+    ) -> Result<BatchSent, PurseError> {
+        let height = node
+            .rules()
+            .map_err(|e| PurseError::Wallet(WalletError::Chain(e)))?
+            .next_height;
+        let a = self
+            .accounts
+            .get_mut(index)
+            .ok_or(PurseError::NoSuchAccount(index))?;
+        let sent = a.wallet.send_batch(node, txs);
+        for built in &txs[..sent.sent] {
+            for (i, part) in built.parts.iter().enumerate() {
+                self.sent.push(SentRecord {
+                    account: index as u32,
+                    id: built.id,
+                    to: part.to,
+                    amount: part.amount,
+                    fee: if i == 0 { built.fee } else { 0 },
+                    level,
+                    time: now,
+                    height,
+                    spends: built.spends.clone(),
+                    change_onetime: built.change_onetime,
+                    tx_secret: Some(part.secret.clone()),
+                    payment_onetime: Some(part.onetime),
+                    note: None,
+                });
+            }
+        }
+        while self.sent.len() > MAX_SENT_RECORDS {
+            self.sent.remove(0);
+        }
+        Ok(sent)
+    }
+
+    /// Combines an account's coins (`Wallet::build_sweep`): to its own address, or to `to`. Nothing is sent, nothing is reserved.
+    pub fn build_sweep(
+        &mut self,
+        index: usize,
+        chain: &impl ChainView,
+        rng: &mut (impl RngCore + CryptoRng),
+        to: Option<&Address>,
+        level: FeeLevel,
+    ) -> Result<Vec<Built>, PurseError> {
+        let a = self
+            .accounts
+            .get_mut(index)
+            .ok_or(PurseError::NoSuchAccount(index))?;
+        Ok(a.wallet.build_sweep(chain, rng, to, level)?)
+    }
+
+    /// Combines `count` of an account's coins into one (`Wallet::build_combine`). Nothing is sent, nothing is reserved.
+    pub fn build_combine(
+        &mut self,
+        index: usize,
+        chain: &impl ChainView,
+        rng: &mut (impl RngCore + CryptoRng),
+        count: usize,
+        level: FeeLevel,
+    ) -> Result<Built, PurseError> {
+        let a = self
+            .accounts
+            .get_mut(index)
+            .ok_or(PurseError::NoSuchAccount(index))?;
+        Ok(a.wallet.build_combine(chain, rng, count, level)?)
+    }
+
+    /// Sends transactions that move an account's own coins (a sweep or a combine): reserves the coins and records each as a payment to `to` marked
+    /// with `note`. The coin that comes out is not shown as money received (it is marked as change). Stops at the first the node refuses.
+    pub fn send_own<C: ChainView + Submitter>(
+        &mut self,
+        index: usize,
+        node: &mut C,
+        txs: &[Built],
+        level: FeeLevel,
+        note: &str,
+        now: u64,
+    ) -> Result<BatchSent, PurseError> {
+        let height = node
+            .rules()
+            .map_err(|e| PurseError::Wallet(WalletError::Chain(e)))?
+            .next_height;
+        let a = self
+            .accounts
+            .get_mut(index)
+            .ok_or(PurseError::NoSuchAccount(index))?;
+        let mine = a.wallet.address();
+        let sent = a.wallet.send_batch(node, txs);
+        for built in &txs[..sent.sent] {
+            let part = &built.parts[0];
+            // to another address it is a payment; to this account, the coin that comes out must not be listed as received
+            let change_onetime = if part.to == mine {
+                part.onetime
+            } else {
+                built.change_onetime
+            };
+            self.sent.push(SentRecord {
+                account: index as u32,
+                id: built.id,
+                to: part.to,
+                amount: part.amount,
+                fee: built.fee,
+                level,
+                time: now,
+                height,
+                spends: built.spends.clone(),
+                change_onetime,
+                tx_secret: Some(part.secret.clone()),
+                payment_onetime: Some(part.onetime),
+                note: Some(note.to_string()),
+            });
+        }
+        while self.sent.len() > MAX_SENT_RECORDS {
+            self.sent.remove(0);
+        }
+        Ok(sent)
     }
 
     /// Makes and keeps a payment request for an account. An amount of `None` leaves the payer to choose. `now` is the time in seconds

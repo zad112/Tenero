@@ -14,6 +14,10 @@ use tenero_core::matmulhash::{self, Params};
 use tenero_core::u256::U256;
 use tenero_core::v2::ids::{self, PowKind};
 use tenero_core::v2::*;
+
+/// The proof length these tests give a "big" transaction (about 33 kB, so five of them are over the 150 kB median and under twice it). It shadows
+/// the rules' `MAX_PROOF` (64 KiB since Beta.1) on purpose: the tests are about block sizes, not about the longest proof.
+const MAX_PROOF: usize = 32 * 1024;
 use tenero_store::Store;
 
 const LABEL: &str = "tenero chain test network";

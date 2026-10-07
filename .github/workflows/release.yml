@@ -167,6 +167,6 @@ jobs:
           cat tenero-*.sha256 > SHA256SUMS
           cat SHA256SUMS
           gh release create "$GITHUB_REF_NAME" --draft --prerelease \
-            --title "Tenero $GITHUB_REF_NAME (alpha, experimental)" \
+            --title "Tenero $GITHUB_REF_NAME (beta, experimental)" \
             --notes-file "docs/releases/$GITHUB_REF_NAME.md" \
             tenero-*.zip tenero-*.tar.gz SHA256SUMS

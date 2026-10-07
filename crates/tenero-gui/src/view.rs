@@ -148,6 +148,15 @@ pub struct Quote {
     pub level: FeeLevel,
     /// What it is for (the label of the request it answers).
     pub note: Option<String>,
+    /// How many transactions it is made of: more than one when it needs more coins than one transaction can carry.
+    pub transactions: usize,
+    /// How many coins (outputs) it spends in all.
+    pub coins: usize,
+    /// What could not be made now (the coins that were separate ran out): how many payments, and their worth. Zero when everything is in.
+    pub unsent_payments: usize,
+    pub unsent_total: u64,
+    /// `Some(what)` when this is not a payment but a combining of the account's own coins (`to` is empty then).
+    pub own: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -247,6 +256,13 @@ pub enum Cmd {
     DeleteRequest {
         index: usize,
     },
+    /// Prepares the combining of an account's own coins into fewer, larger ones: `coins` of them (the smallest), or every coin worth combining when
+    /// it is `None`. Shown for a yes like a payment (`SendPrepared`).
+    PrepareCombine {
+        account: usize,
+        coins: Option<usize>,
+        level: FeeLevel,
+    },
     SendPrepared,
     CancelPrepared,
     /// Signs a message with an account's spend key.
@@ -316,7 +332,10 @@ pub enum Event {
     ProofChecked(Result<CheckedView, String>),
     Sent {
         id: [u8; 32],
+        /// The fees of every transaction sent.
         fee: u64,
+        /// How many transactions went (more than one when a payment needed several).
+        transactions: usize,
     },
     /// Something happened that the person should read (not an error).
     Notice(String),

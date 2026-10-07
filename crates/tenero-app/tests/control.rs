@@ -170,6 +170,17 @@ fn responses() -> Vec<Response> {
             next_height: 11,
             reward: 2_000_000_000,
             median: 150_000,
+            max_inputs: None,
+        }),
+        Response::Rules(Rules {
+            chain_id: [8; 32],
+            ring_size: 16,
+            coinbase_maturity: 60,
+            spend_maturity: 10,
+            next_height: 11,
+            reward: 2_000_000_000,
+            median: 150_000,
+            max_inputs: Some(32),
         }),
         Response::TxAccepted { id: [3; 32] },
         Response::Info(sample_info()),
@@ -1189,6 +1200,7 @@ fn a_ring_size_that_does_not_fit_is_an_error_not_a_wrong_number() {
         next_height: 1,
         reward: 1,
         median: 1,
+        max_inputs: None,
     };
     assert!(Response::Rules(r).to_body().is_err());
 }

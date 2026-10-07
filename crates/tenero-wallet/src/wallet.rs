@@ -5,7 +5,7 @@
 
 use rand_core::{CryptoRng, RngCore};
 use tenero_core::fees;
-use tenero_core::v2::{ids, Input, Output, Transaction, TxPrefix, Wire, MAX_INPUTS, VERSION};
+use tenero_core::v2::{ids, Input, Output, Transaction, TxPrefix, Wire, MAX_TX_SIZE, VERSION};
 use tenero_crypto::ringct::{self, OutputSecret, SpendInput};
 use tenero_store::StoredOutput;
 use zeroize::Zeroizing;
@@ -18,6 +18,9 @@ use crate::interim::{
 /// How many scanned block ids the wallet remembers to notice a reorganisation. A reorganisation deeper than
 /// this makes the wallet rescan from its birth height.
 pub const RECENT_BLOCKS: usize = 100;
+
+/// The most recipients one transaction can pay: 16 outputs, and one is always the change.
+pub const MAX_RECIPIENTS: usize = tenero_core::v2::MAX_OUTPUTS - 1;
 
 /// How many blocks the wallet asks a node for at a time while scanning.
 pub const SCAN_BATCH: u64 = 64;
@@ -75,8 +78,17 @@ pub enum WalletError {
         spendable: u64,
         needed: u64,
     },
-    /// The payment would need more than `MAX_INPUTS` outputs.
-    TooManyInputs,
+    /// The payment would need more coins than one transaction can carry: a transaction may take at most `MAX_TX_SIZE` bytes,
+    /// and every coin it spends adds about 780 of them. `max` is how many fit.
+    TooManyInputs {
+        max: usize,
+    },
+    /// A transaction has at most `MAX_RECIPIENTS` recipients (16 outputs, one of them the change).
+    TooManyRecipients {
+        max: usize,
+    },
+    /// There is nothing worth combining: fewer than two coins, or coins worth less than the fee they would add.
+    NothingToCombine,
     /// Not enough mature outputs on the chain to hide among.
     NotEnoughDecoys,
     /// The recipient address is not valid.
@@ -100,9 +112,18 @@ impl std::fmt::Display for WalletError {
                     "not enough spendable coins: {spendable} units, need {needed}"
                 )
             }
-            WalletError::TooManyInputs => {
-                write!(f, "that payment needs more than {MAX_INPUTS} outputs")
-            }
+            WalletError::TooManyInputs { max } => write!(
+                f,
+                "that payment needs more pieces than one transaction can carry (at most {max}): send a smaller amount, or send some of your balance to yourself first to combine it into fewer, larger pieces"
+            ),
+            WalletError::TooManyRecipients { max } => write!(
+                f,
+                "one transaction can pay at most {max} recipients"
+            ),
+            WalletError::NothingToCombine => write!(
+                f,
+                "there are no pieces worth combining (a piece worth less than the fee it adds is left alone)"
+            ),
             WalletError::NotEnoughDecoys => write!(
                 f,
                 "the chain does not have enough matured outputs yet to hide a payment among (block rewards need time to mature): try again after more blocks"
@@ -184,6 +205,33 @@ pub struct Built {
     /// The secret of the PAYMENT output (not the change) and its one-time address: what proves the payment later.
     pub payment_secret: crate::interim::TxSecret,
     pub payment_onetime: [u8; 32],
+    /// Every payment output, in the order the recipients were given (the first is the one `payment_secret` and `payment_onetime` are of).
+    pub parts: Vec<PaymentPart>,
+}
+
+/// One recipient's output of a transaction: what proves that payment later.
+#[derive(Clone, Debug)]
+pub struct PaymentPart {
+    pub to: Address,
+    pub amount: u64,
+    pub onetime: [u8; 32],
+    pub secret: crate::interim::TxSecret,
+}
+
+/// A payment broken into transactions that spend different coins (so they can all be sent at once): what [`Wallet::build_batch`] makes.
+#[derive(Debug)]
+pub struct Plan {
+    pub txs: Vec<Built>,
+    /// What could not be built now (the coins that were left, or their count, ran out): the recipients and amounts still to pay. Coins that come
+    /// back as change take 10 blocks to be spendable, so these are for a later batch.
+    pub unsent: Vec<(Address, u64)>,
+}
+
+/// How a [`Wallet::send_batch`] went: the first `sent` transactions were handed to the node (and their coins reserved); `failed` is why the next one was not.
+#[derive(Debug)]
+pub struct BatchSent {
+    pub sent: usize,
+    pub failed: Option<WalletError>,
 }
 
 pub struct Wallet {
@@ -405,7 +453,8 @@ impl Wallet {
         onetime_address: [u8; 32],
         r: &crate::interim::Recognised,
     ) -> bool {
-        if self.owned.iter().any(|o| o.global_index == global_index) {
+        // an output worth nothing (the change of a payment that used its coins exactly, or of a combine) is of no use to anyone
+        if r.amount == 0 || self.owned.iter().any(|o| o.global_index == global_index) {
             return false;
         }
         let Some(secret) = self.keys.onetime_secret(&r.offset) else {
@@ -578,34 +627,25 @@ impl Wallet {
         if amount == 0 {
             return Err(WalletError::ZeroAmount);
         }
+        self.build_to_at(chain, rng, &[(*to, amount)], level)
+    }
+
+    /// One transaction paying several recipients (at most [`MAX_RECIPIENTS`]), with the change coming back to this wallet. Nothing is sent and
+    /// nothing is reserved. To pay more recipients than that, or more than the coins of one transaction can, use [`Wallet::build_batch`].
+    pub fn build_to_at(
+        &mut self,
+        chain: &impl ChainView,
+        rng: &mut (impl RngCore + CryptoRng),
+        dests: &[(Address, u64)],
+        level: FeeLevel,
+    ) -> Result<Built, WalletError> {
+        check_dests(dests)?;
         let rules = chain.rules().map_err(chain_err)?;
         let candidates = self.spendable(chain, &rules)?;
-        // The fee depends on the size, which depends on how many outputs are spent, which depends on the fee: start
-        // from a guess and rebuild if the size shows it was too low (the fee field has a fixed width, so a
-        // different fee does not change the size).
-        let mut fee =
-            fees::dynamic_min_fee(2_000, rules.reward, rules.median).map_err(WalletError::Chain)?;
         let mut cache = BuildCache::default();
-        for round in 0..6 {
-            let built =
-                self.build_with_fee(chain, rng, &rules, &candidates, to, amount, fee, &mut cache)?;
-            let size = built
-                .tx
-                .to_bytes()
-                .map_err(|e| WalletError::SelfCheck(e.to_string()))?
-                .len() as u64;
-            let min = fees::dynamic_min_fee(size, rules.reward, rules.median)
-                .map_err(WalletError::Chain)?;
-            let wanted = min.saturating_mul(level.percent_of_minimum()) / 100 + 1;
-            // The fee is exactly the level's share of the minimum for the size it ended up with (the first guess is
-            // only a guess). A different fee can change which coins are chosen and so the size; if that has not
-            // settled after a few rounds, a fee that is at least the level's is taken rather than failing.
-            if fee == wanted || (round >= 3 && fee >= wanted) {
-                return Ok(built);
-            }
-            fee = wanted;
-        }
-        Err(WalletError::Chain("could not settle on a fee".into()))
+        settle(&rules, level, |fee| {
+            self.build_with_fee(chain, rng, &rules, &candidates, dests, fee, &mut cache)
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -615,32 +655,64 @@ impl Wallet {
         rng: &mut (impl RngCore + CryptoRng),
         rules: &Rules,
         candidates: &[Owned],
-        to: &Address,
-        amount: u64,
+        dests: &[(Address, u64)],
         fee: u64,
         cache: &mut BuildCache,
     ) -> Result<Built, WalletError> {
+        let amount = dests
+            .iter()
+            .try_fold(0u64, |a, (_, v)| a.checked_add(*v))
+            .ok_or(WalletError::NotEnough {
+                spendable: 0,
+                needed: u64::MAX,
+            })?;
         let needed = amount.checked_add(fee).ok_or(WalletError::NotEnough {
             spendable: 0,
             needed: u64::MAX,
         })?;
-        let mut chosen = select_coins(candidates, needed)?;
+        let limit = payment_input_limit(rules, dests.len() + 1);
+        let chosen = select_coins(candidates, needed, limit)?;
+        self.assemble(chain, rng, rules, chosen, dests, fee, cache)
+    }
+
+    /// Builds, proves and checks a transaction that spends exactly `chosen` and pays `dests` (and what is left, after the fee, back to this wallet).
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        &self,
+        chain: &impl ChainView,
+        rng: &mut (impl RngCore + CryptoRng),
+        rules: &Rules,
+        mut chosen: Vec<Owned>,
+        dests: &[(Address, u64)],
+        fee: u64,
+        cache: &mut BuildCache,
+    ) -> Result<Built, WalletError> {
+        let amount: u64 = dests.iter().map(|(_, v)| *v).sum();
         // key images strictly ascending: the rules' one canonical order
         chosen.sort_by_key(|o| o.key_image);
         let total: u64 = chosen.iter().map(|o| o.amount).sum();
-        let change = total - needed;
+        let change = total
+            .checked_sub(amount)
+            .and_then(|r| r.checked_sub(fee))
+            .ok_or(WalletError::NotEnough {
+                spendable: total,
+                needed: amount.saturating_add(fee),
+            })?;
 
-        // the outputs: the payment and the change, in a random order (nothing about the position says which
-        // is which)
+        // the outputs: the payments and the change, in a random order (nothing about the position says which is which)
         let ctx = tx_context(&chosen[0].key_image);
-        let mut slots = [(*to, amount), (self.address(), change)];
-        let mut change_slot = 1;
-        if rng.next_u32() & 1 == 1 {
-            slots.swap(0, 1);
-            change_slot = 0;
+        let mut slots: Vec<(Address, u64, Option<usize>)> = dests
+            .iter()
+            .enumerate()
+            .map(|(i, (a, v))| (*a, *v, Some(i)))
+            .collect();
+        slots.push((self.address(), change, None));
+        for i in (1..slots.len()).rev() {
+            let j = below(rng, i as u64 + 1) as usize;
+            slots.swap(i, j);
         }
         let mut enotes = Vec::new();
-        for (i, (addr, value)) in slots.iter().enumerate() {
+        for (i, (addr, value, _)) in slots.iter().enumerate() {
             enotes.push(
                 create_enote(rng, addr, *value, &ctx, i as u32, false)
                     .ok_or(WalletError::BadAddress)?,
@@ -734,7 +806,7 @@ impl Wallet {
         let secrets: Vec<OutputSecret> = enotes
             .iter()
             .zip(&slots)
-            .map(|(e, (_, v))| OutputSecret {
+            .map(|(e, (_, v, _))| OutputSecret {
                 amount: *v,
                 mask: e.mask,
             })
@@ -746,6 +818,22 @@ impl Wallet {
         ringct::verify_tx(&rules.chain_id, &tx, &ring_members)
             .map_err(|e| WalletError::SelfCheck(e.to_string()))?;
         let id = ids::tx_id(&tx).map_err(|e| WalletError::SelfCheck(e.to_string()))?;
+        let mut parts: Vec<Option<PaymentPart>> = vec![None; dests.len()];
+        let mut change_onetime = [0u8; 32];
+        for (e, (addr, value, tag)) in enotes.iter().zip(&slots) {
+            match tag {
+                Some(i) => {
+                    parts[*i] = Some(PaymentPart {
+                        to: *addr,
+                        amount: *value,
+                        onetime: e.onetime_address,
+                        secret: e.tx_secret.clone(),
+                    })
+                }
+                None => change_onetime = e.onetime_address,
+            }
+        }
+        let parts: Vec<PaymentPart> = parts.into_iter().flatten().collect();
         Ok(Built {
             tx,
             id,
@@ -753,10 +841,249 @@ impl Wallet {
             amount,
             change,
             spends: chosen.iter().map(|o| o.key_image).collect(),
-            change_onetime: enotes[change_slot].onetime_address,
-            payment_secret: enotes[1 - change_slot].tx_secret.clone(),
-            payment_onetime: enotes[1 - change_slot].onetime_address,
+            change_onetime,
+            payment_secret: parts[0].secret.clone(),
+            payment_onetime: parts[0].onetime,
+            parts,
         })
+    }
+
+    /// A payment to any number of recipients of any total the wallet can cover, as **several transactions that spend different coins**, so that all
+    /// of them can be sent at once. Each pays at most [`MAX_RECIPIENTS`] recipients and spends at most as many coins as fit in `MAX_TX_SIZE`; when
+    /// one recipient's amount needs more coins than that, it is paid in parts, in different transactions (the recipient gets several outputs).
+    ///
+    /// **What comes out may be less than was asked for**: the change of a transaction cannot be spent for 10 blocks, so when the coins that were
+    /// there at the start run out before every recipient is paid, the rest is returned in [`Plan::unsent`] for a later batch. Nothing is sent
+    /// and nothing is reserved (see [`Wallet::send_batch`]). An error is returned only when not even the first transaction can be built.
+    pub fn build_batch(
+        &mut self,
+        chain: &impl ChainView,
+        rng: &mut (impl RngCore + CryptoRng),
+        dests: &[(Address, u64)],
+        level: FeeLevel,
+    ) -> Result<Plan, WalletError> {
+        if dests.is_empty() || dests.iter().any(|(_, v)| *v == 0) {
+            return Err(WalletError::ZeroAmount);
+        }
+        let rules = chain.rules().map_err(chain_err)?;
+        let mut available = self.spendable(chain, &rules)?;
+        let total = dests
+            .iter()
+            .try_fold(0u64, |a, (_, v)| a.checked_add(*v))
+            .ok_or(WalletError::NotEnough {
+                spendable: 0,
+                needed: u64::MAX,
+            })?;
+        let spendable: u64 = available.iter().map(|o| o.amount).sum();
+        if spendable < total {
+            return Err(WalletError::NotEnough {
+                spendable,
+                needed: total,
+            });
+        }
+        // the dearest a transaction can be: one of the largest size the rules allow
+        let reserve = fee_for_size(&rules, level, MAX_TX_SIZE as u64)?;
+        let mut pending: std::collections::VecDeque<(Address, u64)> =
+            dests.iter().copied().collect();
+        let mut txs: Vec<Built> = Vec::new();
+        let mut cache = BuildCache::default();
+        while !pending.is_empty() {
+            let mut group: Vec<(Address, u64)> =
+                pending.iter().take(MAX_RECIPIENTS).copied().collect();
+            let limit = payment_input_limit(&rules, group.len() + 1);
+            let mut amounts: Vec<u64> = available.iter().map(|o| o.amount).collect();
+            amounts.sort_unstable_by(|a, b| b.cmp(a));
+            let capacity: u64 = amounts
+                .iter()
+                .take(limit)
+                .fold(0, |a, v| a.saturating_add(*v));
+            let room = capacity.saturating_sub(reserve);
+            if room == 0 {
+                break;
+            }
+            let mut consumed = group.len();
+            let mut leftover: Option<(Address, u64)> = None;
+            if group.iter().map(|(_, v)| *v).sum::<u64>() > room {
+                // pay what the coins of one transaction can: the recipients in order, the last one in part
+                let mut left = room;
+                let mut kept = Vec::new();
+                consumed = 0;
+                for (a, v) in &group {
+                    if left == 0 {
+                        break;
+                    }
+                    consumed += 1;
+                    if *v <= left {
+                        kept.push((*a, *v));
+                        left -= *v;
+                    } else {
+                        kept.push((*a, left));
+                        leftover = Some((*a, *v - left));
+                        break;
+                    }
+                }
+                group = kept;
+            }
+            let built = settle(&rules, level, |fee| {
+                self.build_with_fee(chain, rng, &rules, &available, &group, fee, &mut cache)
+            });
+            match built {
+                Ok(b) => {
+                    available.retain(|o| !b.spends.contains(&o.key_image));
+                    for _ in 0..consumed {
+                        pending.pop_front();
+                    }
+                    if let Some(l) = leftover {
+                        pending.push_front(l);
+                    }
+                    txs.push(b);
+                }
+                Err(e) if txs.is_empty() => return Err(e),
+                Err(_) => break,
+            }
+        }
+        Ok(Plan {
+            txs,
+            unsent: pending.into_iter().collect(),
+        })
+    }
+
+    /// Combines coins: every spendable coin that is worth more than the fee it adds, grouped as many to a transaction as fit, each group paid to
+    /// `to` (this wallet's own address when it is `None`) in one output. For a wallet that has been paid in many small amounts (a miner's block
+    /// rewards), this is what makes them one coin. Coins that are alone in their group are left alone when the destination is this wallet. Nothing
+    /// is sent and nothing is reserved. **The result of a combine cannot be spent for 10 blocks.**
+    pub fn build_sweep(
+        &mut self,
+        chain: &impl ChainView,
+        rng: &mut (impl RngCore + CryptoRng),
+        to: Option<&Address>,
+        level: FeeLevel,
+    ) -> Result<Vec<Built>, WalletError> {
+        let rules = chain.rules().map_err(chain_err)?;
+        let mut coins = self.spendable(chain, &rules)?;
+        let dest = to.copied().unwrap_or_else(|| self.address());
+        let limit = payment_input_limit(&rules, 2);
+        let per_input = fee_for_size(
+            &rules,
+            level,
+            (transaction_size(2, 2, rules.ring_size) - transaction_size(1, 2, rules.ring_size))
+                as u64,
+        )?;
+        coins.retain(|o| o.amount > per_input);
+        coins.sort_by_key(|o| o.amount);
+        let mut cache = BuildCache::default();
+        let mut out = Vec::new();
+        for group in coins.chunks(limit) {
+            if to.is_none() && group.len() < 2 {
+                continue;
+            }
+            out.push(self.consolidate(
+                chain,
+                rng,
+                &rules,
+                group.to_vec(),
+                dest,
+                level,
+                &mut cache,
+            )?);
+        }
+        if out.is_empty() {
+            return Err(WalletError::NothingToCombine);
+        }
+        Ok(out)
+    }
+
+    /// Combines `count` coins (the smallest ones that are worth more than the fee they add) into one coin of this wallet: the manual form of
+    /// [`Wallet::build_sweep`]. `count` is from 2 up to what one transaction can spend.
+    pub fn build_combine(
+        &mut self,
+        chain: &impl ChainView,
+        rng: &mut (impl RngCore + CryptoRng),
+        count: usize,
+        level: FeeLevel,
+    ) -> Result<Built, WalletError> {
+        let rules = chain.rules().map_err(chain_err)?;
+        let limit = payment_input_limit(&rules, 2);
+        if count > limit {
+            return Err(WalletError::TooManyInputs { max: limit });
+        }
+        if count < 2 {
+            return Err(WalletError::NothingToCombine);
+        }
+        let mut coins = self.spendable(chain, &rules)?;
+        let per_input = fee_for_size(
+            &rules,
+            level,
+            (transaction_size(2, 2, rules.ring_size) - transaction_size(1, 2, rules.ring_size))
+                as u64,
+        )?;
+        coins.retain(|o| o.amount > per_input);
+        coins.sort_by_key(|o| o.amount);
+        if coins.len() < count {
+            return Err(WalletError::NothingToCombine);
+        }
+        coins.truncate(count);
+        let dest = self.address();
+        self.consolidate(
+            chain,
+            rng,
+            &rules,
+            coins,
+            dest,
+            level,
+            &mut BuildCache::default(),
+        )
+    }
+
+    /// One transaction that spends exactly `coins` and pays everything but the fee to `dest`.
+    #[allow(clippy::too_many_arguments)]
+    fn consolidate(
+        &self,
+        chain: &impl ChainView,
+        rng: &mut (impl RngCore + CryptoRng),
+        rules: &Rules,
+        coins: Vec<Owned>,
+        dest: Address,
+        level: FeeLevel,
+        cache: &mut BuildCache,
+    ) -> Result<Built, WalletError> {
+        let total: u64 = coins.iter().map(|o| o.amount).sum();
+        settle(rules, level, |fee| {
+            let amount = total
+                .checked_sub(fee)
+                .filter(|a| *a > 0)
+                .ok_or(WalletError::NothingToCombine)?;
+            self.assemble(
+                chain,
+                rng,
+                rules,
+                coins.clone(),
+                &[(dest, amount)],
+                fee,
+                cache,
+            )
+        })
+    }
+
+    /// Hands the transactions of a batch to the node one after another and reserves the coins of each. It stops at the first the node refuses: the ones
+    /// before it are sent, and the report says how many.
+    pub fn send_batch<C: ChainView + Submitter>(
+        &mut self,
+        node: &mut C,
+        builts: &[Built],
+    ) -> BatchSent {
+        for (i, b) in builts.iter().enumerate() {
+            if let Err(e) = self.send_built(node, b) {
+                return BatchSent {
+                    sent: i,
+                    failed: Some(e),
+                };
+            }
+        }
+        BatchSent {
+            sent: builts.len(),
+            failed: None,
+        }
     }
 
     /// Builds a payment, hands it to the node, and reserves the coins it spends.
@@ -791,10 +1118,111 @@ impl Wallet {
     }
 }
 
+/// Whether a list of recipients can go in one transaction: at least one, every amount more than nothing, at most [`MAX_RECIPIENTS`], a total that fits.
+fn check_dests(dests: &[(Address, u64)]) -> Result<(), WalletError> {
+    if dests.is_empty() || dests.iter().any(|(_, v)| *v == 0) {
+        return Err(WalletError::ZeroAmount);
+    }
+    if dests.len() > MAX_RECIPIENTS {
+        return Err(WalletError::TooManyRecipients {
+            max: MAX_RECIPIENTS,
+        });
+    }
+    dests
+        .iter()
+        .try_fold(0u64, |a, (_, v)| a.checked_add(*v))
+        .map(|_| ())
+        .ok_or(WalletError::NotEnough {
+            spendable: 0,
+            needed: u64::MAX,
+        })
+}
+
+/// The fee for a transaction of `size` bytes at a fee level: the level's share of the minimum the next block needs, and at least one unit more.
+fn fee_for_size(rules: &Rules, level: FeeLevel, size: u64) -> Result<u64, WalletError> {
+    let min =
+        fees::dynamic_min_fee(size, rules.reward, rules.median).map_err(WalletError::Chain)?;
+    Ok(min.saturating_mul(level.percent_of_minimum()) / 100 + 1)
+}
+
+/// Builds a transaction whose fee is exactly the level's share of the minimum for the size it ends up with. The fee depends on the size, which
+/// depends on which coins are spent, which depends on the fee: it starts from a guess and rebuilds if the size shows the guess was too low (the fee
+/// field has a fixed width, so a different fee does not change the size).
+fn settle(
+    rules: &Rules,
+    level: FeeLevel,
+    mut build: impl FnMut(u64) -> Result<Built, WalletError>,
+) -> Result<Built, WalletError> {
+    let mut fee =
+        fees::dynamic_min_fee(2_000, rules.reward, rules.median).map_err(WalletError::Chain)?;
+    for round in 0..6 {
+        let built = build(fee)?;
+        let size = built
+            .tx
+            .to_bytes()
+            .map_err(|e| WalletError::SelfCheck(e.to_string()))?
+            .len() as u64;
+        let wanted = fee_for_size(rules, level, size)?;
+        // A different fee can change which coins are chosen and so the size; if that has not settled after a few rounds, a fee that is at least
+        // the level's is taken rather than failing.
+        if fee == wanted || (round >= 3 && fee >= wanted) {
+            return Ok(built);
+        }
+        fee = wanted;
+    }
+    Err(WalletError::Chain("could not settle on a fee".into()))
+}
+
+/// The size in bytes of a transaction this wallet builds, spending `n_inputs` coins with rings of `ring_size` and paying `n_outputs` outputs (the
+/// payments and the change) with an empty `extra`. Worked out from the layouts of `CONSENSUS_V2.md` 6.2 and of `proof_data` (`tenero-crypto`,
+/// `ringct.rs`), not measured at run time; tests build real transactions and check it to the byte.
+pub fn transaction_size(n_inputs: usize, n_outputs: usize, ring_size: usize) -> usize {
+    // version, input count, key images, output count, the outputs of 123, fee, extra length
+    let prefix = 2 + 4 + 32 * n_inputs + 4 + 123 * n_outputs + 8 + 4;
+    // a Bulletproofs+ proof of n 64-bit outputs, padded to a power of two: 6 32-byte values, 2 * log2(64 * padded) curve points, 2 one-byte lengths
+    let rounds = (64 * n_outputs.next_power_of_two()).ilog2() as usize;
+    let range_proof = 32 * 6 + 32 * 2 * rounds + 2;
+    // a pseudo-output and a CLSAG (s: one scalar per ring member, c1, D) for every input
+    let proof = n_inputs * (32 + 32 * ring_size + 64) + range_proof;
+    // the ring count, each ring (its length and its indexes), the proof length and the proof
+    let prunable = 4 + n_inputs * (4 + 8 * ring_size) + 4 + proof;
+    prefix + prunable
+}
+
+/// [`transaction_size`] of a payment with one recipient: two outputs.
+pub fn payment_size(n_inputs: usize, ring_size: usize) -> usize {
+    transaction_size(n_inputs, 2, ring_size)
+}
+
+/// How many coins a transaction of `n_outputs` outputs can spend: the most whose [`transaction_size`] is within `MAX_TX_SIZE`.
+pub fn max_inputs_for(n_outputs: usize, ring_size: usize) -> usize {
+    let mut n = 1;
+    while transaction_size(n + 1, n_outputs, ring_size) <= MAX_TX_SIZE {
+        n += 1;
+    }
+    n
+}
+
+/// How many coins one payment can spend: [`max_inputs_for`] two outputs.
+pub fn max_payment_inputs(ring_size: usize) -> usize {
+    max_inputs_for(2, ring_size)
+}
+
+/// How many coins a transaction of `n_outputs` outputs can spend on this chain: what fits in `MAX_TX_SIZE`, and no more than the chain's own limit
+/// on inputs if it has one (`Rules::max_inputs`).
+pub fn payment_input_limit(rules: &Rules, n_outputs: usize) -> usize {
+    let by_size = max_inputs_for(n_outputs, rules.ring_size);
+    rules.max_inputs.map_or(by_size, |m| m.min(by_size))
+}
+
 /// Which outputs to spend: the smallest single one that covers `needed`, else the largest first until it is
 /// covered. Fewer inputs mean a smaller transaction and a smaller fee. (Spending the same way every time is a
 /// pattern a chain observer could use; a randomised policy is future work.)
-fn select_coins(candidates: &[Owned], needed: u64) -> Result<Vec<Owned>, WalletError> {
+fn select_coins(
+    candidates: &[Owned],
+    needed: u64,
+    max_inputs: usize,
+) -> Result<Vec<Owned>, WalletError> {
     let spendable: u64 = candidates
         .iter()
         .map(|o| o.amount)
@@ -820,8 +1248,8 @@ fn select_coins(candidates: &[Owned], needed: u64) -> Result<Vec<Owned>, WalletE
             break;
         }
     }
-    if chosen.len() > MAX_INPUTS {
-        return Err(WalletError::TooManyInputs);
+    if chosen.len() > max_inputs {
+        return Err(WalletError::TooManyInputs { max: max_inputs });
     }
     Ok(chosen)
 }

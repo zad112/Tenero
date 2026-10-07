@@ -69,6 +69,8 @@ const DEV_START_TARGET_POW2: u32 = 253;
 pub const ALPHA_START_TARGET_POW2: u32 = 237;
 /// The release network's genesis label (hashed into the chain id). A restart of the network (for Carrot) gets "alpha network 2".
 pub const ALPHA_LABEL: &str = "tenero alpha network 1";
+/// The beta network's genesis label (Beta.1: the fresh network after the hard fork). It starts at the same difficulty as alpha did.
+pub const BETA_LABEL: &str = "tenero beta network 1";
 
 /// The rules and proof of work of a network.
 struct Chain {
@@ -104,19 +106,27 @@ fn chain_of(network: Network) -> Result<Chain, String> {
                 )?)),
             })
         }
-        Network::Alpha => {
-            let label = ALPHA_LABEL.to_string();
+        Network::Alpha | Network::Beta => {
+            let label = if network == Network::Alpha {
+                ALPHA_LABEL
+            } else {
+                BETA_LABEL
+            }
+            .to_string();
+            let mut params = ChainParams::version_2(
+                &label,
+                PowKind::Matmul,
+                U256::pow2(ALPHA_START_TARGET_POW2).ok_or("bad start target")?,
+            );
+            // alpha keeps the limits of alpha.4 so that this version and the older nodes still on that network agree on what is valid
+            params.legacy_tx_limits = network == Network::Alpha;
             Ok(Chain {
-                params: ChainParams::version_2(
-                    &label,
-                    PowKind::Matmul,
-                    U256::pow2(ALPHA_START_TARGET_POW2).ok_or("bad start target")?,
-                ),
+                params,
                 label,
                 kind: PowKind::Matmul,
                 matmul: Some(Arc::new(MatmulPow::low_memory(
                     Params::DEFAULT,
-                    Network::Alpha.epoch_blocks(),
+                    network.epoch_blocks(),
                     6,
                 )?)),
             })
@@ -727,10 +737,9 @@ fn miner_hook(
             mcfg,
         )),
         MineMode::Cpu => {
-            let pow =
-                Arc::clone(chain.matmul.as_ref().ok_or(
-                    "cpu mining needs a network with the real proof of work (dev or alpha)",
-                )?);
+            let pow = Arc::clone(chain.matmul.as_ref().ok_or(
+                "cpu mining needs a network with the real proof of work (dev, beta or alpha)",
+            )?);
             let cores = cfg.mine_cores;
             seen(MinerHook::new(
                 Miner::spawn(move || Ok(CpuMatmulBackend::new(pow, epoch, cores, 10))),
@@ -810,7 +819,11 @@ pub fn run(
                 Network::Test => "SHA-256 test chain, no real proof of work".to_string(),
                 Network::Dev => "development chain, real matmulhash proof of work".to_string(),
                 Network::Alpha => {
-                    "release network (first test release): real matmulhash proof of work, no premine; still no value"
+                    "alpha network (first test release): real matmulhash proof of work, no premine; still no value"
+                        .to_string()
+                }
+                Network::Beta => {
+                    "beta network (second test release): real matmulhash proof of work, no premine; still no value"
                         .to_string()
                 }
             },

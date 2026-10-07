@@ -258,6 +258,10 @@ fn response(m: &Value) -> Response {
             next_height: u(&m["next_height"]),
             reward: u(&m["reward"]),
             median: u(&m["median"]),
+            max_inputs: match u(&m["max_inputs"]) {
+                0 => None,
+                n => Some(n as usize),
+            },
         }),
         "tx_accepted" => Response::TxAccepted { id: arr(&m["id"]) },
         "info" => Response::Info(NodeInfo {

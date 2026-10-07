@@ -449,6 +449,14 @@ impl Response {
                 w.u64(r.next_height);
                 w.u64(r.reward);
                 w.u64(r.median);
+                // 0 means no limit besides the size
+                w.u32(match r.max_inputs {
+                    None => 0,
+                    Some(m) => u32::try_from(m)
+                        .ok()
+                        .filter(|m| *m > 0)
+                        .ok_or_else(|| ControlError::Encode("max inputs".into()))?,
+                });
             }
             Response::TxAccepted { id } => w.raw(id),
             Response::Info(i) => {
@@ -535,6 +543,10 @@ impl Response {
                 next_height: r.u64()?,
                 reward: r.u64()?,
                 median: r.u64()?,
+                max_inputs: match r.u32()? {
+                    0 => None,
+                    m => Some(m as usize),
+                },
             }),
             x if x == K_SUBMIT_TX | ANSWER => Response::TxAccepted { id: r.array()? },
             x if x == K_INFO | ANSWER => Response::Info(NodeInfo {

@@ -402,6 +402,10 @@ def invalid_cases():
             (lambda body: u32(1 + len(body)) + b"\x0c" + body)(
                 u32(1) + v2.enc_tx(v2.sample_tx("big", proof=v2.MAX_PROOF + 1))),
             "length over maximum"),
+        bad("a transaction one byte over MAX_TX_SIZE inside a well-formed frame",
+            (lambda body: u32(1 + len(body)) + b"" + body)(
+                u32(1) + v2.enc_tx(v2.sized_tx("huge", v2.MAX_TX_SIZE + 1))),
+            "length over maximum"),
         bad("a valid block with a byte missing inside a well-formed frame",
             (lambda body: u32(1 + len(body)) + b"\x07" + body)(u32(1) + bytes.fromhex(block_hex("cut"))[:-1]),
             "short read"),

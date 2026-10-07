@@ -64,6 +64,11 @@ impl<'a> Reader<'a> {
         Reader { data, pos: 0 }
     }
 
+    /// How many bytes have been read so far.
+    pub fn position(&self) -> usize {
+        self.pos
+    }
+
     pub fn take(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
         let rest = &self.data[self.pos..];
         if n > rest.len() {
@@ -147,6 +152,15 @@ impl Writer {
 
     pub fn into_bytes(self) -> Vec<u8> {
         self.buf
+    }
+
+    /// How many bytes have been written so far.
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
     }
 
     pub fn raw(&mut self, bytes: &[u8]) {

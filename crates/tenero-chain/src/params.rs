@@ -8,6 +8,11 @@ use tenero_core::v2::ids::PowKind;
 
 /// Every ring has exactly this many members (`CONSENSUS_V2.md` 6.3).
 pub const RING_SIZE: usize = 16;
+/// The limits of the first test release (alpha.4), which the `alpha` network keeps so that a node of this version judges its transactions exactly as
+/// the older nodes still on that network do: at most this many inputs and a `proof_data` of at most this many bytes. Every other network has only the
+/// size limit (`MAX_TX_SIZE`).
+pub const LEGACY_MAX_INPUTS: usize = 32;
+pub const LEGACY_MAX_PROOF: usize = 32 * 1024;
 /// A coinbase output can be spent or used in a ring this many blocks after its block.
 pub const COINBASE_MATURITY: u64 = 60;
 /// Any other output can be used this many blocks after its block.
@@ -31,6 +36,8 @@ pub struct ChainParams {
     pub coinbase_maturity: u64,
     pub spend_maturity: u64,
     pub future_limit_seconds: u64,
+    /// Judge transactions by the limits of alpha.4 (`LEGACY_MAX_INPUTS`, `LEGACY_MAX_PROOF`) as well as by `MAX_TX_SIZE`: only the `alpha` network.
+    pub legacy_tx_limits: bool,
 }
 
 impl ChainParams {
@@ -57,6 +64,7 @@ impl ChainParams {
             coinbase_maturity: COINBASE_MATURITY,
             spend_maturity: SPEND_MATURITY,
             future_limit_seconds: FUTURE_LIMIT_SECONDS,
+            legacy_tx_limits: false,
         }
     }
 }
