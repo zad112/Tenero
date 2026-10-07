@@ -149,6 +149,32 @@ The owner asked how, since the seed is not to serve miners. The author's suggest
    memory has not been measured for it.
 4. Rule 5 applies: the speed and the number of miners are numbers from a run, not claims.
 
+## The stages (the owner, 2026-10-07)
+
+**Stage 1: the miner service (done and measured once).** The solo service, the miner's template checks, a GPU run on one computer and across the internet to a rented test server (`docs/README_FACTS.md`). Still open there: the WSL run (low value now), more than one miner, floods, the epoch boundary.
+
+**Stage 2: the pool standard, made testable** (`docs/POOL_PROTOCOL.md`, decisions made 2026-10-07: nonce prefix, optional tip witness, the pool key pinned by default, port 38335, job declaration included as an optional capability). In order: (1) golden vectors for every message, made by an independent Python reference (CLAUDE.md rules 1 and 6); (2) a small reference pool, for tests only, on the SHA-256 test chain first; (3) `tenero-miner --pool`, checked against it; (4) `tenero-poolcheck`, for a pool developer to run against their pool; (5) hostile tests (a pool that lies about shares or sets a bad target, a miner that floods or sends junk shares or junk declarations); (6) a real GPU run against the reference pool with the share rate and the pool's cost per share measured; (7) a threat-model entry before anything is released.
+
+**Stage 3: our own pool, on the test server, so that people with less hardware can take part in the tests and receive test coins.** Nothing is built. What it needs, and what must be decided first:
+
+* **A pool program** (`tenero-pool`, working name) that runs beside a node on the test server: it builds the jobs from the node (the pool's payout in the coinbase), checks every share (it needs a node's 4 GiB dataset for that), keeps the share accounting in the existing `redb` store (no new dependency), finds blocks and hands them to its node, and pays its miners.
+* **Which network:** the testers are on **alpha**, so the pool must serve alpha, which means a second node on the test server that syncs alpha from the seed (the server's 16 GB holds two nodes, 8 GiB, and the pool). The private `dev` node there now is for the stage 1 and 2 tests. **Decision for the owner.**
+* **How miners are paid:** the author suggests the simplest scheme for a test, **proportional by shares for each block found** (every share in the round earns a part of the reward), **0% fee**, a **minimum payout** so that payments are not dust. A fairer scheme (PPLNS) can come later. **Decision for the owner.** The pool's reward matures after 60 blocks like any other, so payouts lag.
+* **The payout wallet:** a wallet of its own, **not the owner's**, kept on the server so that it can pay. That puts spending keys on a public server, so it holds only the pool's mining rewards, which are test coins. Today's wallet builds one payment to one address at a time (`Wallet::build_payment`), so a payout round is one payment per miner; batching several miners into one payment is a wallet change that is NOT made.
+* **A public listener,** port 38335 open to everyone: it needs the limits of the miner service (miners at once, per address, requests, frame size, timeouts) and more (shares per second, bad shares in a row, declarations), a ban for repeat offenders, and its own threat-model entries before it is opened. How many miners it carries is unknown and must be measured, not claimed.
+* **What the README and the screens must say, plainly:** in pool mode the reward goes to the **pool**, run by the author; the pool pays you on its own rules, and you trust it to; this is a test network and the coins have **no value**; the pool is **unaudited** and one person's server, and a pool makes the network less decentralised.
+* **What the pool owner owes:** a page that publishes the fee, the scheme and the smallest payout, and a record of payments that miners can check against the chain.
+
+## The pool option in the miner and the app (CLI and GUI)
+
+The owner's requirement: the miner can mine on a pool, **ours is the default, and any other pool can be entered.** Nothing is built. The design:
+
+* **CLI:** `tenero-miner --pool HOST:PORT --pool-key HEX --address tni1...` for a pool of one's choosing, and `--pool default` for the program's own (a built-in address and key, as the built-in seed has, in a list like `ALPHA_SEEDS`; more than one may be given, tried in order). The pool's key is **pinned**: a miner refuses a pool whose key is not the one it was given. `--pool` and `--node` cannot be combined, and the pool path says on the screen, every time it starts, that **the reward goes to the pool and not to the address given**. `--address` is where the pool is told to pay. `--witness HOST:PORT` is the optional tip check.
+* **GUI:** a Mining-tab choice between **Mine on a pool** and **Mine alone with my own node** (today's way), with the pool's address and key fields (the program's own pool filled in), a worker name, a list of other pools the user has added, and the same plain statement about where the reward goes. In pool mode **no node is started**: the app runs only the miner, so a user with little memory (a node holds 4 GiB) can take part. The payout address is the wallet's own address, filled in. The status shows the pool's name, shares accepted and refused, and the pool's last answer; a balance shown by the pool is NOT in version 1 (a miner reads it on the pool's page).
+* **Which is the default mode:** pool mode becomes the default **only when our pool exists, has been tested and a release carries its address and key**. Until then the app and the miner stay solo, as today. A release that changes the default must say so in its notes and in the pinned issue.
+* **Built-in default pool and its key:** needs a release, like the seed's address did. The key of the default pool is public.
+* **Tests:** the miner's pool path against the reference pool and then against ours (stage 2 and 3), the app's pool settings and the "no node started" rule in `core.rs` tests (the app's logic is tested without a window), and a check that a pool miner and a solo miner cannot be confused (the handshake name).
+
 ## After the miner
 
 The wallet is harder: it must ask a node about outputs and key images, and the node learns who is asking. The questions
