@@ -55,10 +55,20 @@ pub trait ChainView {
     }
     /// The output with this global index.
     fn output(&self, global_index: u64) -> Result<Option<StoredOutput>, String>;
+    /// Several outputs by global index, in order. A node behind a socket answers this in one round trip (a payment of 32
+    /// coins needs 512 ring members, and one at a time they took twenty seconds); the default asks one by one.
+    fn outputs(&self, global_indexes: &[u64]) -> Result<Vec<Option<StoredOutput>>, String> {
+        global_indexes.iter().map(|i| self.output(*i)).collect()
+    }
     /// How many outputs the chain has (their indexes are `0..count`).
     fn output_count(&self) -> Result<u64, String>;
     /// Whether this key image is in the chain (the output it belongs to has been spent).
     fn key_image_spent(&self, key_image: &[u8; 32]) -> Result<bool, String>;
+    /// Whether each of these key images is in the chain, in order. A node behind a socket answers this in one round trip
+    /// (a wallet with thousands of coins asked one by one took twenty seconds); the default asks one by one.
+    fn key_images_spent(&self, key_images: &[[u8; 32]]) -> Result<Vec<bool>, String> {
+        key_images.iter().map(|k| self.key_image_spent(k)).collect()
+    }
     fn rules(&self) -> Result<Rules, String>;
 }
 

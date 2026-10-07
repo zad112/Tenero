@@ -5,7 +5,7 @@
 use serde_json::Value;
 use tenero_app::control::{
     frame, frame_len, ControlError, NodeInfo, NodeKind, Request, Response, Template,
-    MAX_BLOCKS_PER_REQUEST, MAX_FRAME, MAX_NAME, MAX_TEXT,
+    MAX_BLOCKS_PER_REQUEST, MAX_FRAME, MAX_KEY_IMAGES, MAX_NAME, MAX_OUTPUTS_PER_REQUEST, MAX_TEXT,
 };
 use tenero_core::v2::{
     Block, BlockHeader, Coinbase, CoinbaseOutput, Input, Output, Prunable, Transaction, TxPrefix,
@@ -159,11 +159,22 @@ fn request(m: &Value) -> Request {
         "output" => Request::Output {
             index: u(&m["index"]),
         },
+        "outputs" => Request::Outputs {
+            indexes: m["indexes"].as_array().unwrap().iter().map(u).collect(),
+        },
         "output_count" => Request::OutputCount,
         "key_image_spent" => Request::KeyImageSpent {
             key_image: arr(&m["key_image"]),
         },
         "rules" => Request::Rules,
+        "key_images_spent" => Request::KeyImagesSpent {
+            key_images: m["key_images"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(arr)
+                .collect(),
+        },
         "submit_tx" => Request::SubmitTx(tx(&m["tx"])),
         "info" => Request::Info,
         "stop" => Request::Stop,
@@ -209,8 +220,36 @@ fn response(m: &Value) -> Response {
                 coinbase: o["coinbase"].as_bool().unwrap(),
             })
         }),
+        "outputs_many" => Response::OutputsMany(
+            m["outputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|o| {
+                    if o.is_null() {
+                        None
+                    } else {
+                        Some(StoredOutput {
+                            onetime_address: arr(&o["onetime_address"]),
+                            amount_commitment: arr(&o["amount_commitment"]),
+                            public_amount: u(&o["public_amount"]),
+                            height: u(&o["height"]),
+                            coinbase: o["coinbase"].as_bool().unwrap(),
+                        })
+                    }
+                })
+                .collect(),
+        ),
         "output_count" => Response::OutputCount(u(&m["count"])),
         "spent" => Response::Spent(m["spent"].as_bool().unwrap()),
+        "spent_many" => Response::SpentMany(
+            m["spent"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| b.as_bool().unwrap())
+                .collect(),
+        ),
         "rules" => Response::Rules(Rules {
             chain_id: arr(&m["chain_id"]),
             ring_size: u(&m["ring_size"]) as usize,
@@ -269,6 +308,11 @@ fn the_limits_are_the_references() {
     assert_eq!(
         u(&l["max_blocks_per_request"]) as u16,
         MAX_BLOCKS_PER_REQUEST
+    );
+    assert_eq!(u(&l["max_key_images"]) as usize, MAX_KEY_IMAGES);
+    assert_eq!(
+        u(&l["max_outputs_per_request"]) as usize,
+        MAX_OUTPUTS_PER_REQUEST
     );
 }
 

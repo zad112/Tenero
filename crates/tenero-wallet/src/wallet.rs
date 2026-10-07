@@ -448,6 +448,38 @@ impl Wallet {
         Ok(spent)
     }
 
+    /// Asks the chain about every key image whose answer is not already known, **in one request** (`ChainView::key_images_spent`):
+    /// a wallet that has mined thousands of blocks owns thousands of coins, and asking about each in turn took twenty seconds every
+    /// time the tip moved (the "not spent" answers are forgotten then).
+    fn refresh_spent(
+        &mut self,
+        chain: &impl ChainView,
+        images: &[[u8; 32]],
+    ) -> Result<(), WalletError> {
+        let unknown: Vec<[u8; 32]> = images
+            .iter()
+            .filter(|k| !self.spent_cache.contains(*k) && !self.unspent_cache.contains(*k))
+            .copied()
+            .collect();
+        if unknown.is_empty() {
+            return Ok(());
+        }
+        let flags = chain.key_images_spent(&unknown).map_err(chain_err)?;
+        if flags.len() != unknown.len() {
+            return Err(WalletError::Chain(
+                "the node answered about a different number of key images than were asked".into(),
+            ));
+        }
+        for (k, spent) in unknown.iter().zip(flags) {
+            if spent {
+                self.spent_cache.insert(*k);
+            } else {
+                self.unspent_cache.insert(*k);
+            }
+        }
+        Ok(())
+    }
+
     /// Forgets the "not spent" answers if the chain has moved since they were given.
     fn note_tip(&mut self, chain: &impl ChainView) -> Result<(), WalletError> {
         let (_, id) = chain.tip().map_err(chain_err)?;
@@ -468,6 +500,7 @@ impl Wallet {
         self.note_tip(chain)?;
         let mut spent = Vec::new();
         let images: Vec<[u8; 32]> = self.owned.iter().map(|o| o.key_image).collect();
+        self.refresh_spent(chain, &images)?;
         for ki in images {
             if self.is_spent(chain, &ki)? {
                 spent.push(ki);
@@ -493,6 +526,8 @@ impl Wallet {
         let mut b = Balance::default();
         let mut unspent = Vec::new();
         let owned = self.owned.clone();
+        let images: Vec<[u8; 32]> = owned.iter().map(|o| o.key_image).collect();
+        self.refresh_spent(chain, &images)?;
         for o in owned {
             if !self.is_spent(chain, &o.key_image)? {
                 unspent.push(o);
@@ -550,8 +585,10 @@ impl Wallet {
         // different fee does not change the size).
         let mut fee =
             fees::dynamic_min_fee(2_000, rules.reward, rules.median).map_err(WalletError::Chain)?;
+        let mut cache = BuildCache::default();
         for round in 0..6 {
-            let built = self.build_with_fee(chain, rng, &rules, &candidates, to, amount, fee)?;
+            let built =
+                self.build_with_fee(chain, rng, &rules, &candidates, to, amount, fee, &mut cache)?;
             let size = built
                 .tx
                 .to_bytes()
@@ -581,6 +618,7 @@ impl Wallet {
         to: &Address,
         amount: u64,
         fee: u64,
+        cache: &mut BuildCache,
     ) -> Result<Built, WalletError> {
         let needed = amount.checked_add(fee).ok_or(WalletError::NotEnough {
             spendable: 0,
@@ -622,26 +660,60 @@ impl Wallet {
             extra: vec![],
         };
 
-        // the rings
+        // the rings: decoys for the coins that have none yet (the rounds that settle the fee keep the rings they made), then every
+        // ring member not yet known fetched in ONE request
+        let mut pending: Vec<(u64, Vec<u64>)> = Vec::new();
+        for o in &chosen {
+            if !cache.rings.contains_key(&o.global_index) {
+                if cache.pool.is_none() {
+                    cache.pool = Some(DecoyPool::new(chain, rules)?);
+                }
+                let pool = cache.pool.as_mut().expect("just made");
+                let mut indexes = pool.pick(chain, rules, rng, o.global_index)?;
+                indexes.push(o.global_index);
+                indexes.sort_unstable();
+                pending.push((o.global_index, indexes));
+            }
+        }
+        if !pending.is_empty() {
+            let mut want: Vec<u64> = pending
+                .iter()
+                .flat_map(|(_, ix)| ix.iter().copied())
+                .collect();
+            want.sort_unstable();
+            want.dedup();
+            let got = chain.outputs(&want).map_err(chain_err)?;
+            if got.len() != want.len() {
+                return Err(WalletError::Chain(
+                    "the node answered about a different number of outputs than were asked".into(),
+                ));
+            }
+            let known: std::collections::HashMap<u64, StoredOutput> = want
+                .iter()
+                .copied()
+                .zip(got)
+                .filter_map(|(i, o)| o.map(|o| (i, o)))
+                .collect();
+            for (real, indexes) in pending {
+                let members = indexes
+                    .iter()
+                    .map(|i| known.get(i).cloned().ok_or(WalletError::NotEnoughDecoys))
+                    .collect::<Result<Vec<_>, _>>()?;
+                cache.rings.insert(real, (indexes, members));
+            }
+        }
         let mut spend_inputs = Vec::new();
         let mut ring_members: Vec<Vec<StoredOutput>> = Vec::new();
         for o in &chosen {
-            let mut indexes = pick_decoys(chain, rules, rng, o.global_index)?;
-            indexes.push(o.global_index);
-            indexes.sort_unstable();
+            let (indexes, members) = cache
+                .rings
+                .get(&o.global_index)
+                .cloned()
+                .expect("a ring was made for every chosen coin");
             let signer = indexes
                 .iter()
                 .position(|&i| i == o.global_index)
                 .expect("the real output is in its ring");
-            let mut members = Vec::new();
-            for &i in &indexes {
-                members.push(
-                    chain
-                        .output(i)
-                        .map_err(chain_err)?
-                        .ok_or(WalletError::NotEnoughDecoys)?,
-                );
-            }
             let secret = self
                 .keys
                 .onetime_secret(&o.offset)
@@ -754,32 +826,110 @@ fn select_coins(candidates: &[Owned], needed: u64) -> Result<Vec<Owned>, WalletE
     Ok(chosen)
 }
 
-/// `ring_size - 1` other outputs to hide `real` among: distinct, existing and mature (the rules refuse an
-/// immature ring member).
+/// What is learned while one payment is built, so that the rounds that settle the fee (and every coin of the payment) do not
+/// ask the node the same things again. A payment of 32 coins used to ask it about 1,400 outputs, each a round trip of about
+/// 15 ms over the control socket: twenty seconds of waiting for half a second of work. Nothing is kept between payments.
+#[derive(Default)]
+struct BuildCache {
+    pool: Option<DecoyPool>,
+    /// The ring made for a coin (by its global index): the sorted indexes, the real one among them, and the outputs.
+    rings: std::collections::HashMap<u64, (Vec<u64>, Vec<StoredOutput>)>,
+}
+
+/// Which outputs a ring may use besides the real one, worked out once for a payment.
 ///
 /// **The policy, and its limit:** an output is picked by how far it is from the newest *usable* one, with the distance
 /// log-uniform (`exp(U * ln N)`), so newer outputs are far more likely than old ones, as real spends are. This is a
 /// simplification of Monero's gamma distribution of output ages and has not been checked against how real spends behave
-/// on this chain (which has none yet). The usable ones are found first (see [`Eligible`]) so that no pick is wasted on an
-/// output that has not matured: on a young chain most of the newest ones have not, and picking among all of them and
-/// throwing most away cost hundreds of round trips to the node for every payment.
-fn pick_decoys(
-    chain: &impl ChainView,
-    rules: &Rules,
-    rng: &mut impl RngCore,
-    real: u64,
-) -> Result<Vec<u64>, WalletError> {
-    let want = rules.ring_size.saturating_sub(1);
-    let mut picked: Vec<u64> = Vec::new();
-    if want == 0 {
-        return Ok(picked);
+/// on this chain (which has none yet). The usable ones are found first so that no pick is wasted on an output that has
+/// not matured: on a young chain most of the newest ones have not, and picking among all of them and throwing most away
+/// cost hundreds of round trips to the node for every payment.
+///
+/// Heights never decrease with the output index, which is what makes the search work: outputs at or below
+/// `next_height - max(maturities)` are mature whatever they are (`prefix` counts them: found in about `log2(total)`
+/// requests); between that and `next_height - min(maturities)` only the ones that are not block rewards are (`after`, a
+/// short walk, made only when the prefix alone is too small).
+struct DecoyPool {
+    total: u64,
+    prefix: u64,
+    after: Option<Vec<u64>>,
+}
+
+impl DecoyPool {
+    fn new(chain: &impl ChainView, rules: &Rules) -> Result<DecoyPool, WalletError> {
+        let total = chain.output_count().map_err(chain_err)?;
+        if total < rules.ring_size as u64 {
+            return Err(WalletError::NotEnoughDecoys);
+        }
+        let max_wait = rules.coinbase_maturity.max(rules.spend_maturity);
+        let mut prefix = 0;
+        if let Some(safe) = rules.next_height.checked_sub(max_wait) {
+            let (mut lo, mut hi) = (0u64, total);
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                match chain.output(mid).map_err(chain_err)? {
+                    Some(o) if o.height <= safe => lo = mid + 1,
+                    _ => hi = mid,
+                }
+            }
+            prefix = lo;
+        }
+        Ok(DecoyPool {
+            total,
+            prefix,
+            after: None,
+        })
     }
-    let total = chain.output_count().map_err(chain_err)?;
-    if total < rules.ring_size as u64 {
-        return Err(WalletError::NotEnoughDecoys);
+
+    /// The mature outputs just after the prefix: enough of them that, with the prefix, a ring can still be made when the
+    /// real coin is one of them.
+    fn walk_after(
+        &mut self,
+        chain: &impl ChainView,
+        rules: &Rules,
+        enough: u64,
+    ) -> Result<&[u64], WalletError> {
+        if self.after.is_none() {
+            let min_wait = rules.coinbase_maturity.min(rules.spend_maturity);
+            let mut after = Vec::new();
+            let (mut index, mut walked) = (self.prefix, 0);
+            while self.prefix + (after.len() as u64) < enough + 1
+                && index < self.total
+                && walked < 5_000
+            {
+                let Some(o) = chain.output(index).map_err(chain_err)? else {
+                    break;
+                };
+                if o.height.saturating_add(min_wait) > rules.next_height {
+                    break;
+                }
+                if is_mature(rules, o.height, o.coinbase) {
+                    after.push(index);
+                }
+                index += 1;
+                walked += 1;
+            }
+            self.after = Some(after);
+        }
+        Ok(self.after.as_deref().unwrap_or(&[]))
     }
-    match eligible(chain, rules, real, total, want as u64)? {
-        Eligible::Prefix(p) => {
+
+    /// `ring_size - 1` other outputs to hide `real` among: distinct, existing and mature (the rules refuse an immature ring
+    /// member).
+    fn pick(
+        &mut self,
+        chain: &impl ChainView,
+        rules: &Rules,
+        rng: &mut impl RngCore,
+        real: u64,
+    ) -> Result<Vec<u64>, WalletError> {
+        let want = rules.ring_size.saturating_sub(1);
+        let mut picked: Vec<u64> = Vec::new();
+        if want == 0 {
+            return Ok(picked);
+        }
+        let p = self.prefix;
+        if p - u64::from(real < p) >= want as u64 {
             // every index below `p` is mature: no question to the node is needed to know it
             let ln = (p as f64).ln();
             let mut tries = 0;
@@ -802,77 +952,22 @@ fn pick_decoys(
                 }
                 k += 1;
             }
-        }
-        Eligible::List(mut all) => {
+        } else {
             // few usable outputs: choose among them at random
+            let after: Vec<u64> = self.walk_after(chain, rules, want as u64)?.to_vec();
+            let mut all: Vec<u64> = (0..p).chain(after).filter(|&i| i != real).collect();
+            if (all.len() as u64) < want as u64 {
+                return Err(WalletError::NotEnoughDecoys);
+            }
             while picked.len() < want && !all.is_empty() {
                 let i = below(rng, all.len() as u64) as usize;
                 picked.push(all.swap_remove(i));
             }
         }
-    }
-    if picked.len() == want {
-        Ok(picked)
-    } else {
-        Err(WalletError::NotEnoughDecoys)
-    }
-}
-
-/// The outputs a ring may use besides the real one.
-enum Eligible {
-    /// Every output below this index is mature (and the real one, if below, is not to be used): at least `enough` of them.
-    Prefix(u64),
-    /// The usable indexes, when there are few (at least `enough`).
-    List(Vec<u64>),
-}
-
-/// Finds the outputs that are mature, in about `log2(total)` requests plus a short walk, or says there are too few.
-/// Heights never decrease with the output index, which is what makes the search work: outputs at or below
-/// `next_height - max(maturities)` are mature whatever they are; between that and `next_height - min(maturities)` only
-/// the ones that are not block rewards are.
-fn eligible(
-    chain: &impl ChainView,
-    rules: &Rules,
-    real: u64,
-    total: u64,
-    enough: u64,
-) -> Result<Eligible, WalletError> {
-    let max_wait = rules.coinbase_maturity.max(rules.spend_maturity);
-    let min_wait = rules.coinbase_maturity.min(rules.spend_maturity);
-    let mut prefix = 0;
-    if let Some(safe) = rules.next_height.checked_sub(max_wait) {
-        let (mut lo, mut hi) = (0u64, total);
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            match chain.output(mid).map_err(chain_err)? {
-                Some(o) if o.height <= safe => lo = mid + 1,
-                _ => hi = mid,
-            }
+        if picked.len() == want {
+            Ok(picked)
+        } else {
+            Err(WalletError::NotEnoughDecoys)
         }
-        prefix = lo;
-    }
-    if prefix - u64::from(real < prefix) >= enough {
-        return Ok(Eligible::Prefix(prefix));
-    }
-    // too few for certain: the usable ones are the prefix and the mature ones just after it; list them
-    let mut all: Vec<u64> = (0..prefix).filter(|&i| i != real).collect();
-    let (mut index, mut walked) = (prefix, 0);
-    while (all.len() as u64) < enough && index < total && walked < 5_000 {
-        let Some(o) = chain.output(index).map_err(chain_err)? else {
-            break;
-        };
-        if o.height.saturating_add(min_wait) > rules.next_height {
-            break;
-        }
-        if index != real && is_mature(rules, o.height, o.coinbase) {
-            all.push(index);
-        }
-        index += 1;
-        walked += 1;
-    }
-    if (all.len() as u64) >= enough {
-        Ok(Eligible::List(all))
-    } else {
-        Err(WalletError::NotEnoughDecoys)
     }
 }

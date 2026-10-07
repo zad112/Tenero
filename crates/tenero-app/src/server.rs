@@ -317,6 +317,16 @@ impl ControlHook {
                 }
                 Response::Blocks(out)
             }
+            Request::Outputs { indexes } => {
+                let mut out = Vec::with_capacity(indexes.len());
+                for i in &indexes {
+                    match ChainView::output(node, *i) {
+                        Ok(o) => out.push(o),
+                        Err(e) => return Outcome::Reply(err(e)),
+                    }
+                }
+                Response::OutputsMany(out)
+            }
             Request::Output { index } => match ChainView::output(node, index) {
                 Ok(o) => Response::Output(o),
                 Err(e) => err(e),
@@ -325,6 +335,16 @@ impl ControlHook {
                 Ok(n) => Response::OutputCount(n),
                 Err(e) => err(e),
             },
+            Request::KeyImagesSpent { key_images } => {
+                let mut flags = Vec::with_capacity(key_images.len());
+                for k in &key_images {
+                    match node.key_image_spent(k) {
+                        Ok(b) => flags.push(b),
+                        Err(e) => return Outcome::Reply(err(e)),
+                    }
+                }
+                Response::SpentMany(flags)
+            }
             Request::KeyImageSpent { key_image } => match node.key_image_spent(&key_image) {
                 Ok(b) => Response::Spent(b),
                 Err(e) => err(e),

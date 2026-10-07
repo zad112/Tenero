@@ -72,11 +72,17 @@ impl ChainView for Capped<'_> {
     fn output(&self, i: u64) -> Result<Option<tenero_store::StoredOutput>, String> {
         self.node.output(i)
     }
+    fn outputs(&self, is: &[u64]) -> Result<Vec<Option<tenero_store::StoredOutput>>, String> {
+        self.node.outputs(is)
+    }
     fn output_count(&self) -> Result<u64, String> {
         self.node.output_count()
     }
     fn key_image_spent(&self, k: &[u8; 32]) -> Result<bool, String> {
         self.node.key_image_spent(k)
+    }
+    fn key_images_spent(&self, ks: &[[u8; 32]]) -> Result<Vec<bool>, String> {
+        self.node.key_images_spent(ks)
     }
     fn rules(&self) -> Result<Rules, String> {
         self.node.rules()

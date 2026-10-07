@@ -118,6 +118,12 @@ fn requests() -> Vec<Request> {
         Request::Output { index: 12 },
         Request::OutputCount,
         Request::KeyImageSpent { key_image: [8; 32] },
+        Request::KeyImagesSpent {
+            key_images: vec![[8; 32], [9; 32]],
+        },
+        Request::Outputs {
+            indexes: vec![3, 1, 4],
+        },
         Request::Rules,
         Request::SubmitTx(sample_tx()),
         Request::Info,
@@ -224,6 +230,16 @@ fn an_answer_has_its_requests_kind_with_the_top_bit_set() {
             Request::KeyImageSpent { key_image: [0; 32] },
             Response::Spent(false),
         ),
+        (
+            Request::KeyImagesSpent {
+                key_images: vec![[0; 32]],
+            },
+            Response::SpentMany(vec![false]),
+        ),
+        (
+            Request::Outputs { indexes: vec![0] },
+            Response::OutputsMany(vec![None]),
+        ),
         (Request::Info, Response::Info(sample_info())),
         (Request::Stop, Response::Stopping),
     ];
@@ -240,7 +256,7 @@ fn malformed_requests_are_refused_not_guessed() {
         Request::from_body(&[]),
         Err(ControlError::BadLength(0))
     ));
-    for kind in [0u8, 14, 0x80, 0xFF] {
+    for kind in [0u8, 16, 0x80, 0xFF] {
         assert_eq!(
             Request::from_body(&[kind]),
             Err(ControlError::UnknownKind(kind))
@@ -519,8 +535,10 @@ fn a_wallet_pays_another_through_the_control_interface() {
     });
     assert_eq!(bob_total, 1_000_000_000);
     assert!(balance_before.total > 0);
+    // (a floor: the payment really went through the interface. It used to be 20 and more before the wallet asked for key images and
+    // ring members in batches)
     assert!(
-        hook.answered > 20,
+        hook.answered > 10,
         "{} requests were answered",
         hook.answered
     );
@@ -580,6 +598,26 @@ fn a_remote_view_of_the_chain_matches_the_nodes_own() {
         );
         assert!(remote.blocks(u64::MAX, 10).unwrap().is_empty());
         assert!(!remote.key_image_spent(&[9; 32]).unwrap());
+        // many at once: one answer for each, in order, and more than one request's worth is split by the client
+        assert_eq!(
+            remote.key_images_spent(&[[9; 32], [10; 32]]).unwrap(),
+            vec![false, false]
+        );
+        assert_eq!(
+            remote.key_images_spent(&vec![[7; 32]; 5000]).unwrap().len(),
+            5000
+        );
+        // many outputs at once: the same answers as one at a time, `None` past the end, and a long list is split by the client
+        let n = remote.output_count().unwrap();
+        let wanted: Vec<u64> = (0..n + 2).collect();
+        let many = remote.outputs(&wanted).unwrap();
+        assert_eq!(many.len() as u64, n + 2);
+        for i in 0..n {
+            assert!(many[i as usize].is_some());
+            assert_eq!(many[i as usize], remote.output(i).unwrap(), "output {i}");
+        }
+        assert!(many[n as usize].is_none() && many[n as usize + 1].is_none());
+        assert_eq!(remote.outputs(&vec![0u64; 2500]).unwrap().len(), 2500);
         let info = remote.info().unwrap();
         assert_eq!((info.height, info.tip_id), tip);
         assert_eq!(info.network, "test");

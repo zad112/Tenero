@@ -28,13 +28,17 @@ MAX_FRAME = 16 * 1024 * 1024
 MAX_TEXT = 512
 MAX_NAME = 64
 MAX_BLOCKS_PER_REQUEST = 64
+MAX_KEY_IMAGES = 4096
+MAX_OUTPUTS_PER_REQUEST = 1024
 ANSWER = 0x80
 ERROR = 0xFF
 
 REQUESTS = {"auth": 1, "tip": 2, "block": 3, "output": 4, "output_count": 5, "key_image_spent": 6, "rules": 7,
-            "submit_tx": 8, "info": 9, "stop": 10, "blocks": 11, "block_template": 12, "submit_block": 13}
+            "submit_tx": 8, "info": 9, "stop": 10, "blocks": 11, "block_template": 12, "submit_block": 13,
+            "key_images_spent": 14, "outputs": 15}
 RESPONSES = {"authed": 1, "tip": 2, "block": 3, "output": 4, "output_count": 5, "spent": 6, "rules": 7,
-             "tx_accepted": 8, "info": 9, "stopping": 10, "blocks": 11, "template": 12, "block_submitted": 13}
+             "tx_accepted": 8, "info": 9, "stopping": 10, "blocks": 11, "template": 12, "block_submitted": 13,
+             "spent_many": 14, "outputs_many": 15}
 
 
 class ControlError(Exception):
@@ -133,6 +137,12 @@ def enc_request(m):
         body += u64(m["index"])
     elif t == "key_image_spent":
         body += fixed(m["key_image"], 32)
+    elif t == "outputs":
+        assert 1 <= len(m["indexes"]) <= MAX_OUTPUTS_PER_REQUEST
+        body += u32(len(m["indexes"])) + b"".join(u64(i) for i in m["indexes"])
+    elif t == "key_images_spent":
+        assert 1 <= len(m["key_images"]) <= MAX_KEY_IMAGES
+        body += u32(len(m["key_images"])) + b"".join(fixed(k, 32) for k in m["key_images"])
     elif t == "submit_tx":
         body += v2.enc_tx(m["tx"])
     elif t == "blocks":
@@ -166,6 +176,10 @@ def dec_request(body):
             m["index"] = r.u64()
         elif t == "key_image_spent":
             m["key_image"] = r.fixed(32)
+        elif t == "outputs":
+            m["indexes"] = [r.u64() for _ in range(r.count(1, MAX_OUTPUTS_PER_REQUEST))]
+        elif t == "key_images_spent":
+            m["key_images"] = [r.fixed(32) for _ in range(r.count(1, MAX_KEY_IMAGES))]
         elif t == "submit_tx":
             m["tx"] = v2.dec_tx(r)
         elif t == "blocks":
@@ -205,6 +219,13 @@ def enc_response(m):
         body += u64(m["count"])
     elif t == "spent":
         body += flag(m["spent"])
+    elif t == "outputs_many":
+        assert 1 <= len(m["outputs"]) <= MAX_OUTPUTS_PER_REQUEST
+        body += u32(len(m["outputs"])) + b"".join(
+            flag(o is not None) + (enc_stored_output(o) if o is not None else b"") for o in m["outputs"])
+    elif t == "spent_many":
+        assert 1 <= len(m["spent"]) <= MAX_KEY_IMAGES
+        body += u32(len(m["spent"])) + b"".join(flag(b) for b in m["spent"])
     elif t == "rules":
         body += (fixed(m["chain_id"], 32) + u32(m["ring_size"]) + u64(m["coinbase_maturity"]) + u64(m["spend_maturity"])
                  + u64(m["next_height"]) + u64(m["reward"]) + u64(m["median"]))
@@ -247,6 +268,11 @@ def dec_response(body):
                 m["count"] = r.u64()
             elif t == "spent":
                 m["spent"] = dec_flag(r)
+            elif t == "outputs_many":
+                m["outputs"] = [dec_stored_output(r) if dec_flag(r) else None
+                                for _ in range(r.count(1, MAX_OUTPUTS_PER_REQUEST))]
+            elif t == "spent_many":
+                m["spent"] = [dec_flag(r) for _ in range(r.count(1, MAX_KEY_IMAGES))]
             elif t == "rules":
                 m.update({"chain_id": r.fixed(32), "ring_size": r.u32(), "coinbase_maturity": r.u64(),
                           "spend_maturity": r.u64(), "next_height": r.u64(), "reward": r.u64(), "median": r.u64()})
@@ -355,6 +381,12 @@ def valid_requests():
         ("the number of outputs", {"type": "output_count"}),
         ("is a key image spent", {"type": "key_image_spent", "key_image": "08" * 32}),
         ("the rules", {"type": "rules"}),
+        ("many outputs: one", {"type": "outputs", "indexes": [12]}),
+        ("many outputs: the largest index and a repeat", {"type": "outputs", "indexes": [2 ** 64 - 1, 5, 5, 0]}),
+        ("many outputs: sixty-four", {"type": "outputs", "indexes": list(range(100, 164))}),
+        ("are many key images spent: one", {"type": "key_images_spent", "key_images": ["08" * 32]}),
+        ("are many key images spent: sixty-four", {"type": "key_images_spent",
+                                                     "key_images": ["%02x" % (i + 1) * 32 for i in range(64)]}),
         ("submit a transaction", {"type": "submit_tx", "tx": sample_tx()}),
         ("submit a transaction with three inputs", {"type": "submit_tx", "tx": sample_tx(3)}),
         ("the node's status", {"type": "info"}),
@@ -384,6 +416,12 @@ def valid_responses():
         ("the number of outputs", {"type": "output_count", "count": 99}),
         ("spent", {"type": "spent", "spent": True}),
         ("not spent", {"type": "spent", "spent": False}),
+        ("many outputs: none of them exists", {"type": "outputs_many", "outputs": [None]}),
+        ("many outputs: a mix", {"type": "outputs_many", "outputs": [out_rec, None, dict(out_rec, coinbase=False, public_amount=0), None]}),
+        ("many outputs: thirty-two", {"type": "outputs_many", "outputs": [dict(out_rec, height=i) for i in range(32)]}),
+        ("many: one answer", {"type": "spent_many", "spent": [True]}),
+        ("many: a mix of answers", {"type": "spent_many", "spent": [True, False, False, True, False]}),
+        ("many: sixty-four answers", {"type": "spent_many", "spent": [i % 3 == 0 for i in range(64)]}),
         ("the rules", {"type": "rules", "chain_id": "07" * 32, "ring_size": 16, "coinbase_maturity": 60,
                        "spend_maturity": 10, "next_height": 11, "reward": 2000000000, "median": 150000}),
         ("a transaction was accepted", {"type": "tx_accepted", "id": "03" * 32}),
@@ -437,9 +475,9 @@ def invalid_cases():
     # nothing, and kinds that do not exist
     for d in ("request", "response"):
         out.append(bad(d, "an empty body", b"", "length"))
-    for k in (0, 14, 0x80, 0x8E, 0xFE):
+    for k in (0, 16, 0x80, 0x8F, 0xFE):
         out.append(bad("request", f"unknown request kind {k}", bytes([k]), "kind"))
-    for k in (0, 1, 11, 12, 13, 0x8E, 0xFE):
+    for k in (0, 1, 11, 12, 13, 14, 15, 0x90, 0xFE):
         out.append(bad("response", f"unknown response kind {k}", bytes([k]), "kind"))
     # every message cut short and with a byte too many
     for note, m in valid_requests():
@@ -468,6 +506,22 @@ def invalid_cases():
     out.append(bad("response", "a network name over the cap",
                    bytes(enc_response(info())[: 1 + 8 + 32 + 4 + 4 + 8 + 4 + 1 + 1]) + u32(MAX_NAME + 1) + b"x" * (MAX_NAME + 1)
                    + u32(1) + b"v", "malformed"))
+    # many key images: how many, and the flags
+    for count in (0, MAX_KEY_IMAGES + 1, 2 ** 32 - 1):
+        out.append(bad("request", f"key_images_spent: a count of {count}", u8(14) + u32(count), "malformed"))
+        out.append(bad("response", f"spent_many: a count of {count}", u8(14 | ANSWER) + u32(count), "malformed"))
+    out.append(bad("response", "spent_many: a flag of 2", u8(14 | ANSWER) + u32(2) + bytes([1, 2]), "malformed"))
+    out.append(bad("response", "spent_many: fewer flags than the count", u8(14 | ANSWER) + u32(3) + bytes([1, 0]), "malformed"))
+    out.append(bad("request", "key_images_spent: fewer ids than the count", u8(14) + u32(2) + bytes(32), "malformed"))
+    # many outputs: how many, and the shape
+    for count in (0, MAX_OUTPUTS_PER_REQUEST + 1, 2 ** 32 - 1):
+        out.append(bad("request", f"outputs: a count of {count}", u8(15) + u32(count), "malformed"))
+        out.append(bad("response", f"outputs_many: a count of {count}", u8(15 | ANSWER) + u32(count), "malformed"))
+    out.append(bad("request", "outputs: fewer indexes than the count", u8(15) + u32(2) + u64(1), "malformed"))
+    out.append(bad("response", "outputs_many: an entry flag of 2", u8(15 | ANSWER) + u32(1) + bytes([2]), "malformed"))
+    out.append(bad("response", "outputs_many: an output cut short", u8(15 | ANSWER) + u32(1) + bytes([1]) + bytes(10), "malformed"))
+    out.append(bad("response", "outputs_many: an output that is not a coinbase flag 0 or 1",
+                   u8(15 | ANSWER) + u32(1) + bytes([1]) + enc_stored_output({"onetime_address": "01" * 32, "amount_commitment": "02" * 32, "public_amount": 3, "height": 4, "coinbase": True})[:-1] + bytes([2]), "malformed"))
     # Blocks: how many
     for count in (0, 65, 65535):
         out.append(bad("request", f"blocks: a count of {count}", u8(11) + u64(1) + u16(count), "malformed"))
@@ -506,7 +560,8 @@ def build():
                        "must give, and the frame length rule. An independent Python implementation "
                        "(reference/tools/make_vectors_control.py).",
         "limits": {"max_frame": MAX_FRAME, "max_text": MAX_TEXT, "max_name": MAX_NAME,
-                   "max_blocks_per_request": MAX_BLOCKS_PER_REQUEST},
+                   "max_blocks_per_request": MAX_BLOCKS_PER_REQUEST, "max_key_images": MAX_KEY_IMAGES,
+                   "max_outputs_per_request": MAX_OUTPUTS_PER_REQUEST},
         "kinds": {"requests": REQUESTS, "responses": {k: v | ANSWER for k, v in RESPONSES.items()}, "error": ERROR},
         "valid": valid_cases(),
         "invalid": invalid_cases(),

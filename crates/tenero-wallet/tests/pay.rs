@@ -1055,3 +1055,216 @@ fn building_a_payment_on_a_chain_that_has_just_enough_matured_outputs_asks_the_n
         view.outputs_asked.get()
     );
 }
+
+/// A view that counts how the wallet asks which coins are spent: one key image at a time, or many in one request.
+struct Asking<'a, 'b> {
+    node: &'a Node<'b>,
+    singles: std::cell::Cell<u64>,
+    batches: std::cell::Cell<u64>,
+    last_batch: std::cell::Cell<usize>,
+    /// Answer with too few flags (a broken or hostile node).
+    short: std::cell::Cell<bool>,
+}
+
+impl<'a, 'b> Asking<'a, 'b> {
+    fn new(node: &'a Node<'b>) -> Self {
+        Asking {
+            node,
+            singles: std::cell::Cell::new(0),
+            batches: std::cell::Cell::new(0),
+            last_batch: std::cell::Cell::new(0),
+            short: std::cell::Cell::new(false),
+        }
+    }
+}
+
+impl ChainView for Asking<'_, '_> {
+    fn tip(&self) -> Result<(u64, [u8; 32]), String> {
+        ChainView::tip(self.node)
+    }
+    fn block(&self, h: u64) -> Result<Option<tenero_wallet::ScanBlock>, String> {
+        ChainView::block(self.node, h)
+    }
+    fn blocks(&self, from: u64, max: u64) -> Result<Vec<tenero_wallet::ScanBlock>, String> {
+        ChainView::blocks(self.node, from, max)
+    }
+    fn output(&self, i: u64) -> Result<Option<tenero_store::StoredOutput>, String> {
+        ChainView::output(self.node, i)
+    }
+    fn output_count(&self) -> Result<u64, String> {
+        ChainView::output_count(self.node)
+    }
+    fn key_image_spent(&self, k: &[u8; 32]) -> Result<bool, String> {
+        self.singles.set(self.singles.get() + 1);
+        ChainView::key_image_spent(self.node, k)
+    }
+    fn key_images_spent(&self, ks: &[[u8; 32]]) -> Result<Vec<bool>, String> {
+        self.batches.set(self.batches.get() + 1);
+        self.last_batch.set(ks.len());
+        if self.short.get() {
+            return Ok(Vec::new());
+        }
+        ks.iter()
+            .map(|k| ChainView::key_image_spent(self.node, k))
+            .collect()
+    }
+    fn rules(&self) -> Result<tenero_wallet::Rules, String> {
+        ChainView::rules(self.node)
+    }
+}
+
+#[test]
+fn a_wallet_with_many_coins_asks_which_are_spent_in_one_request_not_one_for_each() {
+    // the owner mines every block, so the wallet owns thousands of coins; asked one at a time (15 ms each over the control
+    // socket) the fee estimate took twenty seconds
+    let rig = Rig::new("batchspent", 2, 1);
+    let mut node = rig.node();
+    let (mut alice, bob) = (wallet(1), wallet(2));
+    mine_n(&mut node, &alice.address(), 30);
+    alice.sync(&node).unwrap();
+    let coins = alice.owned().len();
+    assert!(coins >= 30, "{coins}");
+
+    let view = Asking::new(&node);
+    alice.balance(&view).unwrap();
+    assert_eq!(view.singles.get(), 0, "a question for each coin");
+    assert_eq!(view.batches.get(), 1);
+    assert_eq!(view.last_batch.get(), coins, "one request about every coin");
+
+    // building a payment on the same tip asks nothing more (the answers are known)...
+    alice
+        .build_payment(&view, &mut OsRng, &bob.address(), 1_000)
+        .unwrap();
+    assert_eq!(view.singles.get(), 0);
+    assert_eq!(view.batches.get(), 1);
+
+    // ...and when the tip has moved, the "not spent" answers are asked again, again in one request
+    mine(&mut node, &alice.address(), 0);
+    let view2 = Asking::new(&node);
+    alice.sync(&node).unwrap();
+    alice
+        .build_payment(&view2, &mut OsRng, &bob.address(), 1_000)
+        .unwrap();
+    assert_eq!(view2.singles.get(), 0);
+    assert_eq!(view2.batches.get(), 1);
+}
+
+#[test]
+fn a_node_that_answers_about_fewer_coins_than_were_asked_is_an_error_not_a_guess() {
+    let rig = Rig::new("shortanswer", 2, 1);
+    let mut node = rig.node();
+    let mut alice = wallet(1);
+    mine_n(&mut node, &alice.address(), 5);
+    alice.sync(&node).unwrap();
+    let view = Asking::new(&node);
+    view.short.set(true);
+    let r = alice.balance(&view);
+    assert!(matches!(r, Err(WalletError::Chain(_))), "{r:?}");
+}
+
+/// A view that counts how the wallet asks for outputs: one at a time, or many in one request.
+struct AskingOutputs<'a, 'b> {
+    node: &'a Node<'b>,
+    singles: std::cell::Cell<u64>,
+    batches: std::cell::Cell<u64>,
+    batched: std::cell::Cell<u64>,
+    /// Answer with too few entries (a broken or hostile node).
+    short: std::cell::Cell<bool>,
+}
+
+impl ChainView for AskingOutputs<'_, '_> {
+    fn tip(&self) -> Result<(u64, [u8; 32]), String> {
+        ChainView::tip(self.node)
+    }
+    fn block(&self, h: u64) -> Result<Option<tenero_wallet::ScanBlock>, String> {
+        ChainView::block(self.node, h)
+    }
+    fn blocks(&self, from: u64, max: u64) -> Result<Vec<tenero_wallet::ScanBlock>, String> {
+        ChainView::blocks(self.node, from, max)
+    }
+    fn output(&self, i: u64) -> Result<Option<tenero_store::StoredOutput>, String> {
+        self.singles.set(self.singles.get() + 1);
+        ChainView::output(self.node, i)
+    }
+    fn outputs(&self, is: &[u64]) -> Result<Vec<Option<tenero_store::StoredOutput>>, String> {
+        self.batches.set(self.batches.get() + 1);
+        self.batched.set(self.batched.get() + is.len() as u64);
+        if self.short.get() {
+            return Ok(Vec::new());
+        }
+        is.iter()
+            .map(|i| ChainView::output(self.node, *i))
+            .collect()
+    }
+    fn output_count(&self) -> Result<u64, String> {
+        ChainView::output_count(self.node)
+    }
+    fn key_image_spent(&self, k: &[u8; 32]) -> Result<bool, String> {
+        ChainView::key_image_spent(self.node, k)
+    }
+    fn rules(&self) -> Result<tenero_wallet::Rules, String> {
+        ChainView::rules(self.node)
+    }
+}
+
+#[test]
+fn a_payment_of_thirty_two_coins_asks_for_its_ring_members_in_one_request_not_fourteen_hundred() {
+    // the owner's payment of 639 coins (32 coins of 20) took thirty seconds: the wallet asked the node about 1,364 outputs one at
+    // a time (about 15 ms each over the control socket), for each coin searching again for the outputs old enough to use
+    let rig = Rig::new("many32", 16, 1);
+    let mut node = rig.node();
+    let (mut alice, bob) = (wallet(1), wallet(2));
+    mine_n(&mut node, &alice.address(), 90);
+    alice.sync(&node).unwrap();
+    let mut amounts: Vec<u64> = alice.owned().iter().map(|o| o.amount).collect();
+    amounts.sort_unstable_by(|a, b| b.cmp(a));
+    let amount: u64 = amounts.iter().take(32).sum::<u64>() / 100 * 95;
+    let view = AskingOutputs {
+        node: &node,
+        singles: std::cell::Cell::new(0),
+        batches: std::cell::Cell::new(0),
+        batched: std::cell::Cell::new(0),
+        short: std::cell::Cell::new(false),
+    };
+    let built = alice
+        .build_payment(&view, &mut OsRng, &bob.address(), amount)
+        .unwrap();
+    let inputs = built.tx.prefix.inputs.len();
+    assert!(inputs >= 30, "{inputs} inputs");
+    println!(
+        "{inputs} inputs: {} requests for outputs ({} members), {} single questions (it was 1,364 single questions)",
+        view.batches.get(),
+        view.batched.get(),
+        view.singles.get()
+    );
+    // the ring members of every coin came in a few requests (one for each round that needed new rings), not one by one...
+    // (once: the rounds that settle the fee choose the same coins, and keep the rings they made)
+    assert_eq!(view.batches.get(), 1, "{} batches", view.batches.get());
+    // (each distinct output once: the rings of 32 coins share members, and this young chain has only 90 outputs)
+    assert!(view.batched.get() >= 16, "{} members", view.batched.get());
+    // ...and what is left one by one is the search for which outputs are old enough, done once for the payment: about log2 of the
+    // number of outputs, not that for each coin and each round
+    assert!(
+        view.singles.get() < 40,
+        "{} single questions",
+        view.singles.get()
+    );
+}
+
+#[test]
+fn a_node_that_answers_about_fewer_outputs_than_were_asked_is_an_error_not_a_guess() {
+    let rig = Rig::new("shortouts", 16, 1);
+    let mut node = rig.node();
+    let (mut alice, bob) = (wallet(1), wallet(2));
+    mine_n(&mut node, &alice.address(), 60);
+    alice.sync(&node).unwrap();
+    let view = AskingOutputs {
+        node: &node,
+        singles: std::cell::Cell::new(0),
+        batches: std::cell::Cell::new(0),
+        batched: std::cell::Cell::new(0),
+        short: std::cell::Cell::new(true),
+    };
+    let r = alice.build_payment(&view, &mut OsRng, &bob.address(), 1_000);
+    assert!(matches!(r, Err(WalletError::Chain(_))), "{:?}", r.err());
+}

@@ -67,6 +67,8 @@ The answer to request `k` has kind `k | 0x80`. Any request may instead be answer
 | 11 | `blocks` | from u64, count u16 (1 to 64) | `blocks`: count u32 (0 to 64), then that many scan blocks |
 | 12 | `block_template` | the payout (one-time address 32, view tag 3, ephemeral key 32, anchor 16) and the most transaction bytes wanted u32 | `template`: height u64, target (32, big-endian), then a whole block with its nonce and mix empty; **an error if the node is syncing** |
 | 13 | `submit_block` | a whole block | `block_submitted`: id (32) and a flag, 1 if the block is in the node's chain, 0 if it is valid but on a side branch (it lost a race); **an error if the node refuses it** |
+| 14 | `key_images_spent` | a count u32 (1 to 4096) and that many key images (32 each) | `spent_many`: a count u32 and one flag for each key image, in order, 1 if the key image is in the chain. **Added 2026-10-07:** a wallet that has mined thousands of blocks owns thousands of coins, and asking `key_image_spent` about each in turn (about 15 ms a round trip, measured) took twenty seconds every time the tip moved. A client with more than 4096 splits the list |
+| 15 | `outputs` | a count u32 (1 to 1024) and that many global indexes (u64) | `outputs_many`: a count u32, then for each index a flag and (if 1) a *stored output*, in order (0 for an index past the end). **Added 2026-10-07:** the ring members of a payment. A payment of 32 coins asked about 1,364 outputs one at a time (about 15 ms each, measured), twenty seconds of waiting for half a second of work; the wallet now asks in one request. A client with more than 1024 splits the list |
 
 * A **scan block** is what a wallet needs: height u64, block id (32), the global index of its first output u64, the
   coinbase (version u16, height u64, a count of coinbase outputs from **0** to 16 and the outputs, extra as a var), and a
@@ -101,7 +103,7 @@ node it is pointed at. That is a property of this design, not something the prot
 
 ## Vectors
 
-`tests/vectors/control.json`: 44 valid messages (both directions), 111 malformed bodies with the error class a decoder
+`tests/vectors/control.json`: 55 valid messages (both directions), 154 malformed bodies with the error class a decoder
 must give (`length`, `kind`, `trailing`, `malformed`), and the frame length rule. Every valid message encodes to exactly
 the reference's bytes in Rust and decodes back. The reference also checks, over every valid message and every
 single-bit change of it, that the result is refused or decodes to a message that encodes back to the same bytes.

@@ -200,6 +200,18 @@ impl ChainView for RemoteNode {
         }
     }
 
+    fn outputs(&self, indexes: &[u64]) -> Result<Vec<Option<StoredOutput>>, String> {
+        let mut out = Vec::with_capacity(indexes.len());
+        for chunk in indexes.chunks(crate::control::MAX_OUTPUTS_PER_REQUEST) {
+            match self.request(&Request::Outputs {
+                indexes: chunk.to_vec(),
+            })? {
+                Response::OutputsMany(v) if v.len() == chunk.len() => out.extend(v),
+                r => return unexpected(r),
+            }
+        }
+        Ok(out)
+    }
     fn output_count(&self) -> Result<u64, String> {
         match self.request(&Request::OutputCount)? {
             Response::OutputCount(n) => Ok(n),
@@ -216,6 +228,18 @@ impl ChainView for RemoteNode {
         }
     }
 
+    fn key_images_spent(&self, key_images: &[[u8; 32]]) -> Result<Vec<bool>, String> {
+        let mut out = Vec::with_capacity(key_images.len());
+        for chunk in key_images.chunks(crate::control::MAX_KEY_IMAGES) {
+            match self.request(&Request::KeyImagesSpent {
+                key_images: chunk.to_vec(),
+            })? {
+                Response::SpentMany(flags) if flags.len() == chunk.len() => out.extend(flags),
+                r => return unexpected(r),
+            }
+        }
+        Ok(out)
+    }
     fn rules(&self) -> Result<Rules, String> {
         match self.request(&Request::Rules)? {
             Response::Rules(r) => Ok(r),

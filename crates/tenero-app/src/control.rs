@@ -61,8 +61,19 @@ pub enum Request {
         index: u64,
     },
     OutputCount,
+    /// Many outputs by global index (1 to [`MAX_OUTPUTS_PER_REQUEST`]), in one round trip: the ring members of a payment. The
+    /// answer has one entry for each index, in order. Asked one by one (about 15 ms each) a payment of 32 coins waited
+    /// more than twenty seconds.
+    Outputs {
+        indexes: Vec<u64>,
+    },
     KeyImageSpent {
         key_image: [u8; 32],
+    },
+    /// Many key images at once (1 to [`MAX_KEY_IMAGES`]): the answer has one flag for each, in order. A wallet with
+    /// thousands of coins asked one by one (a round trip each) took twenty seconds to find which are spent.
+    KeyImagesSpent {
+        key_images: Vec<[u8; 32]>,
     },
     Rules,
     SubmitTx(Transaction),
@@ -104,7 +115,11 @@ pub enum Response {
     Block(Option<ScanBlock>),
     Output(Option<StoredOutput>),
     OutputCount(u64),
+    /// One entry for each index asked about, in order.
+    OutputsMany(Vec<Option<StoredOutput>>),
     Spent(bool),
+    /// One flag for each key image asked about, in order.
+    SpentMany(Vec<bool>),
     Rules(Rules),
     TxAccepted {
         id: [u8; 32],
@@ -166,6 +181,12 @@ pub const K_BLOCK: u8 = 3;
 pub const K_OUTPUT: u8 = 4;
 pub const K_OUTPUT_COUNT: u8 = 5;
 pub const K_KEY_IMAGE_SPENT: u8 = 6;
+pub const K_KEY_IMAGES_SPENT: u8 = 14;
+pub const K_OUTPUTS: u8 = 15;
+/// The most outputs one `Outputs` request may ask for (a payment of 32 coins with rings of 16 needs 512).
+pub const MAX_OUTPUTS_PER_REQUEST: usize = 1024;
+/// The most key images one `KeyImagesSpent` request may ask about (and the most flags one answer carries).
+pub const MAX_KEY_IMAGES: usize = 4096;
 pub const K_RULES: u8 = 7;
 pub const K_SUBMIT_TX: u8 = 8;
 pub const K_INFO: u8 = 9;
@@ -204,7 +225,9 @@ impl Request {
             Request::Block { .. } => K_BLOCK,
             Request::Output { .. } => K_OUTPUT,
             Request::OutputCount => K_OUTPUT_COUNT,
+            Request::Outputs { .. } => K_OUTPUTS,
             Request::KeyImageSpent { .. } => K_KEY_IMAGE_SPENT,
+            Request::KeyImagesSpent { .. } => K_KEY_IMAGES_SPENT,
             Request::Rules => K_RULES,
             Request::SubmitTx(_) => K_SUBMIT_TX,
             Request::Info => K_INFO,
@@ -228,7 +251,19 @@ impl Request {
             | Request::Stop => {}
             Request::Block { height } => w.u64(*height),
             Request::Output { index } => w.u64(*index),
+            Request::Outputs { indexes } => {
+                w.count(indexes.len(), 1, MAX_OUTPUTS_PER_REQUEST)?;
+                for i in indexes {
+                    w.u64(*i);
+                }
+            }
             Request::KeyImageSpent { key_image } => w.raw(key_image),
+            Request::KeyImagesSpent { key_images } => {
+                w.count(key_images.len(), 1, MAX_KEY_IMAGES)?;
+                for k in key_images {
+                    w.raw(k);
+                }
+            }
             Request::SubmitTx(tx) => tx.write(&mut w)?,
             Request::Blocks { from, count } => {
                 w.u64(*from);
@@ -257,7 +292,19 @@ impl Request {
             K_TIP => Request::Tip,
             K_BLOCK => Request::Block { height: r.u64()? },
             K_OUTPUT => Request::Output { index: r.u64()? },
+            K_OUTPUTS => {
+                let n = r.count(1, MAX_OUTPUTS_PER_REQUEST)?;
+                let indexes = (0..n).map(|_| r.u64()).collect::<Result<Vec<u64>, _>>()?;
+                Request::Outputs { indexes }
+            }
             K_OUTPUT_COUNT => Request::OutputCount,
+            K_KEY_IMAGES_SPENT => {
+                let n = r.count(1, MAX_KEY_IMAGES)?;
+                let key_images = (0..n)
+                    .map(|_| r.array())
+                    .collect::<Result<Vec<[u8; 32]>, _>>()?;
+                Request::KeyImagesSpent { key_images }
+            }
             K_KEY_IMAGE_SPENT => Request::KeyImageSpent {
                 key_image: r.array()?,
             },
@@ -334,7 +381,9 @@ impl Response {
             Response::Block(_) => K_BLOCK | ANSWER,
             Response::Output(_) => K_OUTPUT | ANSWER,
             Response::OutputCount(_) => K_OUTPUT_COUNT | ANSWER,
+            Response::OutputsMany(_) => K_OUTPUTS | ANSWER,
             Response::Spent(_) => K_KEY_IMAGE_SPENT | ANSWER,
+            Response::SpentMany(_) => K_KEY_IMAGES_SPENT | ANSWER,
             Response::Rules(_) => K_RULES | ANSWER,
             Response::TxAccepted { .. } => K_SUBMIT_TX | ANSWER,
             Response::Info(_) => K_INFO | ANSWER,
@@ -370,7 +419,25 @@ impl Response {
                 None => put_flag(&mut w, false),
             },
             Response::OutputCount(n) => w.u64(*n),
+            Response::OutputsMany(v) => {
+                w.count(v.len(), 1, MAX_OUTPUTS_PER_REQUEST)?;
+                for o in v {
+                    match o {
+                        Some(o) => {
+                            put_flag(&mut w, true);
+                            o.write(&mut w)?;
+                        }
+                        None => put_flag(&mut w, false),
+                    }
+                }
+            }
             Response::Spent(b) => put_flag(&mut w, *b),
+            Response::SpentMany(v) => {
+                w.count(v.len(), 1, MAX_KEY_IMAGES)?;
+                for b in v {
+                    put_flag(&mut w, *b);
+                }
+            }
             Response::Rules(r) => {
                 w.raw(&r.chain_id);
                 w.u32(
@@ -439,7 +506,27 @@ impl Response {
                 None
             }),
             x if x == K_OUTPUT_COUNT | ANSWER => Response::OutputCount(r.u64()?),
+            x if x == K_OUTPUTS | ANSWER => {
+                let n = r.count(1, MAX_OUTPUTS_PER_REQUEST)?;
+                let mut v = Vec::with_capacity(n);
+                for _ in 0..n {
+                    v.push(if flag(&mut r)? {
+                        Some(StoredOutput::read(&mut r)?)
+                    } else {
+                        None
+                    });
+                }
+                Response::OutputsMany(v)
+            }
             x if x == K_KEY_IMAGE_SPENT | ANSWER => Response::Spent(flag(&mut r)?),
+            x if x == K_KEY_IMAGES_SPENT | ANSWER => {
+                let n = r.count(1, MAX_KEY_IMAGES)?;
+                let mut flags = Vec::with_capacity(n);
+                for _ in 0..n {
+                    flags.push(flag(&mut r)?);
+                }
+                Response::SpentMany(flags)
+            }
             x if x == K_RULES | ANSWER => Response::Rules(Rules {
                 chain_id: r.array()?,
                 ring_size: r.u32()? as usize,
