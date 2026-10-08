@@ -11,6 +11,8 @@ tenero-core = { path = "../tenero-core" }
 tenero-store = { path = "../tenero-store" }
 tenero-chain = { path = "../tenero-chain" }
 tenero-node = { path = "../tenero-node" }
+# valid points for the simulator's test blocks (Monero's hash-to-point); a workspace crate
+tenero-tree = { path = "../tenero-tree" }
 
 # The Noise protocol for the encrypted channel between nodes (M8.4): `snow` 0.10, licence Apache-2.0 OR MIT.
 # AN EXCEPTION TO CLAUDE.md RULE 3 ("use audited libraries"), made by the owner on 2026-09-30 and again on 2026-10:

@@ -2,18 +2,20 @@
 //! `docs/CONTROL_PROTOCOL.md` is the description, `tests/vectors/control.json` the golden vectors.
 //!
 //! A frame is `length u32 little-endian | body`, the body `kind u8 | payload`, the length at most [`MAX_FRAME`].
-//! Requests have kinds 1 to 19; the answer to request `k` has kind `k | 0x80`; an error answer is `0xFF`.
+//! Requests have kinds 1 to 20 (4, 5 and 15, the ring members' outputs of version 2, are retired and unknown); the answer
+//! to request `k` has kind `k | 0x80`; an error answer is `0xFF`.
 //! Decoding is strict: an unknown kind, a short payload, a trailing byte, a count out of range or text that is not
 //! UTF-8 is an error, and one message has one encoding. **Experimental and unaudited.**
 
-use tenero_core::v2::codec::{DecodeError, EncodeError, Reader, Wire, Writer};
-use tenero_core::v2::{
-    Block, BlockHeader, Coinbase, CoinbaseOutput, Transaction, TxPrefix, MAX_BLOCK_TXS,
-    MAX_COINBASE_OUTPUTS, MAX_EXTRA,
+use tenero_core::v2::{MAX_BLOCK_TXS, MAX_COINBASE_OUTPUTS, MAX_EXTRA};
+use tenero_core::v3::{
+    Block, BlockHeader, Coinbase, CoinbaseOutput, DecodeError, EncodeError, Reader, Transaction,
+    TxPrefix, Wire, Writer,
 };
-use tenero_node::{Payout, PoolEntry};
-use tenero_store::StoredOutput;
-use tenero_wallet::{Rules, ScanBlock};
+use tenero_node::PoolEntry;
+use tenero_store::TreeState;
+use tenero_tree::{PathBytes, HELIOS_WIDTH, LEAF_CHUNK, SELENE_WIDTH};
+use tenero_wallet::{Rules, ScanBlock, SpendPaths};
 
 /// The biggest body a frame may carry (a block of the biggest allowed size fits).
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
@@ -34,7 +36,7 @@ pub enum NodeKind {
     Pruned,
 }
 
-/// What a block explorer shows of a block: its header's time, the target it met, the work so far, its size and what its
+/// What a block explorer shows of a block: its header's time, the target it met, the work so far, its weight and what its
 /// coinbase paid. Nothing a wallet's privacy rests on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockSummary {
@@ -46,8 +48,8 @@ pub struct BlockSummary {
     pub target: [u8; 32],
     /// The chain's total work up to and including this block (big-endian).
     pub cumulative_work: [u8; 32],
-    /// The whole block's size in its consensus encoding (header, coinbase, transactions), in bytes.
-    pub size: u64,
+    /// The weight of its transactions (`CONSENSUS_V2.md` 15.4: what the block limit counts; 0 for a block with none).
+    pub weight: u64,
     /// Transactions besides the coinbase.
     pub tx_count: u32,
     /// The coinbase's outputs added up: the reward and the fees, less any penalty.
@@ -100,10 +102,6 @@ pub enum Request {
     Block {
         height: u64,
     },
-    Output {
-        index: u64,
-    },
-    OutputCount,
     /// The full proof-of-work check of a header at a height (`PowCheck::check_full`): the answer says whether the mix is the one the proof of work gives for the
     /// header's nonce. The node does the work on its own thread with the dataset it already holds, so a program that checks many headers (a mining pool) needs no
     /// dataset of its own. It does NOT say the id meets any target: that is a comparison the asker makes.
@@ -111,10 +109,10 @@ pub enum Request {
         height: u64,
         header: BlockHeader,
     },
-    /// Many outputs by global index (1 to [`MAX_OUTPUTS_PER_REQUEST`]), in one round trip: the ring members of a payment. The
-    /// answer has one entry for each index, in order. Asked one by one (about 15 ms each) a payment of 32 coins waited
-    /// more than twenty seconds.
-    Outputs {
+    /// The paths in the curve tree of the outputs with these global indexes (1 to [`MAX_SPEND_PATHS`]), all in the tree of
+    /// one reference block (the tip): what a wallet proves a spend with. The node learns which outputs are about to be
+    /// spent, so a wallet asks only a node on its own machine (`docs/FCMP_CARROT_PLAN.md` 7).
+    SpendPaths {
         indexes: Vec<u64>,
     },
     KeyImageSpent {
@@ -135,11 +133,15 @@ pub enum Request {
         from: u64,
         count: u16,
     },
-    /// An unmined block on the node's tip, with the coinbase paying `payout`, for a miner in another process to
-    /// search. `max_body_bytes` is the most transaction bytes it wants (the node may give fewer).
+    /// An unmined block on the node's tip, with the coinbase paying the main address whose keys these are, for a miner in
+    /// another process to search. A Carrot coinbase output depends on its amount, which only the node knows (the reward
+    /// and the fees of what it puts in), so the node makes the output, with fresh randomness each time; it therefore
+    /// knows which of its templates' outputs are this address's, as the node a miner mines through always did.
+    /// `max_weight` is the most transaction weight it wants (the node may give less).
     BlockTemplate {
-        payout: Payout,
-        max_body_bytes: u32,
+        spend_pubkey: [u8; 32],
+        view_pubkey: [u8; 32],
+        max_weight: u64,
     },
     /// A mined block. The answer says whether it is in the chain, or on a side branch (it lost a race); a block the
     /// node refuses is an error answer.
@@ -157,12 +159,15 @@ pub enum Request {
 }
 
 /// What a miner searches: the block with an empty nonce and mix, the height, and the target its id must be below
-/// (big-endian).
+/// (big-endian). `anchor` is the randomness the node made the coinbase output with (Carrot's Janus anchor): with it the
+/// miner makes the same output from its own address and the amount, and so knows the template pays it
+/// (`remote_miner::check_template`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Template {
     pub block: Block,
     pub height: u64,
     pub target: [u8; 32],
+    pub anchor: [u8; 16],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,12 +178,11 @@ pub enum Response {
         id: [u8; 32],
     },
     Block(Option<ScanBlock>),
-    Output(Option<StoredOutput>),
-    OutputCount(u64),
     /// The answer to `CheckPow`: the mix is right, or not.
     PowChecked(bool),
-    /// One entry for each index asked about, in order.
-    OutputsMany(Vec<Option<StoredOutput>>),
+    /// The reference block, its tree, and one path for each index asked about, in order (`None` for an output not in
+    /// that tree).
+    SpendPaths(SpendPaths),
     Spent(bool),
     /// One flag for each key image asked about, in order.
     SpentMany(Vec<bool>),
@@ -249,15 +253,17 @@ impl From<EncodeError> for ControlError {
 pub const K_AUTH: u8 = 1;
 pub const K_TIP: u8 = 2;
 pub const K_BLOCK: u8 = 3;
-pub const K_OUTPUT: u8 = 4;
-pub const K_OUTPUT_COUNT: u8 = 5;
 pub const K_KEY_IMAGE_SPENT: u8 = 6;
 pub const K_KEY_IMAGES_SPENT: u8 = 14;
-pub const K_OUTPUTS: u8 = 15;
 /// `check_pow`: is this header's mix what the proof of work gives (the full check, with the node's own dataset)? A pool asks it so that it needs no 4 GiB dataset of its own.
 pub const K_CHECK_POW: u8 = 16;
-/// The most outputs one `Outputs` request may ask for (a payment of 32 coins with rings of 16 needs 512).
-pub const MAX_OUTPUTS_PER_REQUEST: usize = 1024;
+/// `spend_paths`: the curve-tree paths a spend is proven with (version 3).
+pub const K_SPEND_PATHS: u8 = 20;
+/// The most outputs one `SpendPaths` request may ask about. A path is at most about 12 KiB (a leaf chunk of 38 outputs
+/// and a chunk for each of up to eight layers), so the answer stays well inside a frame.
+pub const MAX_SPEND_PATHS: usize = 512;
+/// The most layers a path may have: a tree of `u64::MAX` leaves has fewer.
+pub const MAX_PATH_LAYERS: usize = 32;
 /// The most key images one `KeyImagesSpent` request may ask about (and the most flags one answer carries).
 pub const MAX_KEY_IMAGES: usize = 4096;
 pub const K_RULES: u8 = 7;
@@ -300,9 +306,7 @@ impl Request {
             Request::Auth { .. } => K_AUTH,
             Request::Tip => K_TIP,
             Request::Block { .. } => K_BLOCK,
-            Request::Output { .. } => K_OUTPUT,
-            Request::OutputCount => K_OUTPUT_COUNT,
-            Request::Outputs { .. } => K_OUTPUTS,
+            Request::SpendPaths { .. } => K_SPEND_PATHS,
             Request::CheckPow { .. } => K_CHECK_POW,
             Request::KeyImageSpent { .. } => K_KEY_IMAGE_SPENT,
             Request::KeyImagesSpent { .. } => K_KEY_IMAGES_SPENT,
@@ -326,20 +330,18 @@ impl Request {
         match self {
             Request::Auth { cookie } => w.raw(cookie),
             Request::Tip
-            | Request::OutputCount
             | Request::Rules
             | Request::Info
             | Request::Stop
             | Request::Mempool
             | Request::ChainStats => {}
             Request::Block { height } => w.u64(*height),
-            Request::Output { index } => w.u64(*index),
             Request::CheckPow { height, header } => {
                 w.u64(*height);
                 header.write(&mut w)?;
             }
-            Request::Outputs { indexes } => {
-                w.count(indexes.len(), 1, MAX_OUTPUTS_PER_REQUEST)?;
+            Request::SpendPaths { indexes } => {
+                w.count(indexes.len(), 1, MAX_SPEND_PATHS)?;
                 for i in indexes {
                     w.u64(*i);
                 }
@@ -357,14 +359,13 @@ impl Request {
                 w.u16(*count);
             }
             Request::BlockTemplate {
-                payout,
-                max_body_bytes,
+                spend_pubkey,
+                view_pubkey,
+                max_weight,
             } => {
-                w.raw(&payout.onetime_address);
-                w.raw(&payout.view_tag);
-                w.raw(&payout.ephemeral_pubkey);
-                w.raw(&payout.anchor_enc);
-                w.u32(*max_body_bytes);
+                w.raw(spend_pubkey);
+                w.raw(view_pubkey);
+                w.u64(*max_weight);
             }
             Request::SubmitBlock(b) => b.write(&mut w)?,
         }
@@ -378,17 +379,15 @@ impl Request {
             K_AUTH => Request::Auth { cookie: r.array()? },
             K_TIP => Request::Tip,
             K_BLOCK => Request::Block { height: r.u64()? },
-            K_OUTPUT => Request::Output { index: r.u64()? },
             K_CHECK_POW => Request::CheckPow {
                 height: r.u64()?,
                 header: BlockHeader::read(&mut r)?,
             },
-            K_OUTPUTS => {
-                let n = r.count(1, MAX_OUTPUTS_PER_REQUEST)?;
+            K_SPEND_PATHS => {
+                let n = r.count(1, MAX_SPEND_PATHS)?;
                 let indexes = (0..n).map(|_| r.u64()).collect::<Result<Vec<u64>, _>>()?;
-                Request::Outputs { indexes }
+                Request::SpendPaths { indexes }
             }
-            K_OUTPUT_COUNT => Request::OutputCount,
             K_KEY_IMAGES_SPENT => {
                 let n = r.count(1, MAX_KEY_IMAGES)?;
                 let key_images = (0..n)
@@ -418,13 +417,9 @@ impl Request {
             K_MEMPOOL => Request::Mempool,
             K_CHAIN_STATS => Request::ChainStats,
             K_BLOCK_TEMPLATE => Request::BlockTemplate {
-                payout: Payout {
-                    onetime_address: r.array()?,
-                    view_tag: r.array()?,
-                    ephemeral_pubkey: r.array()?,
-                    anchor_enc: r.array()?,
-                },
-                max_body_bytes: r.u32()?,
+                spend_pubkey: r.array()?,
+                view_pubkey: r.array()?,
+                max_weight: r.u64()?,
             },
             K_SUBMIT_BLOCK => Request::SubmitBlock(Block::read(&mut r)?),
             other => return Err(ControlError::UnknownKind(other)),
@@ -460,7 +455,7 @@ fn write_summary(w: &mut Writer, b: &BlockSummary) {
     w.u64(b.timestamp);
     w.raw(&b.target);
     w.raw(&b.cumulative_work);
-    w.u64(b.size);
+    w.u64(b.weight);
     w.u32(b.tx_count);
     w.u64(b.coinbase_total);
 }
@@ -472,7 +467,7 @@ fn read_summary(r: &mut Reader<'_>) -> Result<BlockSummary, DecodeError> {
         timestamp: r.u64()?,
         target: r.array()?,
         cumulative_work: r.array()?,
-        size: r.u64()?,
+        weight: r.u64()?,
         tx_count: r.u32()?,
         coinbase_total: r.u64()?,
     })
@@ -484,6 +479,42 @@ fn read_pool_entry(r: &mut Reader<'_>) -> Result<PoolEntry, DecodeError> {
         received: r.u64()?,
         fee: r.u64()?,
         size: r.u64()?,
+        weight: r.u64()?,
+    })
+}
+
+/// The widest chunk a path may carry above the leaves (the curve tree's two branch widths).
+const MAX_CHUNK: usize = if SELENE_WIDTH > HELIOS_WIDTH {
+    SELENE_WIDTH
+} else {
+    HELIOS_WIDTH
+};
+
+fn write_path(w: &mut Writer, p: &PathBytes) -> Result<(), EncodeError> {
+    w.u64(p.position);
+    w.count(p.leaves.len(), 1, LEAF_CHUNK)?;
+    for (o, c) in &p.leaves {
+        w.raw(o);
+        w.raw(c);
+    }
+    w.count(p.layers.len(), 0, MAX_PATH_LAYERS)?;
+    for chunk in &p.layers {
+        w.count(chunk.len(), 1, MAX_CHUNK)?;
+        for x in chunk {
+            w.raw(x);
+        }
+    }
+    Ok(())
+}
+
+fn read_path(r: &mut Reader<'_>) -> Result<PathBytes, DecodeError> {
+    let position = r.u64()?;
+    let leaves = r.list(1, LEAF_CHUNK, |r| Ok((r.array()?, r.array()?)))?;
+    let layers = r.list(0, MAX_PATH_LAYERS, |r| r.list(1, MAX_CHUNK, |r| r.array()))?;
+    Ok(PathBytes {
+        position,
+        leaves,
+        layers,
     })
 }
 
@@ -509,9 +540,7 @@ impl Response {
             Response::Authed => K_AUTH | ANSWER,
             Response::Tip { .. } => K_TIP | ANSWER,
             Response::Block(_) => K_BLOCK | ANSWER,
-            Response::Output(_) => K_OUTPUT | ANSWER,
-            Response::OutputCount(_) => K_OUTPUT_COUNT | ANSWER,
-            Response::OutputsMany(_) => K_OUTPUTS | ANSWER,
+            Response::SpendPaths(_) => K_SPEND_PATHS | ANSWER,
             Response::PowChecked(_) => K_CHECK_POW | ANSWER,
             Response::Spent(_) => K_KEY_IMAGE_SPENT | ANSWER,
             Response::SpentMany(_) => K_KEY_IMAGES_SPENT | ANSWER,
@@ -545,22 +574,16 @@ impl Response {
                 }
                 None => put_flag(&mut w, false),
             },
-            Response::Output(o) => match o {
-                Some(o) => {
-                    put_flag(&mut w, true);
-                    o.write(&mut w)?;
-                }
-                None => put_flag(&mut w, false),
-            },
-            Response::OutputCount(n) => w.u64(*n),
             Response::PowChecked(b) => put_flag(&mut w, *b),
-            Response::OutputsMany(v) => {
-                w.count(v.len(), 1, MAX_OUTPUTS_PER_REQUEST)?;
-                for o in v {
-                    match o {
-                        Some(o) => {
+            Response::SpendPaths(sp) => {
+                w.u64(sp.reference_height);
+                sp.tree.write(&mut w)?;
+                w.count(sp.paths.len(), 1, MAX_SPEND_PATHS)?;
+                for p in &sp.paths {
+                    match p {
+                        Some(p) => {
                             put_flag(&mut w, true);
-                            o.write(&mut w)?;
+                            write_path(&mut w, p)?;
                         }
                         None => put_flag(&mut w, false),
                     }
@@ -575,23 +598,13 @@ impl Response {
             }
             Response::Rules(r) => {
                 w.raw(&r.chain_id);
-                w.u32(
-                    u32::try_from(r.ring_size)
-                        .map_err(|_| ControlError::Encode("ring size".into()))?,
-                );
-                w.u64(r.coinbase_maturity);
-                w.u64(r.spend_maturity);
                 w.u64(r.next_height);
                 w.u64(r.reward);
                 w.u64(r.median);
-                // 0 means no limit besides the size
-                w.u32(match r.max_inputs {
-                    None => 0,
-                    Some(m) => u32::try_from(m)
-                        .ok()
-                        .filter(|m| *m > 0)
-                        .ok_or_else(|| ControlError::Encode("max inputs".into()))?,
-                });
+                w.raw(&[u8::try_from(r.tree_layers)
+                    .ok()
+                    .filter(|l| usize::from(*l) <= MAX_PATH_LAYERS)
+                    .ok_or_else(|| ControlError::Encode("tree layers".into()))?]);
             }
             Response::TxAccepted { id } => w.raw(id),
             Response::Info(i) => {
@@ -618,6 +631,7 @@ impl Response {
             Response::Template(t) => {
                 w.u64(t.height);
                 w.raw(&t.target);
+                w.raw(&t.anchor);
                 t.block.write(&mut w)?;
             }
             Response::BlockSubmitted { id, in_chain } => {
@@ -643,6 +657,7 @@ impl Response {
                     w.u64(t.received);
                     w.u64(t.fee);
                     w.u64(t.size);
+                    w.u64(t.weight);
                 }
             }
             Response::ChainStats(c) => {
@@ -674,24 +689,18 @@ impl Response {
             } else {
                 None
             }),
-            x if x == K_OUTPUT | ANSWER => Response::Output(if flag(&mut r)? {
-                Some(StoredOutput::read(&mut r)?)
-            } else {
-                None
-            }),
-            x if x == K_OUTPUT_COUNT | ANSWER => Response::OutputCount(r.u64()?),
             x if x == K_CHECK_POW | ANSWER => Response::PowChecked(flag(&mut r)?),
-            x if x == K_OUTPUTS | ANSWER => {
-                let n = r.count(1, MAX_OUTPUTS_PER_REQUEST)?;
-                let mut v = Vec::with_capacity(n);
-                for _ in 0..n {
-                    v.push(if flag(&mut r)? {
-                        Some(StoredOutput::read(&mut r)?)
-                    } else {
-                        None
-                    });
-                }
-                Response::OutputsMany(v)
+            x if x == K_SPEND_PATHS | ANSWER => {
+                let reference_height = r.u64()?;
+                let tree = TreeState::read(&mut r)?;
+                let paths = r.list(1, MAX_SPEND_PATHS, |r| {
+                    Ok(if flag(r)? { Some(read_path(r)?) } else { None })
+                })?;
+                Response::SpendPaths(SpendPaths {
+                    reference_height,
+                    tree,
+                    paths,
+                })
             }
             x if x == K_KEY_IMAGE_SPENT | ANSWER => Response::Spent(flag(&mut r)?),
             x if x == K_KEY_IMAGES_SPENT | ANSWER => {
@@ -704,15 +713,12 @@ impl Response {
             }
             x if x == K_RULES | ANSWER => Response::Rules(Rules {
                 chain_id: r.array()?,
-                ring_size: r.u32()? as usize,
-                coinbase_maturity: r.u64()?,
-                spend_maturity: r.u64()?,
                 next_height: r.u64()?,
                 reward: r.u64()?,
                 median: r.u64()?,
-                max_inputs: match r.u32()? {
-                    0 => None,
-                    m => Some(m as usize),
+                tree_layers: match usize::from(r.take(1)?[0]) {
+                    l if l <= MAX_PATH_LAYERS => l,
+                    _ => return Err(DecodeError::CountOutOfRange.into()),
                 },
             }),
             x if x == K_SUBMIT_TX | ANSWER => Response::TxAccepted { id: r.array()? },
@@ -739,6 +745,7 @@ impl Response {
             x if x == K_BLOCK_TEMPLATE | ANSWER => Response::Template(Template {
                 height: r.u64()?,
                 target: r.array()?,
+                anchor: r.array()?,
                 block: Block::read(&mut r)?,
             }),
             x if x == K_SUBMIT_BLOCK | ANSWER => Response::BlockSubmitted {

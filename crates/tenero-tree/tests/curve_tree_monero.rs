@@ -8,7 +8,7 @@ use curve25519_dalek::edwards::EdwardsPoint;
 use curve25519_dalek::scalar::Scalar;
 use monero_primitives::keccak256;
 use tenero_core::vectors::{hex, load};
-use tenero_crypto::curve_tree::{n_layers, CurveTree, Leaf};
+use tenero_tree::{n_layers, CurveTree, Leaf};
 
 /// Output `i` of the vectors: key `o_i G`, commitment `c_i G`, `o_i = Keccak256(label || i LE) mod l`.
 fn output(i: u64) -> Leaf {

@@ -7,7 +7,7 @@ use tenero_core::vectors::{hex, load};
 use tenero_net::{decode_frame, encode, FrameDecoder, MAX_FRAME};
 
 fn valid_frames() -> Vec<Vec<u8>> {
-    let v = load("v2_wire").unwrap();
+    let v = load("v3_wire").unwrap();
     v["valid"]
         .as_array()
         .unwrap()

@@ -2,8 +2,14 @@
 
 An independent implementation, in Python and the standard library only, of how crates/tenero-app turns the requests
 a wallet (or a block explorer) makes of a node, and the node's answers, into bytes: the frame, the requests, the answers, and the
-order in which a decoder checks a message. The transaction and coinbase encodings inside come from the version 2
-data-model reference (`reference/tools/make_vectors_v2.py`).
+order in which a decoder checks a message. The transaction, header and coinbase encodings inside come from the
+version 3 (`gamma`) data-model reference (`reference/tools/make_vectors_v3.py`).
+
+Version 3 of the protocol (0.3.0, FCMP++ and Carrot) retired the requests for ring members' outputs (kinds 4, 5 and 15:
+unknown now), added `spend_paths` (20: the curve-tree paths a spend is proven with), and changed `rules` (no ring size or
+maturities; the tree's layers), `block_template` (the main address's keys and a weight, not a finished output: a Carrot
+coinbase output depends on its amount, so the node makes it), the template (the anchor the output was made with), the
+block summary (its weight, not its size) and the pool listing (each transaction's weight).
 
     python reference/tools/make_vectors_control.py --check     do the committed vectors match the reference?
     python reference/tools/make_vectors_control.py --write     regenerate them (a PROTOCOL CHANGE: explain it in the commit
@@ -18,7 +24,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import make_vectors_v2 as v2  # noqa: E402
+import make_vectors_v3 as v3  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the repository (the tools live in reference/tools)
 VECTOR_DIR = os.path.join(ROOT, "tests", "vectors")
@@ -29,17 +35,23 @@ MAX_TEXT = 512
 MAX_NAME = 64
 MAX_BLOCKS_PER_REQUEST = 64
 MAX_KEY_IMAGES = 4096
-MAX_OUTPUTS_PER_REQUEST = 1024
+MAX_SPEND_PATHS = 512
+MAX_PATH_LAYERS = 32
+LEAF_CHUNK = 38          # the curve tree's leaf chunk (FCMP++ LAYER_ONE_LEN): the outputs a path carries
+MAX_CHUNK = 38           # the wider of the tree's two branch widths (38 and 18)
 MAX_MEMPOOL_LIST = 4096
 ANSWER = 0x80
 ERROR = 0xFF
 
-REQUESTS = {"auth": 1, "tip": 2, "block": 3, "output": 4, "output_count": 5, "key_image_spent": 6, "rules": 7,
+REQUESTS = {"auth": 1, "tip": 2, "block": 3, "key_image_spent": 6, "rules": 7,
             "submit_tx": 8, "info": 9, "stop": 10, "blocks": 11, "block_template": 12, "submit_block": 13,
-            "key_images_spent": 14, "outputs": 15, "check_pow": 16, "headers": 17, "mempool": 18, "chain_stats": 19}
-RESPONSES = {"authed": 1, "tip": 2, "block": 3, "output": 4, "output_count": 5, "spent": 6, "rules": 7,
+            "key_images_spent": 14, "check_pow": 16, "headers": 17, "mempool": 18, "chain_stats": 19,
+            "spend_paths": 20}
+RESPONSES = {"authed": 1, "tip": 2, "block": 3, "spent": 6, "rules": 7,
              "tx_accepted": 8, "info": 9, "stopping": 10, "blocks": 11, "template": 12, "block_submitted": 13,
-             "spent_many": 14, "outputs_many": 15, "pow_checked": 16, "headers": 17, "mempool": 18, "chain_stats": 19}
+             "spent_many": 14, "pow_checked": 16, "headers": 17, "mempool": 18, "chain_stats": 19,
+             "spend_paths": 20}
+RETIRED = (4, 5, 15)     # output, output_count, outputs: the ring members of version 2
 
 
 class ControlError(Exception):
@@ -80,54 +92,74 @@ def flag(b):
     return u8(1 if b else 0)
 
 
-# ---- scan blocks and stored outputs --------------------------------------------------------------------------
+# ---- scan blocks and spend paths ------------------------------------------------------------------------------
 
 def enc_scan_block(b):
     # the coinbase is written here (not with the consensus encoding): the genesis block has no outputs
     cb = b["coinbase"]
     return (u64(b["height"]) + fixed(b["id"], 32) + u64(b["first_output_index"]) + u16(cb["version"]) + u64(cb["height"])
-            + v2.w_list(cb["outputs"], v2.enc_cb_output) + v2.w_var(cb["extra"])
-            + v2.w_list(b["txs"], v2.enc_tx_prefix))
+            + v3.w_list(cb["outputs"], v3.enc_cb_output) + v3.w_var(cb["extra"])
+            + v3.w_list(b["txs"], v3.enc_tx_prefix))
 
 
 def dec_scan_block(r):
     height, bid, first = r.u64(), r.fixed(32), r.u64()
     version, cb_height = r.u16(), r.u64()
-    outputs = [v2.dec_cb_output(r) for _ in range(r.count(0, v2.MAX_COINBASE_OUTPUTS))]
-    extra = r.var(v2.MAX_EXTRA)
-    txs = [v2.dec_tx_prefix(r) for _ in range(r.count(0, v2.MAX_BLOCK_TXS))]
+    outputs = [v3.dec_cb_output(r) for _ in range(r.count(0, v3.MAX_COINBASE_OUTPUTS))]
+    extra = r.var(v3.MAX_EXTRA)
+    txs = [v3.dec_tx_prefix(r) for _ in range(r.count(0, v3.MAX_BLOCK_TXS))]
     return {"height": height, "id": bid, "first_output_index": first,
             "coinbase": {"version": version, "height": cb_height, "outputs": outputs, "extra": extra}, "txs": txs}
 
 
-def enc_stored_output(o):
-    return (fixed(o["onetime_address"], 32) + fixed(o["amount_commitment"], 32) + u64(o["public_amount"])
-            + u64(o["height"]) + flag(o["coinbase"]))
+def enc_path(p):
+    """A path in the curve tree: the output's position, its leaf chunk (each output's key and commitment), and one chunk
+    for each layer above (each a list of 32-byte points)."""
+    assert 1 <= len(p["leaves"]) <= LEAF_CHUNK and len(p["layers"]) <= MAX_PATH_LAYERS
+    out = u64(p["position"]) + u32(len(p["leaves"]))
+    for o, c in p["leaves"]:
+        out += fixed(o, 32) + fixed(c, 32)
+    out += u32(len(p["layers"]))
+    for chunk in p["layers"]:
+        assert 1 <= len(chunk) <= MAX_CHUNK
+        out += u32(len(chunk)) + b"".join(fixed(x, 32) for x in chunk)
+    return out
 
 
-def dec_stored_output(r):
-    return {"onetime_address": r.fixed(32), "amount_commitment": r.fixed(32), "public_amount": r.u64(),
-            "height": r.u64(), "coinbase": dec_flag(r)}
+def dec_path(r):
+    position = r.u64()
+    leaves = [[r.fixed(32), r.fixed(32)] for _ in range(r.count(1, LEAF_CHUNK))]
+    layers = [[r.fixed(32) for _ in range(r.count(1, MAX_CHUNK))] for _ in range(r.count(0, MAX_PATH_LAYERS))]
+    return {"position": position, "leaves": leaves, "layers": layers}
+
+
+def enc_tree(t):
+    """A block's tree: how many leaves, how many layers, and the root."""
+    return u64(t["n_leaves"]) + u8(t["n_layers"]) + fixed(t["root"], 32)
+
+
+def dec_tree(r):
+    return {"n_leaves": r.u64(), "n_layers": r.u8(), "root": r.fixed(32)}
 
 
 # ---- what a block explorer is told ---------------------------------------------------------------------------
 
 def enc_summary(b):
     return (u64(b["height"]) + fixed(b["id"], 32) + u64(b["timestamp"]) + fixed(b["target"], 32)
-            + fixed(b["cumulative_work"], 32) + u64(b["size"]) + u32(b["tx_count"]) + u64(b["coinbase_total"]))
+            + fixed(b["cumulative_work"], 32) + u64(b["weight"]) + u32(b["tx_count"]) + u64(b["coinbase_total"]))
 
 
 def dec_summary(r):
     return {"height": r.u64(), "id": r.fixed(32), "timestamp": r.u64(), "target": r.fixed(32),
-            "cumulative_work": r.fixed(32), "size": r.u64(), "tx_count": r.u32(), "coinbase_total": r.u64()}
+            "cumulative_work": r.fixed(32), "weight": r.u64(), "tx_count": r.u32(), "coinbase_total": r.u64()}
 
 
 def enc_pool_entry(t):
-    return fixed(t["id"], 32) + u64(t["received"]) + u64(t["fee"]) + u64(t["size"])
+    return fixed(t["id"], 32) + u64(t["received"]) + u64(t["fee"]) + u64(t["size"]) + u64(t["weight"])
 
 
 def dec_pool_entry(r):
-    return {"id": r.fixed(32), "received": r.u64(), "fee": r.u64(), "size": r.u64()}
+    return {"id": r.fixed(32), "received": r.u64(), "fee": r.u64(), "size": r.u64(), "weight": r.u64()}
 
 
 STATS_FIELDS = ("next_reward", "emitted", "max_supply", "tail_reward", "block_time")
@@ -157,36 +189,32 @@ def enc_request(m):
         body += fixed(m["cookie"], 32)
     elif t == "block":
         body += u64(m["height"])
-    elif t == "output":
-        body += u64(m["index"])
     elif t == "key_image_spent":
         body += fixed(m["key_image"], 32)
     elif t == "check_pow":
-        body += u64(m["height"]) + v2.enc_header(m["header"])
-    elif t == "outputs":
-        assert 1 <= len(m["indexes"]) <= MAX_OUTPUTS_PER_REQUEST
+        body += u64(m["height"]) + v3.enc_header(m["header"])
+    elif t == "spend_paths":
+        assert 1 <= len(m["indexes"]) <= MAX_SPEND_PATHS
         body += u32(len(m["indexes"])) + b"".join(u64(i) for i in m["indexes"])
     elif t == "key_images_spent":
         assert 1 <= len(m["key_images"]) <= MAX_KEY_IMAGES
         body += u32(len(m["key_images"])) + b"".join(fixed(k, 32) for k in m["key_images"])
     elif t == "submit_tx":
-        body += v2.enc_tx(m["tx"])
+        body += v3.enc_tx(m["tx"])
     elif t in ("blocks", "headers"):
         assert 1 <= m["count"] <= MAX_BLOCKS_PER_REQUEST
         body += u64(m["from"]) + u16(m["count"])
     elif t == "block_template":
-        pl = m["payout"]
-        body += (fixed(pl["onetime_address"], 32) + fixed(pl["view_tag"], 3) + fixed(pl["ephemeral_pubkey"], 32)
-                 + fixed(pl["anchor_enc"], 16) + u32(m["max_body_bytes"]))
+        body += fixed(m["spend_pubkey"], 32) + fixed(m["view_pubkey"], 32) + u64(m["max_weight"])
     elif t == "submit_block":
-        body += v2.enc_block(m["block"])
+        body += v3.enc_block(m["block"])
     return body
 
 
 def dec_request(body):
     if len(body) == 0:
         raise ControlError("length")
-    r = v2.Reader(body)
+    r = v3.Reader(body)
     kind = r.u8()
     names = {v: k for k, v in REQUESTS.items()}
     if kind not in names:
@@ -198,35 +226,33 @@ def dec_request(body):
             m["cookie"] = r.fixed(32)
         elif t == "block":
             m["height"] = r.u64()
-        elif t == "output":
-            m["index"] = r.u64()
         elif t == "key_image_spent":
             m["key_image"] = r.fixed(32)
         elif t == "check_pow":
             m["height"] = r.u64()
-            m["header"] = v2.dec_header(r)
-        elif t == "outputs":
-            m["indexes"] = [r.u64() for _ in range(r.count(1, MAX_OUTPUTS_PER_REQUEST))]
+            m["header"] = v3.dec_header(r)
+        elif t == "spend_paths":
+            m["indexes"] = [r.u64() for _ in range(r.count(1, MAX_SPEND_PATHS))]
         elif t == "key_images_spent":
             m["key_images"] = [r.fixed(32) for _ in range(r.count(1, MAX_KEY_IMAGES))]
         elif t == "submit_tx":
-            m["tx"] = v2.dec_tx(r)
+            m["tx"] = v3.dec_tx(r)
         elif t in ("blocks", "headers"):
             m["from"] = r.u64()
             m["count"] = r.u16()
             if not 1 <= m["count"] <= MAX_BLOCKS_PER_REQUEST:
                 raise ControlError("malformed")
         elif t == "block_template":
-            m["payout"] = {"onetime_address": r.fixed(32), "view_tag": r.fixed(3), "ephemeral_pubkey": r.fixed(32),
-                           "anchor_enc": r.fixed(16)}
-            m["max_body_bytes"] = r.u32()
+            m["spend_pubkey"] = r.fixed(32)
+            m["view_pubkey"] = r.fixed(32)
+            m["max_weight"] = r.u64()
         elif t == "submit_block":
-            m["block"] = v2.dec_block(r)
-    except v2.DecodeError:
+            m["block"] = v3.dec_block(r)
+    except v3.DecodeError:
         raise ControlError("malformed")
     try:
         r.finish()
-    except v2.DecodeError:
+    except v3.DecodeError:
         raise ControlError("trailing")
     return m
 
@@ -242,24 +268,21 @@ def enc_response(m):
         body += u64(m["height"]) + fixed(m["id"], 32)
     elif t == "block":
         body += flag(m["block"] is not None) + (enc_scan_block(m["block"]) if m["block"] is not None else b"")
-    elif t == "output":
-        body += flag(m["output"] is not None) + (enc_stored_output(m["output"]) if m["output"] is not None else b"")
-    elif t == "output_count":
-        body += u64(m["count"])
     elif t == "spent":
         body += flag(m["spent"])
     elif t == "pow_checked":
         body += flag(m["ok"])
-    elif t == "outputs_many":
-        assert 1 <= len(m["outputs"]) <= MAX_OUTPUTS_PER_REQUEST
-        body += u32(len(m["outputs"])) + b"".join(
-            flag(o is not None) + (enc_stored_output(o) if o is not None else b"") for o in m["outputs"])
+    elif t == "spend_paths":
+        assert 1 <= len(m["paths"]) <= MAX_SPEND_PATHS
+        body += u64(m["reference_height"]) + enc_tree(m["tree"]) + u32(len(m["paths"])) + b"".join(
+            flag(p is not None) + (enc_path(p) if p is not None else b"") for p in m["paths"])
     elif t == "spent_many":
         assert 1 <= len(m["spent"]) <= MAX_KEY_IMAGES
         body += u32(len(m["spent"])) + b"".join(flag(b) for b in m["spent"])
     elif t == "rules":
-        body += (fixed(m["chain_id"], 32) + u32(m["ring_size"]) + u64(m["coinbase_maturity"]) + u64(m["spend_maturity"])
-                 + u64(m["next_height"]) + u64(m["reward"]) + u64(m["median"]) + u32(m["max_inputs"]))
+        assert m["tree_layers"] <= MAX_PATH_LAYERS
+        body += (fixed(m["chain_id"], 32) + u64(m["next_height"]) + u64(m["reward"]) + u64(m["median"])
+                 + u8(m["tree_layers"]))
     elif t == "tx_accepted":
         body += fixed(m["id"], 32)
     elif t == "info":
@@ -270,7 +293,7 @@ def enc_response(m):
         assert len(m["blocks"]) <= MAX_BLOCKS_PER_REQUEST
         body += u32(len(m["blocks"])) + b"".join(enc_scan_block(b) for b in m["blocks"])
     elif t == "template":
-        body += u64(m["height"]) + fixed(m["target"], 32) + v2.enc_block(m["block"])
+        body += u64(m["height"]) + fixed(m["target"], 32) + fixed(m["anchor"], 16) + v3.enc_block(m["block"])
     elif t == "block_submitted":
         body += fixed(m["id"], 32) + flag(m["in_chain"])
     elif t == "headers":
@@ -288,7 +311,7 @@ def enc_response(m):
 def dec_response(body):
     if len(body) == 0:
         raise ControlError("length")
-    r = v2.Reader(body)
+    r = v3.Reader(body)
     kind = r.u8()
     names = {v | ANSWER: k for k, v in RESPONSES.items()}
     try:
@@ -302,23 +325,21 @@ def dec_response(body):
                 m["id"] = r.fixed(32)
             elif t == "block":
                 m["block"] = dec_scan_block(r) if dec_flag(r) else None
-            elif t == "output":
-                m["output"] = dec_stored_output(r) if dec_flag(r) else None
-            elif t == "output_count":
-                m["count"] = r.u64()
             elif t == "spent":
                 m["spent"] = dec_flag(r)
             elif t == "pow_checked":
                 m["ok"] = dec_flag(r)
-            elif t == "outputs_many":
-                m["outputs"] = [dec_stored_output(r) if dec_flag(r) else None
-                                for _ in range(r.count(1, MAX_OUTPUTS_PER_REQUEST))]
+            elif t == "spend_paths":
+                m["reference_height"] = r.u64()
+                m["tree"] = dec_tree(r)
+                m["paths"] = [dec_path(r) if dec_flag(r) else None for _ in range(r.count(1, MAX_SPEND_PATHS))]
             elif t == "spent_many":
                 m["spent"] = [dec_flag(r) for _ in range(r.count(1, MAX_KEY_IMAGES))]
             elif t == "rules":
-                m.update({"chain_id": r.fixed(32), "ring_size": r.u32(), "coinbase_maturity": r.u64(),
-                          "spend_maturity": r.u64(), "next_height": r.u64(), "reward": r.u64(), "median": r.u64(),
-                          "max_inputs": r.u32()})
+                m.update({"chain_id": r.fixed(32), "next_height": r.u64(), "reward": r.u64(), "median": r.u64(),
+                          "tree_layers": r.u8()})
+                if m["tree_layers"] > MAX_PATH_LAYERS:
+                    raise ControlError("malformed")
             elif t == "tx_accepted":
                 m["id"] = r.fixed(32)
             elif t == "info":
@@ -335,7 +356,8 @@ def dec_response(body):
             elif t == "template":
                 m["height"] = r.u64()
                 m["target"] = r.fixed(32)
-                m["block"] = v2.dec_block(r)
+                m["anchor"] = r.fixed(16)
+                m["block"] = v3.dec_block(r)
             elif t == "block_submitted":
                 m["id"] = r.fixed(32)
                 m["in_chain"] = dec_flag(r)
@@ -353,11 +375,11 @@ def dec_response(body):
                     m[k] = r.u64()
         else:
             raise ControlError("kind")
-    except v2.DecodeError:
+    except v3.DecodeError:
         raise ControlError("malformed")
     try:
         r.finish()
-    except v2.DecodeError:
+    except v3.DecodeError:
         raise ControlError("trailing")
     return m
 
@@ -375,20 +397,13 @@ def h(c, n=32):
     return c * n
 
 
-def sample_output(seed):
-    return {"onetime_address": h(seed), "amount_commitment": h("03"), "amount_enc": h("04", 8),
-            "view_tag": h("05", 3), "ephemeral_pubkey": h("06"), "anchor_enc": h("07", 16)}
-
-
-def sample_tx(n_in=1):
-    return {"version": 2, "inputs": [{"key_image": "%02x" % (i + 1) * 32} for i in range(n_in)],
-            "outputs": [sample_output("02"), sample_output("08")], "fee": 12345, "extra": "0909",
-            "rings": [[1, 2] for _ in range(n_in)], "proof_data": "08" * 10}
+def sample_tx(n_in=2):
+    return v3.sample_tx("control", n_in=n_in, proof=40)
 
 
 def sample_prefix():
     t = sample_tx()
-    return {k: t[k] for k in ("version", "inputs", "outputs", "fee", "extra")}
+    return {k: t[k] for k in ("version", "inputs", "outputs", "ephemeral_pubkeys", "fee", "encrypted_payment_id")}
 
 
 def sample_coinbase_output():
@@ -398,7 +413,7 @@ def sample_coinbase_output():
 
 def sample_scan_block(height=77, txs=1, outputs=1):
     return {"height": height, "id": "ab" * 32, "first_output_index": 1000,
-            "coinbase": {"version": 2, "height": height, "outputs": [sample_coinbase_output() for _ in range(outputs)],
+            "coinbase": {"version": 3, "height": height, "outputs": [sample_coinbase_output() for _ in range(outputs)],
                          "extra": ""},
             "txs": [sample_prefix() for _ in range(txs)]}
 
@@ -406,18 +421,32 @@ def sample_scan_block(height=77, txs=1, outputs=1):
 def genesis_scan_block():
     """The genesis block as the wallet sees it: no coinbase outputs and no transactions."""
     return {"height": 0, "id": "cd" * 32, "first_output_index": 0,
-            "coinbase": {"version": 2, "height": 0, "outputs": [], "extra": ""}, "txs": []}
+            "coinbase": {"version": 3, "height": 0, "outputs": [], "extra": ""}, "txs": []}
 
 
 def sample_block(height=7, txs=1):
-    return {"header": {"version": 2, "prev_id": "11" * 32, "timestamp": 1700000000, "tx_root": "22" * 32,
+    return {"header": {"version": 3, "prev_id": "11" * 32, "timestamp": 1700000000, "tx_root": "22" * 32,
                        "nonce": 0, "mix": "00" * 64},
-            "coinbase": {"version": 2, "height": height, "outputs": [sample_coinbase_output()], "extra": ""},
+            "coinbase": {"version": 3, "height": height, "outputs": [sample_coinbase_output()], "extra": ""},
             "transactions": [sample_tx() for _ in range(txs)]}
 
 
-def sample_payout():
-    return {"onetime_address": h("0a"), "view_tag": h("0b", 3), "ephemeral_pubkey": h("0c"), "anchor_enc": h("0d", 16)}
+def sample_template_request(max_weight=3 * 1024 * 1024):
+    return {"type": "block_template", "spend_pubkey": h("0a"), "view_pubkey": h("0b"), "max_weight": max_weight}
+
+
+def sample_path(position=77, leaves=3, layers=2):
+    """A path: `leaves` outputs in its leaf chunk and a chunk for each of `layers` layers, alternating the two widths' worth
+    of points (none of it is a real tree: the codec does not look inside)."""
+    return {"position": position,
+            "leaves": [[v3.h(f"path {position} leaf {i} O", 32), v3.h(f"path {position} leaf {i} C", 32)]
+                       for i in range(leaves)],
+            "layers": [[v3.h(f"path {position} layer {k} {j}", 32) for j in range(1 + (k * 7) % MAX_CHUNK)]
+                       for k in range(layers)]}
+
+
+def sample_tree(n_leaves=1234, n_layers=3):
+    return {"n_leaves": n_leaves, "n_layers": n_layers, "root": v3.h(f"root {n_leaves}", 32)}
 
 
 def info(**kw):
@@ -430,17 +459,18 @@ def info(**kw):
 def sample_summary(height=12, txs=2):
     return {"height": height, "id": "%02x" % (height % 256) * 32, "timestamp": 1700000000 + 60 * height,
             "target": "00" * 3 + "0f" + "ff" * 28, "cumulative_work": "00" * 30 + "%04x" % (height * 7),
-            "size": 300 + 2000 * txs, "tx_count": txs, "coinbase_total": 2000012345}
+            "weight": 1500 * txs, "tx_count": txs, "coinbase_total": 2000012345}
 
 
 def genesis_summary():
     """The genesis block: no target, no coinbase, no transactions; its size is its header."""
     return {"height": 0, "id": "cd" * 32, "timestamp": 1700000000, "target": "00" * 32, "cumulative_work": "00" * 32,
-            "size": 146, "tx_count": 0, "coinbase_total": 0}
+            "weight": 0, "tx_count": 0, "coinbase_total": 0}
 
 
 def sample_pool_entry(i, received=1700000123):
-    return {"id": "%02x" % (i + 0x40) * 32, "received": received, "fee": 1000000 * (i + 1), "size": 1500 + i}
+    return {"id": "%02x" % (i + 0x40) * 32, "received": received, "fee": 1000000 * (i + 1), "size": 4500 + i,
+            "weight": 1500 + i}
 
 
 def chain_stats(**kw):
@@ -456,27 +486,29 @@ def valid_requests():
         ("authenticate", {"type": "auth", "cookie": "09" * 32}),
         ("tip", {"type": "tip"}),
         ("a block, the largest height", {"type": "block", "height": 2 ** 64 - 1}),
-        ("an output", {"type": "output", "index": 12}),
-        ("the number of outputs", {"type": "output_count"}),
         ("is a key image spent", {"type": "key_image_spent", "key_image": "08" * 32}),
         ("the rules", {"type": "rules"}),
-        ("check pow: a header", {"type": "check_pow", "height": 77, "header": v2.sample_header("cp")}),
-        ("check pow: the largest height and nonce", {"type": "check_pow", "height": 2 ** 64 - 1, "header": v2.sample_header("cp2", nonce=2 ** 64 - 1, mix="ff" * 64)}),
-        ("many outputs: one", {"type": "outputs", "indexes": [12]}),
-        ("many outputs: the largest index and a repeat", {"type": "outputs", "indexes": [2 ** 64 - 1, 5, 5, 0]}),
-        ("many outputs: sixty-four", {"type": "outputs", "indexes": list(range(100, 164))}),
+        ("check pow: a header", {"type": "check_pow", "height": 77, "header": v3.sample_header("cp")}),
+        ("check pow: the largest height and nonce", {"type": "check_pow", "height": 2 ** 64 - 1,
+                                                     "header": dict(v3.sample_header("cp2", nonce=2 ** 64 - 1),
+                                                                    mix="ff" * 64)}),
+        ("spend paths: one", {"type": "spend_paths", "indexes": [12]}),
+        ("spend paths: the largest index and a repeat", {"type": "spend_paths", "indexes": [2 ** 64 - 1, 5, 5, 0]}),
+        ("spend paths: the most at once", {"type": "spend_paths", "indexes": list(range(1000, 1000 + MAX_SPEND_PATHS))}),
         ("are many key images spent: one", {"type": "key_images_spent", "key_images": ["08" * 32]}),
         ("are many key images spent: sixty-four", {"type": "key_images_spent",
                                                      "key_images": ["%02x" % (i + 1) * 32 for i in range(64)]}),
         ("submit a transaction", {"type": "submit_tx", "tx": sample_tx()}),
         ("submit a transaction with three inputs", {"type": "submit_tx", "tx": sample_tx(3)}),
+        ("submit a transaction with one input and three outputs (a key for each)",
+         {"type": "submit_tx", "tx": v3.sample_tx("control three", n_in=1, n_out=3, proof=40)}),
         ("the node's status", {"type": "info"}),
         ("stop", {"type": "stop"}),
         ("one block", {"type": "blocks", "from": 5, "count": 1}),
         ("the most blocks at once", {"type": "blocks", "from": 0, "count": 64}),
-        ("a block template", {"type": "block_template", "payout": sample_payout(), "max_body_bytes": 1000000}),
-        ("a block template, no transactions wanted", {"type": "block_template", "payout": sample_payout(),
-                                                      "max_body_bytes": 0}),
+        ("a block template", sample_template_request()),
+        ("a block template, no transactions wanted", sample_template_request(0)),
+        ("a block template, any weight", sample_template_request(2 ** 64 - 1)),
         ("a mined block", {"type": "submit_block", "block": sample_block(txs=0)}),
         ("a mined block with two transactions", {"type": "submit_block", "block": sample_block(txs=2)}),
         ("one block summary", {"type": "headers", "from": 7, "count": 1}),
@@ -487,32 +519,39 @@ def valid_requests():
 
 
 def valid_responses():
-    out_rec = {"onetime_address": h("01"), "amount_commitment": h("02"), "public_amount": 3, "height": 4,
-               "coinbase": True}
     return [
         ("authenticated", {"type": "authed"}),
         ("the tip", {"type": "tip", "height": 5, "id": "01" * 32}),
         ("no such block", {"type": "block", "block": None}),
         ("a block", {"type": "block", "block": sample_scan_block()}),
         ("the genesis block: a coinbase with no outputs", {"type": "block", "block": genesis_scan_block()}),
-        ("no such output", {"type": "output", "output": None}),
-        ("a coinbase output", {"type": "output", "output": out_rec}),
-        ("an ordinary output", {"type": "output", "output": dict(out_rec, coinbase=False, public_amount=0)}),
-        ("the number of outputs", {"type": "output_count", "count": 99}),
         ("spent", {"type": "spent", "spent": True}),
         ("not spent", {"type": "spent", "spent": False}),
         ("the mix is right", {"type": "pow_checked", "ok": True}),
         ("the mix is wrong", {"type": "pow_checked", "ok": False}),
-        ("many outputs: none of them exists", {"type": "outputs_many", "outputs": [None]}),
-        ("many outputs: a mix", {"type": "outputs_many", "outputs": [out_rec, None, dict(out_rec, coinbase=False, public_amount=0), None]}),
-        ("many outputs: thirty-two", {"type": "outputs_many", "outputs": [dict(out_rec, height=i) for i in range(32)]}),
+        ("spend paths: an output not in the tree", {"type": "spend_paths", "reference_height": 70, "tree": sample_tree(),
+                                                    "paths": [None]}),
+        ("spend paths: one", {"type": "spend_paths", "reference_height": 70, "tree": sample_tree(),
+                              "paths": [sample_path()]}),
+        ("spend paths: a mix", {"type": "spend_paths", "reference_height": 2 ** 64 - 1,
+                                "tree": sample_tree(2 ** 64 - 1, MAX_PATH_LAYERS),
+                                "paths": [sample_path(1, 1, 0), None, sample_path(2 ** 64 - 1, LEAF_CHUNK, 5), None]}),
+        ("spend paths: the widest chunks and the most layers",
+         {"type": "spend_paths", "reference_height": 9, "tree": sample_tree(10 ** 9, MAX_PATH_LAYERS),
+          "paths": [dict(sample_path(5, LEAF_CHUNK, MAX_PATH_LAYERS),
+                         layers=[[v3.h(f"wide {k} {j}", 32) for j in range(MAX_CHUNK if k == 0 else 1)]
+                                 for k in range(MAX_PATH_LAYERS)])]}),
+        ("spend paths: an empty tree", {"type": "spend_paths", "reference_height": 0,
+                                        "tree": {"n_leaves": 0, "n_layers": 0, "root": "00" * 32}, "paths": [None, None]}),
         ("many: one answer", {"type": "spent_many", "spent": [True]}),
         ("many: a mix of answers", {"type": "spent_many", "spent": [True, False, False, True, False]}),
         ("many: sixty-four answers", {"type": "spent_many", "spent": [i % 3 == 0 for i in range(64)]}),
-        ("the rules", {"type": "rules", "chain_id": "07" * 32, "ring_size": 16, "coinbase_maturity": 60,
-                       "spend_maturity": 10, "next_height": 11, "reward": 2000000000, "median": 150000, "max_inputs": 0}),
-        ("the rules of a network with a limit on inputs", {"type": "rules", "chain_id": "08" * 32, "ring_size": 16, "coinbase_maturity": 60,
-                       "spend_maturity": 10, "next_height": 11, "reward": 2000000000, "median": 150000, "max_inputs": 32}),
+        ("the rules", {"type": "rules", "chain_id": "07" * 32, "next_height": 11, "reward": 2000000000,
+                       "median": 150000, "tree_layers": 3}),
+        ("the rules of an empty tree", {"type": "rules", "chain_id": "08" * 32, "next_height": 1, "reward": 2000000000,
+                                        "median": 150000, "tree_layers": 0}),
+        ("the rules with the most layers", {"type": "rules", "chain_id": "09" * 32, "next_height": 2 ** 64 - 1,
+                                            "reward": 2 ** 64 - 1, "median": 2 ** 64 - 1, "tree_layers": MAX_PATH_LAYERS}),
         ("a transaction was accepted", {"type": "tx_accepted", "id": "03" * 32}),
         ("a pruned node's status", info()),
         ("an archive node's status", info(kind="archive", syncing=False)),
@@ -521,9 +560,10 @@ def valid_responses():
         ("no blocks", {"type": "blocks", "blocks": []}),
         ("two blocks", {"type": "blocks", "blocks": [sample_scan_block(1), sample_scan_block(2, txs=2, outputs=2)]}),
         ("genesis and the block after it", {"type": "blocks", "blocks": [genesis_scan_block(), sample_scan_block(1)]}),
-        ("a template", {"type": "template", "height": 7, "target": "00" * 4 + "ff" * 28, "block": sample_block()}),
+        ("a template", {"type": "template", "height": 7, "target": "00" * 4 + "ff" * 28, "anchor": h("5a", 16),
+                        "block": sample_block()}),
         ("a template with no transactions", {"type": "template", "height": 1, "target": "7f" + "ff" * 31,
-                                             "block": sample_block(1, txs=0)}),
+                                             "anchor": h("01", 16), "block": sample_block(1, txs=0)}),
         ("the block is in the chain", {"type": "block_submitted", "id": "33" * 32, "in_chain": True}),
         ("the block lost a race", {"type": "block_submitted", "id": "44" * 32, "in_chain": False}),
         ("no block summaries", {"type": "headers", "blocks": []}),
@@ -531,7 +571,7 @@ def valid_responses():
                                                   "blocks": [genesis_summary(), sample_summary(1, 0), sample_summary(2)]}),
         ("a summary with the largest numbers", {"type": "headers", "blocks": [
             {"height": 2 ** 64 - 1, "id": "ff" * 32, "timestamp": 2 ** 64 - 1, "target": "ff" * 32,
-             "cumulative_work": "ff" * 32, "size": 2 ** 64 - 1, "tx_count": 2 ** 32 - 1, "coinbase_total": 2 ** 64 - 1}]}),
+             "cumulative_work": "ff" * 32, "weight": 2 ** 64 - 1, "tx_count": 2 ** 32 - 1, "coinbase_total": 2 ** 64 - 1}]}),
         ("an empty pool", {"type": "mempool", "total": 0, "txs": []}),
         ("a pool of three", {"type": "mempool", "total": 3,
                              "txs": [sample_pool_entry(0), sample_pool_entry(1, received=0), sample_pool_entry(2)]}),
@@ -576,9 +616,12 @@ def invalid_cases():
     # nothing, and kinds that do not exist
     for d in ("request", "response"):
         out.append(bad(d, "an empty body", b"", "length"))
-    for k in (0, 20, 0x80, 0x8F, 0xFE):
+    for k in (0, 21, 0x80, 0x8F, 0xFE):
         out.append(bad("request", f"unknown request kind {k}", bytes([k]), "kind"))
-    for k in (0, 1, 11, 12, 13, 14, 15, 17, 0x94, 0xFE):
+    for k in RETIRED:
+        out.append(bad("request", f"the retired request kind {k} (version 2's ring members)", bytes([k]) + u64(1), "kind"))
+        out.append(bad("response", f"the retired answer kind {k | ANSWER}", bytes([k | ANSWER, 0]), "kind"))
+    for k in (0, 1, 11, 12, 13, 14, 15, 17, 0x95, 0xFE):
         out.append(bad("response", f"unknown response kind {k}", bytes([k]), "kind"))
     # every message cut short and with a byte too many
     for note, m in valid_requests():
@@ -594,7 +637,7 @@ def invalid_cases():
         out.append(bad("response", f"{note}: with a trailing byte", body + b"\0", "trailing"))
     # flags are 0 or 1
     out.append(bad("response", "the in-chain flag is 2", bytes([13 | ANSWER]) + bytes(32) + bytes([2]), "malformed"))
-    for k, name in ((3, "block"), (4, "output"), (6, "spent")):
+    for k, name in ((3, "block"), (6, "spent")):
         out.append(bad("response", f"the {name} flag is 2", bytes([k | ANSWER, 2]), "malformed"))
     # a node kind is 0 or 1
     info_body = bytearray(enc_response(info()))
@@ -614,17 +657,37 @@ def invalid_cases():
     out.append(bad("response", "spent_many: a flag of 2", u8(14 | ANSWER) + u32(2) + bytes([1, 2]), "malformed"))
     out.append(bad("response", "spent_many: fewer flags than the count", u8(14 | ANSWER) + u32(3) + bytes([1, 0]), "malformed"))
     out.append(bad("request", "key_images_spent: fewer ids than the count", u8(14) + u32(2) + bytes(32), "malformed"))
-    # many outputs: how many, and the shape
-    for count in (0, MAX_OUTPUTS_PER_REQUEST + 1, 2 ** 32 - 1):
-        out.append(bad("request", f"outputs: a count of {count}", u8(15) + u32(count), "malformed"))
-        out.append(bad("response", f"outputs_many: a count of {count}", u8(15 | ANSWER) + u32(count), "malformed"))
-    out.append(bad("request", "outputs: fewer indexes than the count", u8(15) + u32(2) + u64(1), "malformed"))
-    out.append(bad("response", "outputs_many: an entry flag of 2", u8(15 | ANSWER) + u32(1) + bytes([2]), "malformed"))
-    out.append(bad("response", "outputs_many: an output cut short", u8(15 | ANSWER) + u32(1) + bytes([1]) + bytes(10), "malformed"))
-    out.append(bad("response", "outputs_many: an output that is not a coinbase flag 0 or 1",
-                   u8(15 | ANSWER) + u32(1) + bytes([1]) + enc_stored_output({"onetime_address": "01" * 32, "amount_commitment": "02" * 32, "public_amount": 3, "height": 4, "coinbase": True})[:-1] + bytes([2]), "malformed"))
+    # spend paths: how many, and the shape of a path
+    for count in (0, MAX_SPEND_PATHS + 1, 2 ** 32 - 1):
+        out.append(bad("request", f"spend_paths: a count of {count}", u8(20) + u32(count), "malformed"))
+    head = u8(20 | ANSWER) + u64(5) + enc_tree(sample_tree())
+    for count in (0, MAX_SPEND_PATHS + 1, 2 ** 32 - 1):
+        out.append(bad("response", f"spend_paths answer: a count of {count}", head + u32(count), "malformed"))
+    out.append(bad("request", "spend_paths: fewer indexes than the count", u8(20) + u32(2) + u64(1), "malformed"))
+    out.append(bad("response", "spend_paths answer: an entry flag of 2", head + u32(1) + bytes([2]), "malformed"))
+    out.append(bad("response", "spend_paths answer: fewer entries than the count", head + u32(2) + bytes([0]), "malformed"))
+    p = sample_path()
+    out.append(bad("response", "a path with no leaves", head + u32(1) + bytes([1]) + u64(1) + u32(0) + u32(0), "malformed"))
+    out.append(bad("response", f"a path of {LEAF_CHUNK + 1} leaves, every one there",
+                   head + u32(1) + bytes([1]) + u64(1) + u32(LEAF_CHUNK + 1) + bytes(64 * (LEAF_CHUNK + 1)) + u32(0),
+                   "malformed"))
+    out.append(bad("response", f"a path of {MAX_PATH_LAYERS + 1} layers",
+                   head + u32(1) + bytes([1]) + u64(1) + u32(1) + bytes(64) + u32(MAX_PATH_LAYERS + 1)
+                   + (u32(1) + bytes(32)) * (MAX_PATH_LAYERS + 1), "malformed"))
+    out.append(bad("response", "a layer chunk with nothing in it",
+                   head + u32(1) + bytes([1]) + u64(1) + u32(1) + bytes(64) + u32(1) + u32(0), "malformed"))
+    out.append(bad("response", f"a layer chunk of {MAX_CHUNK + 1}, every one there",
+                   head + u32(1) + bytes([1]) + u64(1) + u32(1) + bytes(64) + u32(1) + u32(MAX_CHUNK + 1)
+                   + bytes(32 * (MAX_CHUNK + 1)), "malformed"))
+    out.append(bad("response", "a path cut short", head + u32(1) + bytes([1]) + enc_path(p)[:-1], "malformed"))
+    out.append(bad("response", "spend_paths answer: no tree", u8(20 | ANSWER) + u64(5), "malformed"))
+    # the rules: at most MAX_PATH_LAYERS layers
+    rules = bytearray(enc_response({"type": "rules", "chain_id": "07" * 32, "next_height": 1, "reward": 2,
+                                    "median": 3, "tree_layers": 0}))
+    rules[-1] = MAX_PATH_LAYERS + 1
+    out.append(bad("response", f"the rules with {MAX_PATH_LAYERS + 1} layers", bytes(rules), "malformed"))
     # check_pow: a header cut short, a trailing byte, a flag that is not 0 or 1
-    good = u8(16) + u64(5) + v2.enc_header(v2.sample_header("cp"))
+    good = u8(16) + u64(5) + v3.enc_header(v3.sample_header("cp"))
     out.append(bad("request", "check_pow: a header one byte short", good[:-1], "malformed"))
     out.append(bad("request", "check_pow: no height", u8(16), "malformed"))
     out.append(bad("response", "pow_checked: a flag of 2", u8(16 | ANSWER) + bytes([2]), "malformed"))
@@ -685,7 +748,9 @@ def build():
                        "(reference/tools/make_vectors_control.py).",
         "limits": {"max_frame": MAX_FRAME, "max_text": MAX_TEXT, "max_name": MAX_NAME,
                    "max_blocks_per_request": MAX_BLOCKS_PER_REQUEST, "max_key_images": MAX_KEY_IMAGES,
-                   "max_outputs_per_request": MAX_OUTPUTS_PER_REQUEST, "max_mempool_list": MAX_MEMPOOL_LIST},
+                   "max_spend_paths": MAX_SPEND_PATHS, "max_path_layers": MAX_PATH_LAYERS, "leaf_chunk": LEAF_CHUNK,
+                   "max_chunk": MAX_CHUNK, "max_mempool_list": MAX_MEMPOOL_LIST},
+        "retired": list(RETIRED),
         "kinds": {"requests": REQUESTS, "responses": {k: v | ANSWER for k, v in RESPONSES.items()}, "error": ERROR},
         "valid": valid_cases(),
         "invalid": invalid_cases(),

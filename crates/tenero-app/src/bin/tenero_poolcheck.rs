@@ -13,7 +13,7 @@ tenero-poolcheck: checks a mining pool against the pool protocol (EXPERIMENTAL, 
   tenero-poolcheck --pool HOST:PORT --network NET (--pool-key HEX | --pool-unpinned) [--address ADDR] [--wait SECS]
 
   --pool HOST:PORT   the pool to check
-  --network NET      the network it should serve: test, dev, beta or alpha
+  --network NET      the network it should serve: gamma, dev or test
   --pool-key HEX     the pool's public key (64 hexadecimal digits): the check fails if the pool proves another
   --pool-unpinned    check without a key
   --address ADDR     an address to give the pool as the one to pay (default: a fixed test address); nothing is ever sent to it
@@ -81,18 +81,15 @@ fn main() {
     if key.is_none() && !unpinned {
         fail("give --pool-key, or --pool-unpinned to check without a key".into());
     }
-    let network = Network::parse(&network).unwrap_or_else(|| {
-        fail(format!(
-            "--network: `{network}` is not test, dev, beta or alpha"
-        ))
-    });
+    let network = Network::parse(&network)
+        .unwrap_or_else(|| fail(format!("--network: `{network}` is not gamma, dev or test")));
     let addr = pool
         .to_socket_addrs()
         .ok()
         .and_then(|mut a| a.next())
         .unwrap_or_else(|| fail(format!("--pool: cannot look up `{pool}`")));
     let address = address.unwrap_or_else(|| {
-        tenero_wallet::Wallet::from_seed(&[0x11; 32], 0)
+        tenero_wallet::Wallet::from_seed(&[0x11; 32], network.wallet_network(), 0)
             .address()
             .to_text()
     });

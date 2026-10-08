@@ -2,8 +2,8 @@
 //! longer holds on honest input is found without a fuzzer. A crash a fuzzer finds becomes a case in `regressions.rs`.
 
 use tenero_fuzzcases::{
-    control_bodies, decode_v2, engine_messages, fixture, noise_handshake, op, record, seeds,
-    wallet_proofs, wire_stream,
+    control_bodies, decode_v3, engine_messages, fixture, noise_handshake, op, record, seeds,
+    wallet_text, wire_stream,
 };
 
 fn bytes(seed: u64, n: usize) -> Vec<u8> {
@@ -22,10 +22,10 @@ fn bytes(seed: u64, n: usize) -> Vec<u8> {
 fn every_seed_runs_through_its_target() {
     let all = seeds();
     for target in [
-        "decode_v2",
+        "decode_v3",
         "wire_stream",
         "engine_messages",
-        "wallet_proofs",
+        "wallet_text",
         "noise_handshake",
     ] {
         assert!(
@@ -35,12 +35,12 @@ fn every_seed_runs_through_its_target() {
     }
     for (target, name, data) in &all {
         match *target {
-            "decode_v2" => {
-                decode_v2(data);
+            "decode_v3" => {
+                decode_v3(data);
                 control_bodies(data);
             }
             "wire_stream" => wire_stream(data),
-            "wallet_proofs" => wallet_proofs(data),
+            "wallet_text" => wallet_text(data),
             "engine_messages" => {
                 engine_messages(data);
             }
@@ -55,27 +55,42 @@ fn the_decoders_and_the_stream_survive_pseudo_random_bytes() {
     for seed in 1..=400u64 {
         let n = (seed as usize * 7) % 900;
         let b = bytes(seed, n);
-        decode_v2(&b);
+        decode_v3(&b);
         control_bodies(&b);
         wire_stream(&b);
-        wallet_proofs(&b);
+        wallet_text(&b);
     }
 }
 
 #[test]
-fn the_proof_checker_survives_every_single_byte_change_of_an_honest_proof() {
-    let f = tenero_fuzzcases::proof_fixture();
-    for p in &f.proofs {
-        let good = p.to_bytes();
+fn one_character_changed_in_an_honest_address_is_always_caught() {
+    let all = tenero_fuzzcases::address_texts();
+    assert!(all.len() >= 9, "every network and kind");
+    let alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    for good in &all {
+        wallet_text(good.as_bytes());
+        assert!(tenero_wallet::Address::parse_any(good).is_ok(), "{good}");
         for i in 0..good.len() {
-            for flip in [1u8, 0x80, 0xff] {
-                let mut bad = good.clone();
-                bad[i] ^= flip;
-                wallet_proofs(&bad);
+            for c in ['1', 'z', 'L'] {
+                let mut bad: Vec<char> = good.chars().collect();
+                if bad[i] == c {
+                    continue;
+                }
+                bad[i] = c;
+                let bad: String = bad.into_iter().collect();
+                wallet_text(bad.as_bytes());
+                assert!(
+                    tenero_wallet::Address::parse_any(&bad).is_err(),
+                    "{bad} (character {i} of {good}) was taken"
+                );
             }
         }
-        // and an honest one is checked, not just survived
-        assert!(tenero_wallet::proofs::check(p, &f.out).is_ok());
+        // a character outside the alphabet anywhere is refused too
+        for bad_char in ['0', 'O', 'I', 'l', '+'] {
+            assert!(!alphabet.contains(bad_char));
+            let bad = format!("{}{bad_char}{}", &good[..10], &good[11..]);
+            assert!(tenero_wallet::Address::parse_any(&bad).is_err());
+        }
     }
 }
 
@@ -116,7 +131,7 @@ fn an_input_cut_short_is_not_a_panic() {
     let _ = engine_messages(&[0, op::FRAME, 0, 255, 255, 1]); // a length that runs past the end
     wire_stream(&[]);
     wire_stream(&[3]);
-    decode_v2(&[]);
+    decode_v3(&[]);
     control_bodies(&[]);
 }
 

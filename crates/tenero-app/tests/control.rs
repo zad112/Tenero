@@ -17,15 +17,17 @@ use tenero_app::control::{
 };
 use tenero_app::server::{start, start_with, ControlConfig, ControlHook, Meta};
 use tenero_chain::Sha256Pow;
-use tenero_core::v2::{
+use tenero_core::v3::{
     Coinbase, CoinbaseOutput, Input, Output, Prunable, Transaction, TxPrefix, VERSION,
 };
-use tenero_net::sim::{mine_test_block, test_chain_params, LABEL};
+use tenero_net::sim::{test_chain_params, LABEL};
 use tenero_net::transport::Hooks;
 use tenero_net::{Engine, EngineConfig, Event};
 use tenero_node::{Node, NodeConfig};
-use tenero_store::{Store, StoredOutput};
-use tenero_wallet::{coinbase_payout_random, Address, ChainView, Rules, ScanBlock, Wallet};
+use tenero_store::{Store, TreeState};
+use tenero_tree::PathBytes;
+use tenero_wallet::testing::{test_block_to, READY};
+use tenero_wallet::{Address, ChainView, Network, Rules, ScanBlock, SpendPaths, Wallet};
 
 const T0: u64 = 1_700_000_000;
 
@@ -44,16 +46,16 @@ fn sample_tx() -> Transaction {
                     amount_commitment: [3; 32],
                     amount_enc: [4; 8],
                     view_tag: [5; 3],
-                    ephemeral_pubkey: [6; 32],
                     anchor_enc: [7; 16],
                 };
                 2
             ],
+            ephemeral_pubkeys: vec![[6; 32]],
             fee: 12345,
-            extra: vec![9, 9],
+            encrypted_payment_id: [9; 8],
         },
         prunable: Prunable {
-            rings: vec![vec![1, 2]],
+            reference_height: 70,
             proof_data: vec![8; 10],
         },
     }
@@ -80,9 +82,9 @@ fn sample_scan_block() -> ScanBlock {
     }
 }
 
-fn sample_block() -> tenero_core::v2::Block {
-    tenero_core::v2::Block {
-        header: tenero_core::v2::BlockHeader {
+fn sample_block() -> tenero_core::v3::Block {
+    tenero_core::v3::Block {
+        header: tenero_core::v3::BlockHeader {
             version: VERSION,
             prev_id: [1; 32],
             timestamp: 5,
@@ -92,6 +94,25 @@ fn sample_block() -> tenero_core::v2::Block {
         },
         coinbase: sample_scan_block().coinbase,
         transactions: vec![sample_tx()],
+    }
+}
+
+fn sample_paths() -> SpendPaths {
+    SpendPaths {
+        reference_height: 70,
+        tree: TreeState {
+            n_leaves: 99,
+            n_layers: 2,
+            root: [5; 32],
+        },
+        paths: vec![
+            Some(PathBytes {
+                position: 7,
+                leaves: vec![([1; 32], [2; 32]); 9],
+                layers: vec![vec![[3; 32]; 2]],
+            }),
+            None,
+        ],
     }
 }
 
@@ -115,13 +136,11 @@ fn requests() -> Vec<Request> {
         Request::Auth { cookie: [9; 32] },
         Request::Tip,
         Request::Block { height: u64::MAX },
-        Request::Output { index: 12 },
-        Request::OutputCount,
         Request::KeyImageSpent { key_image: [8; 32] },
         Request::KeyImagesSpent {
             key_images: vec![[8; 32], [9; 32]],
         },
-        Request::Outputs {
+        Request::SpendPaths {
             indexes: vec![3, 1, 4],
         },
         Request::CheckPow {
@@ -134,13 +153,9 @@ fn requests() -> Vec<Request> {
         Request::Stop,
         Request::Blocks { from: 5, count: 64 },
         Request::BlockTemplate {
-            payout: tenero_node::Payout {
-                onetime_address: [1; 32],
-                view_tag: [2; 3],
-                ephemeral_pubkey: [3; 32],
-                anchor_enc: [4; 16],
-            },
-            max_body_bytes: 1_000_000,
+            spend_pubkey: [1; 32],
+            view_pubkey: [2; 32],
+            max_weight: 1_000_000,
         },
         Request::SubmitBlock(sample_block()),
         Request::Headers { from: 0, count: 1 },
@@ -158,38 +173,24 @@ fn responses() -> Vec<Response> {
         },
         Response::Block(None),
         Response::Block(Some(sample_scan_block())),
-        Response::Output(None),
-        Response::Output(Some(StoredOutput {
-            onetime_address: [1; 32],
-            amount_commitment: [2; 32],
-            public_amount: 3,
-            height: 4,
-            coinbase: true,
-        })),
-        Response::OutputCount(99),
+        Response::SpendPaths(sample_paths()),
         Response::PowChecked(true),
         Response::PowChecked(false),
         Response::Spent(true),
         Response::Spent(false),
         Response::Rules(Rules {
             chain_id: [7; 32],
-            ring_size: 16,
-            coinbase_maturity: 60,
-            spend_maturity: 10,
             next_height: 11,
             reward: 2_000_000_000,
             median: 150_000,
-            max_inputs: None,
+            tree_layers: 3,
         }),
         Response::Rules(Rules {
             chain_id: [8; 32],
-            ring_size: 16,
-            coinbase_maturity: 60,
-            spend_maturity: 10,
-            next_height: 11,
+            next_height: 1,
             reward: 2_000_000_000,
             median: 150_000,
-            max_inputs: Some(32),
+            tree_layers: 0,
         }),
         Response::TxAccepted { id: [3; 32] },
         Response::Info(sample_info()),
@@ -203,6 +204,7 @@ fn responses() -> Vec<Response> {
             block: sample_block(),
             height: 9,
             target: [0xaa; 32],
+            anchor: [0x5a; 16],
         }),
         Response::BlockSubmitted {
             id: [8; 32],
@@ -244,8 +246,6 @@ fn an_answer_has_its_requests_kind_with_the_top_bit_set() {
             },
         ),
         (Request::Block { height: 0 }, Response::Block(None)),
-        (Request::Output { index: 0 }, Response::Output(None)),
-        (Request::OutputCount, Response::OutputCount(0)),
         (
             Request::KeyImageSpent { key_image: [0; 32] },
             Response::Spent(false),
@@ -257,8 +257,8 @@ fn an_answer_has_its_requests_kind_with_the_top_bit_set() {
             Response::SpentMany(vec![false]),
         ),
         (
-            Request::Outputs { indexes: vec![0] },
-            Response::OutputsMany(vec![None]),
+            Request::SpendPaths { indexes: vec![0] },
+            Response::SpendPaths(sample_paths()),
         ),
         (
             Request::CheckPow {
@@ -294,7 +294,8 @@ fn malformed_requests_are_refused_not_guessed() {
         Request::from_body(&[]),
         Err(ControlError::BadLength(0))
     ));
-    for kind in [0u8, 20, 0x80, 0xFF] {
+    // 4, 5 and 15 were version 2's requests for ring members: retired, so unknown
+    for kind in [0u8, 4, 5, 15, 21, 0x80, 0xFF] {
         assert_eq!(
             Request::from_body(&[kind]),
             Err(ControlError::UnknownKind(kind))
@@ -338,7 +339,7 @@ fn malformed_responses_are_refused_too() {
         );
     }
     // a flag byte is 0 or 1, nothing else
-    for body in [vec![0x80 | 3, 2], vec![0x80 | 4, 2], vec![0x80 | 6, 2]] {
+    for body in [vec![0x80 | 3, 2], vec![0x80 | 6, 2], vec![0x80 | 16, 2]] {
         assert!(Response::from_body(&body).is_err());
     }
     // a node kind is 0 or 1
@@ -421,14 +422,10 @@ impl Rig {
             std::env::temp_dir().join(format!("tenero-app-{}-{tag}.redb", std::process::id()));
         remove(&path);
         let store = Store::open(&path, LABEL, tenero_core::v2::ids::PowKind::Sha256).unwrap();
-        let mut params = test_chain_params();
-        params.ring_size = 2;
-        params.coinbase_maturity = 1;
-        params.spend_maturity = 1;
         Rig {
             path,
             store,
-            params,
+            params: test_chain_params(),
         }
     }
 
@@ -453,10 +450,13 @@ impl Drop for Rig {
 
 fn mine(engine: &mut Engine<'_>, to: &Address) {
     let h = engine.node().tip().unwrap().0 + 1;
-    let payout = coinbase_payout_random(to, h).unwrap();
     let ts = T0 + 60 * h;
-    let block = mine_test_block(engine.node(), ts, payout);
+    let block = test_block_to(engine.node(), to, ts);
     engine.handle(ts * 1000 + 10_000, Event::LocalBlock(block));
+}
+
+fn wallet(tag: u8) -> Wallet {
+    Wallet::from_seed(&[tag; 32], Network::Test, 0)
 }
 
 fn meta() -> Meta {
@@ -537,11 +537,8 @@ fn a_wallet_pays_another_through_the_control_interface() {
     let shutdown = Arc::new(AtomicBool::new(false));
     let (handle, mut hook) =
         start("127.0.0.1:0".parse().unwrap(), COOKIE, shutdown, meta()).unwrap();
-    let (mut alice, mut bob) = (
-        Wallet::from_seed(&[1; 32], 0),
-        Wallet::from_seed(&[2; 32], 0),
-    );
-    for _ in 0..6 {
+    let (mut alice, mut bob) = (wallet(1), wallet(2));
+    for _ in 0..READY {
         mine(&mut engine, &alice.address());
     }
     let addr = handle.addr;
@@ -550,7 +547,11 @@ fn a_wallet_pays_another_through_the_control_interface() {
     let (alice, built, balance_before) = with_client(&mut engine, &mut hook, move || {
         let mut remote = RemoteNode::connect(addr, &COOKIE).unwrap();
         let report = alice.sync(&remote).unwrap();
-        assert_eq!(report.blocks_scanned, 7, "the genesis block and six more");
+        assert_eq!(
+            report.blocks_scanned,
+            READY + 1,
+            "the genesis block and the rest"
+        );
         let before = alice.balance(&remote).unwrap();
         assert!(before.spendable > 0);
         let built = alice
@@ -573,8 +574,7 @@ fn a_wallet_pays_another_through_the_control_interface() {
     });
     assert_eq!(bob_total, 1_000_000_000);
     assert!(balance_before.total > 0);
-    // (a floor: the payment really went through the interface. It used to be 20 and more before the wallet asked for key images and
-    // ring members in batches)
+    // (a floor: the payment really went through the interface, its coins' paths included)
     assert!(
         hook.answered > 10,
         "{} requests were answered",
@@ -593,45 +593,58 @@ fn a_remote_view_of_the_chain_matches_the_nodes_own() {
         meta(),
     )
     .unwrap();
-    let alice = Wallet::from_seed(&[1; 32], 0);
-    for _ in 0..4 {
+    let alice = wallet(1);
+    // the first rewards are in the curve tree by block 66
+    for _ in 0..66 {
         mine(&mut engine, &alice.address());
     }
     let addr = handle.addr;
     let tip = ChainView::tip(engine.node()).unwrap();
-    let count = ChainView::output_count(engine.node()).unwrap();
+    assert_eq!(tip.0, 66);
     let rules = ChainView::rules(engine.node()).unwrap();
-    let blocks: Vec<_> = (0..=5)
+    let blocks: Vec<_> = (0..=67)
         .map(|h| ChainView::block(engine.node(), h).unwrap())
         .collect();
-    let outputs: Vec<_> = (0..=count)
-        .map(|i| ChainView::output(engine.node(), i).unwrap())
-        .collect();
+    let wanted: Vec<u64> = (0..12).collect();
+    let paths = ChainView::spend_paths(engine.node(), &wanted).unwrap();
+    // the tree holds the first rewards (one output each), and an index past them has no path
+    let in_tree = paths.paths.iter().filter(|p| p.is_some()).count();
+    assert!(in_tree > 0);
+    assert_eq!(
+        in_tree as u64, paths.tree.n_leaves,
+        "every leaf is one of these"
+    );
+    assert!(paths.paths[..in_tree].iter().all(Option::is_some));
     with_client(&mut engine, &mut hook, move || {
         let remote = RemoteNode::connect(addr, &COOKIE).unwrap();
         assert_eq!(remote.tip().unwrap(), tip);
-        assert_eq!(remote.output_count().unwrap(), count);
         assert_eq!(remote.rules().unwrap(), rules);
+        assert!(rules.tree_layers >= 1);
         for (h, b) in blocks.iter().enumerate() {
             assert_eq!(&remote.block(h as u64).unwrap(), b, "block {h}");
         }
-        for (i, o) in outputs.iter().enumerate() {
-            assert_eq!(&remote.output(i as u64).unwrap(), o, "output {i}");
-        }
+        // the paths a spend is proven with: the node's own, byte for byte, `None` for an output not in the tree
+        assert_eq!(remote.spend_paths(&wanted).unwrap(), paths);
+        // more than one request's worth is split by the client, and still comes from one tree
+        let many = remote.spend_paths(&vec![2u64; 1200]).unwrap();
+        assert_eq!(many.paths.len(), 1200);
+        assert_eq!(many.tree, paths.tree);
+        assert!(many.paths.iter().all(|p| *p == paths.paths[2]));
+        assert!(remote.spend_paths(&[]).is_err(), "nothing to ask for");
         // blocks in a batch: the same as one by one, in order, and fewer than asked at the tip
         let batch = remote.blocks(1, 64).unwrap();
-        assert_eq!(batch.len(), 4, "blocks 1 to 4, and the tip is 4");
+        assert_eq!(batch.len(), 64);
         assert_eq!(
             batch.iter().map(|b| b.height).collect::<Vec<_>>(),
-            vec![1, 2, 3, 4]
+            (1..=64).collect::<Vec<_>>()
         );
         for b in &batch {
             assert_eq!(Some(b), blocks[b.height as usize].as_ref());
         }
         assert_eq!(remote.blocks(0, 2).unwrap().len(), 2);
-        assert_eq!(remote.blocks(3, 64).unwrap().len(), 2);
+        assert_eq!(remote.blocks(63, 64).unwrap().len(), 4, "63 to 66");
         assert!(
-            remote.blocks(5, 10).unwrap().is_empty(),
+            remote.blocks(67, 10).unwrap().is_empty(),
             "nothing past the tip"
         );
         assert!(remote.blocks(u64::MAX, 10).unwrap().is_empty());
@@ -645,17 +658,6 @@ fn a_remote_view_of_the_chain_matches_the_nodes_own() {
             remote.key_images_spent(&vec![[7; 32]; 5000]).unwrap().len(),
             5000
         );
-        // many outputs at once: the same answers as one at a time, `None` past the end, and a long list is split by the client
-        let n = remote.output_count().unwrap();
-        let wanted: Vec<u64> = (0..n + 2).collect();
-        let many = remote.outputs(&wanted).unwrap();
-        assert_eq!(many.len() as u64, n + 2);
-        for i in 0..n {
-            assert!(many[i as usize].is_some());
-            assert_eq!(many[i as usize], remote.output(i).unwrap(), "output {i}");
-        }
-        assert!(many[n as usize].is_none() && many[n as usize + 1].is_none());
-        assert_eq!(remote.outputs(&vec![0u64; 2500]).unwrap().len(), 2500);
         let info = remote.info().unwrap();
         assert_eq!((info.height, info.tip_id), tip);
         assert_eq!(info.network, "test");
@@ -675,7 +677,7 @@ fn a_transaction_the_node_would_not_take_comes_back_with_the_reason() {
         meta(),
     )
     .unwrap();
-    let alice = Wallet::from_seed(&[1; 32], 0);
+    let alice = wallet(1);
     for _ in 0..3 {
         mine(&mut engine, &alice.address());
     }
@@ -699,11 +701,8 @@ fn the_same_transaction_twice_is_refused_the_second_time() {
         meta(),
     )
     .unwrap();
-    let (mut alice, bob) = (
-        Wallet::from_seed(&[1; 32], 0),
-        Wallet::from_seed(&[2; 32], 0),
-    );
-    for _ in 0..5 {
+    let (mut alice, bob) = (wallet(1), wallet(2));
+    for _ in 0..READY {
         mine(&mut engine, &alice.address());
     }
     alice.sync(engine.node()).unwrap();
@@ -732,7 +731,7 @@ fn the_same_transaction_twice_is_refused_the_second_time() {
 
 #[test]
 fn a_block_explorer_sees_the_blocks_the_pool_and_the_numbers_as_the_node_has_them() {
-    use tenero_core::v2::Wire;
+    use tenero_core::v3::Wire;
     let rig = Rig::new("explorer");
     let mut engine = rig.engine();
     let (handle, mut hook) = start(
@@ -742,11 +741,8 @@ fn a_block_explorer_sees_the_blocks_the_pool_and_the_numbers_as_the_node_has_the
         meta(),
     )
     .unwrap();
-    let (mut alice, bob) = (
-        Wallet::from_seed(&[1; 32], 0),
-        Wallet::from_seed(&[2; 32], 0),
-    );
-    for _ in 0..5 {
+    let (mut alice, bob) = (wallet(1), wallet(2));
+    for _ in 0..READY {
         mine(&mut engine, &alice.address());
     }
     alice.sync(engine.node()).unwrap();
@@ -754,7 +750,7 @@ fn a_block_explorer_sees_the_blocks_the_pool_and_the_numbers_as_the_node_has_the
         .build_payment(engine.node(), &mut OsRng, &bob.address(), 1_000)
         .unwrap();
     let tx = built.tx.clone();
-    let tx_id = tenero_core::v2::ids::tx_id(&tx).unwrap();
+    let tx_id = tenero_core::v3::ids::tx_id(&tx).unwrap();
     let addr = handle.addr;
     // the transaction goes in through the interface (so the node's clock stamps it), then the pool is listed
     let (total, listed) = with_client(&mut engine, &mut hook, move || {
@@ -767,34 +763,34 @@ fn a_block_explorer_sees_the_blocks_the_pool_and_the_numbers_as_the_node_has_the
     assert_eq!(listed[0].id, tx_id);
     assert_eq!(listed[0].fee, built.tx.prefix.fee);
     assert_eq!(listed[0].size, built.tx.to_bytes().unwrap().len() as u64);
+    let tx_weight = tenero_core::v3::rules::tx_weight(&built.tx).unwrap();
+    assert_eq!(listed[0].weight, tx_weight);
+    assert!(
+        listed[0].weight < listed[0].size,
+        "the proof counts a quarter"
+    );
     // `pump`'s clock, in seconds
     assert_eq!(listed[0].received, T0 + 60 * 500);
 
-    // a block takes it in; the summaries must match the blocks as stored, byte for byte in size
+    // a block takes it in; the summaries must match the blocks as stored, and a block's weight is its transactions'
     mine(&mut engine, &alice.address());
     let store = engine.node().store();
     let tip = store.tip().unwrap().0;
-    assert_eq!(tip, 6);
+    assert_eq!(tip, READY + 1);
     let mut want = Vec::new();
     for h in 0..=tip {
         let index = store.block_index(h).unwrap().unwrap();
-        let (size, paid) = match store.get_block(h).unwrap() {
-            Some(b) => {
-                let paid: u64 = b.coinbase.outputs.iter().map(|o| o.amount).sum();
-                (
-                    b.into_full().unwrap().to_bytes().unwrap().len() as u64,
-                    paid,
-                )
-            }
-            None => (index.header.to_bytes().unwrap().len() as u64, 0),
-        };
+        let paid: u64 = store
+            .coinbase(h)
+            .unwrap()
+            .map_or(0, |c| c.outputs.iter().map(|o| o.amount).sum());
         want.push((
             h,
             index.block_id,
             index.header.timestamp,
             index.target,
             index.tx_count,
-            size,
+            if h == tip { tx_weight } else { 0 },
             paid,
         ));
     }
@@ -818,15 +814,16 @@ fn a_block_explorer_sees_the_blocks_the_pool_and_the_numbers_as_the_node_has_the
                 b.timestamp,
                 b.target,
                 b.tx_count,
-                b.size,
+                b.weight,
                 b.coinbase_total,
             )
         })
         .collect();
     assert_eq!(got, want);
-    assert_eq!(summaries[6].tx_count, 1, "the payment's block");
+    let last = tip as usize;
+    assert_eq!(summaries[last].tx_count, 1, "the payment's block");
     assert!(
-        summaries[6].coinbase_total > summaries[5].coinbase_total,
+        summaries[last].coinbase_total > summaries[last - 1].coinbase_total,
         "it paid a fee"
     );
     // the work grows block by block
@@ -836,7 +833,7 @@ fn a_block_explorer_sees_the_blocks_the_pool_and_the_numbers_as_the_node_has_the
     assert_eq!(total_after, 0, "the block emptied the pool");
     assert_eq!(stats.height, tip);
     assert_eq!(stats.next_target, next.target.to_be_bytes());
-    assert_eq!(stats.cumulative_work, summaries[6].cumulative_work);
+    assert_eq!(stats.cumulative_work, summaries[last].cumulative_work);
     assert_eq!(stats.next_reward, next.reward);
     assert_eq!(
         stats.emitted,
@@ -1098,7 +1095,7 @@ fn a_blocks_answer_stops_at_its_byte_budget_but_always_makes_progress() {
         cfg,
     )
     .unwrap();
-    let alice = Wallet::from_seed(&[1; 32], 0);
+    let alice = wallet(1);
     for _ in 0..4 {
         mine(&mut engine, &alice.address());
     }
@@ -1111,9 +1108,9 @@ fn a_blocks_answer_stops_at_its_byte_budget_but_always_makes_progress() {
         assert_eq!(one[0].height, 1);
         assert_eq!(remote.blocks(2, 5).unwrap()[0].height, 2);
         // a wallet scanning through such a node still gets everything
-        let mut wallet = Wallet::from_seed(&[1; 32], 0);
-        wallet.sync(&remote).unwrap();
-        assert_eq!(wallet.owned().len(), 4);
+        let mut w = wallet(1);
+        w.sync(&remote).unwrap();
+        assert_eq!(w.owned().len(), 4);
     });
 }
 
@@ -1249,11 +1246,8 @@ fn a_transaction_the_pool_will_not_keep_is_not_reported_accepted() {
         meta(),
     )
     .unwrap();
-    let (mut alice, bob) = (
-        Wallet::from_seed(&[1; 32], 0),
-        Wallet::from_seed(&[2; 32], 0),
-    );
-    for _ in 0..5 {
+    let (mut alice, bob) = (wallet(1), wallet(2));
+    for _ in 0..READY {
         mine(&mut engine, &alice.address());
     }
     alice.sync(engine.node()).unwrap();
@@ -1290,7 +1284,7 @@ fn a_remote_blocks_call_asks_for_a_sensible_count_whatever_the_wallet_wants() {
         meta(),
     )
     .unwrap();
-    let alice = Wallet::from_seed(&[1; 32], 0);
+    let alice = wallet(1);
     for _ in 0..70 {
         mine(&mut engine, &alice.address());
     }
@@ -1306,7 +1300,8 @@ fn a_remote_blocks_call_asks_for_a_sensible_count_whatever_the_wallet_wants() {
 
 #[test]
 fn a_block_with_too_many_transactions_is_refused_both_ways() {
-    use tenero_core::v2::{Wire, MAX_BLOCK_TXS};
+    use tenero_core::v2::MAX_BLOCK_TXS;
+    use tenero_core::v3::Wire;
     let mut block = sample_scan_block();
     block.coinbase.outputs.clear();
     block.txs = vec![sample_tx().prefix; MAX_BLOCK_TXS];
@@ -1335,18 +1330,18 @@ fn a_block_with_too_many_transactions_is_refused_both_ways() {
 }
 
 #[test]
-fn a_ring_size_that_does_not_fit_is_an_error_not_a_wrong_number() {
-    let r = Rules {
+fn a_tree_deeper_than_a_path_may_be_is_an_error_not_a_wrong_number() {
+    let r = |tree_layers| Rules {
         chain_id: [0; 32],
-        ring_size: (u32::MAX as usize) + 1,
-        coinbase_maturity: 1,
-        spend_maturity: 1,
         next_height: 1,
         reward: 1,
         median: 1,
-        max_inputs: None,
+        tree_layers,
     };
-    assert!(Response::Rules(r).to_body().is_err());
+    use tenero_app::control::MAX_PATH_LAYERS;
+    assert!(Response::Rules(r(MAX_PATH_LAYERS)).to_body().is_ok());
+    assert!(Response::Rules(r(MAX_PATH_LAYERS + 1)).to_body().is_err());
+    assert!(Response::Rules(r(256)).to_body().is_err());
 }
 
 // ---- a web page cannot talk to this port (M9, threat model G2) -----------------------------------------------------------

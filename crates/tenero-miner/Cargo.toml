@@ -12,6 +12,7 @@ tenero-chain = { path = "../tenero-chain" }
 tenero-node = { path = "../tenero-node" }
 tenero-net = { path = "../tenero-net" }
 tenero-wallet = { path = "../tenero-wallet" }
+tenero-tree = { path = "../tenero-tree" }
 # The GPU engine. It needs the CUDA driver only when a GPU backend is started (the library is loaded at run time),
 # so this crate builds and its CPU paths run on any machine.
 tenero-gpu = { path = "../tenero-gpu" }

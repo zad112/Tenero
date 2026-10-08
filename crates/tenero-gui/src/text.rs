@@ -94,10 +94,10 @@ mod tests {
 
     #[test]
     fn short_forms_keep_both_ends_and_leave_short_text_alone() {
-        let a = format!("tni1{}", "0123456789abcdef".repeat(8));
+        let a = format!("TENg{}", "0123456789abcdef".repeat(6));
         let s = short_address(&a);
-        assert!(s.starts_with("tni10123456789ab") && s.ends_with("6789abcdef") && s.contains('…'));
-        assert_eq!(short_address("tni1abc"), "tni1abc");
+        assert!(s.starts_with("TENg0123456789ab") && s.ends_with("6789abcdef") && s.contains('…'));
+        assert_eq!(short_address("TENgabc"), "TENgabc");
         assert_eq!(short_hex(&[0xab; 32]), "abababab…ababab");
         assert_eq!(duration(45), "45 s");
         assert_eq!(duration(200), "3 min 20 s");

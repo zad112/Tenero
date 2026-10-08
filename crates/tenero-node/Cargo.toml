@@ -12,5 +12,9 @@ tenero-store = { path = "../tenero-store" }
 tenero-chain = { path = "../tenero-chain" }
 tenero-crypto = { path = "../tenero-crypto" }
 
+[dev-dependencies]
+# valid test points (Monero's hash-to-point); a workspace crate
+tenero-tree = { path = "../tenero-tree" }
+
 [lints]
 workspace = true

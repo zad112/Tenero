@@ -1,0 +1,357 @@
+{
+ "description": "Version 3 (gamma) wallet keys and addresses (docs/CONSENSUS_V2.md 15.9): an account's Carrot master secret from its seed, the network tags, and addresses in Monero's block base58 with a SHA-256 checksum. Made by reference/tools/make_vectors_address.py.",
+ "invalid": [
+  {
+   "error": "bad checksum",
+   "network": "gamma",
+   "note": "one character changed",
+   "text": "TENgJm6yJJqbfKXSp5y329Tjnx1Vx8Y8NJobsP4QYzwPh9VqG3VzizzbPF4UeKK4vkHGhWNggaPUw65mTs6eD3jrTAthJTD2e8v"
+  },
+  {
+   "error": "another network",
+   "network": "dev",
+   "note": "a gamma address on the dev network",
+   "text": "TENgJm6yJJqbfKXSp5y3A9Tjnx1Vx8Y8NJobsP4QYzwPh9VqG3VzizzbPF4UeKK4vkHGhWNggaPUw65mTs6eD3jrTAthJTD2e8v"
+  },
+  {
+   "error": "bad character",
+   "network": "gamma",
+   "note": "a character not in the alphabet (0)",
+   "text": "TENgJm6yJJqbfKXSp5y3A9Tjnx1Vx8Y8NJobsP4QYzwPh9VqG3VzizzbPF4UeKK4vkHGhWNggaPUw65mTs6eD3jrTAthJTD2e80"
+  },
+  {
+   "error": "bad character",
+   "network": "gamma",
+   "note": "a character not in the alphabet (l)",
+   "text": "TENgJm6yJJqbfKXSp5y3A9Tjnx1Vx8Y8NJobsP4QYzwPh9VqG3VzizzbPF4UeKK4vkHGhWNggaPUw65mTs6eD3jrTAthJTD2e8l"
+  },
+  {
+   "error": "bad block",
+   "network": "gamma",
+   "note": "one character missing (the last block then overflows)",
+   "text": "TENgJm6yJJqbfKXSp5y3A9Tjnx1Vx8Y8NJobsP4QYzwPh9VqG3VzizzbPF4UeKK4vkHGhWNggaPUw65mTs6eD3jrTAthJTD2e8"
+  },
+  {
+   "error": "an interim address",
+   "network": "gamma",
+   "note": "an interim (beta) address",
+   "text": "tni100000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  },
+  {
+   "error": "bad length",
+   "network": "gamma",
+   "note": "empty",
+   "text": ""
+  },
+  {
+   "error": "unknown network",
+   "network": "gamma",
+   "note": "a Monero-style address",
+   "text": "46AUZveNza5DKsyhjRTxgeFsrdXPf6ZixhD9FAS5v54SU7RyN2FAT8NJjUaTspdxK9ZSojAzCKggtXE9kze47pkP5UFxxjv"
+  },
+  {
+   "error": "bad length",
+   "network": "gamma",
+   "note": "a main address carrying a payment ID",
+   "text": "TENgJn2dnsE6p7wmceGhLNVy2L6MrQ2oZUCkevSfRspReN1Cxybgy61PTEJLsihWtf7j7dEy5MN3qZVAFtfgUWBCdcR8Ybfmv2qEfcuJFCSxXB"
+  },
+  {
+   "error": "bad block",
+   "network": "gamma",
+   "note": "a block that does not fit its size",
+   "text": "TENgJm6yJJqbfKXSp5y3A9Tjnx1Vx8Y8NJobsP4QYzwPh9VqG3VzizzbPF4UeKK4vkHGhWNggaPUw65mTs6eD3jrzz"
+  }
+ ],
+ "keys": [
+  {
+   "account": 0,
+   "account_seed": "1094beaf03505a2e986c788609f7abbde9b8df9f518b12e0f36d9229e11dfea2",
+   "carrot_master": "20fd94365276c9d900290139ff4e070acd07ce8493821e54ba4a55b2819809f0",
+   "seed": "1094beaf03505a2e986c788609f7abbde9b8df9f518b12e0f36d9229e11dfea2"
+  },
+  {
+   "account": 1,
+   "account_seed": "8106a53f7686af503fe8783d2f23cf3f0686bf7100a26938ba6ba76a22955841",
+   "carrot_master": "a607bf6ac04bba13548df78ebcdada937183e0d169b0c8b37e6a98ce1a559bd2",
+   "seed": "1094beaf03505a2e986c788609f7abbde9b8df9f518b12e0f36d9229e11dfea2"
+  },
+  {
+   "account": 7,
+   "account_seed": "c8ebadb52279bd4b8bfbc56733b7de572c8b2ceeac47105a51bee0770d0e9427",
+   "carrot_master": "e260eee92c10a18170cd134fe7a2508eafb3369cb6eab6497dde114f059b55f0",
+   "seed": "1094beaf03505a2e986c788609f7abbde9b8df9f518b12e0f36d9229e11dfea2"
+  },
+  {
+   "account": 0,
+   "account_seed": "980049814e2a6e6aaedd07152efb01792e60eb7a7ae151e8a4790a4388b4e54e",
+   "carrot_master": "f9ed747d64e4b8194aa2922ca3f4c595ea936d2d8ad4254f5ce1fa90f8ae09bd",
+   "seed": "980049814e2a6e6aaedd07152efb01792e60eb7a7ae151e8a4790a4388b4e54e"
+  },
+  {
+   "account": 1,
+   "account_seed": "acac682d48c2da895a0ee7154eed72997d3bb5616a8abb4d1d6cc55856338aee",
+   "carrot_master": "12cca252d47c62ded7dc981195898ff0b832f64cd7203b51fba9eb1925bbca73",
+   "seed": "980049814e2a6e6aaedd07152efb01792e60eb7a7ae151e8a4790a4388b4e54e"
+  },
+  {
+   "account": 7,
+   "account_seed": "244bf1827f4978f3b7638ef728f2a5ad2231763fddf3966036587fd8e43dc995",
+   "carrot_master": "7aadb0a6a179b893df3687bd6735683924c6a62b83779fea4a347fe16197a3ab",
+   "seed": "980049814e2a6e6aaedd07152efb01792e60eb7a7ae151e8a4790a4388b4e54e"
+  },
+  {
+   "account": 0,
+   "account_seed": "bb14e413220922f34acba73286b9f526bb9241373519abb9fbcc448eded9b794",
+   "carrot_master": "81ec007bb97ebdc61e0205676b4f25672930de2618ea35b9efc85d22ba3e781c",
+   "seed": "bb14e413220922f34acba73286b9f526bb9241373519abb9fbcc448eded9b794"
+  },
+  {
+   "account": 1,
+   "account_seed": "172a89d4b9f82579507ee7f6c3aa1bd11e8496c0251df765ac673d1a4030f129",
+   "carrot_master": "63015dfd6534e042a0210f53fd51b77720c08ff635f2bcd580f7e865f4f41d93",
+   "seed": "bb14e413220922f34acba73286b9f526bb9241373519abb9fbcc448eded9b794"
+  },
+  {
+   "account": 7,
+   "account_seed": "f06f5f8e48a77fe517fd6d23e1db6626753c44c52146a32e75a50f32ee5fb285",
+   "carrot_master": "8137ca5baae948578980f9f40156e9378f66ab1ba1713fa2c56b5cdc73bdde8a",
+   "seed": "bb14e413220922f34acba73286b9f526bb9241373519abb9fbcc448eded9b794"
+  }
+ ],
+ "name": "v3_address",
+ "prefixes": {
+  "dev": "TENd",
+  "gamma": "TENg",
+  "test": "TENt"
+ },
+ "schema": 1,
+ "tags": {
+  "dev integrated": 4253980,
+  "dev main": 2156828,
+  "dev subaddress": 2173212,
+  "gamma integrated": 4352284,
+  "gamma main": 2255132,
+  "gamma subaddress": 2271516,
+  "test integrated": 4745500,
+  "test main": 2648348,
+  "test subaddress": 2664732
+ },
+ "valid": [
+  {
+   "kind": "main",
+   "network": "gamma",
+   "payment_id": null,
+   "spend": "a6dec7becf39005996bb4efa9fdad6f4a987168f6a70a2d572a639fef0052f39",
+   "text": "TENgJm6yJJqbfKXSp5y3A9Tjnx1Vx8Y8NJobsP4QYzwPh9VqG3VzizzbPF4UeKK4vkHGhWNggaPUw65mTs6eD3jrTAthJTD2e8v",
+   "view": "85ec758fcd90c1a4689fcfe96146a3701209f1241e626720e1997ecd9c76a385"
+  },
+  {
+   "kind": "main",
+   "network": "gamma",
+   "payment_id": null,
+   "spend": "0000000000000000000000000000000000000000000000000000000000000000",
+   "text": "TENgJgqaXRH11111111111111111111111111111111111111111111111111111111111111111111111111111111112vvGdc",
+   "view": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  {
+   "kind": "main",
+   "network": "gamma",
+   "payment_id": null,
+   "spend": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "text": "TENgJoP7MZYjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZdcSNMt",
+   "view": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  {
+   "kind": "subaddress",
+   "network": "gamma",
+   "payment_id": null,
+   "spend": "f7c6b4781003491866cb966e90f32788f719efb12b314ef13f7765ab7bc1f063",
+   "text": "TENgogLzhdy3gLz4guBRf3RFCJTbXRygU8E2JTPuvnPLMhc1ADo3Hu7MmHu5KkRBuuQwcD5pKoKFxbJ72HYnqhKn9fsXcE8KMfa",
+   "view": "4cb3a9fe7c234153757ded148f230a978d2ef89bcd092860fd0d9a1133d5f011"
+  },
+  {
+   "kind": "subaddress",
+   "network": "gamma",
+   "payment_id": null,
+   "spend": "0000000000000000000000000000000000000000000000000000000000000000",
+   "text": "TENgoa1f1wu11111111111111111111111111111111111111111111111111111111111111111111111111111111116SPxNd",
+   "view": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  {
+   "kind": "subaddress",
+   "network": "gamma",
+   "payment_id": null,
+   "spend": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "text": "TENgogZBr6AjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZZVn7uj",
+   "view": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  {
+   "kind": "integrated",
+   "network": "gamma",
+   "payment_id": "ce58c5332be7fbe7",
+   "spend": "0e8dd039fe232098ba6eaece1baab039b6e5eaa001ab38aaa93ca4de094c9233",
+   "text": "TENgJokgpFijWT4axjsJbf5dQKpYur4mu1HC1QJLNFPK2ZDMT1Vbu1fLsyg2GMMBA1LdKaC1EhdrpWb4j2WtrAMmGBrdd5yvvLi8Lwp3PdhzXA",
+   "view": "3d5a770676d9286039d611f2755662dfc01d09a9b0e41821f5b5b4305acc5305"
+  },
+  {
+   "kind": "integrated",
+   "network": "gamma",
+   "payment_id": "cad8a83ea986c42a",
+   "spend": "0000000000000000000000000000000000000000000000000000000000000000",
+   "text": "TENgJoP7MZZ11111111111111111111111111111111111111111111111111111111111111111111111111111111116BjGkMVMctRnn3e5d",
+   "view": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  {
+   "kind": "integrated",
+   "network": "gamma",
+   "payment_id": "6ef33d5e3edf85b9",
+   "spend": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "text": "TENgJuveBhpjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZavEB3BBWwzcPYAXAV",
+   "view": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  {
+   "kind": "main",
+   "network": "dev",
+   "payment_id": null,
+   "spend": "c20110a4154f7fcc0a820eda0112c698ac8c22ea44898db5adc469b5a7f16a0e",
+   "text": "TENdKUkjXfq4ZjrtnLUXSq1BQwZPuJboFCTu5M2kUKfAV6FwwhGBwsXLh7RNq8cnbwZxGvNxQBU47MUrncUgHAHaAG9Pq2JWjHs",
+   "view": "48e4440a75ba692b12627566c5035ec6688dcfa07a719ddeb3d0d415375e5c29"
+  },
+  {
+   "kind": "main",
+   "network": "dev",
+   "payment_id": null,
+   "spend": "0000000000000000000000000000000000000000000000000000000000000000",
+   "text": "TENdKPo7aFZ11111111111111111111111111111111111111111111111111111111111111111111111111111111113EyW3h",
+   "view": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  {
+   "kind": "main",
+   "network": "dev",
+   "payment_id": null,
+   "spend": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "text": "TENdKWLeQPpjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZa8H9Ao",
+   "view": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  {
+   "kind": "subaddress",
+   "network": "dev",
+   "payment_id": null,
+   "spend": "d50dea256c35aa5891c9964be7efe06f7ace175ace42fd7b33a863b66d16c282",
+   "text": "TENdpNR46tCK6mboHy8pRgfo5cphDoWvMbVzoorVhDDoKFJLx39wAuxbehtDW6fUo1NbmfkTRdRR52mFZMmfgPtDcynm62QjNCb",
+   "view": "9b0cdeb3cf28c90b13a15818812287c880ee29f40a8a3c0ea5b1e7aad71ae824"
+  },
+  {
+   "kind": "subaddress",
+   "network": "dev",
+   "payment_id": null,
+   "spend": "0000000000000000000000000000000000000000000000000000000000000000",
+   "text": "TENdpGyC4nB11111111111111111111111111111111111111111111111111111111111111111111111111111111116AMJAk",
+   "view": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  {
+   "kind": "subaddress",
+   "network": "dev",
+   "payment_id": null,
+   "spend": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "text": "TENdpPWitvSjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZeahfib",
+   "view": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  {
+   "kind": "integrated",
+   "network": "dev",
+   "payment_id": "6628337d609b1caa",
+   "spend": "fe6acdf893e68f14e6659a9000c739e81c83c1798a9ef5e163520c9829ddcf87",
+   "text": "TENdKcqq8hDRjpdpNKoPB518YtTgEQtRNQBoDHWERJxF81A77KuaegG9qWKGEDVqV4jb6xHBxnAmS2s9iEPYMkN1QNMhtmxvUtkHACW6KSybFP",
+   "view": "2517244134d42b833064271bfe9deb8f5155068d0b25e78954c1155e8bb5a09e"
+  },
+  {
+   "kind": "integrated",
+   "network": "dev",
+   "payment_id": "922d7f3a609ae17c",
+   "spend": "0000000000000000000000000000000000000000000000000000000000000000",
+   "text": "TENdKWLeQPq11111111111111111111111111111111111111111111111111111111111111111111111111111111114jiUVoHABzd94Ndzj",
+   "view": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  {
+   "kind": "integrated",
+   "network": "dev",
+   "payment_id": "c185bebb83c74f5f",
+   "spend": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "text": "TENdKctBEY6jpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZd2eNJNP3RByNgGToN",
+   "view": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  {
+   "kind": "main",
+   "network": "test",
+   "payment_id": null,
+   "spend": "b57b1a68a364645308f3dcec48e27da61a3c33b7206d023807ecae5a16302675",
+   "text": "TENtFweVSLfUL7JHDB9eg3DC5FAr234mL6Ra7vnVWEDf4iFdXHtWZoXSgPxxbbEZzCgDtHqNFidLydAvuJSXrFohVEYP54GRZSc",
+   "view": "3ffd93429986b19951a2ca1dea7e6e82d38465fed840e1ffccb103f4a8cbff68"
+  },
+  {
+   "kind": "main",
+   "network": "test",
+   "payment_id": null,
+   "spend": "0000000000000000000000000000000000000000000000000000000000000000",
+   "text": "TENtFs1SL6B11111111111111111111111111111111111111111111111111111111111111111111111111111111116kiUep",
+   "view": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  {
+   "kind": "main",
+   "network": "test",
+   "payment_id": null,
+   "spend": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "text": "TENtFyYyAESjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZdrxTLw",
+   "view": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  {
+   "kind": "subaddress",
+   "network": "test",
+   "payment_id": null,
+   "spend": "f8137530d056bffdfba335f00f1bc3342de3227a81af3c38133672976db52a1f",
+   "text": "TENtkrXJHaFbr9apvjyx7R3Xa7PYZUg9PNh6vshx6s6vKMJWUACdiemDyNmqLwtfywWSJubt9JwJtBuJAd8MGUVCTWdodVSe1b8",
+   "view": "c1febd824d8df0fe87756176affd0d3d9e34632d412d3e715b2b4ea79e7fa176"
+  },
+  {
+   "kind": "subaddress",
+   "network": "test",
+   "payment_id": null,
+   "spend": "0000000000000000000000000000000000000000000000000000000000000000",
+   "text": "TENtkkBWpco11111111111111111111111111111111111111111111111111111111111111111111111111111111114K2QsB",
+   "view": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  {
+   "kind": "subaddress",
+   "network": "test",
+   "payment_id": null,
+   "spend": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "text": "TENtkrj3em4jpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZZdRvyb",
+   "view": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  {
+   "kind": "integrated",
+   "network": "test",
+   "payment_id": "3f45050e591847f1",
+   "spend": "566dbb1a99c111229c5eaf50885907c9a628477c0dbd43fca13d5350a36d30db",
+   "text": "TENtG1m6xCRSicGQPK8MwDPokAYAoL1tw3JHjrc5jqtKULSdyXEJhwhNFZhU7128BjRFc9mRfQwj7hHWwRsM4tQy16jNCRCr5q7FuLEbbkUoxx",
+   "view": "29a3343c7f0d513c5142871290fe016c7567f61af0d8cb6aa8129a9200973780"
+  },
+  {
+   "kind": "integrated",
+   "network": "test",
+   "payment_id": "f3af3c428cdc290c",
+   "spend": "0000000000000000000000000000000000000000000000000000000000000000",
+   "text": "TENtFyYyAET11111111111111111111111111111111111111111111111111111111111111111111111111111111117EGrLhQZX573zK8VQ",
+   "view": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  {
+   "kind": "integrated",
+   "network": "test",
+   "payment_id": "87359b421d481ed5",
+   "spend": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "text": "TENtG66VzNijpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZedGfVQjpXCZbYCAjK5u52MeZN3YS",
+   "view": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  }
+ ]
+}

@@ -1,5 +1,5 @@
-//! Validating a block that extends the chain's tip (`docs/CONSENSUS_V2.md` section 8), in the order the
-//! document lists the checks. Every rule has its own error, so a test can break exactly one rule and see
+//! Validating a version 3 block that extends the chain's tip (`docs/CONSENSUS_V2.md` section 8 as changed by 15), in the
+//! order the document lists the checks. Every rule has its own error, so a test can break exactly one rule and see
 //! exactly that error.
 //!
 //! **What this does not check unless told to:** the cryptographic proofs (see [`crate::proofs`]).
@@ -13,9 +13,10 @@ use std::sync::Arc;
 use tenero_core::difficulty;
 use tenero_core::fees;
 use tenero_core::u256::U256;
-use tenero_core::v2::ids;
-use tenero_core::v2::{Block, Transaction, Wire, VERSION};
+use tenero_core::v3::rules::{self, ShapeError};
+use tenero_core::v3::{ids, Block, Transaction, Wire, VERSION};
 use tenero_store::{BlockIndex, BlockMeta, Store, StoreError};
+use tenero_tree::strict_point;
 
 /// Why a block is invalid. A block that is merely too far ahead of the clock is not an error: see
 /// [`Outcome::NotYet`].
@@ -39,9 +40,17 @@ pub enum BlockError {
     /// The cheap check passed but the full proof of work does not reproduce the header's mix.
     PowInvalid(String),
     BadTxRoot,
+    /// Its transactions' weight over twice the median (at most 12 MiB), or their real bytes over 48 MiB.
     BlockTooLarge {
+        weight: u64,
         size: u64,
-        limit: u64,
+        weight_limit: u64,
+    },
+    /// A coinbase whose outputs are out of order or whose ephemeral keys are zero or repeat.
+    CoinbaseShape(ShapeError),
+    /// A coinbase output's one-time address is not a canonical, prime-order point.
+    CoinbaseBadPoint {
+        output: usize,
     },
     CoinbaseVersion(u16),
     CoinbaseHeight {
@@ -61,8 +70,26 @@ pub enum BlockError {
         fee: u64,
         min: u64,
     },
-    InputsNotAscending {
+    /// Key images or outputs out of order, or a zero or repeated ephemeral key.
+    TxShape {
         tx: usize,
+        error: ShapeError,
+    },
+    /// An output's one-time address or commitment is not a canonical, prime-order point.
+    BadOutputPoint {
+        tx: usize,
+        output: usize,
+    },
+    /// A key image is not a canonical, prime-order point.
+    BadKeyImage {
+        tx: usize,
+        input: usize,
+    },
+    /// The reference block is not one the transaction may use: at most 1,440 blocks below the block, below it, with a
+    /// non-empty tree.
+    BadReference {
+        tx: usize,
+        reference_height: u64,
     },
     KeyImageSpent {
         tx: usize,
@@ -71,25 +98,6 @@ pub enum BlockError {
     KeyImageRepeated {
         tx: usize,
         key_image: [u8; 32],
-    },
-    RingWrongSize {
-        tx: usize,
-        input: usize,
-        size: usize,
-    },
-    RingNotAscending {
-        tx: usize,
-        input: usize,
-    },
-    RingMemberMissing {
-        tx: usize,
-        input: usize,
-        member: u64,
-    },
-    RingMemberImmature {
-        tx: usize,
-        input: usize,
-        member: u64,
     },
     ProofRejected {
         tx: usize,
@@ -136,8 +144,11 @@ pub struct NextBlock {
     pub min_timestamp: i64,
     /// The block's reward before any penalty.
     pub reward: u64,
-    /// The block-size median the block is judged against.
+    /// The block-weight median the block is judged against (its limit, penalty and minimum fee): the short-term median,
+    /// at most ten times the long-term one.
     pub median: u64,
+    /// The long-term median it is judged against (what its long-term weight is capped by).
+    pub long_term_median: u64,
     /// The chain's total work up to the tip.
     pub cumulative_work: U256,
 }
@@ -147,10 +158,12 @@ pub struct NextBlock {
 pub struct PoolTx {
     /// Its size on the wire, the number the fee rules use.
     pub size: u64,
+    /// Its weight (prefix bytes plus a quarter of the proof bytes), the number the block limit uses.
+    pub weight: u64,
     pub fee: u64,
     /// The height of the block it was checked for (the tip's height plus one).
     pub next_height: u64,
-    /// The block-size median at that height: a block may hold at most twice this many transaction bytes.
+    /// The block-weight median at that height: a block may weigh at most twice this.
     pub median: u64,
 }
 
@@ -161,8 +174,8 @@ pub struct ValidatedBlock {
     pub block_id: [u8; 32],
     /// What the store must record with it.
     pub meta: BlockMeta,
-    /// `false` while the cryptographic proofs are not checked (`ProofsNotChecked`): the block is then valid
-    /// **except** that no signature or range proof was verified.
+    /// `false` when the cryptographic proofs were not checked (`ProofsNotChecked`, or a block assumed valid): the block is
+    /// then valid **except** that no membership, spend or range proof was verified.
     pub proofs_checked: bool,
 }
 
@@ -211,14 +224,14 @@ impl<'a> Validator<'a> {
     /// Skips the full proof of work and the transaction proofs for the blocks whose ids are in `set`. The caller
     /// must have shown that they are ancestors of a checkpoint it trusts (`docs/M8_PLAN.md`, M8.3): this is a
     /// **trust decision**, and a block in the set is still held to every other rule (the cheap proof-of-work
-    /// check, the Merkle root, the coinbase, key images, fees, ring membership).
+    /// check, the Merkle root, the coinbase, every point, key images, fees, reference heights).
     pub fn with_assumed(mut self, set: Option<Arc<HashSet<[u8; 32]>>>) -> Validator<'a> {
         self.assumed = set;
         self
     }
 
     /// What the rules require of the next block: its height, parent, target, earliest timestamp, reward and
-    /// the block-size median. A miner builds a block from this; the validator checks a block against it.
+    /// the block-weight median. A miner builds a block from this; the validator checks a block against it.
     pub fn lookback(&self) -> usize {
         let window = usize::try_from(self.params.difficulty.window).unwrap_or(usize::MAX - 1);
         window.saturating_add(1).max(fees::MEDIAN_WINDOW)
@@ -239,16 +252,21 @@ impl<'a> Validator<'a> {
                     .ok_or_else(|| BlockError::Store(format!("block {h} is missing")))?,
             );
         }
-        self.next_block_from(height, &recent)
+        let lt = self
+            .store
+            .long_term_weights(height, rules::LONG_TERM_WINDOW);
+        self.next_block_from(height, &recent, &lt)
     }
 
     /// The next block at `height` on ANY branch: `recent` are that branch's last `min(height, lookback())`
-    /// blocks, oldest first, the last one being the parent. This is what a side branch is judged by: the
+    /// blocks, oldest first, the last one being the parent, and `long_term_weights` the long-term weights of its last
+    /// (at most) `LONG_TERM_WINDOW` blocks from block 1 on, oldest first. This is what a side branch is judged by: the
     /// rules look only at these blocks, never at the store's tip.
     pub fn next_block_from(
         &self,
         height: u64,
         recent: &[BlockIndex],
+        long_term_weights: &[u64],
     ) -> Result<NextBlock, BlockError> {
         let tip = recent
             .last()
@@ -271,7 +289,7 @@ impl<'a> Validator<'a> {
         let target = difficulty::retarget_recent(&self.params.difficulty, &ts, &targets, pos)
             .map_err(BlockError::Malformed)?;
 
-        // positions from 1 on: the genesis block does not count for the block-size median
+        // positions from 1 on: the genesis block does not count for the block-weight median
         let non_genesis = usize::from(first == 0);
         // a block's timestamp must be later than its parent's (the genesis block's is 0)
         let min_timestamp = if self.params.difficulty.window > 0 {
@@ -279,9 +297,12 @@ impl<'a> Validator<'a> {
         } else {
             0
         };
-        let sizes: Vec<u64> = recent[non_genesis..].iter().map(|r| r.body_size).collect();
-        let last_sizes = &sizes[sizes.len().saturating_sub(fees::MEDIAN_WINDOW)..];
-        let median = fees::median(last_sizes, self.params.min_block_median);
+        let weights: Vec<u64> = recent[non_genesis..]
+            .iter()
+            .map(|r| r.body_weight)
+            .collect();
+        let long_term_median = rules::long_term_median(long_term_weights, rules::LONG_TERM_WINDOW);
+        let median = rules::effective_median(&weights, long_term_median);
 
         Ok(NextBlock {
             height,
@@ -290,19 +311,20 @@ impl<'a> Validator<'a> {
             min_timestamp,
             reward: self.params.emission.reward_at(height),
             median,
+            long_term_median,
             cumulative_work: U256::from_be_bytes(&tip.cumulative_work),
         })
     }
 
-    /// What the coinbase must pay in total: `reward - penalty(body_size) + fees`, exactly.
+    /// What the coinbase must pay in total: `reward - penalty(body_weight) + fees`, exactly.
     pub fn coinbase_amount(
         &self,
         next: &NextBlock,
-        body_size: u64,
+        body_weight: u64,
         fees_total: u64,
     ) -> Result<u64, BlockError> {
         let penalty =
-            fees::penalty(next.reward, body_size, next.median).map_err(BlockError::Malformed)?;
+            fees::penalty(next.reward, body_weight, next.median).map_err(BlockError::Malformed)?;
         next.reward
             .checked_sub(penalty)
             .and_then(|r| r.checked_add(fees_total))
@@ -316,9 +338,9 @@ impl<'a> Validator<'a> {
         self.validate_block_on(block, &next, now, true)
     }
 
-    /// The same checks against an explicit [`NextBlock`] (any branch). With `check_state` false, step 6 is
-    /// skipped: the transactions' fee, key images, rings and proofs, which need the state at the parent and
-    /// so can be checked only when the branch becomes the chain. Everything else is checked.
+    /// The same checks against an explicit [`NextBlock`] (any branch). With `check_state` false, the parts of step 6
+    /// that need the state at the parent are skipped (key images not yet spent, the reference block's tree, the proofs):
+    /// they can be checked only when the branch becomes the chain. Everything else is checked.
     pub fn validate_block_on(
         &self,
         block: &Block,
@@ -371,31 +393,32 @@ impl<'a> Validator<'a> {
             }
         }
 
-        // 4. the body: it encodes (so every count and length is within its limit), the Merkle root, the size
-        let malformed = |e: tenero_core::v2::EncodeError| BlockError::Malformed(e.to_string());
+        // 4. the body: it encodes (so every count and length is within its limit), the Merkle root, the weight and size
+        let malformed = |e: tenero_core::v3::EncodeError| BlockError::Malformed(e.to_string());
         if ids::block_tx_root(&block.coinbase, &block.transactions).map_err(malformed)?
             != header.tx_root
         {
             return Err(BlockError::BadTxRoot);
         }
         let mut sizes = Vec::with_capacity(block.transactions.len());
-        let mut body_size: u64 = 0;
+        let (mut body_weight, mut body_size) = (0u64, 0u64);
         for t in &block.transactions {
             let size = t.to_bytes().map_err(malformed)?.len() as u64;
-            body_size = body_size
-                .checked_add(size)
-                .ok_or_else(|| BlockError::Malformed("the block size overflows".into()))?;
+            let weight = rules::tx_weight(t).map_err(malformed)?;
+            // (each is at most MAX_TX_SIZE and there are at most MAX_BLOCK_TXS: no overflow)
+            body_size += size;
+            body_weight += weight;
             sizes.push(size);
         }
-        let limit = fees::v2_block_limit(next.median);
-        if fees::v2_over_limit(body_size, next.median) {
+        if rules::block_too_large(body_weight, body_size, next.median) {
             return Err(BlockError::BlockTooLarge {
+                weight: body_weight,
                 size: body_size,
-                limit,
+                weight_limit: rules::block_limit(next.median),
             });
         }
 
-        // 5. the coinbase: version, height and exactly reward - penalty + fees
+        // 5. the coinbase: version, height, shape, points, and exactly reward - penalty + fees
         if block.coinbase.version != VERSION {
             return Err(BlockError::CoinbaseVersion(block.coinbase.version));
         }
@@ -405,12 +428,18 @@ impl<'a> Validator<'a> {
                 got: block.coinbase.height,
             });
         }
+        rules::coinbase_shape(&block.coinbase).map_err(BlockError::CoinbaseShape)?;
+        for (j, o) in block.coinbase.outputs.iter().enumerate() {
+            if strict_point(&o.onetime_address).is_none() {
+                return Err(BlockError::CoinbaseBadPoint { output: j });
+            }
+        }
         let fees_total = block
             .transactions
             .iter()
             .try_fold(0u64, |a, t| a.checked_add(t.prefix.fee))
             .ok_or_else(|| BlockError::Malformed("the fees overflow".into()))?;
-        let expected = self.coinbase_amount(next, body_size, fees_total)?;
+        let expected = self.coinbase_amount(next, body_weight, fees_total)?;
         let paid = block
             .coinbase
             .outputs
@@ -424,12 +453,20 @@ impl<'a> Validator<'a> {
             });
         }
 
-        // 6. every other transaction, in order
-        if check_state {
-            let mut spent_in_block: HashSet<[u8; 32]> = HashSet::new();
-            for (i, t) in block.transactions.iter().enumerate() {
-                self.check_transaction(i, t, sizes[i], next, &mut spent_in_block, !assumed)?;
+        // 6. every other transaction, in order: what needs no state always, the rest (and the proofs, as one batch) when
+        // the block is on the chain's state
+        let mut spent_in_block: HashSet<[u8; 32]> = HashSet::new();
+        let mut contexts = Vec::with_capacity(block.transactions.len());
+        for (i, t) in block.transactions.iter().enumerate() {
+            self.check_stateless(i, t, sizes[i], next, &mut spent_in_block)?;
+            if check_state {
+                contexts.push(self.check_state(i, t, next)?);
             }
+        }
+        if check_state && !assumed {
+            self.proofs
+                .check_block(&contexts)
+                .map_err(|(tx, reason)| BlockError::ProofRejected { tx, reason })?;
         }
 
         Ok(Outcome::Valid(ValidatedBlock {
@@ -438,38 +475,43 @@ impl<'a> Validator<'a> {
             meta: BlockMeta {
                 cumulative_work: cumulative_work.to_be_bytes(),
                 target: next.target.to_be_bytes(),
-                body_size,
+                body_weight,
+                long_term_weight: rules::long_term_weight(body_weight, next.long_term_median),
             },
-            proofs_checked: self.proofs.checks_proofs() && !assumed,
+            proofs_checked: self.proofs.checks_proofs() && !assumed && check_state,
         }))
     }
 
-    /// Checks one loose transaction against the tip's state, as if it were in the next block: version, the
-    /// dynamic minimum fee, key-image order, ring shape, membership and maturity, key images not yet spent,
-    /// and the proofs. This is what a mempool needs; the block validator runs the same checks per transaction.
+    /// Checks one loose transaction against the tip's state, as if it were in the next block: everything the block
+    /// validator checks of a transaction, and its proofs on their own. This is what a mempool needs.
     pub fn check_pool_tx(&self, t: &Transaction) -> Result<PoolTx, BlockError> {
         let next = self.next_block()?;
-        let size = t
-            .to_bytes()
-            .map_err(|e| BlockError::Malformed(e.to_string()))?
-            .len() as u64;
-        self.check_transaction(0, t, size, &next, &mut HashSet::new(), true)?;
+        let malformed = |e: tenero_core::v3::EncodeError| BlockError::Malformed(e.to_string());
+        let size = t.to_bytes().map_err(malformed)?.len() as u64;
+        let weight = rules::tx_weight(t).map_err(malformed)?;
+        self.check_stateless(0, t, size, &next, &mut HashSet::new())?;
+        let ctx = self.check_state(0, t, &next)?;
+        self.proofs
+            .check_tx(&ctx)
+            .map_err(|reason| BlockError::ProofRejected { tx: 0, reason })?;
         Ok(PoolTx {
             size,
+            weight,
             fee: t.prefix.fee,
             next_height: next.height,
             median: next.median,
         })
     }
 
-    fn check_transaction(
+    /// What a transaction must satisfy whatever the chain's state: its version, its shape, its points, the minimum fee
+    /// of its real size, and no key image twice in the block.
+    fn check_stateless(
         &self,
         i: usize,
         t: &Transaction,
         size: u64,
         next: &NextBlock,
         spent_in_block: &mut HashSet<[u8; 32]>,
-        check_proofs: bool,
     ) -> Result<(), BlockError> {
         if t.prefix.version != VERSION {
             return Err(BlockError::TxVersion {
@@ -477,24 +519,20 @@ impl<'a> Validator<'a> {
                 version: t.prefix.version,
             });
         }
-        if self.params.legacy_tx_limits {
-            if t.prefix.inputs.len() > crate::params::LEGACY_MAX_INPUTS {
-                return Err(BlockError::Malformed(format!(
-                    "transaction {i}: {} inputs, over the {} this network allows",
-                    t.prefix.inputs.len(),
-                    crate::params::LEGACY_MAX_INPUTS
-                )));
-            }
-            if t.prunable.proof_data.len() > crate::params::LEGACY_MAX_PROOF {
-                return Err(BlockError::Malformed(format!(
-                    "transaction {i}: a proof of {} bytes, over the {} this network allows",
-                    t.prunable.proof_data.len(),
-                    crate::params::LEGACY_MAX_PROOF
-                )));
+        rules::shape(&t.prefix).map_err(|error| BlockError::TxShape { tx: i, error })?;
+        for (j, o) in t.prefix.outputs.iter().enumerate() {
+            if strict_point(&o.onetime_address).is_none()
+                || strict_point(&o.amount_commitment).is_none()
+            {
+                return Err(BlockError::BadOutputPoint { tx: i, output: j });
             }
         }
-        let min =
-            fees::dynamic_min_fee(size, next.reward, next.median).map_err(BlockError::Malformed)?;
+        for (j, input) in t.prefix.inputs.iter().enumerate() {
+            if strict_point(&input.key_image).is_none() {
+                return Err(BlockError::BadKeyImage { tx: i, input: j });
+            }
+        }
+        let min = rules::min_fee(size, next.reward, next.median).map_err(BlockError::Malformed)?;
         if t.prefix.fee < min {
             return Err(BlockError::FeeTooLow {
                 tx: i,
@@ -502,62 +540,7 @@ impl<'a> Validator<'a> {
                 min,
             });
         }
-        // one canonical order: key images strictly ascending (which also means no two the same)
-        if t.prefix
-            .inputs
-            .windows(2)
-            .any(|w| w[0].key_image >= w[1].key_image)
-        {
-            return Err(BlockError::InputsNotAscending { tx: i });
-        }
-        if t.prunable.rings.len() != t.prefix.inputs.len() {
-            return Err(BlockError::Malformed("one ring per input".into()));
-        }
-        let mut ring_members = Vec::with_capacity(t.prunable.rings.len());
-        for (j, ring) in t.prunable.rings.iter().enumerate() {
-            if ring.len() != self.params.ring_size {
-                return Err(BlockError::RingWrongSize {
-                    tx: i,
-                    input: j,
-                    size: ring.len(),
-                });
-            }
-            if ring.windows(2).any(|w| w[0] >= w[1]) {
-                return Err(BlockError::RingNotAscending { tx: i, input: j });
-            }
-            let mut members = Vec::with_capacity(ring.len());
-            for &member in ring {
-                let out = self
-                    .store
-                    .output(member)?
-                    .ok_or(BlockError::RingMemberMissing {
-                        tx: i,
-                        input: j,
-                        member,
-                    })?;
-                let wait = if out.coinbase {
-                    self.params.coinbase_maturity
-                } else {
-                    self.params.spend_maturity
-                };
-                if next.height < out.height.saturating_add(wait) {
-                    return Err(BlockError::RingMemberImmature {
-                        tx: i,
-                        input: j,
-                        member,
-                    });
-                }
-                members.push(out);
-            }
-            ring_members.push(members);
-        }
         for input in &t.prefix.inputs {
-            if self.store.key_image_height(&input.key_image)?.is_some() {
-                return Err(BlockError::KeyImageSpent {
-                    tx: i,
-                    key_image: input.key_image,
-                });
-            }
             if !spent_in_block.insert(input.key_image) {
                 return Err(BlockError::KeyImageRepeated {
                     tx: i,
@@ -565,18 +548,46 @@ impl<'a> Validator<'a> {
                 });
             }
         }
-        if !check_proofs {
-            return Ok(());
+        Ok(())
+    }
+
+    /// What needs the state at the parent: no key image already spent, and a reference block the transaction may use
+    /// (whose tree the proofs are then checked against).
+    fn check_state<'t>(
+        &self,
+        i: usize,
+        t: &'t Transaction,
+        next: &NextBlock,
+    ) -> Result<TxContext<'t>, BlockError> {
+        for input in &t.prefix.inputs {
+            if self.store.key_image_height(&input.key_image)?.is_some() {
+                return Err(BlockError::KeyImageSpent {
+                    tx: i,
+                    key_image: input.key_image,
+                });
+            }
         }
-        let ctx = TxContext {
+        let r = t.prunable.reference_height;
+        let bad = BlockError::BadReference {
+            tx: i,
+            reference_height: r,
+        };
+        if r >= next.height {
+            return Err(bad);
+        }
+        let tree = self
+            .store
+            .tree_state(r)?
+            .ok_or_else(|| BlockError::Store(format!("the tree after block {r} is missing")))?;
+        if !rules::reference_ok(r, next.height, tree.n_leaves) {
+            return Err(bad);
+        }
+        Ok(TxContext {
             chain_id: self.store.chain_id(),
             height: next.height,
             tx: t,
-            ring_members,
-        };
-        self.proofs
-            .check_tx(&ctx)
-            .map_err(|reason| BlockError::ProofRejected { tx: i, reason })
+            tree,
+        })
     }
 
     /// Validates `block` and, if it is valid, adds it to the store. A block that is not yet acceptable is

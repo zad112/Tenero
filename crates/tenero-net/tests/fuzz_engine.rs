@@ -24,8 +24,8 @@ use std::sync::OnceLock;
 use proptest::prelude::*;
 use tenero_chain::{ProofsNotChecked, Sha256Pow};
 use tenero_core::u256::U256;
-use tenero_core::v2::{Block, BlockHeader, Transaction, Wire};
-use tenero_net::message::PeerAddr;
+use tenero_core::v3::{Block, BlockHeader, Transaction, Wire};
+use tenero_net::message::{CompactBlock, PeerAddr};
 use tenero_net::sim::{sim_addr, test_chain_id, Sim, SimConfig, SimRig};
 use tenero_net::{
     encode, Action, Engine, EngineConfig, Event, Hello, Message, PeerId, PROTOCOL_VERSION,
@@ -64,13 +64,14 @@ fn fixture() -> &'static Fixture {
                 blocks.push(store.get_block(h).unwrap().unwrap().into_full().unwrap());
             }
         }
-        let v = tenero_core::vectors::load("v2_serialization").unwrap();
+        let v = tenero_core::vectors::load("v3_serialization").unwrap();
         let case = v["valid"]
             .as_array()
             .unwrap()
             .iter()
             .find(|c| {
-                c["kind"] == "transaction" && c["note"].as_str().unwrap().contains("2 inputs")
+                c["kind"] == "transaction"
+                    && c["note"].as_str().unwrap().contains("ONE ephemeral key")
             })
             .unwrap();
         let tx = Transaction::from_bytes(
@@ -145,6 +146,18 @@ enum MsgSpec {
     Txs(usize),
     GetAddrs,
     Addrs(Vec<([u8; 16], u16, u64)>),
+    GetCompact(IdSpec),
+    /// A fixture block's compact form, perhaps with its header changed, an id added, or ids swapped.
+    Compact(usize, Option<CompactEdit>),
+    GetBlockTxs(IdSpec, Vec<u32>),
+    BlockTxs(IdSpec, usize),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CompactEdit {
+    Header(BlockEdit),
+    ExtraId,
+    DropCoinbaseOutput,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -211,7 +224,35 @@ fn msg_spec() -> impl Strategy<Value = MsgSpec> {
         2 => (0usize..70).prop_map(MsgSpec::Txs),
         1 => Just(MsgSpec::GetAddrs),
         2 => proptest::collection::vec((any::<[u8; 16]>(), any::<u16>(), any::<u64>()), 0..120).prop_map(MsgSpec::Addrs),
+        2 => id_spec().prop_map(MsgSpec::GetCompact),
+        4 => (
+            0usize..CHAIN_LEN,
+            proptest::option::of(prop_oneof![
+                Just(CompactEdit::Header(BlockEdit::Nonce)),
+                Just(CompactEdit::Header(BlockEdit::TxRoot)),
+                Just(CompactEdit::Header(BlockEdit::Parent)),
+                Just(CompactEdit::ExtraId),
+                Just(CompactEdit::DropCoinbaseOutput),
+            ])
+        )
+            .prop_map(|(p, e)| MsgSpec::Compact(p, e)),
+        2 => (id_spec(), proptest::collection::vec(prop_oneof![0u32..4, any::<u32>()], 0..20))
+            .prop_map(|(i, x)| MsgSpec::GetBlockTxs(i, x)),
+        3 => (id_spec(), 0usize..6).prop_map(|(i, n)| MsgSpec::BlockTxs(i, n)),
     ]
+}
+
+/// A block's compact form: its header, its coinbase, its transactions' ids.
+fn compact(b: &Block) -> CompactBlock {
+    CompactBlock {
+        header: b.header.clone(),
+        coinbase: b.coinbase.clone(),
+        tx_ids: b
+            .transactions
+            .iter()
+            .map(|t| tenero_core::v3::ids::tx_id(t).unwrap())
+            .collect(),
+    }
 }
 
 fn edit_block(b: &mut Block, e: BlockEdit) {
@@ -304,6 +345,33 @@ fn build(spec: &MsgSpec) -> Message {
             ids: l.iter().map(resolve).collect(),
         },
         MsgSpec::Txs(n) => Message::Txs {
+            txs: vec![fx.tx.clone(); *n],
+        },
+        MsgSpec::GetCompact(i) => Message::GetCompact { id: resolve(i) },
+        MsgSpec::Compact(p, edit) => {
+            let mut b = fx.blocks[*p % fx.blocks.len()].clone();
+            let mut c = compact(&b);
+            match edit {
+                Some(CompactEdit::Header(e)) => {
+                    edit_block(&mut b, *e);
+                    c.header = b.header;
+                }
+                Some(CompactEdit::ExtraId) => {
+                    c.tx_ids.push(tenero_core::v3::ids::tx_id(&fx.tx).unwrap())
+                }
+                Some(CompactEdit::DropCoinbaseOutput) => {
+                    c.coinbase.outputs.clear();
+                }
+                None => {}
+            }
+            Message::Compact(Box::new(c))
+        }
+        MsgSpec::GetBlockTxs(i, x) => Message::GetBlockTxs {
+            block_id: resolve(i),
+            indexes: x.clone(),
+        },
+        MsgSpec::BlockTxs(i, n) => Message::BlockTxs {
+            block_id: resolve(i),
             txs: vec![fx.tx.clone(); *n],
         },
         MsgSpec::GetAddrs => Message::GetAddrs,
@@ -509,6 +577,8 @@ impl<'a> Run<'a> {
                             | Message::GetHeaders { .. }
                             | Message::GetBlocks { .. }
                             | Message::GetTxs { .. }
+                            | Message::GetCompact { .. }
+                            | Message::GetBlockTxs { .. }
                             | Message::GetAddrs
                             | Message::Ping(_)
                     ) {
@@ -747,6 +817,33 @@ fn answer(req: &Message, flaw: Flaw) -> Vec<Message> {
             Message::Blocks { blocks }
         }
         Message::GetTxs { ids } => Message::NotFound { ids: ids.clone() },
+        Message::GetCompact { id } => match height_of(id).filter(|h| *h > 0) {
+            Some(h) => Message::Compact(Box::new(compact(&fx.blocks[h - 1]))),
+            None => Message::NotFound { ids: vec![*id] },
+        },
+        Message::GetBlockTxs { block_id, indexes } => {
+            match height_of(block_id).filter(|h| *h > 0) {
+                Some(h) => {
+                    let b = &fx.blocks[h - 1];
+                    match indexes
+                        .iter()
+                        .map(|i| b.transactions.get(*i as usize).cloned())
+                        .collect::<Option<Vec<_>>>()
+                    {
+                        Some(txs) => Message::BlockTxs {
+                            block_id: *block_id,
+                            txs,
+                        },
+                        None => Message::NotFound {
+                            ids: vec![*block_id],
+                        },
+                    }
+                }
+                None => Message::NotFound {
+                    ids: vec![*block_id],
+                },
+            }
+        }
         Message::GetAddrs => Message::Addrs {
             addrs: (0..5u8)
                 .map(|i| PeerAddr {
@@ -794,6 +891,15 @@ fn answer(req: &Message, flaw: Flaw) -> Vec<Message> {
             if let Some(b) = blocks.first_mut() {
                 edit_block(b, e);
             }
+        }
+        (Flaw::CorruptBlock(e), Message::Compact(c)) => {
+            let mut b = Block {
+                header: c.header.clone(),
+                coinbase: c.coinbase.clone(),
+                transactions: vec![],
+            };
+            edit_block(&mut b, e);
+            c.header = b.header;
         }
         (Flaw::Twice, _) => twice = true,
         _ => {}

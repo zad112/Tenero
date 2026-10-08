@@ -692,3 +692,144 @@ chain was 23% smaller (14.3).
   pruning never changes a consensus number.
 - Software constants that are **policy, not consensus**: `PRUNE_KEEP_BLOCKS` (proposed default 5,500, about
   3.8 days) and the assume-valid checkpoint.
+
+## 15. Version 3: the `gamma` network (FCMP++ and Carrot from genesis)
+
+**DECIDED by the owner, 2026-10-08** (`docs/FCMP_CARROT_PLAN.md`, decisions F1-F12), except where marked PROPOSED. Version 3
+is the rules of the `gamma`, `dev` and `test` networks of the 0.3.0 programs, **from height 0**: there is no fork and no
+version 2 block on those chains. Version 2 (sections 1-14) stays the record of `alpha` and `beta`. The reference is
+`reference/tools/make_vectors_v3.py`; its vectors are `tests/vectors/v3_*.json` (rule 1). Everything cryptographic in this
+section uses code that is **only partly audited (FCMP++) or not audited at all (our Carrot and the tree's bookkeeping)**.
+
+### 15.1 What carries over unchanged
+
+The header encoding, the block encoding, the coinbase encoding and its outputs (each with its own ephemeral key), the
+Merkle root, emission, difficulty and fork choice (8.3), the proof of work (the GATHERED attempt from height 0:
+`docs/CONSENSUS.md` 8.3), the dynamic minimum fee's formula (8.1), the block-size floor and ceiling (8.2, 8.4) and the
+oversize penalty, global output indexes (14.6), the 8-decimal units. Maturity: 60 blocks for a coinbase output, 10 for
+others.
+
+### 15.2 The encodings
+
+```
+Output (91 bytes)     onetime_address [32]  amount_commitment [32]  amount_enc [8]  view_tag [3]  anchor_enc [16]
+TxPrefix              version u16 (= 3) | inputs: count u32 (1..), key_image [32] each
+                      | outputs: count u32 (2..16), Output each
+                      | ephemeral_pubkeys: [32] each, ONE when there are two outputs, else one per output (the count is
+                        not written: it follows from the outputs)
+                      | fee u64 | encrypted_payment_id [8]
+Prunable              reference_height u64 | proof_data: length u32 (..MAX_PROOF), bytes
+Transaction           TxPrefix | Prunable, at most MAX_TX_SIZE (75,000) bytes
+PrunedTransaction     TxPrefix | prunable_hash [32]
+```
+
+The Carrot ephemeral key moved from the output to the transaction (a 2-output transaction's outputs share one key by
+Carrot's design, so it is written once: 32 bytes saved, no privacy effect). `extra` is gone: in its place, the 8-byte
+encrypted payment ID every Carrot transaction carries (a dummy when no integrated address is paid), so **every
+transaction looks alike**. A coinbase keeps its free `extra` (at most 128 bytes).
+
+### 15.3 Ids and tags
+
+As in 6.4 and 5.2, with new tags so that no version 3 object can be taken for a version 2 one: `"tenero block header v3"`,
+`"tenero tx v3"`, `"tenero tx prunable v3"`, `"tenero coinbase v3"`. Genesis: the header of 5.4 with `version = 3` and
+`tx_root = SHA-256("tenero genesis v3" || label)`; the chain id is `SHA-256("tenero genesis id v3" || genesis header)`.
+Labels: `"tenero gamma network 1"`, `"tenero development network v3"`, `"tenero test network v3"`.
+
+### 15.4 Weight, limits and fees
+
+A transaction's **weight** is its prefix bytes plus a quarter of its prunable bytes, rounded up. A block's weight is the
+sum of its transactions' weights (the coinbase, as in version 2, is not counted). The block-size median, the block limit
+(twice the median, at most 4 MiB) and the oversize penalty are version 2's rules **applied to weight**. **The ceilings** (owner, 2026-10-08: the chain can grow to
+about 100 transactions a second): a block weighs at most **`MAX_BLOCK_WEIGHT` = 12 MiB** (version 2's ceiling was 4 MiB),
+and its **real** transaction bytes are at most **`MAX_BLOCK_BYTES` = 48 MiB**, which stops proof-heavy blocks from being
+four times bigger than their weight. A typical transaction weighs about 1,980 and is about 7,000 bytes, so a block holds
+about 6,300 of them (about 106 a second at 60-second blocks).
+
+**The median, with slow growth** (owner, 2026-10-08, as Monero's long-term median; the numbers are recommendations). For
+the block at height `h`, with the weights `w` and long-term weights `lw` of the blocks before it (from block 1: the genesis
+block never counts):
+
+```text
+long_term_median(h) = max(150,000, upper median of the last LONG_TERM_WINDOW = 100,000 values of lw,
+                          the blocks a young chain lacks counting as 150,000)
+median(h)           = min(max(150,000, upper median of the last 10 values of w), 10 * long_term_median(h))
+long_term_weight(h) = min(weight(h), long_term_median(h) * 7 / 5)          (integer division)
+```
+
+`median(h)` is the median the block is judged by: its limit (`min(2 * median, MAX_BLOCK_WEIGHT)`), its penalty and the
+minimum fee. Blocks can jump tenfold above the long-term median for a spike (to about 1,500 typical transactions while it
+is at the floor), and grow lastingly only as the long-term median does, by 1.4 times per half a window of full blocks: from
+the floor to the ceiling takes about 2.5 windows, 5 to 6 months of sustained demand. Counting the blocks a young chain
+lacks at the floor (Monero does not) makes a new chain grow as slowly as an old one. Vectors: `v3_median.json` (with
+smaller windows too, to see the long-term median move). The **minimum fee**
+is version 2's formula with **`FEE_REFERENCE_WEIGHT = 1000`** (version 2: 3000; owner, 2026-10-08) applied to the
+transaction's **real size** and the (weight) median: a typical transaction, about three times as big as in version 2, costs
+what a version 2 one did (about 0.0062 coins at the start, 0.00016 at the tail emission, at the 150,000 floor), and the fee
+still falls with every halving and with the square of the median. So a typical transaction weighs less than in version 2
+(about 2,000 against 2,400), transactions per block do not fall, and fees pay for the real bytes. Lower fees make spam
+cheaper: filling a quiet block of about 75 typical transactions costs about 0.47 coins at the start. A node stores each block's weight with it, so pruning never changes a consensus number.
+
+### 15.5 Shape (consensus)
+
+* Key images strictly ascending (as in version 2), each a canonical, prime-order point that is not the identity.
+* Outputs strictly ascending by one-time address; every one-time address and commitment a canonical, prime-order point
+  that is not the identity.
+* Ephemeral keys non-zero; when there are several, all different.
+* A coinbase's outputs: strictly ascending by one-time address, every one-time address a canonical, prime-order point
+  that is not the identity (new: version 2 did not check coinbase points), ephemeral keys non-zero and all different.
+
+### 15.6 The curve tree and the reference block
+
+The tree of `docs/FCMP_CARROT_PLAN.md` 4.3 (`tenero-crypto::curve_tree`; leaves `{O, Hp²(O), C}`, a coinbase output's `C`
+being `1*G + amount*H`; widths 38 and 18). **Applying the block at height h adds to the tree the coinbase outputs of block
+h + 1 - 60 and the other outputs of block h + 1 - 10, in global output index order**, so the tree after block r holds
+exactly the outputs spendable in block r + 1. Undoing a block removes what it added.
+
+A transaction in the block at height B names a **reference height** r with `B - 1440 <= r <= B - 1` (`MAX_REFERENCE_AGE`,
+PROPOSED) whose tree is not empty; its membership proof is against the tree's root after block r, with that tree's number
+of layers. A transaction that waited too long is rebuilt by its wallet.
+
+### 15.7 The proofs
+
+```
+proof_data = pseudo_outs (n_inputs * 32) | Bulletproofs+ (Monero's encoding, over the outputs' commitments in order)
+             | the FCMP++ proof (monero-fcmp-plus-plus's encoding for n_inputs inputs and the reference tree's layers)
+```
+
+exactly, nothing after it. The FCMP++ spend-authorisation proofs sign
+`SHA-256("tenero fcmp++ message v3" || chain_id || prefix || reference_height u64 || pseudo_outs || range proof bytes)`
+(FCMP++ requires the prefix, the RingCT base and the pseudo-outputs to be bound; the rest is ours, as in 7). The balance
+is version 2's: `sum(pseudo_outs) = sum(output commitments) + fee * H`. A key image already spent, on the chain or earlier
+in the block, is refused (as in version 2). The block's FCMP++ proofs are verified as one batch.
+
+### 15.8 What is not consensus
+
+The Carrot derivations themselves (a node cannot check how an output was made for its receiver: that is wallet code,
+`crates/tenero-carrot`), pruning (nodes are pruned by default from 0.3.0: proofs of recent blocks only; seeds and the
+explorer keep everything), and how a wallet chooses its reference height.
+
+
+### 15.9 Wallet keys and addresses (not consensus; every wallet must agree)
+
+Vectors: `tests/vectors/v3_address.json` from the independent reference `reference/tools/make_vectors_address.py`
+(`python reference/tools/make_vectors_address.py --check`); the Rust is `crates/tenero-wallet/src/address.rs`.
+
+* **Keys.** The 24 words spell a 32-byte master seed; account 0's seed is the master seed, account `i > 0`'s is
+  `SHA-256("tenero account v1" || master || i as u32 LE)` (as on `beta`). An account's **Carrot master secret** is
+  `s_m = SHA-256("tenero carrot master v1" || account seed)`, and every other key follows from `s_m` by Carrot 5.2. The same
+  words therefore give a `beta` wallet and a `gamma` wallet that share no key.
+* **Addresses.** `varint(tag) || spend key 32 || view key 32 || [payment ID 8, integrated only] || checksum 4`, the checksum the
+  first 4 bytes of `SHA-256("tenero address v3" || everything before it)` (Monero uses Keccak-256 here; SHA-256 keeps the wallet
+  to one hash it already has), written in Monero's block base58 (8-byte blocks as 11 characters; a last block of n bytes as
+  `[0, 2, 3, 5, 6, 7, 9, 10, 11][n]` characters). A main address or subaddress is 99 characters, an integrated one 110.
+* **Tags** (4-byte varints, chosen so that every address of a network starts with its four letters whatever its keys):
+
+  | network | prefix | main | subaddress | integrated |
+  |---|---|---|---|---|
+  | `gamma` | `TENg` | 2,255,132 | 2,271,516 | 4,352,284 |
+  | `dev` | `TENd` | 2,156,828 | 2,173,212 | 4,253,980 |
+  | `test` | `TENt` | 2,648,348 | 2,664,732 | 4,745,500 |
+
+  `TENm`, `TENs`, `TENi` are kept for a main net. No tag equals another CryptoNote coin's (the reference checks a list).
+* A wallet refuses an address of another network, and a `tni1` (interim, `beta`) address with a reason. A block reward pays
+  a main address only (Carrot); a transaction carries at most one integrated address (one payment ID).

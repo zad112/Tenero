@@ -21,8 +21,8 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use tenero_chain::{BlockError, Submitted};
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{block_id, tx_id};
-use tenero_core::v2::{Block, BlockHeader, Transaction};
+use tenero_core::v3::ids::{block_id, coinbase_id, tx_id};
+use tenero_core::v3::{Block, BlockHeader, Coinbase, Transaction, Wire};
 use tenero_node::{AddOutcome, Node, PoolError};
 
 use crate::addrbook::{
@@ -182,7 +182,8 @@ pub struct EngineConfig {
     /// new epoch is not checked after a wait of several seconds.
     pub pow_prefetch_blocks: u64,
     /// The most bytes of blocks put in one `blocks` reply; a request for blocks that are larger together is answered in
-    /// several replies (the wire's frame ceiling is 16 MiB, and a reply over it cannot be sent at all).
+    /// several replies (the wire's frame ceiling is 16 MiB, and a reply over it cannot be sent at all). A block bigger than
+    /// this on its own is sent as a compact block and its transactions in pieces of at most this many bytes.
     pub blocks_reply_bytes: usize,
     /// How many outbound peers are remembered across a restart and dialled first when the node starts again (`anchors.rs`).
     /// 0 turns anchors off.
@@ -306,6 +307,10 @@ pub struct Stats {
     /// Feeler connections: dialled, and read (their tip and work noted).
     pub feelers_dialled: u64,
     pub feelers_sampled: u64,
+    /// Blocks put together from their compact form, and the transactions that had to be fetched for them (the rest came
+    /// from the mempool).
+    pub compact_complete: u64,
+    pub compact_fetched_txs: u64,
 }
 
 /// What a feeler connection read from one address.
@@ -473,7 +478,25 @@ enum Late {
     Tx([u8; 32]),
     /// The nonce of a ping that went unanswered and was asked again.
     Pong(u64),
+    /// Transactions of a block we stopped assembling (its id).
+    BlockTxs([u8; 32]),
 }
+
+/// A block being put together from its compact form (`docs/WIRE_PROTOCOL.md` 3): the transactions our mempool had, and
+/// the rest as they arrive from the peer that sent the compact block.
+struct Assembly {
+    peer: PeerId,
+    /// When the peer last delivered something for it (a slow, steady transfer of a big block does not time out).
+    at: u64,
+    header: BlockHeader,
+    coinbase: Coinbase,
+    tx_ids: Vec<[u8; 32]>,
+    txs: Vec<Option<Transaction>>,
+    missing: usize,
+}
+
+/// The most blocks being assembled at once (a peer can make us hold at most this many partial blocks).
+const MAX_ASSEMBLING: usize = 8;
 
 /// The most forgivable replies remembered at once (they are made only by our own timeouts, so this is a bound, not a
 /// limit anyone can reach from outside).
@@ -537,6 +560,8 @@ pub struct Engine<'a> {
     asked: BTreeMap<(PeerId, [u8; 32]), u64>,
     announcers: HashMap<[u8; 32], Vec<PeerId>>,
     req_txs: BTreeMap<[u8; 32], Req>,
+    /// Blocks being put together from their compact form, by id.
+    assembling: HashMap<[u8; 32], Assembly>,
     rejected_txs: HashSet<[u8; 32]>,
     held: Vec<Block>,
     last_reannounce: u64,
@@ -578,6 +603,7 @@ impl<'a> Engine<'a> {
             asked: BTreeMap::new(),
             announcers: HashMap::new(),
             req_txs: BTreeMap::new(),
+            assembling: HashMap::new(),
             rejected_txs: HashSet::new(),
             held: Vec::new(),
             last_reannounce: 0,
@@ -746,6 +772,8 @@ impl<'a> Engine<'a> {
                 | Message::GetHeaders { .. }
                 | Message::GetBlocks { .. }
                 | Message::GetTxs { .. }
+                | Message::GetCompact { .. }
+                | Message::GetBlockTxs { .. }
         ) {
             // (not pings: a ping's nonce IS its send time, and it is sent from the quick tick handler)
             self.stamp_fresh = Some(self.now);
@@ -754,6 +782,9 @@ impl<'a> Engine<'a> {
             for id in ids {
                 self.asked.insert((peer, *id), self.now);
             }
+        }
+        if let Message::GetCompact { id } = &msg {
+            self.asked.insert((peer, *id), self.now);
         }
         *self.stats.sent.entry(msg.kind()).or_default() += 1;
         out.push(Action::Send { peer, msg });
@@ -847,6 +878,7 @@ impl<'a> Engine<'a> {
         }
         self.req_txs.retain(|_, r| r.peer != peer);
         self.asked.retain(|(p, _), _| *p != peer);
+        self.assembling.retain(|_, a| a.peer != peer);
         for list in self.announcers.values_mut() {
             list.retain(|p| *p != peer);
         }
@@ -864,7 +896,7 @@ impl<'a> Engine<'a> {
             .and_then(|l| l.iter().copied().find(|p| self.peers.contains_key(p)));
         if let Some(peer) = candidate {
             self.req_blocks.insert(id, Req { peer, at: self.now });
-            self.send(peer, Message::GetBlocks { ids: vec![id] }, out);
+            self.send(peer, Message::GetCompact { id }, out);
         }
     }
 
@@ -1106,6 +1138,8 @@ impl<'a> Engine<'a> {
                         | Message::Txs { .. }
                         | Message::Pong(_)
                         | Message::NotFound { .. }
+                        | Message::Compact(_)
+                        | Message::BlockTxs { .. }
                 ) {
                     p.timeouts = 0; // it answers
                 }
@@ -1200,6 +1234,19 @@ impl<'a> Engine<'a> {
                     self.on_get_txs(peer, ids, out);
                 }
             }
+            Message::GetCompact { id } => self.on_get_compact(peer, id, out),
+            Message::Compact(c) => {
+                let c = *c;
+                self.on_compact(peer, c.header, c.coinbase, c.tx_ids, out)
+            }
+            Message::GetBlockTxs { block_id, indexes } => {
+                if indexes.is_empty() {
+                    self.penalize(peer, 50, "an empty request for a block's transactions", out);
+                } else {
+                    self.on_get_block_txs(peer, block_id, indexes, out);
+                }
+            }
+            Message::BlockTxs { block_id, txs } => self.on_block_txs(peer, block_id, txs, out),
             Message::GetAddrs => self.on_get_addrs(peer, out),
             Message::Addrs { addrs } => {
                 if addrs.len() > lim.max_addrs {
@@ -1313,16 +1360,94 @@ impl<'a> Engine<'a> {
         for id in served {
             self.note_peer_has(peer, id);
         }
-        // as many replies as it takes for each to fit a frame; a block too big for any frame is, to the peer, one we cannot serve
-        let (groups, too_big) = crate::wire::split_blocks(blocks, self.cfg.blocks_reply_bytes);
-        for b in &too_big {
-            missing.push(self.block_id_of(b));
+        // a block bigger than a whole reply goes as a compact block, whose transactions the peer then asks for in pieces; the
+        // rest in as many replies as it takes for each to fit
+        let budget = self.cfg.blocks_reply_bytes;
+        let (whole, too_big): (Vec<Block>, Vec<Block>) = blocks
+            .into_iter()
+            .partition(|b| b.to_bytes().is_ok_and(|bytes| bytes.len() <= budget));
+        let (groups, unsendable) = crate::wire::split_blocks(whole, budget);
+        for b in unsendable {
+            missing.push(self.block_id_of(&b));
         }
         for blocks in groups {
             self.send(peer, Message::Blocks { blocks }, out);
         }
+        for b in too_big {
+            match compact_of(&b) {
+                Some(m) => self.send(peer, m, out),
+                None => missing.push(self.block_id_of(&b)),
+            }
+        }
         if !missing.is_empty() {
             self.send(peer, Message::NotFound { ids: missing }, out);
+        }
+    }
+
+    /// The full block `id`, if we have it with its proofs.
+    fn full_block(&self, id: &[u8; 32]) -> Option<Block> {
+        let store = self.node.store();
+        store
+            .height_of(id)
+            .ok()
+            .flatten()
+            .and_then(|h| store.get_block(h).ok().flatten())
+            .and_then(|sb| sb.into_full())
+    }
+
+    fn on_get_compact(&mut self, peer: PeerId, id: [u8; 32], out: &mut Vec<Action>) {
+        match self.full_block(&id).as_ref().and_then(compact_of) {
+            Some(m) => {
+                self.note_peer_has(peer, id);
+                self.send(peer, m, out);
+            }
+            None => self.send(peer, Message::NotFound { ids: vec![id] }, out),
+        }
+    }
+
+    /// The transactions of block `block_id` at `indexes`, in as many replies as it takes for each to fit a frame. A block
+    /// we cannot serve, or an index it does not have: `not_found` for the block.
+    fn on_get_block_txs(
+        &mut self,
+        peer: PeerId,
+        block_id: [u8; 32],
+        indexes: Vec<u32>,
+        out: &mut Vec<Action>,
+    ) {
+        let Some(block) = self.full_block(&block_id) else {
+            self.send(
+                peer,
+                Message::NotFound {
+                    ids: vec![block_id],
+                },
+                out,
+            );
+            return;
+        };
+        let mut txs = Vec::with_capacity(indexes.len());
+        for i in indexes {
+            match block.transactions.get(i as usize) {
+                Some(t) => txs.push(t.clone()),
+                None => {
+                    self.send(
+                        peer,
+                        Message::NotFound {
+                            ids: vec![block_id],
+                        },
+                        out,
+                    );
+                    self.penalize(
+                        peer,
+                        20,
+                        "asked for a transaction a block does not have",
+                        out,
+                    );
+                    return;
+                }
+            }
+        }
+        for txs in crate::wire::split_txs(txs, self.cfg.blocks_reply_bytes) {
+            self.send(peer, Message::BlockTxs { block_id, txs }, out);
         }
     }
 
@@ -2492,24 +2617,40 @@ impl<'a> Engine<'a> {
                 }
                 continue;
             }
-            self.req_blocks.remove(&id);
-            if let Some(Sync {
-                peer: sync_peer,
-                phase: Phase::Blocks { requested, .. },
-                ..
-            }) = self.syncing.as_mut()
-            {
-                if *sync_peer == peer {
-                    requested.remove(&id);
-                }
-            }
-            match self.apply_block(Some(peer), &b, out) {
+            match self.receive_block(peer, id, &b, out) {
                 Applied::NewTip => new_tip = true,
                 Applied::Orphan => orphan = true,
                 Applied::Invalid => return, // the peer was banned, and its requests forgotten
                 _ => {}
             }
         }
+        self.after_delivery(peer, new_tip, orphan, out);
+    }
+
+    /// A block `peer` delivered (whole, or assembled from its compact form): no longer waited for; applied.
+    fn receive_block(
+        &mut self,
+        peer: PeerId,
+        id: [u8; 32],
+        b: &Block,
+        out: &mut Vec<Action>,
+    ) -> Applied {
+        self.req_blocks.remove(&id);
+        if let Some(Sync {
+            peer: sync_peer,
+            phase: Phase::Blocks { requested, .. },
+            ..
+        }) = self.syncing.as_mut()
+        {
+            if *sync_peer == peer {
+                requested.remove(&id);
+            }
+        }
+        self.apply_block(Some(peer), b, out)
+    }
+
+    /// After blocks from `peer` were applied: announce a new tip, and move the sync on.
+    fn after_delivery(&mut self, peer: PeerId, new_tip: bool, orphan: bool, out: &mut Vec<Action>) {
         if new_tip {
             self.announce_tip(Some(peer), out);
         }
@@ -2538,9 +2679,188 @@ impl<'a> Engine<'a> {
         }
     }
 
+    /// A compact block: checked against its header (the header's root is over the coinbase's id and these ids), filled
+    /// from the mempool, and the rest asked for by index from the same peer.
+    fn on_compact(
+        &mut self,
+        peer: PeerId,
+        header: BlockHeader,
+        coinbase: Coinbase,
+        tx_ids: Vec<[u8; 32]>,
+        out: &mut Vec<Action>,
+    ) {
+        let id = block_id(&header, self.node.store().pow());
+        if self.asked.remove(&(peer, id)).is_none() {
+            self.penalize(peer, 20, "a block nobody asked for", out);
+            return;
+        }
+        let Ok(cb_id) = coinbase_id(&coinbase) else {
+            self.penalize(
+                peer,
+                100,
+                "a compact block whose coinbase does not encode",
+                out,
+            );
+            return;
+        };
+        let mut leaves = Vec::with_capacity(1 + tx_ids.len());
+        leaves.push(cb_id);
+        leaves.extend_from_slice(&tx_ids);
+        if tenero_core::v2::ids::merkle_root(&leaves) != header.tx_root {
+            self.penalize(
+                peer,
+                100,
+                "a compact block whose ids are not its header's",
+                out,
+            );
+            return;
+        }
+        if self.on_chain(&id)
+            || self.node.chain().holds_block(&id)
+            || self.assembling.contains_key(&id)
+        {
+            self.req_blocks.remove(&id);
+            return;
+        }
+        let txs: Vec<Option<Transaction>> = tx_ids
+            .iter()
+            .map(|t| self.node.pool().get(t).cloned())
+            .collect();
+        let wanted: Vec<u32> = txs
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.is_none())
+            .map(|(i, _)| i as u32)
+            .collect();
+        let a = Assembly {
+            peer,
+            at: self.now,
+            header,
+            coinbase,
+            tx_ids,
+            missing: wanted.len(),
+            txs,
+        };
+        if wanted.is_empty() {
+            self.stats.compact_complete += 1;
+            self.complete(id, a, out);
+            return;
+        }
+        if self.assembling.len() >= MAX_ASSEMBLING {
+            // the oldest partial block gives way (it is asked for again by whoever needs it)
+            if let Some(old) = self
+                .assembling
+                .iter()
+                .min_by_key(|(_, a)| a.at)
+                .map(|(k, _)| *k)
+            {
+                self.assembling.remove(&old);
+                self.req_blocks.remove(&old);
+            }
+        }
+        self.stats.compact_fetched_txs += wanted.len() as u64;
+        self.assembling.insert(id, a);
+        self.send(
+            peer,
+            Message::GetBlockTxs {
+                block_id: id,
+                indexes: wanted,
+            },
+            out,
+        );
+    }
+
+    /// Some of a block's transactions, for a block being assembled from `peer`.
+    fn on_block_txs(
+        &mut self,
+        peer: PeerId,
+        block_id: [u8; 32],
+        txs: Vec<Transaction>,
+        out: &mut Vec<Action>,
+    ) {
+        if !self
+            .assembling
+            .get(&block_id)
+            .is_some_and(|a| a.peer == peer)
+        {
+            if !self.forgave(peer, &Late::BlockTxs(block_id)) {
+                self.penalize(peer, 20, "transactions for a block nobody asked about", out);
+            }
+            return;
+        }
+        let now = self.now;
+        let mut wrong = false;
+        {
+            let a = self.assembling.get_mut(&block_id).expect("checked above");
+            a.at = now;
+            for t in txs {
+                let Ok(id) = tx_id(&t) else {
+                    wrong = true;
+                    break;
+                };
+                // the first slot that wants this id
+                let slot = a
+                    .tx_ids
+                    .iter()
+                    .enumerate()
+                    .position(|(i, x)| *x == id && a.txs[i].is_none());
+                match slot {
+                    Some(i) => {
+                        a.txs[i] = Some(t);
+                        a.missing -= 1;
+                    }
+                    None => {
+                        wrong = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if wrong {
+            self.assembling.remove(&block_id);
+            self.req_blocks.remove(&block_id);
+            self.penalize(peer, 50, "a transaction the block does not hold", out);
+            return;
+        }
+        // a sync that is moving is not stuck
+        if let Some(s) = self.syncing.as_mut() {
+            if s.peer == peer {
+                s.started = now;
+            }
+        }
+        if self.assembling[&block_id].missing == 0 {
+            let a = self.assembling.remove(&block_id).expect("present");
+            self.stats.compact_complete += 1;
+            self.complete(block_id, a, out);
+        }
+    }
+
+    /// A block whose every transaction is here: applied as if it had come whole.
+    fn complete(&mut self, id: [u8; 32], a: Assembly, out: &mut Vec<Action>) {
+        let peer = a.peer;
+        let block = Block {
+            header: a.header,
+            coinbase: a.coinbase,
+            transactions: a.txs.into_iter().map(|t| t.expect("complete")).collect(),
+        };
+        let applied = self.receive_block(peer, id, &block, out);
+        if matches!(applied, Applied::Invalid) {
+            return;
+        }
+        self.after_delivery(
+            peer,
+            matches!(applied, Applied::NewTip),
+            matches!(applied, Applied::Orphan),
+            out,
+        );
+    }
+
     fn on_not_found(&mut self, peer: PeerId, ids: Vec<[u8; 32]>, out: &mut Vec<Action>) {
         let syncing_here = self.syncing.as_ref().is_some_and(|s| s.peer == peer);
         for id in ids {
+            if self.assembling.get(&id).is_some_and(|a| a.peer == peer) {
+                self.assembling.remove(&id);
+            }
             self.req_txs.remove(&id);
             self.asked.remove(&(peer, id));
             if self.req_blocks.get(&id).is_some_and(|r| r.peer == peer) {
@@ -2660,7 +2980,7 @@ impl<'a> Engine<'a> {
         let (_, _, ours) = self.tip();
         if work > ours && !self.req_blocks.contains_key(&id) {
             self.req_blocks.insert(id, Req { peer, at: self.now });
-            self.send(peer, Message::GetBlocks { ids: vec![id] }, out);
+            self.send(peer, Message::GetCompact { id }, out);
         }
     }
 
@@ -2846,6 +3166,26 @@ impl<'a> Engine<'a> {
             self.note_timeout(peer, out);
             self.fetch_from_announcers(id, out);
         }
+        // blocks being assembled whose peer stopped delivering
+        let stalled: Vec<([u8; 32], PeerId)> = self
+            .assembling
+            .iter()
+            .filter(|(_, a)| now.saturating_sub(a.at) > timeout)
+            .map(|(id, a)| (*id, a.peer))
+            .collect();
+        for (id, peer) in stalled {
+            self.assembling.remove(&id);
+            self.req_blocks.remove(&id);
+            self.forgive_later(peer, Late::BlockTxs(id));
+            if let Some(l) = self.announcers.get_mut(&id) {
+                l.retain(|p| *p != peer);
+            }
+            if self.syncing.as_ref().is_some_and(|s| s.peer == peer) {
+                self.abort_sync(peer, out);
+            }
+            self.note_timeout(peer, out);
+            self.fetch_from_announcers(id, out);
+        }
         // asks that will never be answered no longer make a delivery welcome
         self.asked
             .retain(|_, at| now.saturating_sub(*at) <= timeout.saturating_mul(4));
@@ -2899,4 +3239,19 @@ impl<'a> Engine<'a> {
         self.maintain_connections(out);
         self.maybe_start_sync(out);
     }
+}
+
+/// A block's compact form: its header, its coinbase and its transactions' ids. `None` if it does not encode.
+fn compact_of(b: &Block) -> Option<Message> {
+    let tx_ids = b
+        .transactions
+        .iter()
+        .map(tx_id)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    Some(Message::Compact(Box::new(crate::message::CompactBlock {
+        header: b.header.clone(),
+        coinbase: b.coinbase.clone(),
+        tx_ids,
+    })))
 }

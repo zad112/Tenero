@@ -18,7 +18,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tenero_core::matmulhash::{self as mh, Params};
-use tenero_core::v2::ids;
+use tenero_core::v3::ids;
 use tenero_gpu::gather::GatherEngine;
 use tenero_gpu::group::SliceGrouper;
 use tenero_gpu::{DeviceDataset, Gpu};
@@ -245,7 +245,7 @@ pub fn measure_batches(
     use std::sync::atomic::AtomicBool;
     use std::time::{Duration, Instant};
     use tenero_core::u256::U256;
-    use tenero_core::v2::BlockHeader;
+    use tenero_core::v3::BlockHeader;
 
     let mut out = vec![];
     for &batch in candidates {
@@ -260,7 +260,7 @@ pub fn measure_batches(
         let job = Job {
             id: batch as u64,
             header: BlockHeader {
-                version: tenero_core::v2::VERSION,
+                version: tenero_core::v3::VERSION,
                 prev_id: [0; 32],
                 timestamp: 1,
                 tx_root: [0; 32],

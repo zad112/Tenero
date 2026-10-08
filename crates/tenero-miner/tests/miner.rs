@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use tenero_chain::{ChainParams, MatmulPow, ProofsNotChecked, Sha256Pow};
 use tenero_core::matmulhash::Params;
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{self, PowKind};
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids;
 use tenero_miner::{
     Backend, Counters, CpuMatmulBackend, Job, Miner, MinerConfig, MinerEvent, MinerHook,
     PlaceholderPayout, Sha256Backend, Solution, MAX_CORES,
@@ -549,15 +550,15 @@ fn hook_failed() -> bool {
 
 fn job_for(rig: &SimRig, target: U256, id: u64) -> (Job, Arc<AtomicBool>) {
     let engine = sha_engine(rig);
-    let payout = Payout {
+    let payout = tenero_net::sim::test_payout(Payout {
         onetime_address: [9; 32],
         view_tag: [0; 3],
         ephemeral_pubkey: [9; 32],
         anchor_enc: [0; 16],
-    };
+    });
     let block = engine
         .node()
-        .block_template(1_700_000_060, 1000, payout)
+        .block_template(1_700_000_060, 1000, &|_| payout.clone())
         .unwrap();
     let stale = Arc::new(AtomicBool::new(false));
     (
@@ -644,7 +645,7 @@ fn small() -> Params {
 fn the_cpu_matmul_miner_mines_blocks_a_matmul_node_verifies_across_epoch_boundaries() {
     let db = TempDb::new("matmul");
     let store = Store::open(&db.0, LABEL, PowKind::Matmul).unwrap();
-    let params = ChainParams::version_2(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
+    let params = ChainParams::version_3(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
     // one MatmulPow shared by the node's validation and the miner, so each dataset is built once
     let pow = Arc::new(MatmulPow::new(small(), 4, 1).unwrap());
     let node = Node::with_proof_check(
@@ -746,7 +747,7 @@ fn the_cpu_matmul_search_is_cancelled_and_its_threads_are_limited() {
 fn the_node_prepares_the_next_epochs_dataset_before_the_first_block_that_needs_it() {
     let db = TempDb::new("nodeprefetch");
     let store = Store::open(&db.0, LABEL, PowKind::Matmul).unwrap();
-    let params = ChainParams::version_2(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
+    let params = ChainParams::version_3(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
     // the node's own proof of work, and a DIFFERENT one for the miner, so only the node's own prefetch can have
     // built the node's datasets
     let node_pow = Arc::new(MatmulPow::new(small(), 4, 1).unwrap());
@@ -908,8 +909,8 @@ fn the_placeholder_payout_depends_on_the_height_and_the_seed_and_on_nothing_else
     use tenero_miner::PayoutSource;
     let mut a = PlaceholderPayout { seed: [1; 32] };
     let mut b = PlaceholderPayout { seed: [2; 32] };
-    let p = a.payout(10);
-    let again = a.payout(10);
+    let p = a.payout(10, 7);
+    let again = a.payout(10, 7);
     assert_eq!(
         (
             p.onetime_address,
@@ -924,10 +925,10 @@ fn the_placeholder_payout_depends_on_the_height_and_the_seed_and_on_nothing_else
             again.anchor_enc
         )
     );
-    let later = a.payout(11);
+    let later = a.payout(11, 7);
     assert_ne!(p.onetime_address, later.onetime_address);
     assert_ne!(p.ephemeral_pubkey, later.ephemeral_pubkey);
-    assert_ne!(p.onetime_address, b.payout(10).onetime_address);
+    assert_ne!(p.onetime_address, b.payout(10, 7).onetime_address);
     assert_ne!(
         p.onetime_address, p.ephemeral_pubkey,
         "the address and the key are made apart"
@@ -1087,7 +1088,7 @@ fn the_miner_pays_a_wallet_that_finds_every_reward() {
     use tenero_miner::WalletPayout;
     use tenero_wallet::{Address, Wallet};
     let wallet_seed = [5u8; 32];
-    let mut wallet = Wallet::from_seed(&wallet_seed, 0);
+    let mut wallet = Wallet::from_seed(&wallet_seed, tenero_wallet::Network::Test, 0);
     let rig = SimRig::rigs("mn-wallet", 1);
     let mut engine = sha_engine(&rig[0]);
     let lines = Lines::new();
@@ -1126,12 +1127,9 @@ fn the_miner_pays_a_wallet_that_finds_every_reward() {
         })
         .sum();
     assert_eq!(wallet.balance(engine.node()).unwrap().total, paid);
-    // an address with an invalid key cannot be paid
-    assert!(WalletPayout::new(Address {
-        spend: [0; 32],
-        view: [0; 32]
-    })
-    .is_none());
+    // a subaddress cannot be paid a block reward (Carrot pays one to a main address only)
+    let sub: Address = wallet.subaddress(3).unwrap();
+    assert!(WalletPayout::new(sub).is_none());
 }
 
 #[test]

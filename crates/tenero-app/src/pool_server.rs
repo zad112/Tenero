@@ -34,11 +34,10 @@ use std::time::{Duration, Instant};
 use rand_core::OsRng;
 use tenero_chain::PowCheck;
 use tenero_core::u256::U256;
-use tenero_core::v2::ids;
-use tenero_core::v2::{Block, BlockHeader};
+use tenero_core::v3::ids;
+use tenero_core::v3::{Block, BlockHeader};
 use tenero_net::noise::NodeKey;
-use tenero_node::Payout;
-use tenero_wallet::{ChainView, FeeLevel, Submitter, Wallet};
+use tenero_wallet::{Address, ChainView, FeeLevel, Submitter, Wallet};
 
 use crate::client::{BlockVerdict, RemoteNode};
 use crate::control::Template;
@@ -69,8 +68,8 @@ pub const R_NOT_ALLOWED: u8 = 6;
 pub trait PoolNode: Send + Sync {
     /// The height and id of the tip, and whether the node is still catching up (a node that is must not be mined on).
     fn tip(&self) -> Result<(u64, [u8; 32], bool), String>;
-    /// A block to search for, paying `payout`.
-    fn template(&self, payout: Payout, max_body_bytes: u32) -> Result<Template, String>;
+    /// A block to search for, its reward paying the main address `to`.
+    fn template(&self, to: &Address, max_weight: u64) -> Result<Template, String>;
     fn submit_block(&self, block: Block) -> Result<BlockVerdict, String>;
     /// The id of the block the node's chain has at `height`.
     fn block_id_at(&self, height: u64) -> Result<Option<[u8; 32]>, String>;
@@ -83,8 +82,8 @@ impl PoolNode for RemoteNode {
         let i = self.info()?;
         Ok((i.height, i.tip_id, i.syncing))
     }
-    fn template(&self, payout: Payout, max_body_bytes: u32) -> Result<Template, String> {
-        self.block_template(payout, max_body_bytes)
+    fn template(&self, to: &Address, max_weight: u64) -> Result<Template, String> {
+        self.block_template(to, max_weight)
     }
     fn submit_block(&self, block: Block) -> Result<BlockVerdict, String> {
         RemoteNode::submit_block(self, block)
@@ -134,8 +133,8 @@ impl PoolNode for ReconnectingNode {
     fn tip(&self) -> Result<(u64, [u8; 32], bool), String> {
         self.with(PoolNode::tip)
     }
-    fn template(&self, payout: Payout, max_body_bytes: u32) -> Result<Template, String> {
-        self.with(|n| PoolNode::template(n, payout, max_body_bytes))
+    fn template(&self, to: &Address, max_weight: u64) -> Result<Template, String> {
+        self.with(|n| PoolNode::template(n, to, max_weight))
     }
     fn submit_block(&self, block: Block) -> Result<BlockVerdict, String> {
         self.with(|n| PoolNode::submit_block(n, block))
@@ -207,7 +206,8 @@ pub struct PoolConfig {
     pub job_ttl: u32,
     /// A job for the same tip is replaced by a fresh one this often (new transactions, a later timestamp).
     pub refresh_every: Duration,
-    pub max_body_bytes: u32,
+    /// The most transaction weight a job's block carries (the node gives at most `server::MAX_TEMPLATE_WEIGHT`).
+    pub max_weight: u64,
     /// Shares one connection may send in a minute.
     pub shares_per_minute: usize,
     /// Bad shares in a row (above the target, a wrong mix) before the address is banned.
@@ -235,7 +235,7 @@ impl PoolConfig {
             max_payees: 500,
             job_ttl: 120,
             refresh_every: Duration::from_secs(30),
-            max_body_bytes: 1_000_000,
+            max_weight: u64::MAX,
             shares_per_minute: 600,
             bad_shares_ban: 20,
             ban_secs: 600,
@@ -546,7 +546,10 @@ impl Pool {
         if hello.worker.chars().any(char::is_control) || hello.agent.chars().any(char::is_control) {
             return Err("the worker name has a control character".into());
         }
-        let address = tenero_wallet::Address::from_text(hello.address.trim())
+        let network = crate::config::Network::parse(&self.cfg.network)
+            .ok_or("the pool's network is not one this program knows")?
+            .wallet_network();
+        let address = Address::parse(hello.address.trim(), network)
             .map_err(|e| format!("the payout address is not valid: {e}"))?;
         let address_id = {
             let mut a = self
@@ -902,17 +905,15 @@ impl Pool {
 
     fn make_job(&self, height: u64, tip: [u8; 32], clean: bool) -> Result<(), String> {
         let next = height + 1;
-        let payout = tenero_wallet::coinbase_payout(&mut OsRng, &self.cfg.pool_address, next)
-            .ok_or("the pool's address holds an invalid key")?;
         let t = self
             .node
-            .template(payout.clone(), self.cfg.max_body_bytes)?;
+            .template(&self.cfg.pool_address, self.cfg.max_weight)?;
         if t.height != next || t.block.header.prev_id != tip {
             // the tip moved between our two questions: the next look makes the job
             return Ok(());
         }
         // the node is ours, but a template that does not pay the pool must never be handed out
-        check_template(&t, next, &tip, &payout, self.now())
+        check_template(&t, next, &tip, &self.cfg.pool_address, self.now())
             .map_err(|e| format!("the node's template was refused: {e}"))?;
         let mut header = t.block.header.clone();
         header.nonce = 0;

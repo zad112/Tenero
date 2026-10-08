@@ -37,8 +37,9 @@ use tenero_chain::MatmulPow;
 use tenero_core::hash::sha256;
 use tenero_core::matmulhash as mh;
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{self, PowKind};
-use tenero_core::v2::{Block, BlockHeader};
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids;
+use tenero_core::v3::{Block, BlockHeader};
 use tenero_net::transport::Hooks;
 use tenero_net::{Engine, Event};
 use tenero_node::Payout;
@@ -460,28 +461,35 @@ impl Drop for Miner {
 
 // ---- the node hook ------------------------------------------------------------------------------------------
 
-/// Where the coinbase of each block pays.
+/// Where the coinbase of each block pays. A Carrot coinbase output's key depends on its amount, so the payout is asked
+/// for once the block's amount is known.
 pub trait PayoutSource {
-    fn payout(&mut self, height: u64) -> Payout;
+    fn payout(&mut self, height: u64, amount: u64) -> Payout;
 }
 
-/// Pays every block's reward to a wallet's address (the interim output scheme, `tenero-wallet`), with fresh
+/// Pays every block's reward to a wallet's main address (a Carrot coinbase output, `tenero-wallet`), with fresh
 /// randomness for every block, so the rewards cannot be linked to one another by anyone without the view key.
 pub struct WalletPayout {
     address: tenero_wallet::Address,
 }
 
 impl WalletPayout {
-    /// `None` if the address holds an invalid key (a reward could not be made for it).
+    /// `None` if the address cannot be paid a block reward (Carrot pays one to a main address only, not a subaddress or
+    /// an integrated address), or holds an invalid key.
     pub fn new(address: tenero_wallet::Address) -> Option<WalletPayout> {
-        tenero_wallet::coinbase_payout_random(&address, 0)?;
+        tenero_wallet::coinbase_payout_random(&address, 1, 1)?;
         Some(WalletPayout { address })
+    }
+
+    /// The main address the rewards go to.
+    pub fn address(&self) -> &tenero_wallet::Address {
+        &self.address
     }
 }
 
 impl PayoutSource for WalletPayout {
-    fn payout(&mut self, height: u64) -> Payout {
-        tenero_wallet::coinbase_payout_random(&self.address, height)
+    fn payout(&mut self, height: u64, amount: u64) -> Payout {
+        tenero_wallet::coinbase_payout_random(&self.address, height, amount)
             .expect("the address was checked when this payout was made")
     }
 }
@@ -493,7 +501,7 @@ pub struct PlaceholderPayout {
 }
 
 impl PayoutSource for PlaceholderPayout {
-    fn payout(&mut self, height: u64) -> Payout {
+    fn payout(&mut self, height: u64, _amount: u64) -> Payout {
         let h = |tag: &[u8]| {
             sha256(&[
                 b"tenero placeholder payout",
@@ -507,10 +515,11 @@ impl PayoutSource for PlaceholderPayout {
         view_tag.copy_from_slice(&t[..3]);
         let mut anchor = [0u8; 16];
         anchor.copy_from_slice(&t[3..19]);
+        // valid points (hash-to-point) that nobody has the key of
         Payout {
-            onetime_address: a,
+            onetime_address: tenero_tree::hash_to_point(a),
             view_tag,
-            ephemeral_pubkey: e,
+            ephemeral_pubkey: tenero_tree::hash_to_point(e),
             anchor_enc: anchor,
         }
     }
@@ -580,8 +589,9 @@ pub fn block_reward(block: &Block) -> u64 {
 
 #[derive(Clone)]
 pub struct MinerConfig {
-    /// The most transaction bytes to put in a block.
-    pub max_body_bytes: u64,
+    /// The most a block's transactions may weigh, if less than the rules allow (twice the block-weight median, at most
+    /// 12 MiB): no limit of its own by default.
+    pub max_weight: u64,
     /// A template this old is replaced by a fresh one (new transactions, a later timestamp) even if the tip has
     /// not moved.
     pub refresh_every: Duration,
@@ -598,7 +608,7 @@ pub struct MinerConfig {
 impl Default for MinerConfig {
     fn default() -> MinerConfig {
         MinerConfig {
-            max_body_bytes: 1_000_000,
+            max_weight: u64::MAX,
             refresh_every: Duration::from_secs(60),
             mine_while_syncing: false,
             min_block_interval: Duration::ZERO,
@@ -816,11 +826,14 @@ impl<P: PayoutSource> Hooks for MinerHook<P> {
             let Ok(next) = engine.node().next_block() else {
                 return events;
             };
-            let payout = self.payout.payout(next.height);
+            let source = std::cell::RefCell::new(&mut self.payout);
+            let height = next.height;
             let Ok(block) =
                 engine
                     .node()
-                    .block_template(now_ms / 1000, self.cfg.max_body_bytes, payout)
+                    .block_template(now_ms / 1000, self.cfg.max_weight, &|amount| {
+                        source.borrow_mut().payout(height, amount)
+                    })
             else {
                 return events;
             };

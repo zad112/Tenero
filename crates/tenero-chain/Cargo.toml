@@ -1,6 +1,6 @@
 [package]
 name = "tenero-chain"
-description = "Tenero block validation and chain acceptance (experimental, without the cryptographic proofs yet)."
+description = "Tenero block validation and chain acceptance (experimental; the proofs are checked through the ProofCheck hook)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 tenero-core = { path = "../tenero-core" }
 tenero-store = { path = "../tenero-store" }
+tenero-tree = { path = "../tenero-tree" }
 
 [lints]
 workspace = true

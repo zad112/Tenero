@@ -10,9 +10,9 @@
 //! accepted share with a reason, a header that already carries a nonce) is an error, and one message has one encoding.
 //! **Experimental and unaudited.**
 
-use tenero_core::v2::codec::{DecodeError, EncodeError, Reader, Wire, Writer};
-use tenero_core::v2::{BlockHeader, Coinbase, Transaction};
-use tenero_node::Payout;
+use tenero_core::v3::{
+    BlockHeader, Coinbase, DecodeError, EncodeError, Reader, Transaction, Wire, Writer,
+};
 
 /// The biggest body a frame may carry.
 pub const MAX_FRAME: usize = 4 * 1024 * 1024;
@@ -194,10 +194,15 @@ pub enum PoolMessage {
     SetShareTarget {
         share_target: [u8; 32],
     },
-    /// Where the reward of a block at `height` goes: the pool's (a declared job must pay exactly this).
+    /// Where the reward of a block at `height` goes: the pool's main address (its keys), and the Janus anchor the miner
+    /// makes the coinbase output with. A Carrot coinbase output depends on its amount, which only the miner of a declared
+    /// job knows, so the pool cannot hand over a finished output; with the keys and the anchor the miner makes it, and the
+    /// pool, making it again from the same three things and the block's amount, sees that the block pays it.
     SetPayout {
         height: u64,
-        payout: Payout,
+        spend_pubkey: [u8; 32],
+        view_pubkey: [u8; 32],
+        anchor: [u8; 16],
     },
     Error(String),
 }
@@ -466,12 +471,16 @@ impl PoolMessage {
                 }
                 w.raw(share_target);
             }
-            PoolMessage::SetPayout { height, payout } => {
+            PoolMessage::SetPayout {
+                height,
+                spend_pubkey,
+                view_pubkey,
+                anchor,
+            } => {
                 w.u64(*height);
-                w.raw(&payout.onetime_address);
-                w.raw(&payout.view_tag);
-                w.raw(&payout.ephemeral_pubkey);
-                w.raw(&payout.anchor_enc);
+                w.raw(spend_pubkey);
+                w.raw(view_pubkey);
+                w.raw(anchor);
             }
             PoolMessage::Error(text) => put_text(&mut w, text, MAX_TEXT)?,
         }
@@ -569,12 +578,9 @@ impl PoolMessage {
             }
             K_SET_PAYOUT => PoolMessage::SetPayout {
                 height: r.u64()?,
-                payout: Payout {
-                    onetime_address: r.array()?,
-                    view_tag: r.array()?,
-                    ephemeral_pubkey: r.array()?,
-                    anchor_enc: r.array()?,
-                },
+                spend_pubkey: r.array()?,
+                view_pubkey: r.array()?,
+                anchor: r.array()?,
             },
             K_ERROR => PoolMessage::Error(read_text(&mut r, MAX_TEXT)?),
             other => return Err(PoolError::UnknownKind(other)),

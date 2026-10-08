@@ -20,28 +20,31 @@ pub enum Network {
     /// The real matmulhash proof of work, with a placeholder starting difficulty and genesis: the **development**
     /// network. It is not a launched network and nothing on it has value.
     Dev,
-    /// The **release network** of the first test release (M11.2): the real matmulhash proof of work, a fresh genesis with no premine
-    /// ("tenero alpha network 1"), a real starting difficulty (2^237: about 524,000 attempts a block) and 100-block epochs. It is still a
-    /// test network: unaudited, and nothing on it has value. **Kept after Beta.1 for a short time** so that people can move over: a node of this version
-    /// judges its transactions by the limits of alpha.4 (`ChainParams::legacy_tx_limits`), as the older nodes still on it do.
-    Alpha,
-    /// The **beta network** of 0.2.0-beta.1: the release network after the hard fork of Beta.1 (a transaction is limited by its size, not by a count of
-    /// inputs; `CONSENSUS_V2.md` 6.2). A fresh genesis ("tenero beta network 1"), the same real proof of work, difficulty and 100-block epochs as alpha.
-    /// Still a test network: unaudited, and nothing on it has value.
-    Beta,
+    /// The network of 0.3.0-gamma.1 (`docs/FCMP_CARROT_PLAN.md`): FCMP++ spends and Carrot addresses from its first block,
+    /// a fresh genesis ("tenero gamma network 1") with no premine, the real proof of work (gathered from block 0), the
+    /// real starting difficulty of `beta` (2^237) and 100-block epochs. **A test network: unaudited, nothing on it has
+    /// value, and it can restart.** The 0.3.0 programs run `gamma`, `dev` and `test` only: `beta` and `alpha` carry on
+    /// with the 0.2.0 programs (decision P2, 2026-10-08).
+    Gamma,
 }
 
 /// The proof-of-work epoch of the networks that use the real proof of work, in blocks (the owner's choice for M11.2; the same value the
 /// development network always had).
 pub const REAL_POW_EPOCH_BLOCKS: u64 = 100;
 
+/// How many recent blocks a node keeps whole (with their proofs) unless told otherwise: nodes are **pruned by default**
+/// from 0.3.0 (decision F11, 2026-10-08), so an ordinary node's disk grows by the transactions' prefixes, not their
+/// proofs. 5,500 blocks is about 3.8 days at a block a minute (`CONSENSUS_V2.md` 14: `PRUNE_KEEP_BLOCKS`, policy, not
+/// consensus). A seed or a block explorer sets `prune_keep = 0` (an archive node): a node syncing from scratch needs a
+/// peer that still has every proof.
+pub const DEFAULT_PRUNE_KEEP: u64 = 5_500;
+
 impl Network {
     pub fn parse(s: &str) -> Option<Network> {
         match s {
             "test" => Some(Network::Test),
             "dev" => Some(Network::Dev),
-            "alpha" => Some(Network::Alpha),
-            "beta" => Some(Network::Beta),
+            "gamma" => Some(Network::Gamma),
             _ => None,
         }
     }
@@ -50,13 +53,12 @@ impl Network {
         match self {
             Network::Test => "test",
             Network::Dev => "dev",
-            Network::Alpha => "alpha",
-            Network::Beta => "beta",
+            Network::Gamma => "gamma",
         }
     }
 
     /// Every network, in the order the screens list them.
-    pub const ALL: [Network; 4] = [Network::Test, Network::Dev, Network::Beta, Network::Alpha];
+    pub const ALL: [Network; 3] = [Network::Test, Network::Dev, Network::Gamma];
 
     /// Whether the network uses the real matmulhash proof of work (a CPU or a GPU mines it) and not SHA-256.
     pub fn real_pow(self) -> bool {
@@ -64,12 +66,12 @@ impl Network {
     }
 
     /// The height from which this network's blocks need the GATHERED proof-of-work attempt (`CONSENSUS.md` section 8.3,
-    /// `THREAT_MODEL.md` E11): `GATHER_FORK_HEIGHT` on `beta` and `dev` (decided by the owner, 2026-10-07), never (`u64::MAX`) on `alpha`
-    /// (it keeps the first design) and on the SHA-256 `test` network (no matmulhash at all).
+    /// `THREAT_MODEL.md` E11): from block 0 on `gamma` and `dev` (the first design's weakness never reaches a version 3
+    /// chain), never (`u64::MAX`) on the SHA-256 `test` network (no matmulhash at all).
     pub fn gather_from(self) -> u64 {
         match self {
-            Network::Beta | Network::Dev => GATHER_FORK_HEIGHT,
-            Network::Alpha | Network::Test => u64::MAX,
+            Network::Gamma | Network::Dev => 0,
+            Network::Test => u64::MAX,
         }
     }
 
@@ -79,21 +81,24 @@ impl Network {
     }
 
     /// The default port of the loopback control interface: a different one for each network, so that nodes of two networks on one
-    /// machine do not meet.
+    /// machine do not meet. (`alpha` had 38332 and `beta` 38342; `gamma` follows them.)
     pub fn default_control_port(self) -> u16 {
         match self {
             Network::Test => 18332,
             Network::Dev => 28332,
-            Network::Alpha => 38332,
-            Network::Beta => 38342,
+            Network::Gamma => 38352,
+        }
+    }
+
+    /// The wallet's network of the same name: which addresses (`TENt`, `TENd`, `TENg`) belong here.
+    pub fn wallet_network(self) -> tenero_wallet::Network {
+        match self {
+            Network::Test => tenero_wallet::Network::Test,
+            Network::Dev => tenero_wallet::Network::Dev,
+            Network::Gamma => tenero_wallet::Network::Gamma,
         }
     }
 }
-
-/// The gather fork: from this height on, `beta` and `dev` blocks need the gathered proof-of-work attempt. **A consensus rule**: a node
-/// without it refuses every beta block from this height on (and is left on a chain of its own). Decided by the owner, 2026-10-07, when
-/// beta was at height 280.
-pub const GATHER_FORK_HEIGHT: u64 = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MineMode {
@@ -103,28 +108,22 @@ pub enum MineMode {
     Gpu,
 }
 
-/// The seed addresses built into the program for the `alpha` network (`ip:port`). A brand-new node starts from these and from any `seed` setting.
-/// **Nothing may be put here that nobody runs**, and the list is only as trustworthy as the number of *independent operators in different network
-/// groups* behind it (`docs/SEED_POLICY.md`; `check_seed_list` refuses a list that breaks the rules that can be checked). A release carries whatever
-/// is here, so a change of address needs a new release (a node's own `seed` settings and `no_builtin_seeds` are the way round that).
+/// The seed addresses built into the program for the `gamma` network (`ip:port`). A brand-new node starts from these and from any `seed`
+/// setting. **Nothing may be put here that nobody runs**, and the list is only as trustworthy as the number of *independent operators in
+/// different network groups* behind it (`docs/SEED_POLICY.md`; `check_seed_list` refuses a list that breaks the rules that can be checked). A
+/// release carries whatever is here, so a change of address needs a new release (a node's own `seed` settings and `no_builtin_seeds` are the
+/// way round that).
 ///
-/// Today ONE seed: the author's server (Contabo, 2026-10-05; `docs/RUNNING_A_SEED.md`). **One operator is below the policy's three**: if it is down, a
-/// brand-new node has nowhere to start (an existing one remembers its peers), and whoever runs it could show a new node a false chain
-/// (`THREAT_MODEL.md` C1). That is the state of an experiment, not a launched network.
-pub const ALPHA_SEEDS: &[&str] = &["194.238.27.60:38333"];
-
-/// The seed addresses built into the program for the `beta` network: TWO, both the author's servers, in different network groups (`check_seed_list`):
-/// the second server, 195.26.244.245 (2026-10-07; 11 GiB), which serves beta from its first block, and the first one, 194.238.27.60 (the old `alpha` seed's
-/// machine, a beta seed since 2026-10-07; `docs/SERVER_UPGRADE_BETA2.md`). As for alpha, **one operator is below the policy's three** (`docs/SEED_POLICY.md`,
-/// `THREAT_MODEL.md` C1): two servers are two machines, not two independent operators, so if the author is gone both are. An experiment, not a launched network.
-pub const BETA_SEEDS: &[&str] = &["195.26.244.245:38343", "194.238.27.60:38343"];
+/// TWO, the author's two servers, the hosts of `beta`'s seeds (decided 2026-10-08), on port 38353 (the peer port next to `gamma`'s control
+/// port, as 38343 is to `beta`'s 38342). As for `beta`, **one operator is below the policy's three** (`docs/SEED_POLICY.md`, `THREAT_MODEL.md`
+/// C1): two servers are two machines, not two independent operators. An experiment, not a launched network.
+pub const GAMMA_SEEDS: &[&str] = &["195.26.244.245:38353", "194.238.27.60:38353"];
 
 impl Network {
     /// The seeds built into the program for this network (none for the private `test` and `dev` networks).
     pub fn builtin_seeds(self) -> &'static [&'static str] {
         match self {
-            Network::Alpha => ALPHA_SEEDS,
-            Network::Beta => BETA_SEEDS,
+            Network::Gamma => GAMMA_SEEDS,
             Network::Test | Network::Dev => &[],
         }
     }
@@ -198,7 +197,8 @@ pub struct Config {
     pub miner_max: usize,
     /// The most requests one address may make in a minute.
     pub miner_rate: usize,
-    /// 0 keeps every block in full (an archive node); N keeps the most recent N blocks' proofs.
+    /// 0 keeps every block in full (an archive node); N keeps the most recent N blocks' proofs ([`DEFAULT_PRUNE_KEEP`]
+    /// unless set).
     pub prune_keep: u64,
     pub assume_valid: Option<(u64, [u8; 32])>,
     pub mine: MineMode,
@@ -390,13 +390,15 @@ impl Raw {
         let network = self.one("network").ok_or_else(|| {
             bad(
                 "network",
-                "is required: `test` (a CPU-mined test chain), `dev` (the development network), `beta` (the current test release's network) or `alpha` (the first test release's network)",
+                "is required: `gamma` (the network of 0.3.0-gamma), `test` (a CPU-mined test chain) or `dev` (the development network)",
             )
         })?;
         let network = Network::parse(network).ok_or_else(|| {
             bad(
                 "network",
-                format!("`{network}` is not `test`, `dev`, `beta` or `alpha`"),
+                format!(
+                    "`{network}` is not `gamma`, `test` or `dev` (`beta` and `alpha` run with the 0.2.0 programs)"
+                ),
             )
         })?;
         let listen = match self.one("listen") {
@@ -507,7 +509,7 @@ impl Raw {
                 "must be at least 1 (use a node with no seeds to run alone)",
             ));
         }
-        let prune_keep: u64 = self.parse("prune_keep", 0)?;
+        let prune_keep: u64 = self.parse("prune_keep", DEFAULT_PRUNE_KEEP)?;
         if prune_keep != 0 && prune_keep < 1_000 {
             return Err(bad(
                 "prune_keep",
@@ -566,7 +568,14 @@ impl Raw {
                     "is required when mining: the wallet address to pay rewards to",
                 ));
             };
-            tenero_wallet::Address::from_text(to).map_err(|e| bad("mine_to", e))?;
+            let a = tenero_wallet::Address::parse(to, network.wallet_network())
+                .map_err(|e| bad("mine_to", e))?;
+            if a.kind != tenero_wallet::Kind::Main {
+                return Err(bad(
+                    "mine_to",
+                    "a block reward is paid to a main address only (not a subaddress or an integrated address)",
+                ));
+            }
         }
         let mine_cores: usize = self.parse("mine_cores", 6)?;
         if mine_cores == 0 || mine_cores > tenero_miner::MAX_CORES {

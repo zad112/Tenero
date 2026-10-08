@@ -3253,12 +3253,14 @@ dependencies = [
  "rand_core 0.6.4",
  "rpassword",
  "serde_json",
+ "tenero-carrot",
  "tenero-chain",
  "tenero-core",
  "tenero-miner",
  "tenero-net",
  "tenero-node",
  "tenero-store",
+ "tenero-tree",
  "tenero-wallet",
  "zeroize",
 ]
@@ -3284,6 +3286,7 @@ version = "0.2.0-beta.4"
 dependencies = [
  "tenero-core",
  "tenero-store",
+ "tenero-tree",
 ]
 
 [[package]]
@@ -3320,6 +3323,7 @@ dependencies = [
  "tenero-chain",
  "tenero-core",
  "tenero-store",
+ "tenero-tree",
  "zeroize",
 ]
 
@@ -3382,6 +3386,7 @@ dependencies = [
  "tenero-net",
  "tenero-node",
  "tenero-store",
+ "tenero-tree",
  "tenero-wallet",
 ]
 
@@ -3396,6 +3401,7 @@ dependencies = [
  "tenero-core",
  "tenero-node",
  "tenero-store",
+ "tenero-tree",
 ]
 
 [[package]]
@@ -3406,13 +3412,39 @@ dependencies = [
  "tenero-core",
  "tenero-crypto",
  "tenero-store",
+ "tenero-tree",
 ]
 
 [[package]]
 name = "tenero-store"
 version = "0.2.0-beta.4"
 dependencies = [
+ "curve25519-dalek",
+ "monero-fcmp-plus-plus",
  "redb",
+ "tenero-core",
+ "tenero-tree",
+]
+
+[[package]]
+name = "tenero-tree"
+version = "0.2.0-beta.4"
+dependencies = [
+ "ciphersuite",
+ "curve25519-dalek",
+ "dalek-ff-group 0.5.0",
+ "ec-divisors",
+ "full-chain-membership-proofs",
+ "generalized-bulletproofs",
+ "helioselene",
+ "monero-ed25519",
+ "monero-fcmp-plus-plus",
+ "monero-fcmp-plus-plus-generators",
+ "monero-primitives",
+ "multiexp",
+ "proptest",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
  "tenero-core",
 ]
 
@@ -3427,12 +3459,14 @@ dependencies = [
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "serde_json",
+ "tenero-carrot",
  "tenero-chain",
  "tenero-core",
  "tenero-crypto",
  "tenero-net",
  "tenero-node",
  "tenero-store",
+ "tenero-tree",
  "zeroize",
 ]
 

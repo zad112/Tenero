@@ -2,22 +2,21 @@
 //! the coin can ask each other for payments without copying three things by hand. Like Monero's `monero:` links and Bitcoin's BIP-21.
 //!
 //! ```text
-//! tenero:tni1<136 hex digits>?amount=1.5&label=Rent&message=October%20rent
+//! tenero:TENg<95 more characters>?amount=1.5&label=Rent&message=October%20rent
 //! ```
 //!
-//! * the address is checked like any address (its checksum, its keys);
+//! * the address is checked like any address (its checksum, and that it is of the wallet's network);
 //! * `amount` is coins with up to 8 decimals, strictly parsed (`amount.rs`), and not zero; it may be left out (then the payer chooses);
 //! * `label` (at most [`MAX_LABEL`] bytes) names what it is for or who asked; `message` (at most [`MAX_MESSAGE`]) says more;
 //! * each is percent-encoded (everything but letters, digits and `-._~` as `%XX`) and may appear once; **an unknown parameter makes the
 //!   link invalid** rather than being ignored (a link the wallet only half understands must not look like it is understood);
 //! * control characters are refused (no line breaks in a label).
 //!
-//! A request is **not a promise or an invoice** and the interim scheme cannot tell which payment answered which request (one address
-//! per account; the chain shows no payer): the wallet does not mark requests as paid. **A request shows an address and an amount to
-//! whoever gets it.** Nothing here is private in Monero's sense.
+//! A request is **not a promise or an invoice**: the wallet does not mark requests as paid (a request made with its own subaddress could
+//! be matched to its payment; that is not built). **A request shows an address and an amount to whoever gets it.**
 
+use crate::address::{Address, Network};
 use crate::amount::{format_coins, parse_coins};
-use crate::interim::{Address, ADDRESS_PREFIX};
 
 pub const URI_SCHEME: &str = "tenero";
 pub const MAX_LABEL: usize = 64;
@@ -133,8 +132,8 @@ impl PaymentRequest {
         uri
     }
 
-    /// Reads a link strictly.
-    pub fn from_uri(text: &str) -> Result<PaymentRequest, RequestError> {
+    /// Reads a link strictly; its address must be of `network`.
+    pub fn from_uri(text: &str, network: Network) -> Result<PaymentRequest, RequestError> {
         let t = text.trim();
         if t.len() > MAX_URI {
             return Err(RequestError::Format("too long"));
@@ -147,10 +146,16 @@ impl PaymentRequest {
             Some((a, q)) => (a, Some(q)),
             None => (rest, None),
         };
-        if !addr.starts_with(ADDRESS_PREFIX) {
+        if addr.is_empty() {
             return Err(RequestError::Format("no address after tenero:"));
         }
-        let address = Address::from_text(addr).map_err(|e| RequestError::Address(e.to_string()))?;
+        if addr.starts_with('/') {
+            return Err(RequestError::Format(
+                "the form is tenero:ADDRESS, without //",
+            ));
+        }
+        let address =
+            Address::parse(addr, network).map_err(|e| RequestError::Address(e.to_string()))?;
         let (mut amount, mut label, mut message) = (None, None, None);
         if let Some(q) = query {
             if q.is_empty() {
@@ -205,12 +210,12 @@ impl PaymentRequest {
 }
 
 /// What the Send screen's "paste a request or an address" field makes of its text: a request, or a bare address.
-pub fn parse_pay_text(text: &str) -> Result<PaymentRequest, RequestError> {
+pub fn parse_pay_text(text: &str, network: Network) -> Result<PaymentRequest, RequestError> {
     let t = text.trim();
     if t.starts_with(URI_SCHEME) {
-        return PaymentRequest::from_uri(t);
+        return PaymentRequest::from_uri(t, network);
     }
-    let address = Address::from_text(t).map_err(|e| RequestError::Address(e.to_string()))?;
+    let address = Address::parse(t, network).map_err(|e| RequestError::Address(e.to_string()))?;
     Ok(PaymentRequest {
         address,
         amount: None,

@@ -1,12 +1,13 @@
 //! The wire codec against the golden vectors of the independent Python reference
-//! (`tests/vectors/v2_wire.json`), plus properties the vectors cannot list: streaming in any chunking, one
+//! (`tests/vectors/v3_wire.json`), plus properties the vectors cannot list: streaming in any chunking, one
 //! message one encoding, no panic on any input, and a bounded buffer.
 
 use serde_json::Value;
-use tenero_core::v2::{Block, BlockHeader, Transaction, Wire};
+use tenero_core::v3::{Block, BlockHeader, Coinbase, Transaction, Wire};
 use tenero_core::vectors::{hex, load};
 use tenero_net::message::{
-    PeerAddr, MAX_ADDRS, MAX_BLOCKS, MAX_HEADERS, MAX_IDS, MAX_LOCATOR, MAX_NOT_FOUND, MAX_TXS,
+    CompactBlock, PeerAddr, MAX_ADDRS, MAX_BLOCKS, MAX_BLOCK_TXS, MAX_HEADERS, MAX_IDS,
+    MAX_LOCATOR, MAX_NOT_FOUND, MAX_TXS,
 };
 use tenero_net::{
     decode_frame, encode, FrameDecoder, Hello, Limits, Message, WireError, MAX_FRAME,
@@ -100,12 +101,36 @@ fn message(m: &Value) -> Message {
                 .map(|t| Transaction::from_bytes(&hex(t.as_str().unwrap()).unwrap()).unwrap())
                 .collect(),
         },
+        "get_compact" => Message::GetCompact { id: h32(&m["id"]) },
+        "compact" => Message::Compact(Box::new(CompactBlock {
+            header: BlockHeader::from_bytes(&hex(m["header"].as_str().unwrap()).unwrap()).unwrap(),
+            coinbase: Coinbase::from_bytes(&hex(m["coinbase"].as_str().unwrap()).unwrap()).unwrap(),
+            tx_ids: ids(&m["tx_ids"]),
+        })),
+        "get_block_txs" => Message::GetBlockTxs {
+            block_id: h32(&m["block_id"]),
+            indexes: m["indexes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i.as_u64().unwrap() as u32)
+                .collect(),
+        },
+        "block_txs" => Message::BlockTxs {
+            block_id: h32(&m["block_id"]),
+            txs: m["txs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| Transaction::from_bytes(&hex(t.as_str().unwrap()).unwrap()).unwrap())
+                .collect(),
+        },
         other => panic!("unknown kind {other} in the vector file"),
     }
 }
 
 fn vectors() -> Value {
-    load("v2_wire").unwrap()
+    load("v3_wire").unwrap()
 }
 
 struct Rng(u64);
@@ -133,6 +158,11 @@ fn the_limits_in_the_vector_file_are_the_ones_in_the_code() {
     assert_eq!(l["max_ids"].as_u64().unwrap() as usize, MAX_IDS);
     assert_eq!(l["max_blocks"].as_u64().unwrap() as usize, MAX_BLOCKS);
     assert_eq!(l["max_txs"].as_u64().unwrap() as usize, MAX_TXS);
+    assert_eq!(l["max_block_txs"].as_u64().unwrap() as usize, MAX_BLOCK_TXS);
+    assert_eq!(
+        v["protocol_version"].as_u64().unwrap() as u32,
+        tenero_net::PROTOCOL_VERSION
+    );
     assert_eq!(l["max_not_found"].as_u64().unwrap() as usize, MAX_NOT_FOUND);
     assert_eq!(l["max_addrs"].as_u64().unwrap() as usize, MAX_ADDRS);
     assert_eq!(l["max_headers"].as_u64().unwrap() as usize, MAX_HEADERS);
@@ -451,11 +481,11 @@ fn random_bytes_never_panic_the_decoders() {
 }
 
 #[test]
-fn every_kind_byte_but_one_to_sixteen_is_unknown() {
+fn every_kind_byte_but_one_to_twenty_is_unknown() {
     for kind in 0u8..=255 {
         let frame = [1u8, 0, 0, 0, kind];
         let r = decode_frame(&frame);
-        if (1..=16).contains(&kind) {
+        if (1..=20).contains(&kind) {
             assert!(!matches!(r, Err(WireError::UnknownKind(_))), "kind {kind}");
         } else {
             assert_eq!(r, Err(WireError::UnknownKind(kind)));
@@ -465,7 +495,7 @@ fn every_kind_byte_but_one_to_sixteen_is_unknown() {
 
 #[test]
 fn a_frame_over_sixteen_mebibytes_is_refused_by_the_encoder_and_a_smaller_one_is_not() {
-    use tenero_core::v2::*;
+    use tenero_core::v3::*;
     let tx = |proof: usize| Transaction {
         prefix: TxPrefix {
             version: VERSION,
@@ -476,16 +506,16 @@ fn a_frame_over_sixteen_mebibytes_is_refused_by_the_encoder_and_a_smaller_one_is
                     amount_commitment: [3; 32],
                     amount_enc: [4; 8],
                     view_tag: [5; 3],
-                    ephemeral_pubkey: [6; 32],
                     anchor_enc: [7; 16],
                 };
                 2
             ],
+            ephemeral_pubkeys: vec![[6; 32]],
             fee: 1,
-            extra: vec![],
+            encrypted_payment_id: [0; 8],
         },
         prunable: Prunable {
-            rings: vec![(0..16).collect()],
+            reference_height: 0,
             proof_data: vec![9; proof],
         },
     };
@@ -533,7 +563,7 @@ fn a_frame_over_sixteen_mebibytes_is_refused_by_the_encoder_and_a_smaller_one_is
 
 #[test]
 fn the_encoder_accepts_a_frame_of_exactly_sixteen_mebibytes_and_refuses_one_byte_more() {
-    use tenero_core::v2::*;
+    use tenero_core::v3::*;
     let tx = |proof: usize| Transaction {
         prefix: TxPrefix {
             version: VERSION,
@@ -544,16 +574,16 @@ fn the_encoder_accepts_a_frame_of_exactly_sixteen_mebibytes_and_refuses_one_byte
                     amount_commitment: [3; 32],
                     amount_enc: [4; 8],
                     view_tag: [5; 3],
-                    ephemeral_pubkey: [6; 32],
                     anchor_enc: [7; 16],
                 };
                 2
             ],
+            ephemeral_pubkeys: vec![[6; 32]],
             fee: 1,
-            extra: vec![],
+            encrypted_payment_id: [0; 8],
         },
         prunable: Prunable {
-            rings: vec![(0..16).collect()],
+            reference_height: 0,
             proof_data: vec![9; proof],
         },
     };

@@ -1,6 +1,7 @@
-//! The release networks, "alpha" (M11.2) and "beta" (Beta.1, the fresh network after the hard fork), beside `test` (SHA-256) and `dev` (the development network). Its chain id, its parameters
-//! and its genesis are decisions, written down in `docs/CONSENSUS_V2.md` and `docs/M10_M11_PLAN.md`, and held here so that none of them changes by accident.
-//! **Still a test network: nothing on it has value, and nothing here is audited.**
+//! The networks of the 0.3.0 programs: `gamma` (0.3.0-gamma.1: FCMP++ and Carrot from its first block), beside `test`
+//! (SHA-256) and `dev` (the development network). Their chain ids, parameters and genesis are decisions, written down in
+//! `docs/CONSENSUS_V2.md` 15 and `docs/FCMP_CARROT_PLAN.md` (P2, P3, F11), and held here so that none of them changes by
+//! accident. **Still test networks: nothing on them has value, and nothing here is audited.**
 
 use std::path::PathBuf;
 
@@ -10,18 +11,13 @@ use tenero_core::u256::U256;
 use tenero_core::v2::ids::PowKind;
 use tenero_store::Store;
 
-/// The chain id of "tenero alpha network 1": SHA-256("tenero genesis id v2" || the genesis header), checked against the reference in
-/// `tests/vectors/v2_genesis.json` below. A peer on any other chain is refused at the handshake because its id differs.
-const ALPHA_CHAIN_ID: &str = "430ca70081d3e52c618fd9af46fecdf6d6fc8f7965dc8ed2aa53c92ecfe069d3";
-/// The chain id of "tenero beta network 1", from the same reference vectors.
-const BETA_CHAIN_ID: &str = "577cc63dfdf445eb26b712fa422b95a082ddcac2249e34de9489cb87be23641b";
+/// The chain id of "tenero gamma network 1": SHA-256("tenero genesis id v3" || the genesis header), checked against the
+/// reference in `tests/vectors/v3_genesis.json` below. A peer on any other chain is refused at the handshake because its id
+/// differs.
+const GAMMA_CHAIN_ID: &str = "bd366b37dc59f25d5d2e15aecd1d5c14810b5c20643f2c0f90384db9ee4c28c4";
 
 fn hex(id: &[u8; 32]) -> String {
     id.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn config(extra: &str) -> Result<tenero_app::config::Config, String> {
-    config_for("alpha", extra)
 }
 
 fn config_for(network: &str, extra: &str) -> Result<tenero_app::config::Config, String> {
@@ -31,47 +27,47 @@ fn config_for(network: &str, extra: &str) -> Result<tenero_app::config::Config, 
 }
 
 #[test]
-fn alpha_is_a_third_network_with_its_own_name_port_and_epoch() {
-    assert_eq!(Network::parse("alpha"), Some(Network::Alpha));
-    assert_eq!(Network::Alpha.name(), "alpha");
-    assert_eq!(Network::parse("beta"), Some(Network::Beta));
-    assert_eq!(Network::Beta.name(), "beta");
-    assert_eq!(
-        Network::ALL,
-        [Network::Test, Network::Dev, Network::Beta, Network::Alpha]
-    );
-    assert!(Network::Alpha.real_pow() && Network::Dev.real_pow() && !Network::Test.real_pow());
-    // four networks, four control ports: nodes of two networks on one machine do not meet
+fn the_programs_run_gamma_dev_and_test_each_with_its_own_name_port_and_epoch() {
+    assert_eq!(Network::parse("gamma"), Some(Network::Gamma));
+    assert_eq!(Network::Gamma.name(), "gamma");
+    // beta and alpha carry on with the 0.2.0 programs (decision P2)
+    assert_eq!(Network::parse("beta"), None);
+    assert_eq!(Network::parse("alpha"), None);
+    assert_eq!(Network::ALL, [Network::Test, Network::Dev, Network::Gamma]);
+    assert!(Network::Gamma.real_pow() && Network::Dev.real_pow() && !Network::Test.real_pow());
+    // three networks, three control ports (gamma's next to beta's 38342 and alpha's 38332): nodes of two networks on one
+    // machine do not meet
     let ports: Vec<u16> = Network::ALL
         .iter()
         .map(|n| n.default_control_port())
         .collect();
-    assert_eq!(ports, vec![18332, 28332, 38342, 38332]);
-    assert!(Network::Beta.real_pow());
-    assert_eq!(Network::Beta.epoch_blocks(), 100);
+    assert_eq!(ports, vec![18332, 28332, 38352]);
     // the epoch of the real proof of work: 100 blocks, the owner's choice of 2026-10-04
-    assert_eq!(Network::Alpha.epoch_blocks(), 100);
+    assert_eq!(Network::Gamma.epoch_blocks(), 100);
     assert_eq!(Network::Dev.epoch_blocks(), 100);
     assert_eq!(daemon::DEV_EPOCH_BLOCKS, 100);
+    // each network's addresses are its own
+    assert_eq!(Network::Gamma.wallet_network().prefix(), "TENg");
+    assert_eq!(Network::Dev.wallet_network().prefix(), "TENd");
+    assert_eq!(Network::Test.wallet_network().prefix(), "TENt");
 }
 
 #[test]
-fn alpha_has_the_decided_parameters() {
-    let p = daemon::params_of(Network::Alpha).unwrap();
-    assert_eq!(p.label, "tenero alpha network 1");
-    assert_eq!(p.label, daemon::ALPHA_LABEL);
-    // alpha keeps the limits of alpha.4 (32 inputs, a proof of at most 32 KiB), so that this version and the older nodes on it agree
-    assert!(p.legacy_tx_limits);
+fn gamma_has_the_decided_parameters() {
+    let p = daemon::params_of(Network::Gamma).unwrap();
+    assert_eq!(p.label, "tenero gamma network 1");
+    assert_eq!(p.label, daemon::GAMMA_LABEL);
     assert_eq!(
         p.pow_kind,
         PowKind::Matmul,
         "the real proof of work, not SHA-256"
     );
+    // beta's real starting difficulty, block time and window (decision P3: the version 2 difficulty unchanged)
     assert_eq!(p.difficulty.start_target, U256::pow2(237).unwrap());
     assert_eq!(p.difficulty.block_time, 60);
     assert_eq!(p.difficulty.window, 30);
-    // 2^237 is about 524,000 attempts a block: at the measured 34,000 attempts a second of one RTX 5070 Ti, a block takes about 15 s,
-    // never under a second (the placeholder 2^253 of the development network is 8 attempts, which is why 50 blocks came in 20 seconds)
+    // 2^237 is about 524,000 attempts a block: at the measured 34,000 attempts a second of one RTX 5070 Ti, a block takes
+    // about 15 s, never under a second
     let work = U256::work_of_target(&p.difficulty.start_target).unwrap();
     let bytes = work.to_be_bytes();
     assert!(
@@ -84,16 +80,34 @@ fn alpha_has_the_decided_parameters() {
         attempts as f64 / 34_000.0 > 10.0,
         "a first block takes more than 10 s on the owner's GPU"
     );
+    // the version 2 emission unchanged (decision P3)
+    assert_eq!(p.emission.initial_reward, 2_000_000_000);
+    assert_eq!(p.emission.halving_interval, 525_600);
+    assert_eq!(p.emission.max_supply, 2_000_000_000_000_000);
+    assert_eq!(p.emission.tail_reward, 50_000_000);
+    // dev differs in its start and its label only
     let dev = daemon::params_of(Network::Dev).unwrap();
     assert_ne!(dev.difficulty.start_target, p.difficulty.start_target);
-    // the rules that are the same on every network
+    assert_eq!(dev.label, daemon::DEV_LABEL);
     assert_eq!(p.emission, dev.emission);
-    assert_eq!(p.ring_size, dev.ring_size);
-    assert_eq!(p.coinbase_maturity, dev.coinbase_maturity);
+    assert_eq!(p.difficulty.window, dev.difficulty.window);
 }
 
 #[test]
-fn the_chain_ids_differ_and_alpha_is_the_one_in_the_reference_vectors() {
+fn the_test_network_s_difficulty_is_fixed_so_a_reward_is_spendable_in_minutes() {
+    // a CPU mines it on the clock; with the 60-block wait for a reward, an adjusting difficulty would make it a block a minute
+    let t = daemon::params_of(Network::Test).unwrap();
+    assert_eq!(t.difficulty.window, 0);
+    assert_eq!(t.pow_kind, PowKind::Sha256);
+    assert_eq!(
+        t.difficulty.start_target,
+        tenero_net::sim::test_chain_params().difficulty.start_target
+    );
+    assert_eq!(t.label, tenero_net::sim::LABEL);
+}
+
+#[test]
+fn the_chain_ids_differ_and_are_the_ones_in_the_reference_vectors() {
     let ids: Vec<[u8; 32]> = Network::ALL
         .iter()
         .map(|n| daemon::chain_id_of(*n).unwrap())
@@ -109,66 +123,31 @@ fn the_chain_ids_differ_and_alpha_is_the_one_in_the_reference_vectors() {
             );
         }
     }
-    assert_eq!(hex(&ids[3]), ALPHA_CHAIN_ID);
-    assert_eq!(hex(&ids[2]), BETA_CHAIN_ID);
-    // and the independent Python reference gives the same id for the same label
+    assert_eq!(hex(&ids[2]), GAMMA_CHAIN_ID);
+    // and the independent Python reference gives the same id for each network's label
     let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/vectors/v2_genesis.json");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/vectors/v3_genesis.json");
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    let case = v["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["label"] == "tenero alpha network 1")
-        .expect("the alpha label is in the vectors");
-    assert_eq!(case["chain_id"], ALPHA_CHAIN_ID);
-    let beta = v["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["label"] == "tenero beta network 1")
-        .expect("the beta label is in the vectors");
-    assert_eq!(beta["chain_id"], BETA_CHAIN_ID);
-}
-
-#[test]
-fn beta_has_the_parameters_of_alpha_except_the_old_limits() {
-    let a = daemon::params_of(Network::Alpha).unwrap();
-    let b = daemon::params_of(Network::Beta).unwrap();
-    assert_eq!(b.label, "tenero beta network 1");
-    assert_eq!(b.label, daemon::BETA_LABEL);
-    assert_eq!(b.pow_kind, PowKind::Matmul);
-    assert_eq!(b.difficulty.start_target, a.difficulty.start_target);
-    assert_eq!(b.emission, a.emission);
-    assert_eq!(b.ring_size, a.ring_size);
-    assert_eq!(b.coinbase_maturity, a.coinbase_maturity);
-    assert_eq!(b.spend_maturity, a.spend_maturity);
-    assert_eq!(b.min_block_median, a.min_block_median);
-    // the one difference: beta has only the size limit of a transaction
-    assert!(!b.legacy_tx_limits && a.legacy_tx_limits);
-    // no network but alpha has the old limits
-    for n in [Network::Test, Network::Dev, Network::Beta] {
-        assert!(
-            !daemon::params_of(n).unwrap().legacy_tx_limits,
-            "{}",
-            n.name()
-        );
+    for (n, id) in Network::ALL.iter().zip(&ids) {
+        let label = daemon::params_of(*n).unwrap().label;
+        let case = v["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["label"] == label.as_str())
+            .unwrap_or_else(|| panic!("the {label} label is in the vectors"));
+        assert_eq!(case["chain_id"], hex(id).as_str(), "{}", n.name());
     }
 }
 
-/// The gather fork (decided by the owner 2026-10-07, beta then at height 280): beta and dev blocks need the gathered proof-of-work attempt from
-/// height 500, alpha never; the SHA-256 test network has no matmulhash. Checked on the checker the node really builds.
+/// The gathered proof-of-work attempt (`CONSENSUS.md` 8.3, `THREAT_MODEL.md` E11) from block 0 on gamma and dev: the first
+/// design's weakness never reaches a version 3 chain. The SHA-256 test network has no matmulhash. Checked on the checker the
+/// node really builds.
 #[test]
-fn the_gather_fork_is_at_500_on_beta_and_dev_and_never_on_alpha() {
-    use tenero_app::config::GATHER_FORK_HEIGHT;
-    assert_eq!(GATHER_FORK_HEIGHT, 500);
-    assert_eq!(daemon::gather_fork_of(Network::Beta).unwrap(), Some(500));
-    assert_eq!(daemon::gather_fork_of(Network::Dev).unwrap(), Some(500));
-    assert_eq!(
-        daemon::gather_fork_of(Network::Alpha).unwrap(),
-        Some(u64::MAX)
-    );
+fn the_gathered_attempt_is_required_from_block_0_on_gamma_and_dev() {
+    assert_eq!(daemon::gather_fork_of(Network::Gamma).unwrap(), Some(0));
+    assert_eq!(daemon::gather_fork_of(Network::Dev).unwrap(), Some(0));
     assert_eq!(daemon::gather_fork_of(Network::Test).unwrap(), None);
     for n in Network::ALL {
         if let Some(h) = daemon::gather_fork_of(n).unwrap() {
@@ -177,13 +156,14 @@ fn the_gather_fork_is_at_500_on_beta_and_dev_and_never_on_alpha() {
     }
 }
 
-/// NO PREMINE, checked on the real genesis of every network: it creates no output, so every coin comes from a mined block, the owner's included.
+/// NO PREMINE, checked on the real genesis of every network: it creates no output, so every coin comes from a mined block,
+/// the owner's included.
 #[test]
 fn the_genesis_of_every_network_creates_no_output() {
     for network in Network::ALL {
         let p = daemon::params_of(network).unwrap();
         let dir = std::env::temp_dir().join(format!(
-            "tenero-alpha-test-{}-{}",
+            "tenero-genesis-test-{}-{}",
             std::process::id(),
             network.name()
         ));
@@ -206,81 +186,65 @@ fn the_genesis_of_every_network_creates_no_output() {
             network.name()
         );
         assert_eq!(tip.header.timestamp, 0, "{}", network.name());
+        assert_eq!(tip.header.version, 3, "{}", network.name());
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
 #[test]
-fn settings_for_alpha() {
-    let c = config("").unwrap();
-    assert_eq!(c.network, Network::Alpha);
-    assert_eq!(c.control.port(), 38332);
+fn settings_for_gamma() {
+    let c = config_for("gamma", "").unwrap();
+    assert_eq!(c.network, Network::Gamma);
+    assert_eq!(c.control.port(), 38352);
     assert!(
         !c.allow_private_peers,
         "a release network does not take 127.0.0.2-style peers by default"
     );
-    // the real proof of work: cpu or gpu, never sha256
-    let e = config("mine = sha256\nmine_to = x\n").unwrap_err();
-    assert!(e.contains("alpha") && e.contains("cpu or gpu"), "{e}");
-    let address = tenero_wallet::Wallet::from_seed(&[1; 32], 0)
-        .address()
-        .to_text();
-    for mode in ["cpu", "gpu"] {
-        let c = config(&format!("mine = {mode}\nmine_to = {address}\n")).unwrap();
-        assert_eq!(c.network, Network::Alpha);
-    }
-}
-
-#[test]
-fn settings_for_beta() {
-    let c = config_for("beta", "").unwrap();
-    assert_eq!(c.network, Network::Beta);
-    assert_eq!(c.control.port(), 38342);
-    assert!(!c.allow_private_peers);
-    // the author's two beta seeds are built in (not the alpha one: the old alpha seed's machine is the second beta seed, on the beta port),
-    // and the list passes the checks a program can make (public, listed once, no two in one network group)
+    // pruned unless told otherwise (decision F11): a seed or an explorer sets 0
+    assert_eq!(c.prune_keep, tenero_app::config::DEFAULT_PRUNE_KEEP);
     assert_eq!(
-        tenero_app::config::BETA_SEEDS,
-        ["195.26.244.245:38343", "194.238.27.60:38343"]
+        config_for("gamma", "prune_keep = 0\n").unwrap().prune_keep,
+        0
     );
-    assert!(tenero_app::config::check_seed_list(tenero_app::config::BETA_SEEDS).is_ok());
-    assert_eq!(c.seeds, tenero_app::config::BETA_SEEDS.to_vec());
-    assert!(!c
-        .seeds
-        .iter()
-        .any(|s| tenero_app::config::ALPHA_SEEDS.contains(&s.as_str())));
-    // the two are on different hosts and in different network groups, so a node can hold a connection to each
-    let seeds = tenero_app::config::BETA_SEEDS;
+    // the author's two servers are built in, on the gamma peer port, and the list passes the checks a program can make
+    // (public, listed once, no two in one network group)
+    let seeds = tenero_app::config::GAMMA_SEEDS;
+    assert_eq!(seeds, ["195.26.244.245:38353", "194.238.27.60:38353"]);
+    assert!(tenero_app::config::check_seed_list(seeds).is_ok());
+    assert_eq!(c.seeds, seeds.to_vec());
     assert_ne!(
         tenero_net::addrbook::group_of(seeds[0]),
         tenero_net::addrbook::group_of(seeds[1])
     );
-    let c = config_for("beta", "seed = 203.0.113.9:38343\n").unwrap();
-    assert!(
-        c.seeds.contains(&"203.0.113.9:38343".to_string())
-            && c.seeds.len() == tenero_app::config::BETA_SEEDS.len() + 1
-    );
-    let c = config_for("beta", "no_builtin_seeds = yes\n").unwrap();
+    let c = config_for("gamma", "seed = 203.0.113.9:38353\n").unwrap();
+    assert!(c.seeds.contains(&"203.0.113.9:38353".to_string()) && c.seeds.len() == seeds.len() + 1);
+    let c = config_for("gamma", "no_builtin_seeds = yes\n").unwrap();
     assert!(c.seeds.is_empty());
-    let e = config_for("beta", "mine = sha256\nmine_to = x\n").unwrap_err();
-    assert!(e.contains("beta") && e.contains("cpu or gpu"), "{e}");
+    // the real proof of work: cpu or gpu, never sha256
+    let e = config_for("gamma", "mine = sha256\nmine_to = x\n").unwrap_err();
+    assert!(e.contains("gamma") && e.contains("cpu or gpu"), "{e}");
+    let address = tenero_wallet::Wallet::from_seed(&[1; 32], tenero_wallet::Network::Gamma, 0)
+        .address()
+        .to_text();
+    assert!(address.starts_with("TENg"));
+    for mode in ["cpu", "gpu"] {
+        let c = config_for("gamma", &format!("mine = {mode}\nmine_to = {address}\n")).unwrap();
+        assert_eq!(c.network, Network::Gamma);
+    }
 }
 
 #[test]
 fn a_node_holds_one_proof_of_work_dataset_so_it_stays_inside_8_gb() {
-    // Two datasets are 8.0 GiB (measured 2026-10-04: a process went from 4.0 to 8.0 GiB at the first epoch boundary and stayed there), which
-    // with the rest of the node is more than the owner's limit of 8 GB. A node on a real-proof-of-work network keeps one.
+    // Two datasets are 8.0 GiB (measured 2026-10-04: a process went from 4.0 to 8.0 GiB at the first epoch boundary and
+    // stayed there), which with the rest of the node is more than the owner's limit of 8 GB. A node on a real-proof-of-work
+    // network keeps one.
     assert_eq!(
-        daemon::proof_of_work_datasets(Network::Alpha).unwrap(),
+        daemon::proof_of_work_datasets(Network::Gamma).unwrap(),
         Some(1)
     );
     assert_eq!(
         daemon::proof_of_work_datasets(Network::Dev).unwrap(),
-        Some(1)
-    );
-    assert_eq!(
-        daemon::proof_of_work_datasets(Network::Beta).unwrap(),
         Some(1)
     );
     // the SHA-256 test network has no dataset at all
@@ -290,9 +254,9 @@ fn a_node_holds_one_proof_of_work_dataset_so_it_stays_inside_8_gb() {
 #[test]
 fn a_seed_repeats_its_address_answer_for_15_minutes_on_a_public_network_and_never_on_a_private_one()
 {
-    // public: one network group is held to one sample every 15 minutes (it was a day: a node that had just become reachable was not passed
-    // on for up to a day). Private (the test network by default): every node is one "group", and the first, empty answer would otherwise be
-    // given to every later node (found by the local soak test)
+    // public: one network group is held to one sample every 15 minutes (it was a day: a node that had just become reachable
+    // was not passed on for up to a day). Private (the test network by default): every node is one "group", and the first,
+    // empty answer would otherwise be given to every later node (found by the local soak test)
     assert_eq!(daemon::address_answer_ttl_ms(false), 15 * 60 * 1000);
     assert_eq!(daemon::address_answer_ttl_ms(true), 0);
 }

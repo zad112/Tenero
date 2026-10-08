@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/tenero-core", "crates/tenero-gpu", "crates/tenero-store", "crates/tenero-chain", "crates/tenero-crypto", "crates/tenero-carrot", "crates/tenero-node", "crates/tenero-net", "crates/tenero-miner", "crates/tenero-wallet", "crates/tenero-app", "crates/tenero-fuzzcases", "crates/tenero-gui", "crates/tenero-explorer"]
+members = ["crates/tenero-core", "crates/tenero-gpu", "crates/tenero-store", "crates/tenero-chain", "crates/tenero-crypto", "crates/tenero-carrot", "crates/tenero-tree", "crates/tenero-node", "crates/tenero-net", "crates/tenero-miner", "crates/tenero-wallet", "crates/tenero-app", "crates/tenero-fuzzcases", "crates/tenero-gui", "crates/tenero-explorer"]
 
 [workspace.package]
 version = "0.2.0-beta.4"
@@ -11,6 +11,22 @@ publish = false
 # The proof-of-work tests build datasets and do billions of multiply-adds: unoptimised is far too
 # slow. Overflow checks stay on in tests, so an accidental overflow fails a test.
 [profile.test]
+opt-level = 3
+
+# Dependencies are optimised in debug builds too: the FCMP++ crates (monero-oxide) are unusable without it (a debug node took
+# 70 s for the block that first puts an output in the curve tree, and timed out a wallet's spend; measured 2026-10-08). Our own
+# crates stay quick to build.
+[profile.dev.package."*"]
+opt-level = 3
+
+# and the crates of ours where the FCMP++ and curve-tree generics are compiled (a generic is compiled where it is used)
+[profile.dev.package.tenero-crypto]
+opt-level = 3
+
+[profile.dev.package.tenero-tree]
+opt-level = 3
+
+[profile.dev.package.tenero-carrot]
 opt-level = 3
 
 [workspace.lints.rust]

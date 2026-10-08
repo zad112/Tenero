@@ -1,29 +1,28 @@
 //! What the wallet needs from a node, as two small traits, so that the wallet does not care whether the node is in
-//! its own process (now: [`tenero_node::Node`]) or behind a socket (M8.7).
+//! its own process ([`tenero_node::Node`]) or behind a socket.
 //!
 //! The wallet reads only the PRUNED form of blocks (outputs, key images and the coinbase), so it works against
-//! a pruned node too.
+//! a pruned node too. To spend, it asks for its coins' paths in the curve tree ([`ChainView::spend_paths`]): a node that
+//! is asked learns which outputs are being spent, which is harmless for a node on the same machine (a remote wallet will
+//! need another way, `docs/FCMP_CARROT_PLAN.md` 7).
 
-use tenero_core::v2::{Coinbase, Transaction, TxPrefix};
+use tenero_core::v3::{rules, Coinbase, Transaction, TxPrefix};
 use tenero_node::Node;
-use tenero_store::StoredOutput;
+use tenero_store::TreeState;
+use tenero_tree::PathBytes;
 
 /// What the rules require right now, as far as a wallet builds a transaction by them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rules {
     pub chain_id: [u8; 32],
-    pub ring_size: usize,
-    pub coinbase_maturity: u64,
-    pub spend_maturity: u64,
     /// The height of the next block: the one a transaction sent now can be mined in.
     pub next_height: u64,
-    /// The next block's reward before any penalty, and the size median it is judged against: the inputs of the
-    /// dynamic minimum fee.
+    /// The next block's reward before any penalty, and the weight median it is judged against: the inputs of the
+    /// minimum fee.
     pub reward: u64,
     pub median: u64,
-    /// A limit on the number of inputs of a transaction besides its size (`MAX_TX_SIZE`): `Some(32)` on the `alpha` network, which keeps the limits of
-    /// the first test release, `None` everywhere else.
-    pub max_inputs: Option<usize>,
+    /// The layers of the curve tree at the tip: the size of a membership proof made now.
+    pub tree_layers: usize,
 }
 
 /// A block as the wallet scans it.
@@ -36,6 +35,15 @@ pub struct ScanBlock {
     pub first_output_index: u64,
     pub coinbase: Coinbase,
     pub txs: Vec<TxPrefix>,
+}
+
+/// Where a spend is proven: the reference block (the tip when asked), its tree, and each coin's path in that tree
+/// (`None` for a coin not in it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpendPaths {
+    pub reference_height: u64,
+    pub tree: TreeState,
+    pub paths: Vec<Option<PathBytes>>,
 }
 
 pub trait ChainView {
@@ -56,15 +64,6 @@ pub trait ChainView {
         }
         Ok(out)
     }
-    /// The output with this global index.
-    fn output(&self, global_index: u64) -> Result<Option<StoredOutput>, String>;
-    /// Several outputs by global index, in order. A node behind a socket answers this in one round trip (a payment of 32
-    /// coins needs 512 ring members, and one at a time they took twenty seconds); the default asks one by one.
-    fn outputs(&self, global_indexes: &[u64]) -> Result<Vec<Option<StoredOutput>>, String> {
-        global_indexes.iter().map(|i| self.output(*i)).collect()
-    }
-    /// How many outputs the chain has (their indexes are `0..count`).
-    fn output_count(&self) -> Result<u64, String>;
     /// Whether this key image is in the chain (the output it belongs to has been spent).
     fn key_image_spent(&self, key_image: &[u8; 32]) -> Result<bool, String>;
     /// Whether each of these key images is in the chain, in order. A node behind a socket answers this in one round trip
@@ -73,6 +72,8 @@ pub trait ChainView {
         key_images.iter().map(|k| self.key_image_spent(k)).collect()
     }
     fn rules(&self) -> Result<Rules, String>;
+    /// The paths of the outputs with these global indexes, all in the tree of one reference block.
+    fn spend_paths(&self, global_indexes: &[u64]) -> Result<SpendPaths, String>;
 }
 
 /// Where a finished transaction goes.
@@ -94,7 +95,7 @@ impl ChainView for Node<'_> {
                 id: i.block_id,
                 first_output_index: i.first_output_index,
                 coinbase: Coinbase {
-                    version: tenero_core::v2::VERSION,
+                    version: tenero_core::v3::VERSION,
                     height: 0,
                     outputs: vec![],
                     extra: vec![],
@@ -112,14 +113,6 @@ impl ChainView for Node<'_> {
         }))
     }
 
-    fn output(&self, global_index: u64) -> Result<Option<StoredOutput>, String> {
-        self.store().output(global_index).map_err(|e| e.to_string())
-    }
-
-    fn output_count(&self) -> Result<u64, String> {
-        self.store().output_count().map_err(|e| e.to_string())
-    }
-
     fn key_image_spent(&self, key_image: &[u8; 32]) -> Result<bool, String> {
         Ok(self
             .store()
@@ -130,18 +123,29 @@ impl ChainView for Node<'_> {
 
     fn rules(&self) -> Result<Rules, String> {
         let next = self.next_block().map_err(|e| e.to_string())?;
-        let p = self.params();
+        let state = self
+            .store()
+            .tree_state(next.height - 1)
+            .map_err(|e| e.to_string())?
+            .ok_or("no tree at the tip")?;
         Ok(Rules {
             chain_id: self.store().chain_id(),
-            ring_size: p.ring_size,
-            coinbase_maturity: p.coinbase_maturity,
-            spend_maturity: p.spend_maturity,
             next_height: next.height,
             reward: next.reward,
             median: next.median,
-            max_inputs: p
-                .legacy_tx_limits
-                .then_some(tenero_chain::params::LEGACY_MAX_INPUTS),
+            tree_layers: usize::from(state.n_layers),
+        })
+    }
+
+    fn spend_paths(&self, global_indexes: &[u64]) -> Result<SpendPaths, String> {
+        let (reference_height, tree, paths) = self
+            .store()
+            .spend_paths(global_indexes)
+            .map_err(|e| e.to_string())?;
+        Ok(SpendPaths {
+            reference_height,
+            tree,
+            paths,
         })
     }
 }
@@ -150,4 +154,15 @@ impl Submitter for Node<'_> {
     fn submit(&mut self, tx: Transaction) -> Result<(), String> {
         self.submit_tx(tx).map(|_| ()).map_err(|e| format!("{e:?}"))
     }
+}
+
+/// Whether an output made at `height` can be spent in the next block: in the curve tree by then (a coinbase output 60
+/// blocks after its block, any other 10).
+pub fn is_mature(rules: &Rules, height: u64, coinbase: bool) -> bool {
+    let wait = if coinbase {
+        rules::COINBASE_MATURITY
+    } else {
+        rules::SPEND_MATURITY
+    };
+    rules.next_height >= height.saturating_add(wait)
 }

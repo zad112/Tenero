@@ -9,11 +9,10 @@ use tenero_app::pool::{
     PoolMessage, HEADER_LEN, MAX_ADDRESS, MAX_AGENT, MAX_FRAME, MAX_NETWORK, MAX_POOL_NAME,
     MAX_PREFIX_BITS, MAX_PROVIDED_TXS, MAX_TEXT, MAX_TTL, MAX_TX_IDS, MAX_WORKER,
 };
-use tenero_core::v2::codec::Wire;
-use tenero_core::v2::{
+use tenero_core::v3::Wire;
+use tenero_core::v3::{
     BlockHeader, Coinbase, CoinbaseOutput, Input, Output, Prunable, Transaction, TxPrefix,
 };
-use tenero_node::Payout;
 
 fn vectors() -> Value {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/vectors/pool.json");
@@ -48,7 +47,6 @@ fn output(v: &Value) -> Output {
         amount_commitment: arr(&v["amount_commitment"]),
         amount_enc: arr(&v["amount_enc"]),
         view_tag: arr(&v["view_tag"]),
-        ephemeral_pubkey: arr(&v["ephemeral_pubkey"]),
         anchor_enc: arr(&v["anchor_enc"]),
     }
 }
@@ -71,16 +69,17 @@ fn tx(v: &Value) -> Transaction {
                 .iter()
                 .map(output)
                 .collect(),
-            fee: u(&v["fee"]),
-            extra: unhex(v["extra"].as_str().unwrap()),
-        },
-        prunable: Prunable {
-            rings: v["rings"]
+            ephemeral_pubkeys: v["ephemeral_pubkeys"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|r| r.as_array().unwrap().iter().map(u).collect())
+                .map(arr)
                 .collect(),
+            fee: u(&v["fee"]),
+            encrypted_payment_id: arr(&v["encrypted_payment_id"]),
+        },
+        prunable: Prunable {
+            reference_height: u(&v["reference_height"]),
             proof_data: unhex(v["proof_data"].as_str().unwrap()),
         },
     }
@@ -201,12 +200,9 @@ fn pool(m: &Value) -> PoolMessage {
         },
         "set_payout" => PoolMessage::SetPayout {
             height: u(&m["height"]),
-            payout: Payout {
-                onetime_address: arr(&m["onetime_address"]),
-                view_tag: arr(&m["view_tag"]),
-                ephemeral_pubkey: arr(&m["ephemeral_pubkey"]),
-                anchor_enc: arr(&m["anchor_enc"]),
-            },
+            spend_pubkey: arr(&m["spend_pubkey"]),
+            view_pubkey: arr(&m["view_pubkey"]),
+            anchor: arr(&m["anchor"]),
         },
         "error" => PoolMessage::Error(s(&m["message"])),
         other => panic!("unknown pool message {other}"),

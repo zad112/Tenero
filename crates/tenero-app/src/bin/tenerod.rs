@@ -88,7 +88,7 @@ fn rewind_command(args: &[String]) -> i32 {
         return 2;
     };
     let Some(network) = tenero_app::config::Network::parse(&network) else {
-        eprintln!("error: --network: `{network}` is not test, dev, beta or alpha");
+        eprintln!("error: --network: `{network}` is not gamma, dev or test");
         return 2;
     };
     match daemon::rewind(&data, network, to, yes) {

@@ -1,9 +1,9 @@
-# The peer-to-peer wire protocol, version 1 (a DRAFT, milestones M8.2, M8.3a and M8.3)
+# The peer-to-peer wire protocol, version 2 (a DRAFT; version 1 was M8.2, M8.3a and M8.3; version 2 is the `gamma` network's, G4)
 
-Status: **draft, 2026-09-30, unreviewed.** This is how the messages of `crates/tenero-net` (`Message`) become
+Status: **draft, 2026-09-30 (version 2: 2026-10-08), unreviewed.** This is how the messages of `crates/tenero-net` (`Message`) become
 bytes. It reuses the version 2 codec of `CONSENSUS_V2.md` section 4: fixed-width little-endian integers, no
 varints, strict decoding, and `u32` counts checked **before** any element is read or any memory is reserved. The
-independent Python reference is `reference/tools/make_vectors_wire.py`, which makes `tests/vectors/v2_wire.json`; the Rust
+independent Python reference is `reference/tools/make_vectors_wire.py`, which makes `tests/vectors/v3_wire.json`; the Rust
 code (`crates/tenero-net/src/wire.rs`) must reproduce every vector.
 
 This layer carries no cryptography. The encrypted channel (Noise, M8.4, `crates/tenero-net/src/noise.rs`) carries
@@ -38,10 +38,13 @@ frame  = length u32      the number of bytes that follow: 1 (the kind) + the bod
 | ids in `get_blocks`, blocks in `blocks` | 0 to 32 |
 | ids in `not_found`, `new_tx`, `get_txs`; transactions in `txs` | 0 to 64 |
 | addresses in `addrs` | 0 to 100 |
+| ids in `compact`, indexes in `get_block_txs`, transactions in `block_txs` | 0 to 8192 (`MAX_BLOCK_TXS`) |
 | frame length (kind + body) | per kind, below |
 
 Caps on `length`: `hello` 125, `ping` and `pong` 9, `get_addrs` 1, `addrs` 2605, `new_block` 73, `get_block_ids` and `get_blocks` 1029,
-`not_found`, `new_tx` and `get_txs` 2053, `get_headers` 1029, `headers` 73013, `block_ids` 16013, and **`blocks` and `txs` 16,777,216 (16 MiB)**. The
+`not_found`, `new_tx` and `get_txs` 2053, `get_headers` 1029, `headers` 73013, `block_ids` 16013, `get_compact` 33,
+`compact` 263,897 (the header, the largest coinbase of 1,602 bytes, 8192 ids), `get_block_txs` 32,805, and **`blocks`, `txs` and
+`block_txs` 16,777,216 (16 MiB)**. The
 engine's own limits (`Limits`, configurable) may be lower than these; the wire caps are the ceiling a decoder
 never exceeds. What a count of zero *means* (an empty locator is a protocol violation, for example) is the
 engine's rule, not the codec's.
@@ -67,10 +70,25 @@ engine's rule, not the codec's.
 | 15 | `get_headers` | `count` u32, then `count` block ids (32 each): the locator, newest first (the same as `get_block_ids`) |
 | 16 | `headers` | `first_height` u64, `count` u32, then `count` block headers, oldest first, each 146 bytes: `version` u16, `prev_id` 32, `timestamp` u64, `tx_root` 32, `nonce` u64, `mix` 64 (the header form of `CONSENSUS_V2.md` 4) |
 
+| 17 | `get_compact` | `id` 32: "send me this block in compact form" |
+| 18 | `compact` | the block's header (146 bytes), its coinbase (the coinbase wire form of `CONSENSUS_V2.md` 4), `count` u32, then `count` transaction ids (32 each), in the block's order |
+| 19 | `get_block_txs` | `block_id` 32, `count` u32, then `count` indexes (u32 each) into that block's transactions |
+| 20 | `block_txs` | `block_id` 32, `count` u32, then `count` transactions (the full wire form of `CONSENSUS_V2.md` 15.2) |
+
 A header does not carry its own id: the receiver computes it from the header. A pruned node keeps every header, so
 it can serve `headers` for its whole chain even where it can no longer serve `blocks`.
 
-Every other kind byte (0 and 17 to 255) is an error. The objects inside `blocks` and `txs` are decoded by the
+**Compact blocks (version 2, plan F14).** A block of the `gamma` network can be far bigger than a 16 MiB frame (its real
+transaction bytes may reach 48 MiB), and most of its transactions are usually in the receiver's mempool already. So a new
+block is fetched with `get_compact`, not `get_blocks`, and so is any block that `get_blocks` asked for but that does not fit
+a frame (the server answers that block with `compact` instead). The receiver checks the compact block against its header
+before anything else: the header's `tx_root` is the Merkle root of the coinbase's id and these ids (`CONSENSUS_V2.md` 15), and
+the header carries the proof of work, so a peer cannot send a made-up list. It takes what its mempool has, asks for the rest
+by index with `get_block_txs` (as many requests and replies as it takes, each within a frame: a transaction is at most 75,000
+bytes), checks each transaction's id against the list, and validates the whole block as usual. A server answers an index it
+does not have, or a block it cannot serve, with `not_found` for the block's id.
+
+Every other kind byte (0 and 21 to 255) is an error. The objects inside `blocks` and `txs` are decoded by the
 strict decoders of the data model, so a block or transaction that is malformed *inside* a well-formed frame is
 refused with that decoder's error.
 

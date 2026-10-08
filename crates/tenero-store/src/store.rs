@@ -12,22 +12,31 @@
 //! | `outputs` | global output index -> `StoredOutput` |
 //! | `key_images` | key image -> height (the spent set) |
 //! | `meta` | format, chain id, proof of work, segment size, `pruned_below`, output count |
+//! | `tree_layers` | (layer, index) -> 32 bytes: every element of the FCMP++ curve tree above the leaves |
+//! | `tree_leaves` | leaf position -> global output index (which output each leaf is) |
+//! | `output_leaf` | global output index -> leaf position (for a wallet's path) |
+//! | `tree_state` | height -> `TreeState` (leaves, layers, root) after that block |
 //!
-//! The rings and proofs themselves are in `<database path>.segments/seg-<id>.dat` (see [`crate::segments`]).
+//! The curve tree is grown and trimmed in the same transaction as the block that changes it (`docs/CONSENSUS_V2.md`
+//! 15.6), and kept in memory as well (its layers above the leaves are small: about 90 KB per 100,000 outputs).
+//! The proofs themselves are in `<database path>.segments/seg-<id>.dat` (see [`crate::segments`]).
 //! Every mutation is one redb transaction, and the segment bytes are written and synced before it commits:
 //! the result is whole or not at all, and a crash can only leave bytes nothing refers to.
 
 use crate::error::{Result, StoreError};
 use crate::records::{
     from_bytes, to_bytes, AppendInfo, BlockIndex, BlockMeta, PruneStats, StoredBlock, StoredOutput,
-    StoredTx, TxRow,
+    StoredTx, TreeState, TxRow,
 };
 use crate::segments::Segments;
 use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tenero_core::hash::{hex_lower, Sha256Stream};
-use tenero_core::v2::ids::{self, PowKind};
-use tenero_core::v2::{Block, Coinbase, PrunedTransaction, Wire, VERSION};
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids;
+use tenero_core::v3::{Block, Coinbase, PrunedTransaction, Wire, VERSION};
+use tenero_tree::{CurveTree, Leaf};
 
 const INDEX: TableDefinition<u64, &[u8]> = TableDefinition::new("index");
 const BLOCK_IDS: TableDefinition<&[u8], u64> = TableDefinition::new("block_ids");
@@ -39,11 +48,71 @@ const SEG_LEN: TableDefinition<u64, u64> = TableDefinition::new("seg_len");
 const OUTPUTS: TableDefinition<u64, &[u8]> = TableDefinition::new("outputs");
 const KEY_IMAGES: TableDefinition<&[u8], u64> = TableDefinition::new("key_images");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
+const TREE_LAYERS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("tree_layers");
+const TREE_LEAVES: TableDefinition<u64, u64> = TableDefinition::new("tree_leaves");
+const OUTPUT_LEAF: TableDefinition<u64, u64> = TableDefinition::new("output_leaf");
+const TREE_STATE: TableDefinition<u64, &[u8]> = TableDefinition::new("tree_state");
+
+/// The key of a tree element: its layer, then its index big-endian (so a scan goes layer by layer, in order).
+fn tree_key(layer: usize, index: usize) -> [u8; 9] {
+    let mut k = [0u8; 9];
+    k[0] = u8::try_from(layer).expect("at most 255 layers");
+    k[1..].copy_from_slice(&(index as u64).to_be_bytes());
+    k
+}
+
+/// Writes the layer elements that changed between `old_lens` (the layer lengths before) and `tree`: the last old
+/// element of each layer (growing or trimming may have changed it), every new one; and removes the ones that are gone.
+fn write_tree_diff(
+    layers: &mut redb::Table<&[u8], &[u8]>,
+    old_lens: &[usize],
+    tree: &CurveTree,
+) -> Result<()> {
+    let new_lens = tree.layer_lens();
+    for l in 0..old_lens.len().max(new_lens.len()) {
+        let old = old_lens.get(l).copied().unwrap_or(0);
+        let new = new_lens.get(l).copied().unwrap_or(0);
+        for i in old.min(new).saturating_sub(1)..new {
+            let bytes = tree
+                .element_bytes(l, i)
+                .ok_or_else(|| StoreError::Corrupt("a tree element is missing".into()))?;
+            layers.insert(tree_key(l, i).as_slice(), bytes.as_slice())?;
+        }
+        for i in new..old {
+            layers.remove(tree_key(l, i).as_slice())?;
+        }
+    }
+    Ok(())
+}
+
+fn tree_state_of(tree: &CurveTree) -> TreeState {
+    TreeState {
+        n_leaves: tree.n_leaves(),
+        n_layers: u8::try_from(tree.n_layers()).expect("at most 255 layers"),
+        root: tree.root_bytes().unwrap_or([0; 32]),
+    }
+}
+
+/// The leaf of a stored output (a coinbase output's commitment is `1*G + amount*H`).
+fn leaf_of(o: &StoredOutput, index: u64) -> Result<Leaf> {
+    let c = if o.coinbase {
+        tenero_tree::coinbase_commitment(o.public_amount)
+    } else {
+        o.amount_commitment
+    };
+    Leaf::from_output(&o.onetime_address, &c).ok_or_else(|| {
+        StoreError::Corrupt(format!(
+            "output {index} is not a valid curve-tree leaf (consensus should have refused it)"
+        ))
+    })
+}
 
 /// The on-disk layout version, in `meta`. Version 2: the prunable data is in segment files. Version 3: the
 /// block record also holds the block's target and body size. Version 4: every record in a segment file is followed by
-/// a 16-byte checksum (`CHECK_LEN`), which every read verifies. A store of an older version is refused (`WrongFormat`), not guessed at.
-pub const FORMAT_VERSION: u32 = 4;
+/// a 16-byte checksum (`CHECK_LEN`), which every read verifies. Version 5: the rules version 3 (`gamma`): its blocks and
+/// transactions, the block weight in place of its size, and the curve tree's four tables. Version 6: the block record also
+/// holds the block's long-term weight. A store of an older version is refused (`WrongFormat`), not guessed at.
+pub const FORMAT_VERSION: u32 = 6;
 
 /// The bytes of checksum after each record in a segment file: the first 16 bytes of a SHA-256 of the record and of where it is.
 const CHECK_LEN: usize = 16;
@@ -96,7 +165,7 @@ impl Loc {
     }
 }
 
-const STATE_TAG: &[u8] = b"tenero state v2";
+const STATE_TAG: &[u8] = b"tenero state v3";
 
 fn pow_byte(p: PowKind) -> u8 {
     match p {
@@ -131,6 +200,11 @@ pub struct Store {
     segment_blocks: u64,
     pow: PowKind,
     chain_id: [u8; 32],
+    /// The curve tree at the tip (its layers above the leaves), kept in step with the database.
+    tree: Mutex<CurveTree>,
+    /// The long-term weights of blocks 1 to the tip (8 bytes a block), for the long-term median, kept in step with the
+    /// database.
+    lt_weights: Mutex<Vec<u64>>,
 }
 
 impl Store {
@@ -171,6 +245,10 @@ impl Store {
             txn.open_table(SEG_LEN)?;
             txn.open_table(OUTPUTS)?;
             txn.open_table(KEY_IMAGES)?;
+            txn.open_table(TREE_LAYERS)?;
+            txn.open_table(TREE_LEAVES)?;
+            txn.open_table(OUTPUT_LEAF)?;
+            let mut tree_state = txn.open_table(TREE_STATE)?;
             let mut meta = txn.open_table(META)?;
 
             let existing = meta.get("chain_id")?.map(|g| g.value().to_vec());
@@ -205,7 +283,8 @@ impl Store {
                         header: ids::genesis_header(label),
                         cumulative_work: [0; 32],
                         target: [0; 32],
-                        body_size: 0,
+                        body_weight: 0,
+                        long_term_weight: 0,
                         first_output_index: 0,
                         output_count: 0,
                         tx_count: 0,
@@ -219,10 +298,16 @@ impl Store {
                     meta.insert("label", label.as_bytes())?;
                     meta.insert("pruned_below", 0u64.to_le_bytes().as_slice())?;
                     meta.insert("output_count", 0u64.to_le_bytes().as_slice())?;
+                    tree_state.insert(
+                        0u64,
+                        to_bytes(&tree_state_of(&CurveTree::new()))?.as_slice(),
+                    )?;
                 }
             }
         }
         txn.commit()?;
+        let tree = Store::load_tree(&db)?;
+        let lt_weights = Store::load_lt_weights(&db)?;
         let store = Store {
             db,
             path,
@@ -230,10 +315,63 @@ impl Store {
             segment_blocks: chosen_segment_blocks,
             pow,
             chain_id,
+            tree: Mutex::new(tree),
+            lt_weights: Mutex::new(lt_weights),
         };
         // a segment file the database does not know (left by a crash) is an orphan
         store.sweep_segments()?;
         Ok(store)
+    }
+
+    /// The long-term weights of blocks 1 to the tip, from the block records.
+    fn load_lt_weights(db: &Database) -> Result<Vec<u64>> {
+        let txn = db.begin_read()?;
+        let index = txn.open_table(INDEX)?;
+        let mut out = Vec::new();
+        for entry in index.range(1u64..)? {
+            let (_, v) = entry?;
+            out.push(from_bytes::<BlockIndex>(v.value())?.long_term_weight);
+        }
+        Ok(out)
+    }
+
+    /// Reads the tree at the tip from the database, and checks its shape and its root.
+    fn load_tree(db: &Database) -> Result<CurveTree> {
+        let txn = db.begin_read()?;
+        let index = txn.open_table(INDEX)?;
+        let tip = index
+            .last()?
+            .ok_or_else(|| StoreError::Corrupt("the index has no genesis".into()))?
+            .0
+            .value();
+        let state: TreeState = from_bytes(
+            txn.open_table(TREE_STATE)?
+                .get(tip)?
+                .ok_or_else(|| StoreError::Corrupt("no tree state at the tip".into()))?
+                .value(),
+        )?;
+        let mut layers: Vec<Vec<[u8; 32]>> = vec![];
+        for entry in txn.open_table(TREE_LAYERS)?.iter()? {
+            let (k, v) = entry?;
+            let layer = usize::from(k.value()[0]);
+            let point: [u8; 32] = v
+                .value()
+                .try_into()
+                .map_err(|_| StoreError::Corrupt("a tree element is not 32 bytes".into()))?;
+            if layers.len() <= layer {
+                layers.resize(layer + 1, vec![]);
+            }
+            layers[layer].push(point);
+        }
+        let tree = CurveTree::from_layers(state.n_leaves, layers).ok_or_else(|| {
+            StoreError::Corrupt("the stored curve tree does not have its shape".into())
+        })?;
+        if tree_state_of(&tree) != state {
+            return Err(StoreError::Corrupt(
+                "the stored curve tree does not have its root".into(),
+            ));
+        }
+        Ok(tree)
     }
 
     /// The number of block heights one segment file covers.
@@ -484,6 +622,139 @@ impl Store {
         Ok(found.map(|g| g.value()))
     }
 
+    /// The curve tree after the block at `height`: its leaves, layers and root. `None` above the tip.
+    pub fn tree_state(&self, height: u64) -> Result<Option<TreeState>> {
+        let txn = self.db.begin_read()?;
+        let t = txn.open_table(TREE_STATE)?;
+        let found = t.get(height)?;
+        found.map(|g| from_bytes(g.value())).transpose()
+    }
+
+    /// The leaf position of an output in the tree, once it has entered (when it became spendable).
+    pub fn leaf_of_output(&self, global_index: u64) -> Result<Option<u64>> {
+        let txn = self.db.begin_read()?;
+        let t = txn.open_table(OUTPUT_LEAF)?;
+        let found = t.get(global_index)?;
+        Ok(found.map(|g| g.value()))
+    }
+
+    /// The output at a leaf position.
+    pub fn output_at_leaf(&self, position: u64) -> Result<Option<u64>> {
+        let txn = self.db.begin_read()?;
+        let t = txn.open_table(TREE_LEAVES)?;
+        let found = t.get(position)?;
+        Ok(found.map(|g| g.value()))
+    }
+
+    /// The leaf at a position, made from the output it is.
+    pub fn leaf(&self, position: u64) -> Result<Option<Leaf>> {
+        let Some(index) = self.output_at_leaf(position)? else {
+            return Ok(None);
+        };
+        let o = self.output(index)?.ok_or_else(|| {
+            StoreError::Corrupt(format!("leaf {position} names a missing output"))
+        })?;
+        leaf_of(&o, index).map(Some)
+    }
+
+    /// The long-term weights of the (at most) `n` blocks just below `before`, oldest first, from block 1 on: what the
+    /// long-term median of the block at `before` is taken over. `before` is at most the tip's height plus one.
+    pub fn long_term_weights(&self, before: u64, n: usize) -> Vec<u64> {
+        let all = self
+            .lt_weights
+            .lock()
+            .expect("the weights lock is never poisoned");
+        // block h is at all[h - 1]
+        let end = usize::try_from(before.saturating_sub(1))
+            .unwrap_or(usize::MAX)
+            .min(all.len());
+        all[end.saturating_sub(n)..end].to_vec()
+    }
+
+    /// A copy of the curve tree at the tip.
+    pub fn tree(&self) -> CurveTree {
+        self.tree
+            .lock()
+            .expect("the tree lock is never poisoned")
+            .clone()
+    }
+
+    /// What a wallet needs to spend the outputs with these global indexes: the height of the block their paths are from
+    /// (the tip: a transaction's reference block), that block's tree, and each output's path in it as bytes (`None` for
+    /// an output not in the tree yet, or not at all). Every path comes from ONE copy of the tree, checked against the
+    /// tree recorded for that height, so the paths agree with each other and with the reference block.
+    pub fn spend_paths(
+        &self,
+        global_indexes: &[u64],
+    ) -> Result<(u64, TreeState, Vec<Option<tenero_tree::PathBytes>>)> {
+        for _ in 0..4 {
+            let (height, _) = self.tip()?;
+            let tree = self.tree();
+            let state = self
+                .tree_state(height)?
+                .ok_or_else(|| StoreError::Corrupt(format!("no tree for block {height}")))?;
+            if tree_state_of(&tree) != state {
+                continue; // a block went in between: try again on the new tip
+            }
+            let mut paths = Vec::with_capacity(global_indexes.len());
+            for g in global_indexes {
+                let Some(position) = self.leaf_of_output(*g)? else {
+                    paths.push(None);
+                    continue;
+                };
+                if position >= tree.n_leaves() {
+                    paths.push(None);
+                    continue;
+                }
+                let width = tenero_tree::LEAF_CHUNK as u64;
+                let start = position / width * width;
+                let end = (start + width).min(tree.n_leaves());
+                let mut chunk = Vec::with_capacity((end - start) as usize);
+                for p in start..end {
+                    let index = self
+                        .output_at_leaf(p)?
+                        .ok_or_else(|| StoreError::Corrupt(format!("leaf {p} names no output")))?;
+                    let o = self.output(index)?.ok_or_else(|| {
+                        StoreError::Corrupt(format!("leaf {p} names a missing output"))
+                    })?;
+                    let c = if o.coinbase {
+                        tenero_tree::coinbase_commitment(o.public_amount)
+                    } else {
+                        o.amount_commitment
+                    };
+                    chunk.push((o.onetime_address, c));
+                }
+                paths.push(tree.path_bytes(position, |p| chunk[(p - start) as usize]));
+            }
+            return Ok((height, state, paths));
+        }
+        Err(StoreError::Corrupt(
+            "the tree kept changing while paths were read".into(),
+        ))
+    }
+
+    /// The path of the leaf at `position` in the tree at the tip, for a proof. `None` if there is no such leaf.
+    pub fn tree_path(
+        &self,
+        position: u64,
+    ) -> Result<Option<monero_fcmp_plus_plus::fcmps::Path<monero_fcmp_plus_plus::Curves>>> {
+        let tree = self.tree();
+        if position >= tree.n_leaves() {
+            return Ok(None);
+        }
+        let width = tenero_tree::LEAF_CHUNK as u64;
+        let start = position / width * width;
+        let end = (start + width).min(tree.n_leaves());
+        let mut chunk = Vec::with_capacity((end - start) as usize);
+        for p in start..end {
+            chunk.push(
+                self.leaf(p)?
+                    .ok_or_else(|| StoreError::Corrupt(format!("leaf {p} is missing")))?,
+            );
+        }
+        Ok(tree.path(position, |p| chunk[(p - start) as usize]))
+    }
+
     /// Every block below this height has lost its proofs (and none at or above it has).
     pub fn pruned_below(&self) -> Result<u64> {
         let txn = self.db.begin_read()?;
@@ -531,6 +802,7 @@ impl Store {
     pub fn append_block(&self, block: &Block, meta_in: BlockMeta) -> Result<AppendInfo> {
         let txn = self.db.begin_write()?;
         let info;
+        let grown_tree;
         {
             let mut index = txn.open_table(INDEX)?;
             let mut block_ids = txn.open_table(BLOCK_IDS)?;
@@ -542,6 +814,10 @@ impl Store {
             let mut outputs = txn.open_table(OUTPUTS)?;
             let mut images = txn.open_table(KEY_IMAGES)?;
             let mut meta = txn.open_table(META)?;
+            let mut tree_layers = txn.open_table(TREE_LAYERS)?;
+            let mut tree_leaves = txn.open_table(TREE_LEAVES)?;
+            let mut output_leaf = txn.open_table(OUTPUT_LEAF)?;
+            let mut tree_state = txn.open_table(TREE_STATE)?;
 
             let (tip_height, tip) = {
                 let (k, v) = index
@@ -608,7 +884,7 @@ impl Store {
                 {
                     return Err(StoreError::Duplicate("transaction"));
                 }
-                let bytes = t.prunable.to_bytes(t.prefix.inputs.len())?;
+                let bytes = t.prunable.to_bytes()?;
                 let record_offset = committed + blob.len() as u64;
                 let loc = Loc {
                     segment: segment32,
@@ -642,12 +918,64 @@ impl Store {
             let output_count = u32::try_from(next_output - first_output_index).map_err(|_| {
                 StoreError::Corrupt("a block created more than 2^32 outputs".into())
             })?;
+            // the curve tree: the outputs that become spendable in the next block enter it, in global index order
+            // (`docs/CONSENSUS_V2.md` 15.6)
+            let mut entering: Vec<u64> = Vec::new();
+            let (cb_from, other_from) = tenero_core::v3::rules::entering_from(height);
+            for (from, coinbase_part) in [(cb_from, true), (other_from, false)] {
+                let Some(h) = from.filter(|h| *h >= 1) else {
+                    continue;
+                };
+                let idx: BlockIndex = from_bytes(
+                    index
+                        .get(h)?
+                        .ok_or_else(|| StoreError::Corrupt(format!("no block at {h}")))?
+                        .value(),
+                )?;
+                let cb_outputs = Coinbase::from_bytes(
+                    coinbase_t
+                        .get(h)?
+                        .ok_or_else(|| StoreError::Corrupt(format!("no coinbase at {h}")))?
+                        .value(),
+                )?
+                .outputs
+                .len() as u64;
+                let start = idx.first_output_index;
+                let end = start + u64::from(idx.output_count);
+                if coinbase_part {
+                    entering.extend(start..start + cb_outputs);
+                } else {
+                    entering.extend(start + cb_outputs..end);
+                }
+            }
+            entering.sort_unstable();
+            let mut tree = self.tree();
+            let old_lens = tree.layer_lens();
+            let first_leaf = tree.n_leaves();
+            let mut new_leaves = Vec::with_capacity(entering.len());
+            for (k, g) in entering.iter().enumerate() {
+                let o: StoredOutput = from_bytes(
+                    outputs
+                        .get(*g)?
+                        .ok_or_else(|| StoreError::Corrupt(format!("output {g} is missing")))?
+                        .value(),
+                )?;
+                new_leaves.push(leaf_of(&o, *g)?);
+                tree_leaves.insert(first_leaf + k as u64, *g)?;
+                output_leaf.insert(*g, first_leaf + k as u64)?;
+            }
+            tree.grow(&new_leaves);
+            write_tree_diff(&mut tree_layers, &old_lens, &tree)?;
+            tree_state.insert(height, to_bytes(&tree_state_of(&tree))?.as_slice())?;
+            grown_tree = tree;
+
             let record = BlockIndex {
                 block_id,
                 header: block.header.clone(),
                 cumulative_work: meta_in.cumulative_work,
                 target: meta_in.target,
-                body_size: meta_in.body_size,
+                body_weight: meta_in.body_weight,
+                long_term_weight: meta_in.long_term_weight,
                 first_output_index,
                 output_count,
                 tx_count: u32::try_from(block.transactions.len()).expect("at most MAX_BLOCK_TXS"),
@@ -668,6 +996,11 @@ impl Store {
             };
         }
         txn.commit()?;
+        *self.tree.lock().expect("the tree lock is never poisoned") = grown_tree;
+        self.lt_weights
+            .lock()
+            .expect("the weights lock is never poisoned")
+            .push(meta_in.long_term_weight);
         Ok(info)
     }
 
@@ -678,6 +1011,7 @@ impl Store {
     pub fn pop_block(&self) -> Result<StoredBlock> {
         let txn = self.db.begin_write()?;
         let popped;
+        let trimmed_tree;
         {
             let mut index = txn.open_table(INDEX)?;
             let mut block_ids = txn.open_table(BLOCK_IDS)?;
@@ -689,6 +1023,10 @@ impl Store {
             let mut outputs = txn.open_table(OUTPUTS)?;
             let mut images = txn.open_table(KEY_IMAGES)?;
             let mut meta = txn.open_table(META)?;
+            let mut tree_layers = txn.open_table(TREE_LAYERS)?;
+            let mut tree_leaves = txn.open_table(TREE_LEAVES)?;
+            let mut output_leaf = txn.open_table(OUTPUT_LEAF)?;
+            let mut tree_state = txn.open_table(TREE_STATE)?;
 
             let (tip_height, tip) = {
                 let (k, v) = index
@@ -754,6 +1092,57 @@ impl Store {
                     seg_len.insert(segment, start)?;
                 }
             }
+            // the curve tree goes back to what it was after the parent: the outputs this block added leave it
+            // (they came from older blocks, which stay; this block's own outputs had not entered yet)
+            let parent: TreeState = from_bytes(
+                tree_state
+                    .get(tip_height - 1)?
+                    .ok_or_else(|| StoreError::Corrupt("no tree state for the parent".into()))?
+                    .value(),
+            )?;
+            tree_state.remove(tip_height)?;
+            let mut tree = self.tree();
+            let old_lens = tree.layer_lens();
+            let old_n = tree.n_leaves();
+            let new_n = parent.n_leaves;
+            if new_n > old_n {
+                return Err(StoreError::Corrupt(
+                    "the parent's tree is bigger than the tip's".into(),
+                ));
+            }
+            for p in new_n..old_n {
+                let g = tree_leaves
+                    .remove(p)?
+                    .ok_or_else(|| StoreError::Corrupt(format!("leaf {p} is missing")))?
+                    .value();
+                output_leaf.remove(g)?;
+            }
+            // the trim reads the last chunk of the remaining leaves
+            let width = tenero_tree::LEAF_CHUNK as u64;
+            let chunk_start = new_n.saturating_sub(1) / width * width;
+            let mut chunk = Vec::new();
+            for p in chunk_start..new_n {
+                let g = tree_leaves
+                    .get(p)?
+                    .ok_or_else(|| StoreError::Corrupt(format!("leaf {p} is missing")))?
+                    .value();
+                let o: StoredOutput = from_bytes(
+                    outputs
+                        .get(g)?
+                        .ok_or_else(|| StoreError::Corrupt(format!("output {g} is missing")))?
+                        .value(),
+                )?;
+                chunk.push(leaf_of(&o, g)?);
+            }
+            tree.trim(new_n, |p| chunk[(p - chunk_start) as usize]);
+            write_tree_diff(&mut tree_layers, &old_lens, &tree)?;
+            if tree_state_of(&tree) != parent {
+                return Err(StoreError::Corrupt(
+                    "the trimmed tree is not the parent's".into(),
+                ));
+            }
+            trimmed_tree = tree;
+
             for i in tip.first_output_index..tip.first_output_index + u64::from(tip.output_count) {
                 if outputs.remove(i)?.is_none() {
                     return Err(StoreError::Corrupt(format!(
@@ -789,6 +1178,11 @@ impl Store {
             );
         }
         txn.commit()?;
+        *self.tree.lock().expect("the tree lock is never poisoned") = trimmed_tree;
+        self.lt_weights
+            .lock()
+            .expect("the weights lock is never poisoned")
+            .pop();
         let (block, emptied_segment) = popped;
         if let Some(id) = emptied_segment {
             self.segments.remove(id)?;
@@ -796,7 +1190,7 @@ impl Store {
         Ok(block)
     }
 
-    /// Deletes the rings and proofs of every block below `height`. Idempotent, and it never moves
+    /// Deletes the proofs of every block below `height`. Idempotent, and it never moves
     /// backwards: a height at or below the current `pruned_below` does nothing. It changes NO id, no
     /// Merkle root and no part of the state. The locations go from the database at once (exactly, by
     /// height), and a segment file is deleted as soon as every block in it is below `pruned_below`; the
@@ -922,6 +1316,6 @@ impl Store {
                 prunable_hash: t.tx.prunable_hash,
             })?);
         }
-        Ok(Some(ids::merkle_root(&leaves)))
+        Ok(Some(tenero_core::v2::ids::merkle_root(&leaves)))
     }
 }

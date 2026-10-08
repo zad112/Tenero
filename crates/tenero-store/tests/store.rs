@@ -1,10 +1,13 @@
 //! The store: appending, reading back, refusing bad blocks, rolling blocks back, pruning, reopening, and
 //! a randomised comparison with a plain in-memory model.
 
+use curve25519_dalek::edwards::EdwardsPoint;
+use curve25519_dalek::scalar::Scalar;
 use std::path::PathBuf;
 use tenero_core::hash::{sha256, Sha256Stream};
-use tenero_core::v2::ids::{self, PowKind};
-use tenero_core::v2::*;
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids;
+use tenero_core::v3::*;
 use tenero_store::{BlockMeta, Store, StoreError, StoredOutput};
 
 const LABEL: &str = "tenero store test network";
@@ -53,10 +56,10 @@ impl Drop for TempDb {
     }
 }
 
-/// The bytes of one transaction's prunable part as the tests build them: a ring count, two rings of 16,
-/// the proof length and the proof (`proof_len` bytes).
+/// The bytes of one transaction's prunable part as the tests build them, with its 16-byte checksum in the segment: the
+/// reference height, the proof length and the proof (`proof_len` bytes).
 fn prunable_size(proof_len: usize) -> u64 {
-    (4 + 2 * (4 + 16 * 8) + 4 + proof_len + 16) as u64
+    (8 + 4 + proof_len + 16) as u64
 }
 
 // ------------------------------------------------------------------ making blocks
@@ -80,13 +83,21 @@ impl Rng {
         }
         b
     }
+    /// A real curve point: outputs enter the curve tree, which needs them to be points.
+    fn point(&mut self) -> [u8; 32] {
+        let wide: [u8; 64] = self.bytes();
+        EdwardsPoint::mul_base(&Scalar::from_bytes_mod_order_wide(&wide))
+            .compress()
+            .to_bytes()
+    }
 }
 
 fn meta_for(height: u64) -> BlockMeta {
     BlockMeta {
         cumulative_work: work_for(height),
         target: [0xff; 32],
-        body_size: 0,
+        body_weight: 0,
+        long_term_weight: height * 7,
     }
 }
 
@@ -125,17 +136,12 @@ impl Maker {
                 key_image: self.key_image(),
             })
             .collect();
-        // a ring of the real size for each input (the store does not look at them)
-        let rings = (0..2)
-            .map(|_| (0..16).map(|_| self.rng.next() % 10_000_000).collect())
-            .collect();
         let outputs = (0..2)
             .map(|_| Output {
-                onetime_address: self.rng.bytes(),
-                amount_commitment: self.rng.bytes(),
+                onetime_address: self.rng.point(),
+                amount_commitment: self.rng.point(),
                 amount_enc: self.rng.bytes(),
                 view_tag: self.rng.bytes(),
-                ephemeral_pubkey: self.rng.bytes(),
                 anchor_enc: self.rng.bytes(),
             })
             .collect();
@@ -148,11 +154,12 @@ impl Maker {
                 version: VERSION,
                 inputs,
                 outputs,
+                ephemeral_pubkeys: vec![self.rng.bytes()],
                 fee: 1000,
-                extra: vec![7; 24],
+                encrypted_payment_id: self.rng.bytes(),
             },
             prunable: Prunable {
-                rings,
+                reference_height: 0,
                 proof_data: proof,
             },
         }
@@ -163,7 +170,7 @@ impl Maker {
             version: VERSION,
             height,
             outputs: vec![CoinbaseOutput {
-                onetime_address: self.rng.bytes(),
+                onetime_address: self.rng.point(),
                 amount: 2_000_000_000,
                 view_tag: self.rng.bytes(),
                 ephemeral_pubkey: self.rng.bytes(),
@@ -274,7 +281,7 @@ fn model_digest(blocks: &[Block]) -> [u8; 32] {
     }
     images.sort();
     let mut h = Sha256Stream::new();
-    h.update(b"tenero state v2");
+    h.update(b"tenero state v3");
     h.update(&(outputs.len() as u64).to_le_bytes());
     for (i, o) in outputs.iter().enumerate() {
         h.update(&(i as u64).to_le_bytes());
@@ -413,10 +420,10 @@ fn a_refused_block_leaves_no_trace() {
     );
 
     let mut wrong_version = good.clone();
-    wrong_version.header.version = 3;
+    wrong_version.header.version = 2;
     assert_eq!(
         c.store.append_block(&wrong_version, meta_for(6)),
-        Err(StoreError::BadVersion(3))
+        Err(StoreError::BadVersion(2))
     );
 
     let mut wrong_root = good.clone();
@@ -539,11 +546,8 @@ fn pruning_removes_only_proofs_and_changes_no_id_root_or_state() {
     let stats = s.prune_below(40).unwrap();
     // blocks 1..=39, two transactions each
     assert_eq!(stats.transactions_pruned, 39 * 2);
-    // per transaction: 4 (ring count) + 2 rings of (4 + 16 * 8) + 4 (proof length) + 1900 (proof) + 16 (the record's checksum)
-    assert_eq!(
-        stats.prunable_bytes_freed,
-        39 * 2 * (4 + 2 * (4 + 16 * 8) + 4 + 1900 + 16)
-    );
+    // per transaction: 8 (reference height) + 4 (proof length) + 1900 (proof) + 16 (the record's checksum)
+    assert_eq!(stats.prunable_bytes_freed, 39 * 2 * (8 + 4 + 1900 + 16));
     assert_eq!(stats.pruned_below, 40);
     assert_eq!(s.pruned_below().unwrap(), 40);
 
@@ -1221,4 +1225,182 @@ fn a_store_written_without_checksums_is_refused_not_guessed_at() {
         Store::open_with(&store_path, LABEL, POW, Some(SEGMENT_BLOCKS)),
         Err(StoreError::WrongFormat)
     ));
+}
+
+// ------------------------------------------------------------------ the curve tree (`docs/CONSENSUS_V2.md` 15.6)
+
+/// Every output of `blocks` (height i + 1 = blocks[i]) as a leaf, by global index, with the height that made it and
+/// whether it is a coinbase output.
+fn leaves_of(blocks: &[Block]) -> Vec<(tenero_tree::Leaf, u64, bool)> {
+    let mut out = vec![];
+    for (i, b) in blocks.iter().enumerate() {
+        let h = i as u64 + 1;
+        for o in &b.coinbase.outputs {
+            let c = tenero_tree::coinbase_commitment(o.amount);
+            out.push((
+                tenero_tree::Leaf::from_output(&o.onetime_address, &c).unwrap(),
+                h,
+                true,
+            ));
+        }
+        for t in &b.transactions {
+            for o in &t.prefix.outputs {
+                out.push((
+                    tenero_tree::Leaf::from_output(&o.onetime_address, &o.amount_commitment)
+                        .unwrap(),
+                    h,
+                    false,
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// The tree after the block at `height`, from scratch: the leaves in the order they entered (block by block, each
+/// block's batch in global index order), an output entering when the block before it becomes spendable is applied.
+fn model_tree(blocks: &[Block], height: u64) -> tenero_tree::CurveTree {
+    let all = leaves_of(blocks);
+    let mut entered = vec![];
+    for h in 1..=height {
+        for (leaf, made, coinbase) in &all {
+            let wait = if *coinbase { 60 } else { 10 };
+            if made + wait == h + 1 {
+                entered.push(*leaf);
+            }
+        }
+    }
+    tenero_tree::CurveTree::from_scratch(&entered)
+}
+
+#[test]
+fn the_curve_tree_after_every_block_is_the_from_scratch_tree() {
+    let db = TempDb::new("tree");
+    let mut c = Chain::new(&db, 21);
+    c.maker.proof_len = 10;
+    for _ in 0..75 {
+        c.push();
+        let h = c.blocks.len() as u64;
+        let want = model_tree(&c.blocks, h);
+        let state = c.store.tree_state(h).unwrap().unwrap();
+        assert_eq!(state.n_leaves, want.n_leaves(), "height {h}");
+        assert_eq!(
+            state.root,
+            want.root_bytes().unwrap_or([0; 32]),
+            "height {h}"
+        );
+        assert_eq!(c.store.tree(), want, "height {h}");
+    }
+    // block 1's transaction outputs are spendable in block 11, so they enter when block 10 is applied; its coinbase
+    // output, spendable in block 61, when block 60 is
+    assert_eq!(c.store.tree_state(9).unwrap().unwrap().n_leaves, 0);
+    assert_eq!(c.store.tree_state(10).unwrap().unwrap().n_leaves, 4);
+    let before = c.store.tree_state(59).unwrap().unwrap().n_leaves;
+    assert_eq!(
+        c.store.tree_state(60).unwrap().unwrap().n_leaves,
+        before + 4 + 1
+    );
+    assert!(
+        c.store.tree_state(75).unwrap().unwrap().n_leaves > 38,
+        "past one chunk"
+    );
+}
+
+#[test]
+fn undoing_blocks_gives_back_each_earlier_tree_and_reopening_keeps_it() {
+    let db = TempDb::new("tree-undo");
+    let mut c = Chain::new(&db, 22);
+    c.maker.proof_len = 10;
+    c.push_n(70);
+    let states: Vec<_> = (0..=70)
+        .map(|h| c.store.tree_state(h).unwrap().unwrap())
+        .collect();
+    for h in (50..70).rev() {
+        c.pop();
+        assert_eq!(
+            c.store.tree().root_bytes().unwrap_or([0; 32]),
+            states[h].root,
+            "back to {h}"
+        );
+        assert_eq!(c.store.tree_state(h as u64 + 1).unwrap(), None);
+    }
+    c.push_n(20);
+    assert_eq!(
+        c.store.tree_state(70).unwrap().unwrap().n_leaves,
+        states[70].n_leaves
+    );
+    let tree = c.store.tree();
+    let blocks = std::mem::take(&mut c.blocks);
+    drop(c);
+    let reopened = db.open();
+    assert_eq!(
+        reopened.tree(),
+        tree,
+        "the tree is the same after closing and opening"
+    );
+    assert_eq!(reopened.tree(), model_tree(&blocks, 70));
+}
+
+#[test]
+fn the_long_term_weights_follow_appends_undoing_and_reopening() {
+    let db = TempDb::new("lt-weights");
+    let mut c = Chain::new(&db, 23);
+    c.push_n(30);
+    let expect = |from: u64, to: u64| (from..=to).map(|h| h * 7).collect::<Vec<u64>>();
+    assert_eq!(c.store.long_term_weights(31, 1000), expect(1, 30));
+    assert_eq!(c.store.long_term_weights(11, 5), expect(6, 10));
+    assert_eq!(
+        c.store.long_term_weights(1, 5),
+        Vec::<u64>::new(),
+        "the genesis block never counts"
+    );
+    for _ in 0..5 {
+        c.pop();
+    }
+    assert_eq!(c.store.long_term_weights(31, 1000), expect(1, 25));
+    drop(c);
+    assert_eq!(db.open().long_term_weights(26, 10), expect(16, 25));
+}
+
+#[test]
+fn a_path_from_the_store_is_the_from_scratch_tree_s_path() {
+    let db = TempDb::new("tree-path");
+    let mut c = Chain::new(&db, 23);
+    c.maker.proof_len = 10;
+    c.push_n(65);
+    let model = model_tree(&c.blocks, 65);
+    // the leaves in tree order, from the store's own map
+    let leaves: Vec<tenero_tree::Leaf> = (0..model.n_leaves())
+        .map(|p| c.store.leaf(p).unwrap().unwrap())
+        .collect();
+    for p in [0, 1, 37, 38, model.n_leaves() - 1] {
+        let ours = c.store.tree_path(p).unwrap().unwrap();
+        let want = model.path(p, |i| leaves[i as usize]).unwrap();
+        assert_eq!(ours.leaves, want.leaves, "leaf {p}");
+        assert_eq!(ours.output, want.output, "leaf {p}");
+        assert_eq!(ours.curve_1_layers, want.curve_1_layers, "leaf {p}");
+        assert_eq!(ours.curve_2_layers, want.curve_2_layers, "leaf {p}");
+        let g = c.store.output_at_leaf(p).unwrap().unwrap();
+        assert_eq!(c.store.leaf_of_output(g).unwrap(), Some(p));
+    }
+    assert!(c.store.tree_path(model.n_leaves()).unwrap().is_none());
+
+    // the same paths as bytes, for a wallet: one snapshot, the tip's tree, and None for an output not in the tree
+    let wanted: Vec<u64> = [0u64, 1, 37, 38, model.n_leaves() - 1]
+        .iter()
+        .map(|p| c.store.output_at_leaf(*p).unwrap().unwrap())
+        .chain([c.store.output_count().unwrap() - 1, u64::MAX])
+        .collect();
+    let (height, state, paths) = c.store.spend_paths(&wanted).unwrap();
+    assert_eq!(height, 65);
+    assert_eq!(Some(state), c.store.tree_state(65).unwrap());
+    for (k, p) in [0u64, 1, 37, 38, model.n_leaves() - 1].iter().enumerate() {
+        let rebuilt = tenero_tree::path_from_bytes(paths[k].as_ref().unwrap()).unwrap();
+        let want = model.path(*p, |i| leaves[i as usize]).unwrap();
+        assert_eq!(rebuilt.leaves, want.leaves, "leaf {p}");
+        assert_eq!(rebuilt.curve_1_layers, want.curve_1_layers, "leaf {p}");
+        assert_eq!(rebuilt.curve_2_layers, want.curve_2_layers, "leaf {p}");
+    }
+    assert_eq!(paths[5], None, "the newest output has not entered the tree");
+    assert_eq!(paths[6], None, "no such output");
 }

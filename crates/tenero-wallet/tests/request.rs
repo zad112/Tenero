@@ -1,10 +1,10 @@
 //! Payment requests: the link format, strictly read and never half understood.
 
 use tenero_wallet::request::{parse_pay_text, MAX_LABEL, MAX_MESSAGE};
-use tenero_wallet::{Address, Keys, PaymentRequest, RequestError};
+use tenero_wallet::{Address, Network, PaymentRequest, RequestError, Wallet};
 
 fn addr() -> Address {
-    Keys::from_seed(&[1; 32]).address()
+    Wallet::from_seed(&[1; 32], Network::Test, 0).address()
 }
 
 fn uri(rest: &str) -> String {
@@ -33,9 +33,13 @@ fn a_request_is_written_and_read_back_in_every_combination() {
             message: message.map(str::to_string),
         };
         let text = r.to_uri();
-        assert_eq!(PaymentRequest::from_uri(&text).unwrap(), r, "{text}");
         assert_eq!(
-            PaymentRequest::from_uri(&format!("  {text}\n")).unwrap(),
+            PaymentRequest::from_uri(&text, Network::Test).unwrap(),
+            r,
+            "{text}"
+        );
+        assert_eq!(
+            PaymentRequest::from_uri(&format!("  {text}\n"), Network::Test).unwrap(),
             r,
             "spaces around it do not matter"
         );
@@ -80,7 +84,7 @@ fn awkward_text_survives_the_encoding_and_cannot_add_a_parameter() {
             label: Some(text.trim().to_string()),
             message: Some(text.to_string()),
         };
-        let back = PaymentRequest::from_uri(&r.to_uri()).unwrap();
+        let back = PaymentRequest::from_uri(&r.to_uri(), Network::Test).unwrap();
         assert_eq!(back.label.as_deref(), Some(text.trim()));
         assert_eq!(back.message.as_deref(), Some(text));
         assert!(back.amount.is_none(), "`{text}` added a parameter");
@@ -92,7 +96,7 @@ fn awkward_text_survives_the_encoding_and_cannot_add_a_parameter() {
         label: Some("x&amount=999".into()),
         message: None,
     };
-    let back = PaymentRequest::from_uri(&r.to_uri()).unwrap();
+    let back = PaymentRequest::from_uri(&r.to_uri(), Network::Test).unwrap();
     assert_eq!(
         (back.amount, back.label.as_deref()),
         (None, Some("x&amount=999"))
@@ -102,7 +106,7 @@ fn awkward_text_survives_the_encoding_and_cannot_add_a_parameter() {
 #[test]
 fn a_link_that_is_not_exactly_a_request_is_refused_and_says_why() {
     let bad = |text: String, pattern: fn(&RequestError) -> bool| {
-        let e = PaymentRequest::from_uri(&text).unwrap_err();
+        let e = PaymentRequest::from_uri(&text, Network::Test).unwrap_err();
         assert!(pattern(&e), "`{text}` gave {e:?}");
     };
     let format = |e: &RequestError| matches!(e, RequestError::Format(_));
@@ -158,6 +162,13 @@ fn a_link_that_is_not_exactly_a_request_is_refused_and_says_why() {
     bad(format!("tenero:{good}x"), |e| {
         matches!(e, RequestError::Address(_))
     });
+    // an address of another network is refused, not paid
+    let gamma = Wallet::from_seed(&[1; 32], Network::Gamma, 0)
+        .address()
+        .to_text();
+    bad(format!("tenero:{gamma}?amount=1"), |e| {
+        matches!(e, RequestError::Address(_))
+    });
     bad("x".repeat(2000), format);
     bad(
         format!("tenero:{}?label={}", good, "a".repeat(2000)),
@@ -168,16 +179,16 @@ fn a_link_that_is_not_exactly_a_request_is_refused_and_says_why() {
 #[test]
 fn the_pay_field_takes_a_request_or_a_bare_address_and_nothing_else() {
     let a = addr();
-    let bare = parse_pay_text(&format!("  {}\n", a.to_text())).unwrap();
+    let bare = parse_pay_text(&format!("  {}\n", a.to_text()), Network::Test).unwrap();
     assert_eq!((bare.address, bare.amount, bare.label), (a, None, None));
-    let r = parse_pay_text(&uri("?amount=2&label=Tea")).unwrap();
+    let r = parse_pay_text(&uri("?amount=2&label=Tea"), Network::Test).unwrap();
     assert_eq!(
         (r.amount, r.label.as_deref()),
         (Some(200_000_000), Some("Tea"))
     );
-    assert!(parse_pay_text("").is_err());
-    assert!(parse_pay_text("tenero:nonsense").is_err());
-    assert!(parse_pay_text("tni1abc").is_err());
+    assert!(parse_pay_text("", Network::Test).is_err());
+    assert!(parse_pay_text("tenero:nonsense", Network::Test).is_err());
+    assert!(parse_pay_text("tni1abc", Network::Test).is_err());
 }
 
 #[test]
@@ -191,8 +202,8 @@ fn nothing_panics_on_truncated_or_random_links() {
     .to_uri();
     for n in 0..=full.len() {
         if full.is_char_boundary(n) {
-            let _ = PaymentRequest::from_uri(&full[..n]);
-            let _ = parse_pay_text(&full[..n]);
+            let _ = PaymentRequest::from_uri(&full[..n], Network::Test);
+            let _ = parse_pay_text(&full[..n], Network::Test);
         }
     }
     let mut x = 0x1234_5678_9abc_def1u64;
@@ -206,8 +217,8 @@ fn nothing_panics_on_truncated_or_random_links() {
                 char::from_u32((x % 0x300) as u32).unwrap_or('?')
             })
             .collect();
-        let _ = PaymentRequest::from_uri(&s);
-        let _ = PaymentRequest::from_uri(&format!("tenero:tni1{s}"));
-        let _ = PaymentRequest::from_uri(&format!("{}?{s}", uri("")));
+        let _ = PaymentRequest::from_uri(&s, Network::Test);
+        let _ = PaymentRequest::from_uri(&format!("tenero:tni1{s}"), Network::Test);
+        let _ = PaymentRequest::from_uri(&format!("{}?{s}", uri("")), Network::Test);
     }
 }

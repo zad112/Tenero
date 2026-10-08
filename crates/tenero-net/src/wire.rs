@@ -3,16 +3,17 @@
 //! A frame is `length u32 | kind u8 | body`, `length` counting the kind byte and the body. Everything is
 //! fixed-width little-endian, counts are checked before any element is read, and a decoder that accepts bytes
 //! yields a message that encodes back to the same bytes. The independent Python reference
-//! (`reference/tools/make_vectors_wire.py`) makes `tests/vectors/v2_wire.json`, which this code must reproduce.
+//! (`reference/tools/make_vectors_wire.py`) makes `tests/vectors/v3_wire.json`, which this code must reproduce.
 //!
 //! No cryptography lives here: the Noise channel of M8.4 wraps these frames.
 
-use tenero_core::v2::codec::{DecodeError, EncodeError, Reader, Writer};
-use tenero_core::v2::{Block, BlockHeader, Transaction, Wire};
+use tenero_core::v3::{
+    Block, BlockHeader, Coinbase, DecodeError, EncodeError, Reader, Transaction, Wire, Writer,
+};
 
 use crate::message::{
-    Hello, Message, PeerAddr, MAX_ADDRS, MAX_BLOCKS, MAX_HEADERS, MAX_IDS, MAX_LOCATOR,
-    MAX_NOT_FOUND, MAX_TXS,
+    CompactBlock, Hello, Message, PeerAddr, MAX_ADDRS, MAX_BLOCKS, MAX_BLOCK_TXS, MAX_HEADERS,
+    MAX_IDS, MAX_LOCATOR, MAX_NOT_FOUND, MAX_TXS,
 };
 
 /// The most a frame's `length` may ever be (blocks and transactions lists).
@@ -21,12 +22,15 @@ pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// The most bytes of blocks one `blocks` message is asked to carry (the frame ceiling is twice this, so a message always fits).
 pub const BLOCKS_REPLY_BYTES: usize = MAX_FRAME / 2;
 
-// A block of the largest size the rules allow (4 MiB of transactions, `fees::V2_MAX_BLOCK_BODY`, plus its header and coinbase,
-// well under 64 KiB) must fit one reply, and a reply must fit a frame: if either of these stops being true, a block could
-// exist that no node can send.
-const _: () =
-    assert!(tenero_core::fees::V2_MAX_BLOCK_BODY + 64 * 1024 <= BLOCKS_REPLY_BYTES as u64);
+// A block may be far bigger than a frame (48 MiB of transactions, `rules::MAX_BLOCK_BYTES`): such a block is sent as a
+// compact block and its transactions in pieces (`block_txs`). What must hold is that the largest transaction fits one reply,
+// and a reply a frame: if either stops being true, a transaction could exist that no node can send.
+const _: () = assert!(tenero_core::v3::MAX_TX_SIZE + 64 <= BLOCKS_REPLY_BYTES);
 const _: () = assert!(BLOCKS_REPLY_BYTES * 2 <= MAX_FRAME);
+
+/// The largest coinbase on the wire: version, height, count, its outputs (91 bytes each), the extra's length and bytes.
+const COINBASE_MAX: usize =
+    2 + 8 + 4 + tenero_core::v3::MAX_COINBASE_OUTPUTS * 91 + 4 + tenero_core::v3::MAX_EXTRA;
 
 /// Splits blocks into groups whose encoded sizes add up to at most `budget` bytes (one block over it goes alone), so that
 /// every group fits in a `blocks` frame however large the blocks are; and the blocks that cannot be sent at all (one that
@@ -62,6 +66,26 @@ pub fn split_blocks(blocks: Vec<Block>, budget: usize) -> (Vec<Vec<Block>>, Vec<
     (groups, too_big)
 }
 
+/// Splits transactions into groups whose encoded sizes add up to at most `budget` bytes (one over it goes alone: a
+/// transaction is at most `MAX_TX_SIZE`, far under a frame). Order is kept.
+pub fn split_txs(txs: Vec<Transaction>, budget: usize) -> Vec<Vec<Transaction>> {
+    let mut groups = Vec::new();
+    let (mut current, mut used) = (Vec::new(), 0usize);
+    for t in txs {
+        let size = t.to_bytes().map_or(0, |b| b.len());
+        if !current.is_empty() && used + size > budget {
+            groups.push(std::mem::take(&mut current));
+            used = 0;
+        }
+        used += size;
+        current.push(t);
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    groups
+}
+
 /// Why a frame was refused. [`WireError::as_str`] gives the names the vectors use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WireError {
@@ -86,7 +110,7 @@ pub enum WireError {
 }
 
 impl WireError {
-    /// The error's name in `tests/vectors/v2_wire.json`.
+    /// The error's name in `tests/vectors/v3_wire.json`.
     pub fn as_str(&self) -> &'static str {
         match self {
             WireError::ShortFrame => "short frame",
@@ -139,6 +163,10 @@ const GET_ADDRS: u8 = 13;
 const ADDRS: u8 = 14;
 const GET_HEADERS: u8 = 15;
 const HEADERS: u8 = 16;
+const GET_COMPACT: u8 = 17;
+const COMPACT: u8 = 18;
+const GET_BLOCK_TXS: u8 = 19;
+const BLOCK_TXS: u8 = 20;
 
 /// A block header on the wire: version 2, previous id 32, timestamp 8, transaction root 32, nonce 8, mix 64.
 const HEADER_SIZE: usize = 2 + 32 + 8 + 32 + 8 + 64;
@@ -151,7 +179,10 @@ fn cap_of(kind: u8) -> Option<usize> {
         GET_BLOCK_IDS => 1 + 4 + MAX_LOCATOR * 32,
         BLOCK_IDS => 1 + 8 + 4 + MAX_IDS * 32,
         GET_BLOCKS => 1 + 4 + MAX_BLOCKS * 32,
-        BLOCKS | TXS => MAX_FRAME,
+        BLOCKS | TXS | BLOCK_TXS => MAX_FRAME,
+        GET_COMPACT => 1 + 32,
+        COMPACT => 1 + HEADER_SIZE + COINBASE_MAX + 4 + MAX_BLOCK_TXS * 32,
+        GET_BLOCK_TXS => 1 + 32 + 4 + MAX_BLOCK_TXS * 4,
         NOT_FOUND => 1 + 4 + MAX_NOT_FOUND * 32,
         NEW_BLOCK => 1 + 32 + 8 + 32,
         NEW_TX | GET_TXS => 1 + 4 + MAX_TXS * 32,
@@ -181,6 +212,10 @@ fn kind_of(msg: &Message) -> u8 {
         Message::Addrs { .. } => ADDRS,
         Message::GetHeaders { .. } => GET_HEADERS,
         Message::Headers { .. } => HEADERS,
+        Message::GetCompact { .. } => GET_COMPACT,
+        Message::Compact(_) => COMPACT,
+        Message::GetBlockTxs { .. } => GET_BLOCK_TXS,
+        Message::BlockTxs { .. } => BLOCK_TXS,
     }
 }
 
@@ -264,6 +299,26 @@ pub fn encode(msg: &Message) -> Result<Vec<u8>, WireError> {
             w.raw(id);
             w.u64(*height);
             w.raw(cumulative_work);
+        }
+        Message::GetCompact { id } => w.raw(id),
+        Message::Compact(c) => {
+            c.header.write(&mut w)?;
+            c.coinbase.write(&mut w)?;
+            write_ids(&mut w, &c.tx_ids, MAX_BLOCK_TXS)?;
+        }
+        Message::GetBlockTxs { block_id, indexes } => {
+            w.raw(block_id);
+            w.count(indexes.len(), 0, MAX_BLOCK_TXS)?;
+            for i in indexes {
+                w.u32(*i);
+            }
+        }
+        Message::BlockTxs { block_id, txs } => {
+            w.raw(block_id);
+            w.count(txs.len(), 0, MAX_BLOCK_TXS)?;
+            for t in txs {
+                t.write(&mut w)?;
+            }
         }
     }
     let body = w.into_bytes();
@@ -391,6 +446,30 @@ fn decode_body(kind: u8, body: &[u8]) -> Result<Message, WireError> {
                 txs.push(Transaction::read(&mut r)?);
             }
             Message::Txs { txs }
+        }
+        GET_COMPACT => Message::GetCompact { id: r.array()? },
+        COMPACT => Message::Compact(Box::new(CompactBlock {
+            header: BlockHeader::read(&mut r)?,
+            coinbase: Coinbase::read(&mut r)?,
+            tx_ids: read_ids(&mut r, MAX_BLOCK_TXS)?,
+        })),
+        GET_BLOCK_TXS => {
+            let block_id = r.array()?;
+            let n = r.count(0, MAX_BLOCK_TXS)?;
+            let mut indexes = Vec::with_capacity(n);
+            for _ in 0..n {
+                indexes.push(r.u32()?);
+            }
+            Message::GetBlockTxs { block_id, indexes }
+        }
+        BLOCK_TXS => {
+            let block_id = r.array()?;
+            let n = r.count(0, MAX_BLOCK_TXS)?;
+            let mut txs = Vec::with_capacity(n.min(256));
+            for _ in 0..n {
+                txs.push(Transaction::read(&mut r)?);
+            }
+            Message::BlockTxs { block_id, txs }
         }
         GET_ADDRS => Message::GetAddrs,
         ADDRS => {

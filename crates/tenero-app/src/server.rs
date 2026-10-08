@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use tenero_core::v2::ids;
+use tenero_core::v3::ids;
 use tenero_net::transport::Hooks;
 use tenero_net::{Engine, Event};
 use tenero_wallet::ChainView;
@@ -39,8 +39,11 @@ pub const MAX_CONNECTIONS: usize = 8;
 pub const QUEUE: usize = 64;
 /// Requests the loop answers per poll (so a flood cannot starve the network code).
 pub const PER_POLL: usize = 32;
-/// The most transaction bytes a block template carries, whatever a miner asks for.
-pub const MAX_TEMPLATE_BODY: u64 = 2_000_000;
+/// The most transaction weight a block template carries, whatever a miner asks for: a quarter of the largest block
+/// (`MAX_BLOCK_WEIGHT`), so that a template, whose bytes are at most four times its weight, and the mined block always
+/// fit one control frame (16 MiB). The block limit stays below this until the chain's median passes 1.5 MiB; a miner in
+/// the node's own process is not limited by it.
+pub const MAX_TEMPLATE_WEIGHT: u64 = tenero_core::v3::rules::MAX_BLOCK_WEIGHT / 4;
 /// A connection that has not authenticated in this long is closed.
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 /// A connection silent for this long is closed.
@@ -268,28 +271,13 @@ fn err(m: impl Into<String>) -> Response {
     Response::Error(m.into())
 }
 
-/// The bytes of a coinbase in its consensus encoding (the genesis block has none: 0).
-fn coinbase_size(cb: Option<&tenero_core::v2::Coinbase>) -> u64 {
-    use tenero_core::v2::Wire;
-    cb.and_then(|cb| cb.to_bytes().ok())
-        .map_or(0, |b| b.len() as u64)
-}
-
 /// What an explorer shows of the block at `height`, or `None` above the tip. Reads the index record and the coinbase only,
 /// never the transactions.
 fn summary(store: &tenero_store::Store, height: u64) -> Result<Option<BlockSummary>, String> {
-    use tenero_core::v2::Wire;
     let Some(index) = store.block_index(height).map_err(|e| e.to_string())? else {
         return Ok(None);
     };
     let coinbase = store.coinbase(height).map_err(|e| e.to_string())?;
-    let header = index.header.to_bytes().map_err(|e| e.to_string())?.len() as u64;
-    // header, coinbase, the count of transactions (u32) and the transactions: the block's consensus encoding
-    let size = if height == 0 {
-        header
-    } else {
-        header + coinbase_size(coinbase.as_ref()) + 4 + index.body_size
-    };
     let coinbase_total = coinbase.as_ref().map_or(0, |cb| {
         cb.outputs
             .iter()
@@ -301,7 +289,7 @@ fn summary(store: &tenero_store::Store, height: u64) -> Result<Option<BlockSumma
         timestamp: index.header.timestamp,
         target: index.target,
         cumulative_work: index.cumulative_work,
-        size,
+        weight: index.body_weight,
         tx_count: index.tx_count,
         coinbase_total,
     }))
@@ -356,22 +344,8 @@ impl ControlHook {
                 }
                 Response::Blocks(out)
             }
-            Request::Outputs { indexes } => {
-                let mut out = Vec::with_capacity(indexes.len());
-                for i in &indexes {
-                    match ChainView::output(node, *i) {
-                        Ok(o) => out.push(o),
-                        Err(e) => return Outcome::Reply(err(e)),
-                    }
-                }
-                Response::OutputsMany(out)
-            }
-            Request::Output { index } => match ChainView::output(node, index) {
-                Ok(o) => Response::Output(o),
-                Err(e) => err(e),
-            },
-            Request::OutputCount => match ChainView::output_count(node) {
-                Ok(n) => Response::OutputCount(n),
+            Request::SpendPaths { indexes } => match ChainView::spend_paths(node, &indexes) {
+                Ok(p) => Response::SpendPaths(p),
                 Err(e) => err(e),
             },
             Request::KeyImagesSpent { key_images } => {
@@ -471,8 +445,9 @@ impl ControlHook {
                 Response::Stopping
             }
             Request::BlockTemplate {
-                payout,
-                max_body_bytes,
+                spend_pubkey,
+                view_pubkey,
+                max_weight,
             } => {
                 // a node that is catching up has no tip worth building on
                 if engine.is_syncing() {
@@ -484,10 +459,41 @@ impl ControlHook {
                     Ok(n) => n,
                     Err(e) => return Outcome::Reply(err(e.to_string())),
                 };
-                let max = u64::from(max_body_bytes).min(MAX_TEMPLATE_BODY);
-                match node.block_template(now_ms / 1000, max, payout) {
+                // the output is made once the node knows the amount, with a fresh anchor that goes back with the template
+                // so that the miner can check the output is its own; keys that make no output (not points) leave a
+                // placeholder, and the template is refused rather than handed to a miner to waste its work on
+                let anchor = tenero_carrot::output::random_anchor(&mut rand_core::OsRng);
+                let bad_keys = std::cell::Cell::new(false);
+                let payout = |amount| {
+                    tenero_wallet::coinbase_payout_to_keys(
+                        &spend_pubkey,
+                        &view_pubkey,
+                        next.height,
+                        amount,
+                        &anchor,
+                    )
+                    .unwrap_or_else(|| {
+                        bad_keys.set(true);
+                        tenero_node::Payout {
+                            onetime_address: [0; 32],
+                            view_tag: [0; 3],
+                            ephemeral_pubkey: [0; 32],
+                            anchor_enc: [0; 16],
+                        }
+                    })
+                };
+                let made = node.block_template(
+                    now_ms / 1000,
+                    max_weight.min(MAX_TEMPLATE_WEIGHT),
+                    &payout,
+                );
+                if bad_keys.get() {
+                    return Outcome::Reply(err("the address's keys are not valid points"));
+                }
+                match made {
                     Ok(block) => Response::Template(Template {
                         block,
+                        anchor,
                         height: next.height,
                         target: next.target.to_be_bytes(),
                     }),

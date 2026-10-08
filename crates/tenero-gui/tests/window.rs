@@ -10,7 +10,7 @@ use tenero_gui::backend::Backend;
 use tenero_gui::settings::Settings;
 use tenero_gui::ui::App;
 use tenero_gui::view::*;
-use tenero_wallet::{Address, Balance, EntryKind, FeeLevel, Keys, SentStatus};
+use tenero_wallet::{Address, Balance, EntryKind, FeeLevel, Network, SentStatus};
 use zeroize::Zeroizing;
 
 fn texts(shapes: &[egui::epaint::ClippedShape]) -> String {
@@ -83,7 +83,7 @@ impl Rig {
 
 fn addr(n: u8) -> String {
     // a made-up address of the right shape (the window never checks it, the wallet does)
-    format!("tni1{}", format!("{n:02x}").repeat(68))
+    format!("TENt{}", format!("{n:02x}").repeat(48))[..99].to_string()
 }
 
 fn info(syncing: bool, peers: u32) -> NodeInfo {
@@ -119,11 +119,14 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             balance: with_balances.then(|| bal(1_500_000_000 * (i as u64 + 1), 1_000_000_000)),
         })
         .collect();
-    let to = Address::from_text(&{
-        // a real address from a real key, so the history row can print it
-        let w = tenero_wallet::Wallet::from_seed(&[3; 32], 0);
-        w.address().to_text()
-    })
+    let to = Address::parse(
+        &{
+            // a real address from a real key, so the history row can print it
+            let w = tenero_wallet::Wallet::from_seed(&[3; 32], Network::Test, 0);
+            w.address().to_text()
+        },
+        Network::Test,
+    )
     .unwrap();
     let history = vec![
         HistoryRow {
@@ -460,7 +463,7 @@ fn every_screen_in_every_state_draws_and_keeps_the_owners_rules() {
                 "[{state} / {tab}] the banner is missing"
             );
             assert!(
-                text.contains("not private in Monero's sense"),
+                text.contains("UNAUDITED. Do not rely on their privacy"),
                 "[{state} / {tab}] the scheme note is missing"
             );
             // nothing that sells it, and nothing that calls it money (the one allowed use says it is NOT money)
@@ -864,7 +867,7 @@ fn the_receive_screen_shows_the_address_and_a_code_and_the_settings_screen_its_f
     rig.app.goto("Receive");
     let (t, _) = rig.frame();
     assert!(
-        t.contains(&addr(1)) && t.contains("Copy the address") && t.contains("interim format"),
+        t.contains(&addr(1)) && t.contains("Copy the address") && t.contains("Carrot address"),
         "{t}"
     );
     rig.app.goto("Settings");
@@ -1241,7 +1244,7 @@ fn the_receive_screen_makes_requests_and_the_send_screen_reads_them() {
 
     // the send screen: a request is read into the form; a bad one says what is wrong; a bare address fills only the address
     rig.app.goto("Send");
-    let to = Keys::from_seed(&[1; 32]).address();
+    let to = tenero_wallet::Wallet::from_seed(&[1; 32], Network::Test, 0).address();
     let uri = format!(
         "tenero:{}?amount=2.5&label=Rent&message=October%20rent",
         to.to_text()

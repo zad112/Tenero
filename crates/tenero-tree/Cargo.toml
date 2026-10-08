@@ -1,0 +1,33 @@
+[package]
+name = "tenero-tree"
+description = "The FCMP++ curve tree of the gamma network (experimental; the bookkeeping is unaudited, the hashing is monero-oxide's)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Its own crate so that the store (which keeps the tree) and tenero-crypto (which proves against it) can both use it.
+# The FCMP++ crates of monero-oxide, pinned as in tenero-crypto (owner-approved exception to rule 3, 2026-10-08).
+[dependencies]
+monero-fcmp-plus-plus = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+monero-fcmp-plus-plus-generators = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+full-chain-membership-proofs = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+generalized-bulletproofs = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+helioselene = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+ec-divisors = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93", features = ["ed25519"] }
+monero-ed25519 = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+ciphersuite = { version = "0.4.2", features = ["ed25519"] }
+dalek-ff-group = "0.5"
+# strict point checks (`strict_point`): already in the tree through monero-oxide (BSD-3-Clause)
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }
+
+[dev-dependencies]
+tenero-core = { path = "../tenero-core" }
+monero-primitives = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+multiexp = { version = "0.5", default-features = false, features = ["batch"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+rand_chacha = "0.3"
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true
