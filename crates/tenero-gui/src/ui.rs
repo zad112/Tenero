@@ -412,7 +412,7 @@ impl App {
                         group_digits(info.height),
                         info.peers
                     ),
-                    GREEN,
+                    if info.peers == 0 { AMBER } else { GREEN },
                 ),
             };
             ui.colored_label(col, txt);
@@ -1824,6 +1824,8 @@ impl App {
                             "State",
                             if info.syncing {
                                 "catching up".into()
+                            } else if info.peers == 0 {
+                                "no peers: cannot tell if it is up to date".into()
                             } else {
                                 "up to date".into()
                             },

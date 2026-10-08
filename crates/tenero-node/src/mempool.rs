@@ -55,6 +55,11 @@ pub enum PoolError {
     },
     /// The pool is full and this pays no better than what it would have to push out.
     PoolFull,
+    /// Its reference block is above this node's tip: it cannot be judged until the node has that block. Not a fault of
+    /// the transaction or of whoever sent it (a node that is syncing, or a block behind, sees every new transaction so).
+    ReferenceAhead {
+        reference_height: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -194,7 +199,17 @@ impl Mempool {
         if self.entries.contains_key(&id) {
             return Err(PoolError::AlreadyKnown);
         }
-        let info = validator.check_pool_tx(&tx).map_err(PoolError::Invalid)?;
+        let info = validator.check_pool_tx(&tx).map_err(|e| match e {
+            BlockError::BadReference {
+                reference_height, ..
+            } if validator
+                .next_block()
+                .is_ok_and(|next| reference_height >= next.height) =>
+            {
+                PoolError::ReferenceAhead { reference_height }
+            }
+            e => PoolError::Invalid(e),
+        })?;
         // a transaction no block could hold now is not worth keeping
         if info.weight > rules::block_limit(info.median) {
             return Err(PoolError::TooLarge {

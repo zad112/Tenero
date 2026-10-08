@@ -457,6 +457,9 @@ fn cut(s: &str) -> String {
     out
 }
 
+/// What the status says instead of "in sync" when the node has no peers.
+pub const NO_PEERS: &str = "no peers: cannot tell if it is up to date";
+
 /// The status block: a handful of lines that are redrawn in place. Colour only marks (a sync in progress, an alarm, a pause); the
 /// words alone say everything.
 pub fn render_status_block(s: &NodeStatus, t: &Theme) -> Vec<String> {
@@ -470,6 +473,8 @@ pub fn render_status_block(s: &NodeStatus, t: &Theme) -> Vec<String> {
     )));
     let sync = match &s.sync {
         Some(p) => t.yellow(&p.describe()),
+        // a node with no peers is not syncing, but it cannot know it is up to date either
+        None if s.peers_in + s.peers_out == 0 => t.yellow(NO_PEERS),
         None => t.green("in sync"),
     };
     lines.push(cut(&format!("  sync     {sync}")));
@@ -523,6 +528,7 @@ pub fn render_status_block(s: &NodeStatus, t: &Theme) -> Vec<String> {
 pub fn render_status_line(s: &NodeStatus) -> String {
     let sync = match &s.sync {
         Some(p) => p.describe(),
+        None if s.peers_in + s.peers_out == 0 => NO_PEERS.to_string(),
         None => "in sync".to_string(),
     };
     let mut line = format!(
@@ -732,6 +738,10 @@ pub enum Event {
     Synced {
         height: u64,
     },
+    /// A sync ended because every peer was gone: not "synced".
+    SyncStopped {
+        height: u64,
+    },
     AlarmBegan(String),
     AlarmEnded(String),
     MiningPaused,
@@ -769,6 +779,7 @@ impl Event {
             | Event::AlarmBegan(_)
             | Event::Lost(_)
             | Event::Warn(_)
+            | Event::SyncStopped { .. }
             | Event::MiningPaused => Severity::Warn,
             Event::BlockRefused { .. } | Event::Error { .. } => Severity::Error,
             _ => Severity::Info,
@@ -810,6 +821,13 @@ pub fn render_event(e: &Event, t: &Theme) -> Vec<String> {
             "synced: the chain is up to date at height {}",
             group_digits(*height)
         ))],
+        Event::SyncStopped { height } => vec![
+            t.yellow(&format!(
+                "the sync stopped at height {}: no peers are left, so the chain may NOT be up to date",
+                group_digits(*height)
+            )),
+            "  what to do: wait for the node to find peers again; if it does not, check the log for `disconnecting peer` and the network".to_string(),
+        ],
         Event::AlarmBegan(text) => vec![t.red(&format!("WARNING: {text}"))],
         Event::AlarmEnded(kind) => vec![format!("alarm ended: {kind}")],
         Event::MiningPaused => vec![t.yellow("mining paused: the node is syncing")],

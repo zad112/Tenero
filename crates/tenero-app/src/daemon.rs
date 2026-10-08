@@ -620,7 +620,14 @@ impl Hooks for Maintenance {
                 (false, Some((t, h0))) => {
                     self.sync_began = None;
                     if let Ok((h, _)) = engine.node().store().tip() {
-                        if now.duration_since(t) >= Duration::from_secs(5)
+                        // a sync that ended because every peer was gone did not reach the network's tip
+                        if engine.peer_count() == 0 {
+                            self.log.log_event(
+                                Level::Warn,
+                                &format!("the sync stopped at height {h}: no peers are left"),
+                                UiEvent::SyncStopped { height: h },
+                            );
+                        } else if now.duration_since(t) >= Duration::from_secs(5)
                             || h.saturating_sub(h0) >= 10
                         {
                             self.log.log_event(
@@ -655,7 +662,13 @@ impl Hooks for Maintenance {
                     engine.stats.bans,
                     self.counters.bytes_in.load(Ordering::Relaxed),
                     self.counters.bytes_out.load(Ordering::Relaxed),
-                    if engine.is_syncing() { "syncing" } else { "in sync" },
+                    if engine.is_syncing() {
+                        "syncing"
+                    } else if engine.peer_count() == 0 {
+                        crate::ui::NO_PEERS
+                    } else {
+                        "in sync"
+                    },
                 ));
             }
         }

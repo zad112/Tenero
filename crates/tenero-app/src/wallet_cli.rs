@@ -698,7 +698,13 @@ pub fn run(args: &[String], io: &mut dyn Io) -> Result<(), String> {
                     String::new()
                 }
             ));
-            io.say(if i.syncing { "syncing" } else { "in sync" });
+            io.say(if i.syncing {
+                "syncing"
+            } else if i.peers == 0 {
+                crate::ui::NO_PEERS
+            } else {
+                "in sync"
+            });
             Ok(())
         }
         other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
