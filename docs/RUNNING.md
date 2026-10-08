@@ -1,8 +1,9 @@
-# Running a node and a wallet (M8.7)
+# Running a node and a wallet (0.3.0)
 
-**Experimental and unaudited. There is no launched Tenero network, and nothing on the networks below has any value.**
-Do not put anything you care about in a wallet made by these programs. The wallet uses the **interim output scheme, which
-is not Carrot** (`crates/tenero-wallet/src/interim.rs` lists what it lacks).
+**Experimental and unaudited. Every Tenero network is a test network, and nothing on the networks below has any value.**
+Do not put anything you care about in a wallet made by these programs. The wallet uses **Carrot and FCMP++**, through
+Monero's FCMP++ libraries (only partly audited) and a Carrot written in Rust by this project (not audited); its message
+signatures and payment proofs are **our own construction, reviewed by nobody** (`docs/WALLET_PROOFS.md`).
 
 Build (Windows, PowerShell; `cargo` is in `$HOME\.cargo\bin`):
 
@@ -14,12 +15,14 @@ This makes `target\release\tenerod.exe` (the node) and `target\release\tenero-wa
 
 ## The three networks
 
+All three use the version 3 rules from block 0: FCMP++ spends, Carrot outputs, block weight (`docs/CONSENSUS_V2.md` section 15). **`beta` and `alpha` are not run by the
+0.3.0 programs**: keep the 0.2.0 programs for them; nothing moves between networks.
+
 | name | proof of work | what it is for |
 |---|---|---|
-| `test` | SHA-256, mined by a CPU in an instant | trying the programs. Rings of 2 and a maturity of 1 block, so a payment works after a few blocks. Nodes on one machine need different loopback addresses (`127.0.0.1`, `127.0.0.2`, ...). |
-| `dev` | the real matmulhash (4.3 GiB dataset per epoch), starting difficulty a placeholder (one attempt in eight meets the target) | the real proof of work end to end. The real rings (16) and maturities (10 and 60 blocks). **Not a launched network:** its genesis is made from a label, and `docs/M8_PLAN.md` section 7 lists what must be true before one exists. |
-| `beta` | the real matmulhash, the same real starting difficulty as `alpha` (2^237), epochs of 100 blocks | **the release network of 0.2.0-beta.1**: a fresh genesis ("tenero beta network 1", chain id `577cc63d...641b`) with **no premine**, made after **the hard fork of Beta.1**: a transaction is limited by its size (75,000 bytes), not by a count of inputs (`docs/CONSENSUS_V2.md` 6.2). **Still a test network: unaudited, nothing on it has value, and it can restart.** The default control port is 38342 and the suggested peer port 38343 (so that a beta node and an alpha node can run on one machine). **Two seeds are built in** (from `v0.2.0-beta.3`; `v0.2.0-beta.2` and earlier have only the first), the author's servers `195.26.244.245:38343` and `194.238.27.60:38343` (since 2026-10-07): two machines, one operator, so the same caveat as `alpha`'s. |
-| `alpha` | the real matmulhash, **a real starting difficulty (a target of 2^237: about 524,000 attempts a block)**, epochs of 100 blocks | **the release network** of the first test release (M11.2): a fresh genesis ("tenero alpha network 1", chain id `430ca700...69d3`) with **no premine** (the genesis creates no output; every coin, the owner's included, comes from a mined block), the new timestamp rule, the real rings and maturities. **Still a test network: unaudited, nothing on it has value, and it can restart** (a restart for Carrot would be "alpha network 2"). **Kept for a short time after Beta.1, so that people can move over:** this version judges its transactions by the limits of alpha.4 (at most 32 inputs, a proof of at most 32 KiB), as the older nodes still on it do, so the two agree. The default control port is 38332 (test 18332, dev 28332), and private peer addresses are refused by default. |
+| `gamma` | the real matmulhash (the gathered attempt from block 0), **a real starting difficulty (a target of 2^237: about 524,000 attempts a block)**, epochs of 100 blocks | **the release network of 0.3.0-gamma.1**: a fresh genesis ("tenero gamma network 1", chain id `bd366b37...28c4`) with **no premine**. Addresses start `TENg`. **Still a test network: unaudited, nothing on it has value, and it can restart.** The default control port is 38352 and the peer port 38353. **Two seeds are built in**, the author's servers `195.26.244.245:38353` and `194.238.27.60:38353`: two machines, one operator. Private peer addresses are refused by default. |
+| `dev` | the real matmulhash (4.3 GiB dataset per epoch), starting difficulty a placeholder (one attempt in eight meets the target) | the real proof of work end to end, with `gamma`'s rules and maturities (10 and 60 blocks). Addresses start `TENd`. **Not a launched network:** its genesis is made from a label. |
+| `test` | SHA-256, mined by a CPU in an instant, at a fixed difficulty | trying the programs, with `gamma`'s rules (a payment works once a reward has matured, 60 blocks: about 5 minutes at the default pace). Addresses start `TENt`. Nodes on one machine need different loopback addresses (`127.0.0.1`, `127.0.0.2`, ...). |
 
 You must name a network; there is no default, so nobody runs the wrong one by forgetting a setting. A node and a peer on different networks refuse each other at the handshake (the chain ids differ).
 
@@ -32,7 +35,7 @@ A try-it-out test network on one machine, mining a block every 5 seconds to a wa
 ```powershell
 # a wallet first (see below), then:
 .\target\release\tenerod.exe --data $HOME\tenero-test\n1 --network test --listen 127.0.0.1:18331 `
-    --mine sha256 --mine_to <your tni1... address>
+    --mine sha256 --mine_to <your TENt... address>
 ```
 
 A second node that finds the first (a different loopback address, its own data directory and control port):
@@ -49,21 +52,21 @@ parse is an error that names the setting; nothing silently falls back to a defau
 | setting | meaning | default |
 |---|---|---|
 | `data` | the node's directory: the chain, the node key, the saved peers, the side-branch pool, the log (if any) and the cookie | required |
-| `network` | `test`, `dev`, `beta` or `alpha` | required |
+| `network` | `gamma`, `dev` or `test` | required |
 | `listen` | the peer-to-peer address to accept connections on | none (dial out only) |
 | `advertise` | the `ip:port` OTHER nodes can reach this one at; it is told to each peer once (a peer takes it only if the IP is the one it connected from, except on a private network). **`0.0.0.0:PORT` means "the address you see me at, on this port"**: no IP to know or keep up to date (the wallet app's "Let other nodes connect to me" uses it). Needs `listen`. This is how a seed learns where its peers are, so what to tell the next node. **Set it only if the port is reachable from outside** (a server, or a forwarded port); behind a router that does not forward it, leave it unset | none (nobody is told) |
 | `seed` | an `ip:port` to start from (repeat it); on the command line, `--seed` replaces the file's seeds | none |
-| `no_builtin_seeds` | `yes` ignores the seed addresses built into the program for this network (`alpha` and `beta` each have one, the author's servers; `test` and `dev` never do). A node starts from the built-in seeds **and** every `seed` you give; use this for a private network of your own | no |
+| `no_builtin_seeds` | `yes` ignores the seed addresses built into the program for this network (`gamma` has two, the author's servers; `test` and `dev` never do). A node starts from the built-in seeds **and** every `seed` you give; use this for a private network of your own | no |
 | `trusted_peer` | an `ip:port` you got **out of band** (from someone you trust, not from the network) to always connect to: dialled first, and again whenever it is not connected (at most every 30 s), exempt from the per-network-group limit, never passed on to other nodes; repeat it (up to 16); on the command line, `--trusted_peer` replaces the file's. It is still checked like any peer and still banned if it misbehaves. This is the one defence against an eclipse that the attacker cannot influence | none |
 | `peers` | how many peers to aim for | 50 |
 | `max_inbound` | the most inbound peers; **0 means no limit set by the program** (your machine's own limits and the per-connection budgets still apply: on Linux raise the open-files limit if you expect many, `LimitNOFILE` in a systemd unit). Set a number if you want a limit. A full node (one with a limit that is reached) drops an inbound peer that has done nothing for 10 minutes to make room for a newcomer | 0 (no limit; it was 64 until 2026-10-05) |
-| `allow_private_peers` | dial and accept addresses such as 127.0.0.2 and 10.x.x.x | yes on `test`, no on `dev` and `alpha` |
-| `miner_listen`, `miner_key`, `miner_max`, `miner_rate` | the **miner service** (`docs/REMOTE_MINING_PLAN.md`): `miner_listen` is an `ip:port` (the port the plan proposes is 38334) where **miners on other computers** may ask this node for a block and hand one back; it answers only `info`, `block_template` and `submit_block`, over an encrypted channel. `miner_key` is 64 hexadecimal digits (32 random bytes, which you make and give to the miners): **required** with `miner_listen` in this first version, so only miners you give the key to can connect. `miner_max` is the most miners at once and `miner_rate` the most `info` and `block_template` requests one address may make in a minute (handing in a found block has a limit of its own, 30 a minute, so a miner told to slow down can still deliver a block). A miner that is told to slow down keeps its connection and its job, waits five seconds and asks again. Off unless `miner_listen` is set. **Do not run it on a node that matters until the limits have been measured: they are not.** | off; 8; 120 |
-| `control` | where the control interface listens (**must be a loopback address**) | `127.0.0.1:18332` (`test`), `127.0.0.1:28332` (`dev`), `127.0.0.1:38332` (`alpha`), `127.0.0.1:38342` (`beta`) |
-| `prune_keep` | `0` keeps every block in full (an **archive** node); `N` (at least 1000; the design proposes 5,500) keeps the proofs of the last `N` blocks only (a **pruned** node). Older blocks are kept in pruned form; a node syncing from scratch will not use a pruned peer that has already thrown away what it needs | 0 |
+| `allow_private_peers` | dial and accept addresses such as 127.0.0.2 and 10.x.x.x | yes on `test`, no on `dev` and `gamma` |
+| `miner_listen`, `miner_key`, `miner_max`, `miner_rate` | the **miner service** (`docs/REMOTE_MINING_PLAN.md`): `miner_listen` is an `ip:port` (the port the plan proposes is 38334) where **miners on other computers** may ask this node for a block and hand one back; it answers only `info`, `block_template`, `submit_block` and `submit_header`, over an encrypted channel (a template is compact: the header, the reward output and the transactions' ids, so a remote miner mines blocks up to the ceiling with small messages). `miner_key` is 64 hexadecimal digits (32 random bytes, which you make and give to the miners): **required** with `miner_listen` in this first version, so only miners you give the key to can connect. `miner_max` is the most miners at once and `miner_rate` the most `info` and `block_template` requests one address may make in a minute (handing in a found block has a limit of its own, 30 a minute, so a miner told to slow down can still deliver a block). A miner that is told to slow down keeps its connection and its job, waits five seconds and asks again. Off unless `miner_listen` is set. **Do not run it on a node that matters until the limits have been measured: they are not.** | off; 8; 120 |
+| `control` | where the control interface listens (**must be a loopback address**) | `127.0.0.1:38352` (`gamma`), `127.0.0.1:28332` (`dev`), `127.0.0.1:18332` (`test`) |
+| `prune_keep` | `0` keeps every block in full (an **archive** node: seeds and a block explorer's node should be one); `N` (at least 1000) keeps the proofs of the last `N` blocks only (a **pruned** node). Older blocks are kept in pruned form; a node syncing from scratch will not use a pruned peer that has already thrown away what it needs | 5500 (**pruned**: since 0.3.0) |
 | `assume_valid` | `height:blockid` (64 hexadecimal digits): trust that blocks up to there have valid proofs and skip checking them while syncing (`docs/M8_PLAN.md`, M8.3: what this trusts is written there). **Off unless you set it.** | off |
-| `mine` | `off`, `sha256` (the test network), `cpu` or `gpu` (the `dev`, `beta` and `alpha` networks). Mining runs **inside the node's process** and pays `mine_to` | off |
-| `mine_to` | the address (`tni1...`) block rewards are paid to; required when mining | |
+| `mine` | `off`, `sha256` (the test network), `cpu` or `gpu` (the `gamma` and `dev` networks). Mining runs **inside the node's process** and pays `mine_to` | off |
+| `mine_to` | the address block rewards are paid to (a main address of the node's network: `TENg...`, `TENd...` or `TENt...`); required when mining | |
 | `mine_pace` | seconds to wait after a block is found before starting the next | 5 on `test`, 0 on `dev` |
 | `mine_cores` | CPU threads for `mine = cpu` (1 to 6) | 6 |
 | `gpu_device`, `gpu_batch` | which GPU, and attempts per batch (`docs/BENCHMARKS.md`); `gpu_batch = auto` measures 128, 256 and 512 for 4 s each at start-up (about 20 s) and uses the fastest (on the one card measured the three were within 1 to 2 %, which is inside the run-to-run noise) | 0, 128 |
@@ -115,12 +118,12 @@ A node cut off by an attacker who feeds it a valid chain slowly cannot tell from
 
 **Stopping:** Ctrl-C (or closing the window) shuts the node down cleanly: it closes its connections, saves the peers and
 the side-branch pool, and prints `stopped at height H, tip ID`. A second Ctrl-C ends it at once. From another window:
-`tenerod stop --data DIR` (and `tenerod status --data DIR`); **on `dev` and `alpha` add `--control 127.0.0.1:PORT` (28332 and 38332), because these commands assume the `test` network's port 18332** (measured 2026-10-04: without it they say "cannot reach the node at 127.0.0.1:18332"). If the node is killed instead, what it has saved is at most
+`tenerod stop --data DIR` (and `tenerod status --data DIR`); **on `gamma` and `dev` add `--control 127.0.0.1:PORT` (38352 and 28332), because these commands assume the `test` network's port 18332** (measured 2026-10-04: without it they say "cannot reach the node at 127.0.0.1:18332"). If the node is killed instead, what it has saved is at most
 five minutes old (the chain itself is written as each block arrives).
 
 **Which build is this:** `tenerod --version` prints the version and the source commit (`-dirty` if the tree had changes); a bug report or an emergency starts with it. The node's log begins with the same line.
 
-**Emergency rewind (`docs/EMERGENCY_PLAN.md`):** with the node **stopped**, `tenerod rewind --data DIR --network test|dev --to HEIGHT` takes the newest blocks
+**Emergency rewind (`docs/EMERGENCY_PLAN.md`):** with the node **stopped**, `tenerod rewind --data DIR --network gamma|dev|test --to HEIGHT` takes the newest blocks
 off its chain, down to HEIGHT. Without `--yes` it only says what it would remove and changes nothing; with `--yes` it first writes the removed blocks'
 ids to `rewind-<time>.txt` in the data directory, sets the side-branch pool aside (`pool.dat.before-rewind`), and then removes the blocks one at a time
 (each one a whole database transaction, so a stop in the middle leaves a shorter chain that is intact). **Make a copy of the data directory first** (the
@@ -131,12 +134,15 @@ has them: the plan is a build that refuses the bad block, then every node rewind
 network key; not a wallet), `peers.dat` (the address book, the ban list and the **anchor peers**: up to two long-standing outbound peers that the node dials first after a restart), `pool.dat`, `control.cookie` (new at each start). The wallet's keys are **not**
 here; they are in the wallet file you choose.
 
-**Memory and disk:** on `dev` and `alpha` a node's proof-of-work check holds **one dataset at a time, 4 GiB** (4.01 GiB measured as the whole check process, 2026-10-04, across three epoch
+**Memory and disk:** on `gamma` and `dev` a node's proof-of-work check holds **one dataset at a time, 4 GiB** (4.01 GiB measured as the whole check process, 2026-10-04, across three epoch
 boundaries; a node also has the chain database and the operating system, so plan on about 4.3 GiB free and stay well inside the owner's limit of 8 GB). When the first block of a new epoch arrives the old
 dataset is freed and the new one built, which makes the node **wait about 3 seconds** (measured: 2.8 to 3.0 s with 6 threads) once every 100 blocks, and again if a reorganisation goes back across an epoch boundary;
 a node syncing from scratch pays this at every boundary it crosses. **What it replaced:** the node used to keep the last two epochs (and build the next one ahead of time), which is **8.0 GiB** of dataset for most of
 every epoch after the first (measured; the earlier text here said "briefly", which was wrong). **The CPU miner may still hold two** (and prefetch); **the GPU miner holds one 4 GiB dataset, in video memory** (about 5.0 GiB committed for the process on Windows, measured, with 0.36 GiB of it in use as RAM). `mine = cpu` or `mine = gpu` inside the node adds the miner's own
-memory on top of the node's: the 8 GB limit is for the node alone. The `test` network needs almost nothing.
+memory on top of the node's: the 8 GB limit is for the node alone. The `test` network needs almost nothing. **Disk:** a pruned node (the default) keeps
+every block's prefix and the proofs of the last 5,500 blocks; an archive node keeps everything (FCMP++ proofs make a full block up to about 3.5 times bigger than on
+`beta`; estimated from the proof sizes, not measured on a network). **Checking a proof** (FCMP++, measured on one Ryzen 9 5900X thread): about 20 ms an input, and the
+node checks the proofs of a block's transactions together.
 
 **Moving the node's data (the chain) to another folder or drive.** The chain grows with every block, so you may want it on a bigger drive. **In the wallet app:** Settings, "Move the node's data": stop the node and the miner, type a new or empty folder (a full
 path such as `D:\TeneroData`), press the button. It **copies** the data, then reads every file back and compares it with the original, and only then uses the new place; a progress bar shows how far it is and "Cancel the move" stops it (what it
@@ -147,28 +153,39 @@ with the node stopped:** copy the folder, make the copy private (`icacls "NEW" /
 ## The wallet: `tenero-wallet`
 
 ```powershell
-.\target\release\tenero-wallet.exe create  --wallet $HOME\me.wallet --data $HOME\tenero-test\n1
+.\target\release\tenero-wallet.exe create  --wallet $HOME\me.wallet --network test --data $HOME\tenero-test\n1
 .\target\release\tenero-wallet.exe address --wallet $HOME\me.wallet
 .\target\release\tenero-wallet.exe balance --wallet $HOME\me.wallet --data $HOME\tenero-test\n1
-.\target\release\tenero-wallet.exe pay     --wallet $HOME\me.wallet --data $HOME\tenero-test\n1 --to tni1... --amount 1.5
+.\target\release\tenero-wallet.exe pay     --wallet $HOME\me.wallet --data $HOME\tenero-test\n1 --to TENt... --amount 1.5
 .\target\release\tenero-wallet.exe pay-many --wallet $HOME\me.wallet --data $HOME\tenero-test\n1 --file payments.txt
 .\target\release\tenero-wallet.exe sweep   --wallet $HOME\me.wallet --data $HOME\tenero-test\n1 --yes
 .\target\release\tenero-wallet.exe combine --wallet $HOME\me.wallet --data $HOME\tenero-test\n1 --pieces 10 --yes
 .\target\release\tenero-wallet.exe seed    --wallet $HOME\me.wallet
-.\target\release\tenero-wallet.exe restore --wallet $HOME\again.wallet
-.\target\release\tenero-wallet.exe info    --data $HOME\tenero-test\n1
+.\target\release\tenero-wallet.exe restore --wallet $HOME\again.wallet --network test
+.\target\release\tenero-wallet.exe integrated-address --wallet $HOME\me.wallet
+.\target\release\tenero-wallet.exe view-key --wallet $HOME\me.wallet --tier all
+.\target\release\tenero-wallet.exe restore-view --wallet $HOME\watch.wallet --network test
+.\target\release\tenero-wallet.exe info    --data $HOME\tenero-test\n1 --network test
 ```
 
-* **Many recipients, many pieces** (Beta.1). Your balance is made of separate **pieces**, one for each payment you received (each block reward is one piece); the amount of a piece is in TNR. A transaction pays at most **15 recipients** (16 outputs, one of them your change) and may be at most **75,000 bytes**, which is about **95 pieces** spent
-  (each piece costs about 772 bytes). `pay` and `pay-many` split what does not fit into **several transactions that spend different coins**, so all of them can be sent at once; a payment
+* **A wallet belongs to one network** (`--network`, `gamma` unless you say otherwise): it takes only that network's addresses (`TENg...`, `TENd...`, `TENt...`) and refuses a
+  node of another network. Without `--control`, it talks to its network's default control port.
+* **Integrated addresses.** `integrated-address` prints your main address with a payment ID inside (a random one, or `--payment-id` with 16 hexadecimal digits), for someone who must tell your payments apart; the wallet app's History tab shows the ID of each payment made to one. A subaddress is the more private way to tell payers apart.
+* **View-only wallets.** `view-key` prints a wallet's view key (`TENview1...`, **a secret**: whoever has it sees what it shows). `--tier all` (the default) sees incoming and
+  outgoing payments and the true balance; `--tier received` sees incoming payments only, so its `balance` is what was RECEIVED, not a balance. `restore-view` makes a
+  view-only wallet from one (it asks for the key at a hidden prompt). A view-only wallet cannot spend or sign; it can prove a payment it received (unsigned). The wallet app
+  shows a view key too (Settings, "Show a view key…"), but **opens view-only wallets only here**, in the command line.
+
+* **Many recipients, many pieces.** Your balance is made of separate **pieces**, one for each payment you received (each block reward is one piece); the amount of a piece is in TNR. A transaction pays at most **15 recipients** (16 outputs, one of them your change) and may be at most **75,000 bytes**, which is about **48 to 126 pieces** spent
+  (depending on the depth of the curve tree). `pay` and `pay-many` split what does not fit into **several transactions that spend different coins**, so all of them can be sent at once; a payment
   that needs more pieces than one transaction holds is paid in parts (the person paid receives several amounts that add up). `pay-many` reads `ADDRESS AMOUNT` a line (blank lines and lines
   starting with `#` are skipped; a bad line refuses the whole file, naming the line). **The change of a transaction cannot be spent for 10 blocks**, so when the pieces that were free at the
   start run out before everyone is paid, the wallet sends what it can and says how many payments are left; `--unsent-file FILE` writes them in the same format, to be run again later.
   `sweep` combines every piece worth more than the fee it adds, as many to a transaction as fit, into your own address (or `--to ADDRESS`); `combine --pieces N` makes the N smallest into one.
   **Both only show a preview until `--yes`.** The new piece can be spent after 10 blocks. Combining costs a fee and puts a transaction on the chain; it is not private to do it in a hurry.
-  **A payment proof for a transaction that pays several recipients covers the first recipient only.**
+  **A payment proof covers one output: one recipient of a transaction.**
 * `--data` is **the node's** data directory: the wallet reads the node's cookie from it and talks to the node's control
-  interface. `--control IP:PORT` is needed only if the node does not use the default port of the test network.
+  interface. `--control IP:PORT` is needed only if the node does not use its network's default port.
 * `create` asks for a passphrase twice (at least 8 characters, hidden as you type), makes a seed, writes the encrypted
   wallet file, and **shows the seed once**: write it down on paper. There is no word-list backup yet; it is the raw seed
   (64 hexadecimal digits). `seed` shows it again after the passphrase; `restore` rebuilds a wallet from it (it asks for
@@ -177,8 +194,8 @@ with the node stopped:** copy the folder, make the copy private (`icacls "NEW" /
 * A new wallet starts scanning at the node's tip when it is made, so it does not read old blocks that cannot hold its
   coins. `--birth HEIGHT` sets it by hand (use it when restoring and you know the first block that paid you).
 * `balance` scans what is new and saves the wallet file; it shows total, spendable, immature (waiting for maturity) and
-  reserved (promised to a payment that a block has not yet taken in). `pay` builds the payment with real ring signatures
-  and range proofs, checks it itself, hands it to the node, and saves the reservation. **A payment counts once a block
+  reserved (promised to a payment that a block has not yet taken in). `pay` builds the payment with a real FCMP++ membership
+  proof (the coin is one of every output on the chain) and range proofs, checks it itself, hands it to the node, and saves the reservation. **A payment counts once a block
   takes it in**; until then the node holds it in its pool.
 * Amounts are coins with up to 8 decimals (`1.5`, `0.00000001`); anything else (a sign, an exponent, a ninth decimal, a
   number too large) is an error, never a different amount.
@@ -197,19 +214,19 @@ can be started, stopped and restarted without touching the node, a crash of one 
 no node settings.
 
 ```powershell
-.\target\release\tenero-miner.exe --data $HOME\tenero-test\n1 --address tni1... --backend sha256              # the test network
-.\target\release\tenero-miner.exe --data $HOME\tenero-dev\n1 --control 127.0.0.1:28332 --address tni1... --backend gpu   # the dev network
+.\target\release\tenero-miner.exe --data $HOME\tenero-test\n1 --address TENt... --backend sha256              # the test network
+.\target\release\tenero-miner.exe --data $HOME\tenero-gamma --control 127.0.0.1:38352 --address TENg... --backend gpu   # the gamma network
 ```
 
 * `--data` is the node's data directory (the miner reads the node's cookie from it); `--control` is the node's control address
   (the test network's default, 127.0.0.1:18332, otherwise); `--address` is where block rewards go; `--backend` is `sha256`
-  (the test network), or `cpu` or `gpu` (the dev network's real proof of work), and a backend that does not fit the node's
+  (the test network), or `cpu` or `gpu` (the real proof of work of `gamma` and `dev`), and a backend that does not fit the node's
   network is refused with a message. `--cores`, `--gpu-device`, `--gpu-batch`, `--pace`, `--log-level`, `--log-file` and
   `--status-every` work as the node's settings of the same names; `tenero-miner help` lists them.
 * **A node on another computer:** `--node HOST:PORT --key HEX` (instead of `--data` and `--control`) connects to that node's miner
   service (`miner_listen` and `miner_key` above) over an encrypted channel. The miner then **checks every block it is given**: it
-  refuses one whose coinbase does not pay `--address`, whose header does not match its body, or that is for another height or
-  tip, because a node you do not run could otherwise put its own address in the reward. It cannot check that the difficulty is
+  refuses one whose reward output does not pay `--address` (it rebuilds the Carrot output from the address and the template's anchor), whose header does not match the
+  transactions' ids, or that is for another height or tip, because a node you do not run could otherwise put its own address in the reward. It cannot check that the difficulty is
   right or that the node's chain is the real one: a bad node can waste your hashing (see `docs/REMOTE_MINING_PLAN.md`). It asks
   once a second, so the node's default of 120 requests a minute is enough.
 * **The node checks every block completely.** A found block goes to the node as a local block, so the node's own
@@ -219,13 +236,14 @@ no node settings.
   **carries on if the node restarts**: it reconnects (waiting for the node's new cookie) and starts again. Start it before or
   after the node.
 * **Memory:** with `--backend cpu` the miner builds its own 4.3 GiB dataset, as the node's check does, so the node and the
-  miner together need about 9 GiB on the dev network, or more: the miner keeps the last two epochs. `--backend gpu` keeps its datasets in video memory instead.
+  miner together need about 9 GiB on `gamma` or `dev`, or more: the miner keeps the last two epochs. `--backend gpu` keeps its datasets in video memory instead.
 * Stop it with Ctrl-C (it prints how many blocks it found and what became of them).
 
 ### Mining for a pool: `--pool` (no node needed)
 
 ```powershell
-.\target\release\tenero-miner.exe --pool pool.example:38335 --pool-key 64HEXDIGITS --network beta --address tni1... --backend gpu
+.\target\release\tenero-miner.exe --pool default --network gamma --address TENg... --backend gpu
+.\target\release\tenero-miner.exe --pool pool.example:38335 --pool-key 64HEXDIGITS --network gamma --address TENg... --backend gpu
 ```
 
 A miner that works for a **pool** needs **no node at all**: it connects to the pool over an encrypted channel, is given block headers to search in its own slice of the
@@ -237,7 +255,7 @@ nothing in the protocol or the chain makes a pool pay.** The program says so eve
   by itself. `--network NET` says which network the pool must serve (a pool of another is refused); `--worker NAME` is a name for this computer (default: its name).
 * **The pool's key is pinned.** `--pool-key` is the pool's public key (64 hexadecimal digits, from the pool's operator, by a way an attacker cannot also change). A pool that
   proves another key is refused before anything is sent. `--pool-unpinned` goes without (a person between you and the pool would not be noticed). `--pool default` is the pool
-  built into the program for `--network`: **one, the author's test pool on `beta`** (`195.26.244.245:38335`, its key built in and pinned), none for the other networks (it says so). It is one computer run by one
+  built into the program for `--network`: **one, the author's test pool on `gamma`** (`195.26.244.245:38335`, its key `4eb53ae8...770a` built in and pinned), none for the other networks (it says so). It is one computer run by one
   person, and it keeps the block rewards.
 * A share is checked before it is sent (it must meet the share target); the pool checks every one again. The status shows shares, not blocks: handed in, accepted, too late, refused.
 * The app does the same from the **Mining tab**: "On a pool" (no node needed) or "Alone, on my own node".
@@ -257,16 +275,17 @@ cargo build --release -p tenero-gui -p tenero-app --bins      # the app and the 
 * **The wallet opens first; the node is started from it** (Node tab). No terminal window opens: the node and the miner run hidden and write what they print to `node-output.txt` and `miner-output.txt` in the app folder (the Node and Mining tabs show the last lines).
 * **Closing the window stops the miner and a node this window started** (cleanly: it waits up to a minute for the node to finish writing, then ends its own handle to it). A node it only found already running is left running. The app never stops a process it did not start itself and never looks one up by name.
 * **First run:** create a wallet (a password, or none after a warning), write down the **24 words**, and type three of them back; or restore from 24 words. The words are the wallet; the password only locks the file on this computer. A password can be changed later; the words are shown again only after the password is typed again, and are never put on the clipboard.
-* **Several wallets (the owner's request, 2026-10-03):** each is its own file `NAME.twl` in the wallets folder (`wallets-test` / `wallets-dev` under the app folder), with its own seed, password and accounts. "Lock / switch wallet" (top right) goes back to the list; pick one, type its password. "Create another wallet" and "Restore another wallet from 24 words" ask for a name (letters, digits, spaces, - and _; no clash with an existing name, case aside). A wallet file of the first versions (`wallet-<network>.twl` in the app folder) is listed too and stays where it is. Nothing ever overwrites another wallet's file. The selected wallet is remembered.
-* **Payment requests (Receive tab):** a request is a link `tenero:<address>?amount=1.5&label=Rent&message=...` and a QR code of it, kept in the wallet file so it can be shown again. In Send, "Paste a payment request or an address" fills in the address and the amount and carries the label to the confirmation screen and the history ("for Rent"). A link with anything the wallet does not understand is refused. **A request is not an invoice and is not marked paid** (the interim scheme cannot tell which payment answered it).
+* **Several wallets (the owner's request, 2026-10-03):** each is its own file `NAME.twl` in the wallets folder (`wallets-gamma`, `wallets-dev` or `wallets-test` under the app folder), with its own seed, password and accounts. "Lock / switch wallet" (top right) goes back to the list; pick one, type its password. "Create another wallet" and "Restore another wallet from 24 words" ask for a name (letters, digits, spaces, - and _; no clash with an existing name, case aside). A wallet file of the first versions (`wallet-<network>.twl` in the app folder) is listed too and stays where it is. Nothing ever overwrites another wallet's file. The selected wallet is remembered.
+* **Payment requests (Receive tab):** a request is a link `tenero:<address>?amount=1.5&label=Rent&message=...` and a QR code of it, kept in the wallet file so it can be shown again. In Send, "Paste a payment request or an address" fills in the address and the amount and carries the label to the confirmation screen and the history ("for Rent"). A link with anything the wallet does not understand is refused. **A request is not an invoice and is not marked paid.**
 * **The desktop shortcut and the icon:** the window and taskbar icon is the circular logo. `tenero-wallet-gui.exe --app-dir FOLDER` opens a particular app folder (what a shortcut uses). `assets/tenero.ico` is the same logo for shortcuts (made by `python tools/make_icons.py`). Since M11.3 the icon (and the version information) is also compiled into `tenero-wallet-gui.exe` itself (`crates/tenero-gui/build.rs`, `tenero.rc`; Windows only).
 * **Accounts:** several per wallet, each with its own address and balance, all from the same 24 words. A payment comes from one account. Restoring finds the accounts that were used (it stops after 3 unused ones in a row; add a later one by hand). Account names and the record of payments *sent* are kept only in the wallet file.
 * **Send:** an address, an amount, and one of three fee levels shown with their price: **Low** (1.25 times the minimum fee), **Normal** (2 times), **High** (5 times). A higher fee only buys a better place when the pool is full. A confirmation screen shows everything before anything is sent.
 * **Receive:** the address, a Copy button and a QR code. **History:** what was received, mined and sent, and where each sent payment stands (waiting, taken in, dropped).
-* **Sign, verify and prove (Prove tab, and buttons on History):** sign a message with an account; verify a signature (needs only the address, the message and the signature: no wallet, no node); make a payment proof for a payment you sent ("Prove payment") or an output you received ("Prove receipt"); check a proof against the node (no wallet needed); or check a **transaction key and an address** (like Monero's check_tx_key: the node's chain is read from the block you give, up to 50,000 blocks, until the output that key made is found, so give a block at or before the payment). "Show transaction key" shows the secret of a sent payment only when you click it, in its own window, and never copies it by itself. **Unaudited**, and a proof shows the amount and the address to whoever you give it to and nothing about who sent it (`docs/WALLET_PROOFS.md`). A payment sent by an older wallet has no key kept and cannot be proved by its sender.
+* **Sign, verify and prove (Prove tab, and buttons on History):** sign a message with an account; verify a signature (needs only the address, the message and the signature: no wallet, no node); make a payment proof for a payment you sent ("Prove payment") or an output you received ("Prove receipt", signed by the receiving address); check a proof against the node (no wallet needed); or check a **payment key and an address** (the payment's 32-hex-digit anchor: the node's chain is read from the block you give, up to 50,000 blocks, until the output it made is found, so give a block at or before the payment). "Show payment key" shows the secret of a sent payment only when you click it, in its own window, and never copies it by itself. **Our own construction, reviewed by nobody** (Monero and the Carrot specification define none yet), and a proof shows the amount and the address to whoever you give it to and nothing about who sent it (`docs/WALLET_PROOFS.md`).
+* **View key (Settings, "Show a view key…"):** after the password again, an account's view key, view-all or view-received, for a view-only wallet made with `tenero-wallet restore-view`. The app itself does not open view-only wallets.
 * **Mining:** off until you press Start; says what it uses (the GPU at full load, or CPU cores); shows the rate over 10 s, 60 s, 15 min and the run, the card's temperature, power and clocks, and the blocks found. It stops when you lock the wallet or stop the node.
 * **A balance is never shown as final** while the wallet is reading the chain or no node is running (without a node there is no number at all).
-* **Settings** are in `settings.conf` in the app folder (`%LOCALAPPDATA%\Tenero`, or `TENERO_APP_DIR`): no secrets in it. One node folder and one wallet file per network.
+* **Settings** are in `settings-v3.conf` in the app folder (0.2.0's `settings.conf` is left alone for the 0.2.0 app) (`%LOCALAPPDATA%\Tenero`, or `TENERO_APP_DIR`): no secrets in it. One node folder and one wallet file per network; the app runs `gamma` unless told otherwise, with a pruned node.
 * **What is not built yet:** a payment *request* with a label, exporting the history, a transaction detail view, and a wallet-file folder permission warning (the block explorer is a program of its own: below). The window has been drawn and read in automated tests (all screens, all states) but **how it looks and feels is checked by hand**.
 
 ## The block explorer: `tenero-explorer`
@@ -310,7 +329,8 @@ minutes from a scheduler to build that record. On the test network (`--private y
 protection is a mostly-honest list of independent operators, and a program cannot check who runs a seed. It is one moment's look at a seed unless
 you keep a history. Measured on 2026-10-02 against the 8 nodes of the heavy test network (run 4): all 8 up, one tip, 6 to 9 ms each.
 
-## Not done in M8.7
-* **A Windows service, a systemd unit, an installer.** Run it in a window, or under a scheduler you trust.
+## Not done yet
+* **A Windows service or an installer** (a server's systemd units are in `docs/RUNNING_A_SEED.md` and `docs/RUNNING_A_POOL.md`). Run it in a window, or under a scheduler you trust.
 * **Tor or I2P,** and any encryption of the control interface (it never leaves the machine).
-* **Anything on a launched network:** there is none.
+* **A remote wallet** (a wallet on someone else's node) for a computer without the memory for a node.
+* **A warning while the crowd is small:** the first spends on `gamma` hide among very few outputs, and the wallet does not say so yet.

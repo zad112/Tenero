@@ -33,7 +33,7 @@ pub type Logger = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct PoolMinerConfig {
-    /// The network's name the pool must serve (`beta`).
+    /// The network's name the pool must serve (`gamma`).
     pub network: String,
     /// The address the pool is to pay.
     pub address: String,

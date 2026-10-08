@@ -224,6 +224,34 @@ fn the_wallet_opens_with_no_node_and_never_shows_a_balance_it_cannot_know() {
         assert_eq!(v.address().to_text(), unlocked(&c).accounts[0].address);
         assert!(v.seed().is_none());
     }
+
+    // an integrated address: the account's address with a new random payment ID inside
+    let integrated = |ev: &[Event]| {
+        ev.iter().find_map(|e| match e {
+            Event::Integrated {
+                account,
+                address,
+                payment_id,
+            } => Some((*account, address.clone(), *payment_id)),
+            _ => None,
+        })
+    };
+    let (account, text, id) = integrated(&c.handle(Cmd::MakeIntegrated { account: 0 })).unwrap();
+    assert_eq!(account, 0);
+    assert_ne!(id, [0; 8]);
+    let a = tenero_wallet::Address::parse(&text, tenero_wallet::Network::Test).unwrap();
+    assert_eq!(
+        (a.kind, a.payment_id),
+        (tenero_wallet::Kind::Integrated, id)
+    );
+    let main = tenero_wallet::Address::parse(
+        &unlocked(&c).accounts[0].address,
+        tenero_wallet::Network::Test,
+    )
+    .unwrap();
+    assert_eq!(a.spend_pubkey, main.spend_pubkey);
+    let (_, _, other) = integrated(&c.handle(Cmd::MakeIntegrated { account: 0 })).unwrap();
+    assert_ne!(other, id, "a new ID each time");
 }
 
 #[test]

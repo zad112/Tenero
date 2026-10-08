@@ -193,3 +193,40 @@ fn a_view_only_wallet_survives_its_file_and_is_not_taken_for_a_purse() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_payment_to_an_integrated_address_shows_its_payment_id_in_the_history() {
+    let rig = Rig::new("integrated");
+    let mut node = rig.node();
+    let mut alice = Wallet::from_seed(&[5; 32], Network::Test, 0);
+    let mut bob = Purse::from_seed(&[6; 32], Network::Test, 0);
+    for _ in 0..READY {
+        mine(&mut node, &alice.address());
+    }
+    alice.sync(&node).unwrap();
+    let main = bob.account(0).unwrap().address();
+    let id = [9, 8, 7, 6, 5, 4, 3, 2];
+    let integrated = bob
+        .account(0)
+        .unwrap()
+        .wallet()
+        .integrated_address(id)
+        .unwrap();
+    assert_ne!(integrated, main);
+    alice
+        .pay(&mut node, &mut OsRng, &integrated, 700_000_000)
+        .unwrap();
+    alice
+        .pay(&mut node, &mut OsRng, &main, 300_000_000)
+        .unwrap_or_else(|e| panic!("{e}"));
+    mine(&mut node, &alice.address());
+    bob.sync(&node).unwrap();
+    let mut got: Vec<(u64, Option<[u8; 8]>)> = bob
+        .history(&node)
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.amount, e.payment_id))
+        .collect();
+    got.sort();
+    assert_eq!(got, vec![(300_000_000, None), (700_000_000, Some(id))]);
+}
