@@ -687,6 +687,83 @@ impl Purse {
         &self.sent
     }
 
+    // ---- signatures and payment proofs (`proofs.rs`: the signatures are our own construction, unreviewed) ----
+
+    /// Signs `message` as account `account`'s main address; gives the address with the signature.
+    pub fn sign_message(
+        &self,
+        account: usize,
+        message: &[u8],
+        rng: &mut (impl RngCore + CryptoRng),
+    ) -> Result<(Address, crate::proofs::Signature), PurseError> {
+        self.account(account)?
+            .wallet
+            .sign_message(
+                tenero_carrot::account::AddressIndex { major: 0, minor: 0 },
+                message,
+                rng,
+            )
+            .ok_or_else(|| PurseError::Request("the address cannot be made".into()))
+    }
+
+    /// A RECEIVED proof of an output of account `account` (by its global index), signed over `message`.
+    pub fn prove_received(
+        &self,
+        account: usize,
+        global_index: u64,
+        chain: &impl ChainView,
+        message: &[u8],
+        rng: &mut (impl RngCore + CryptoRng),
+    ) -> Result<crate::proofs::PaymentProof, PurseError> {
+        self.account(account)?
+            .wallet
+            .prove_received(chain, global_index, message, rng)
+            .map_err(|e| PurseError::Request(e.to_string()))
+    }
+
+    /// The anchor of a payment this wallet sent: its "payment key", with which anyone who has the recipient's address can
+    /// find and check that one output ([`crate::proofs::check_anchor`]).
+    pub fn payment_anchor(&self, id: &[u8; 32]) -> Result<JanusAnchor, PurseError> {
+        let rec = self
+            .sent
+            .iter()
+            .find(|r| &r.id == id)
+            .ok_or_else(|| PurseError::Request("there is no such sent payment".into()))?;
+        rec.anchor.ok_or_else(|| {
+            PurseError::Request("this payment's anchor was forgotten: it cannot be proved".into())
+        })
+    }
+
+    /// A proof of a payment this wallet sent: the recipient's address, the block it is in and the payment's anchor. It
+    /// does not say who sent it (the receiver could make the same one); it shows that the output pays that address.
+    pub fn prove_sent(
+        &self,
+        id: &[u8; 32],
+        chain: &impl ChainView,
+    ) -> Result<crate::proofs::PaymentProof, PurseError> {
+        let err = |e: crate::proofs::ProofError| PurseError::Request(e.to_string());
+        let anchor = self.payment_anchor(id)?;
+        let rec = self.sent.iter().find(|r| &r.id == id).expect("found above");
+        let onetime = rec.payment_onetime.ok_or_else(|| {
+            PurseError::Request(
+                "this payment's output was not recorded: it cannot be proved".into(),
+            )
+        })?;
+        // the payment was sent for the block at `height`; it is in that block or a later one
+        let block =
+            crate::proofs::block_with(chain, &onetime, rec.height.saturating_sub(1), 10_000)
+                .map_err(|_| PurseError::Request("the payment is not in a block yet".into()))?;
+        let proof = crate::proofs::PaymentProof {
+            address: rec.to,
+            height: block.height,
+            onetime_address: onetime,
+            anchor,
+            signature: None,
+        };
+        crate::proofs::check_payment(chain, &proof, b"").map_err(err)?;
+        Ok(proof)
+    }
+
     /// Everything the wallet knows happened, newest first: what it received (block rewards marked), and what it sent
     /// with where each payment stands. The change of a payment is not listed as received.
     pub fn history(&self, chain: &impl ChainView) -> Result<Vec<Entry>, PurseError> {

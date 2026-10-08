@@ -1629,7 +1629,7 @@ impl App {
                                         key: false,
                                     }));
                                 }
-                                if ui.small_button("Show transaction key").clicked() {
+                                if ui.small_button("Show payment key").clicked() {
                                     self.backend.send(Cmd::RevealTxKey { id });
                                 }
                             } else {
@@ -2457,7 +2457,7 @@ impl App {
         }
         let mut close_key = false;
         if let Some(key) = &self.tx_key_window {
-            egui::Window::new("Transaction key (secret)")
+            egui::Window::new("Payment key (secret)")
                 .collapsible(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
@@ -2485,10 +2485,7 @@ impl App {
     fn prove_tab(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         ui.heading("Sign, verify and prove");
-        ui.colored_label(
-            AMBER,
-            "UNAUDITED. Signatures and proofs are being rebuilt on Carrot for 0.3.0; they are not a legal or financial proof of anything.",
-        );
+        ui.colored_label(AMBER, crate::core::PROOFS_NOTE);
         ui.add_space(8.0);
 
         // ---- sign
@@ -2634,9 +2631,9 @@ impl App {
         ui.add_space(10.0);
         ui.separator();
 
-        // ---- check a transaction key
-        ui.label(RichText::new("Check a transaction key").strong());
-        ui.label("A transaction key (shown in History, \"Show transaction key\") and the address it paid. The node's chain is read from the block you give until the output that key made is found, so give a block at or before the payment: a vague start is a slower check.");
+        // ---- check a payment key
+        ui.label(RichText::new("Check a payment key").strong());
+        ui.label("A payment key (shown in History, \"Show payment key\": 32 hexadecimal digits, the payment's Janus anchor) and the address it paid. The node's chain is read from the block you give until the output that key made is found, so give a block at or before the payment: a vague start is a slower check.");
         ui.horizontal(|ui| {
             ui.label("Key");
             ui.add(
@@ -2739,9 +2736,18 @@ impl App {
     }
 }
 
-/// Verifies a pasted signature (needs no wallet and no node): rebuilt on Carrot in milestone G5.
-fn verify_text(_address: &str, _message: &str, _signature: &str) -> Result<String, String> {
-    Err(crate::core::PROOFS_IN_G5.into())
+/// Verifies a pasted signature (needs no wallet and no node).
+fn verify_text(address: &str, message: &str, signature: &str) -> Result<String, String> {
+    let address =
+        tenero_wallet::Address::parse_any(address.trim()).map_err(|e| format!("address: {e}"))?;
+    let sig = tenero_wallet::proofs::Signature::from_text(signature).map_err(|e| e.to_string())?;
+    if !tenero_wallet::proofs::verify_message(&address, message.as_bytes(), &sig) {
+        return Err("the signature does not match this address and message".into());
+    }
+    Ok(format!(
+        "VALID: the holder of {} signed exactly this message.",
+        text::short_address(&address.to_text())
+    ))
 }
 
 /// A QR code of `text`, drawn as squares.

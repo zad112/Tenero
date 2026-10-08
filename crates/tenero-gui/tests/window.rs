@@ -1019,7 +1019,7 @@ fn the_history_offers_proofs_and_the_transaction_key_is_not_shown_until_asked() 
     );
     rig.app.set_snapshot(s);
     let (t, _) = rig.frame();
-    for needle in ["Prove payment", "Show transaction key", "Prove receipt"] {
+    for needle in ["Prove payment", "Show payment key", "Prove receipt"] {
         assert!(
             t.contains(needle),
             "`{needle}` missing from the history:
@@ -1027,7 +1027,7 @@ fn the_history_offers_proofs_and_the_transaction_key_is_not_shown_until_asked() 
         );
     }
     // nothing secret is on screen yet
-    let key = "ab".repeat(32);
+    let key = "ab".repeat(16);
     assert!(!t.contains(&key));
     // after the click the worker answers; only then is the key drawn, in a window that says what it is, with a copy button of its own
     rig.events
@@ -1038,7 +1038,7 @@ fn the_history_offers_proofs_and_the_transaction_key_is_not_shown_until_asked() 
         .unwrap();
     let (t, copies) = rig.frame();
     assert!(
-        t.contains("Transaction key (secret)") && t.contains(&key),
+        t.contains("Payment key (secret)") && t.contains(&key),
         "{t}"
     );
     assert!(t.contains("It cannot spend anything"), "{t}");
@@ -1082,7 +1082,7 @@ fn the_prove_screen_signs_verifies_and_checks_and_says_what_it_does_not_show() {
         "Unlock the wallet",
         "Verify a signed message",
         "Check a payment proof",
-        "Check a transaction key",
+        "Check a payment key",
         "Search from block",
         "start the node first",
     ] {

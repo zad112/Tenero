@@ -318,6 +318,21 @@ pub fn scan_external_as_sender(
     Some(r)
 }
 
+/// The Janus anchor of an external output, for its receiver (or anyone with the shared secret `s_sr`): the anchor the sender
+/// chose, which with the transaction and the address re-derives the output ([`scan_external_as_sender`]). `None` if the
+/// view tag or the amount does not open.
+pub fn anchor_external(enote: &Enote, s_sender_receiver: &[u8; 32]) -> Option<JanusAnchor> {
+    scan_external_no_janus(enote, None, s_sender_receiver).map(|(_, anchor)| anchor)
+}
+
+/// The Janus anchor of a coinbase output, for its receiver: as [`anchor_external`].
+pub fn anchor_coinbase(enote: &CoinbaseEnote, s_sender_receiver: &[u8; 32]) -> JanusAnchor {
+    let input_context = make_input_context_coinbase(enote.block_index);
+    let ctx =
+        make_sender_receiver_secret(s_sender_receiver, &enote.ephemeral_pubkey, &input_context);
+    encrypt_anchor(&enote.anchor_enc, &ctx, &enote.onetime_address)
+}
+
 /// Scans an output with everything a view-all wallet has: an internal self-send first, then an external output.
 /// `lookup` maps an address spend key to the index of one of the wallet's own addresses; outputs to other addresses are
 /// not the wallet's and give `None`.

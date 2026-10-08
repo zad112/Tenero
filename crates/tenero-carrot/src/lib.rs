@@ -21,6 +21,21 @@ pub mod output;
 pub mod points;
 pub mod scan;
 
+/// `H_n` of a transcript of Carrot's form (a length-prefixed domain separator, then `fields` as raw bytes): Blake2b-512 with
+/// the personalisation `"Monero"`, reduced modulo the group order. For a construction of Tenero's own that wants Carrot's
+/// hash (the wallet's message signatures, `tenero-wallet/src/proofs.rs`); the caller makes variable-length fields
+/// unambiguous (a length before them).
+pub fn hash_to_scalar(
+    domain_separator: &str,
+    fields: &[&[u8]],
+) -> curve25519_dalek::scalar::Scalar {
+    let mut t = hash::Transcript::new(domain_separator);
+    for f in fields {
+        t = t.bytes(f);
+    }
+    t.derive_scalar(None)
+}
+
 /// What the program must say wherever it shows a Carrot address or balance.
 pub const BANNER: &str =
     "Carrot addressing (Monero's design), written for Tenero in Rust: experimental and UNAUDITED.";

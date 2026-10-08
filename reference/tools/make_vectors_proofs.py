@@ -1,244 +1,329 @@
-"""The reference for the wallet's message signatures and payment proofs (crates/tenero-wallet/src/proofs.rs) and its vectors.
+"""The reference for the wallet's message signatures and payment proofs on Carrot (crates/tenero-wallet/src/proofs.rs,
+docs/WALLET_PROOFS.md) and their vectors.
 
-An independent implementation, in Python and the standard library only, built on the Ed25519 arithmetic and the INTERIM scheme
-of `make_vectors_interim.py` (which shares no code with the Rust side either). **A test reference, not a wallet: it handles real
-secrets in plain integers and is not constant-time.** These are small, standard constructions (a Schnorr signature; a
-Chaum-Pedersen proof that two points have the same discrete logarithm) put together for this project: **unaudited**, and nothing
-here is "proof" in a legal or financial sense. See docs/WALLET_PROOFS.md.
+An independent implementation, in Python and the standard library only: the Ed25519 arithmetic is written out here, the hash
+is the standard library's Blake2b with Carrot's personalisation ("Monero"), and the address text comes from the address
+reference (make_vectors_address.py). It shares no code with the Rust side. **A test reference, not a wallet: it handles real
+secrets in plain integers and is not constant-time.**
+
+The SIGNATURES are our own construction (the owner's second exception to rule 3, 2026-10-08): a Schnorr proof of knowledge
+of the two secrets a, b of an address's spend key K = a G + b T. **Nobody has reviewed them.** The payment proofs' CHECK is
+Carrot's own sender scan, which this reference does not repeat (Carrot is checked against Monero's C++ elsewhere): here are
+the proof's bytes and text, and the receiver's signature inside a received proof.
 
     python reference/tools/make_vectors_proofs.py --check     do the committed vectors match the reference?
-    python reference/tools/make_vectors_proofs.py --write     regenerate them (a CHANGE OF THE PROOF FORMAT: explain it in the commit)
+    python reference/tools/make_vectors_proofs.py --write     regenerate them (a CHANGE OF THE FORMAT: explain it in the commit)
 
-Nothing here is random and nothing depends on the clock: the random 32 bytes a signer draws are fixed inputs.
+Nothing here is random and nothing depends on the clock: the 32 random bytes a signer draws are fixed inputs.
+(The 0.2.0 programs' signatures and proofs, on the interim scheme, are this file's history: `git log`.)
 """
 import argparse
+import hashlib
 import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import make_vectors_interim as I  # noqa: E402
+import make_vectors_address as A  # noqa: E402  (the address text: Tenero's own, with its own vectors)
 
-ROOT = I.ROOT
-VECTOR_DIR = I.VECTOR_DIR
+ROOT = A.ROOT
+VECTOR_DIR = A.VECTOR_DIR
 NAME = "wallet_proofs"
-L, G, encode, strict, mul, add = I.L, I.G, I.encode, I.strict, I.mul, I.add
 
-SIG_PREFIX = "tnsig1"
-PROOF_PREFIX = "tnpay1"
-KIND_RECEIVED, KIND_SENT, KIND_KEY = 1, 2, 3
+SIGNATURE_PREFIX = "TENsig1"
+PROOF_PREFIX = "TENpay1"
+PROOF_VERSION = 1
+MAX_PROOF_MESSAGE = 4096
+MESSAGE_DOMAIN = "Tenero message signature v1"
+PAYMENT_DOMAIN = "Tenero payment proof signature v1"
+NONCE_DOMAIN = "Tenero signature nonce v1"
+
+# ---- Ed25519 ----------------------------------------------------------------------------------------------------------
+P = 2 ** 255 - 19
+L = 2 ** 252 + 27742317777372353535851937790883648493
+D = (-121665 * pow(121666, P - 2, P)) % P
+SQRT_M1 = pow(2, (P - 1) // 4, P)
+IDENTITY = (0, 1)
+
+
+def inv(x):
+    return pow(x, P - 2, P)
+
+
+def recover_x(y, sign):
+    if y >= P:
+        return None
+    x2 = (y * y - 1) * inv(D * y * y + 1) % P
+    if x2 == 0:
+        return None if sign else 0
+    x = pow(x2, (P + 3) // 8, P)
+    if (x * x - x2) % P != 0:
+        x = x * SQRT_M1 % P
+    if (x * x - x2) % P != 0:
+        return None
+    if x & 1 != sign:
+        x = P - x
+    return x
+
+
+def add(a, b):
+    x1, y1 = a
+    x2, y2 = b
+    t = D * x1 * x2 * y1 * y2 % P
+    return ((x1 * y2 + x2 * y1) * inv(1 + t) % P, (y1 * y2 + x1 * x2) * inv(1 - t) % P)
+
+
+def mul(k, pt):
+    r = IDENTITY
+    while k:
+        if k & 1:
+            r = add(r, pt)
+        pt = add(pt, pt)
+        k >>= 1
+    return r
+
+
+def encode(pt):
+    x, y = pt
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+
+def decode(b):
+    """A canonically encoded point (any of the 8l), or None."""
+    n = int.from_bytes(b, "little")
+    y = n & ((1 << 255) - 1)
+    x = recover_x(y, n >> 255)
+    if x is None:
+        return None
+    pt = (x, y)
+    return pt if encode(pt) == bytes(b) else None
+
+
+GY = 4 * inv(5) % P
+G = (recover_x(GY, 0), GY)
+# the FCMP++ generator T, as monero-oxide encodes it (an output key is x G + y T); the Rust tests check this is theirs
+T_BYTES = bytes.fromhex("dc42e1d3307b2d4b3b02729abe577e231d79478141cb5b310ca9fa6e127616a3")
+T = decode(T_BYTES)
+assert T is not None and mul(L, T) == IDENTITY
+
+
+# ---- Carrot's hash: H_n(transcript) = Blake2b-512 personalised "Monero", reduced mod l -------------------------------
+def hash_to_scalar(domain, *fields):
+    data = bytes([len(domain)]) + domain.encode() + b"".join(fields)
+    return int.from_bytes(hashlib.blake2b(data, digest_size=64, person=b"Monero").digest(), "little") % L
 
 
 def le32(n):
     return (n % L).to_bytes(32, "little")
 
 
-def scalar_of(b):
-    """A canonical scalar (< L) or None."""
+def u64(n):
+    return n.to_bytes(8, "little")
+
+
+def canonical(b):
     n = int.from_bytes(b, "little")
     return n if n < L else None
 
 
-# ---- messages --------------------------------------------------------------------------------------------
-def message_hash(spend_pub, view_pub, message):
-    return I.digest(b"message", spend_pub, view_pub, len(message).to_bytes(8, "little"), message)
+# ---- signatures -------------------------------------------------------------------------------------------------------
+def sign_raw(domain, a, b, spend, view, bound, rnd):
+    def nonce(which):
+        return hash_to_scalar(NONCE_DOMAIN, which, le32(a), le32(b), spend, view, domain.encode(), *bound, rnd)
+    r_g, r_t = nonce(b"G"), nonce(b"T")
+    r = encode(add(mul(r_g, G), mul(r_t, T)))
+    c = hash_to_scalar(domain, spend, view, r, *bound)
+    return le32(c) + le32(r_g - c * a) + le32(r_t - c * b)
 
 
-def sign_message(seed, message, rnd):
-    spend, _ = I.keys_of(seed)
-    sp, vp = I.address_bytes(seed)
-    h = message_hash(sp, vp, message)
-    k = I.hs(b"sig nonce", le32(spend), h, rnd)
-    r_pub = encode(mul(k, G))
-    c = I.hs(b"sig challenge", r_pub, sp, h)
-    z = (k + c * spend) % L
-    return r_pub + le32(z)
-
-
-def verify_message(spend_pub, view_pub, message, sig):
-    if len(sig) != 64 or strict(spend_pub) is None or strict(view_pub) is None:
+def verify_raw(domain, spend, view, bound, sig):
+    if len(sig) != 96:
         return False
-    r_pub, z_b = sig[:32], sig[32:]
-    r_pt = strict(r_pub)
-    z = scalar_of(z_b)
-    if r_pt is None or z is None:
+    c, s_g, s_t = canonical(sig[:32]), canonical(sig[32:64]), canonical(sig[64:])
+    if c is None or s_g is None or s_t is None:
         return False
-    h = message_hash(spend_pub, view_pub, message)
-    c = I.hs(b"sig challenge", r_pub, spend_pub, h)
-    return mul(z, G) == add(r_pt, mul(c, strict(spend_pub)))
+    k = decode(spend)
+    # the spend key: a point of the prime-order group, and not the identity (nobody holds its secrets)
+    if k is None or mul(L, k) != IDENTITY or k == IDENTITY or decode(view) is None:
+        return False
+    r = encode(add(add(mul(s_g, G), mul(s_t, T)), mul(c, k)))
+    return hash_to_scalar(domain, spend, view, r, *bound) == c
 
 
-# ---- payment proofs --------------------------------------------------------------------------------------
-def binding(kind, height, global_index, spend_pub, view_pub, de):
-    return bytes([kind]) + height.to_bytes(8, "little") + global_index.to_bytes(8, "little") + spend_pub + view_pub + de
+def message_bound(message):
+    return [u64(len(message)), message]
 
 
-def neg(pt):
-    x, y = pt
-    return ((-x) % I.P, y)
+def sign_message(a, b, spend, view, message, rnd):
+    return sign_raw(MESSAGE_DOMAIN, a, b, spend, view, message_bound(message), rnd)
 
 
-def prove(kind, x, b2_pt, p2_pt, bind, rnd):
-    """`x` with P1 = x*G and P2 = x*B2; returns (D, c, z) as bytes."""
-    k = I.hs(b"pay nonce", le32(x), bind, rnd)
-    a1 = encode(mul(k, G))
-    a2 = encode(mul(k, b2_pt))
-    d = encode(p2_pt)
-    c = I.hs(b"pay challenge", bind, d, a1, a2)
-    z = (k + c * x) % L
-    return d + le32(c) + le32(z)
+def verify_message(spend, view, message, sig):
+    return verify_raw(MESSAGE_DOMAIN, spend, view, message_bound(message), sig)
 
 
-def statement(kind, spend_pub, view_pub, de_b):
-    """(P1, B2) for the proof kind: received: P1 = K_view, B2 = De; sent: P1 = De, B2 = K_view."""
-    k_view = strict(view_pub)
-    de = strict(de_b)
-    if kind == KIND_RECEIVED:
-        return k_view, de
-    return de, k_view
+def signature_text(sig):
+    return SIGNATURE_PREFIX + A.b58encode(sig)
 
 
-def check_dleq(kind, bind, spend_pub, view_pub, de_b, body):
-    d_b, c_b, z_b = body[:32], body[32:64], body[64:96]
-    d = strict(d_b)
-    c, z = scalar_of(c_b), scalar_of(z_b)
-    if d is None or c is None or z is None:
-        return None
-    p1, b2 = statement(kind, spend_pub, view_pub, de_b)
-    if p1 is None or b2 is None:
-        return None
-    a1 = add(mul(z, G), neg(mul(c, p1)))
-    a2 = add(mul(z, b2), neg(mul(c, d)))
-    if I.hs(b"pay challenge", bind, d_b, encode(a1), encode(a2)) != c:
-        return None
-    return encode(mul(8, d))
+# ---- payment proofs ---------------------------------------------------------------------------------------------------
+def proof_bound(height, onetime, anchor, message):
+    return [u64(height), onetime, anchor, u64(len(message)), message]
 
 
-def recompute(spend_pub, view_pub, out, s_bytes):
-    """What the shared secret says about the output: its amount, or None if it is not addressed to this address."""
-    ctx, index = bytes.fromhex(out["context"]), out["index"]
-    i = index.to_bytes(4, "little")
-    t = I.hs(b"onetime", s_bytes, ctx, i)
-    if encode(add(mul(t, G), strict(spend_pub))) != bytes.fromhex(out["onetime_address"]):
-        return None
-    if out["coinbase"]:
-        return out["public_amount"]
-    mask = I.hs(b"mask", s_bytes, ctx, i)
-    amount = int.from_bytes(I.xor(bytes.fromhex(out["amount_enc"]), I.digest(b"amount", s_bytes, ctx, i)[:8]), "little")
-    if I.commit(mask, amount) != bytes.fromhex(out["amount_commitment"]):
-        return None
-    return amount
+def proof_bytes(address_text, height, onetime, anchor, sig):
+    out = bytes([PROOF_VERSION, len(address_text)]) + address_text.encode() + u64(height) + onetime + anchor
+    return out + (b"\x01" + sig if sig is not None else b"\x00")
 
 
-def make_proof(kind, seed_or_r, spend_pub, view_pub, height, global_index, out, rnd):
-    """kind 1: `seed_or_r` is the RECEIVER's seed; kinds 2 and 3: the sender's secret r (an int)."""
-    de_b = bytes.fromhex(out["ephemeral_pubkey"])
-    de = strict(de_b)
-    k_view = strict(view_pub)
-    bind = binding(kind, height, global_index, spend_pub, view_pub, de_b)
-    if kind == KIND_RECEIVED:
-        _, v = I.keys_of(seed_or_r)
-        body = prove(kind, v, de, mul(v, de), bind, rnd)
-    elif kind == KIND_SENT:
-        r = seed_or_r
-        body = prove(kind, r, k_view, mul(r, k_view), bind, rnd)
-    else:
-        body = le32(seed_or_r)
-    return bytes([kind]) + height.to_bytes(8, "little") + global_index.to_bytes(8, "little") + spend_pub + view_pub + body
+def proof_text(b):
+    return PROOF_PREFIX + A.b58encode(b)
 
 
-def check_proof(proof, out):
-    """The amount the proof shows, or None. `out` is the chain's output (as a dict of hex fields)."""
-    if len(proof) < 1 + 8 + 8 + 64:
-        return None
-    kind = proof[0]
-    height = int.from_bytes(proof[1:9], "little")
-    gi = int.from_bytes(proof[9:17], "little")
-    spend_pub, view_pub = proof[17:49], proof[49:81]
-    body = proof[81:]
-    if strict(spend_pub) is None or strict(view_pub) is None:
-        return None
-    de_b = bytes.fromhex(out["ephemeral_pubkey"])
-    if strict(de_b) is None:
-        return None
-    if kind in (KIND_RECEIVED, KIND_SENT):
-        if len(body) != 96:
-            return None
-        bind = binding(kind, height, gi, spend_pub, view_pub, de_b)
-        s_bytes = check_dleq(kind, bind, spend_pub, view_pub, de_b, body)
-    elif kind == KIND_KEY:
-        if len(body) != 32:
-            return None
-        r = scalar_of(body)
-        if r is None or encode(mul(r, G)) != de_b:
-            return None
-        s_bytes = encode(mul(8, mul(r, strict(view_pub))))
-    else:
-        return None
-    if s_bytes is None:
-        return None
-    return recompute(spend_pub, view_pub, out, s_bytes)
+def parse_proof(b):
+    """The fields of a proof's bytes, or the error class a decoder gives ("format")."""
+    if not b or b[0] != PROOF_VERSION:
+        raise ValueError("format")
+    if len(b) < 2:
+        raise ValueError("format")
+    n = b[1]
+    rest = b[2:]
+    if len(rest) < n + 8 + 32 + 16 + 1:
+        raise ValueError("format")
+    try:
+        text = rest[:n].decode()
+    except UnicodeDecodeError:
+        raise ValueError("format")
+    ok = False
+    for net in A.NETWORKS:
+        try:
+            A.decode(text, net)
+            ok = True
+        except Exception:
+            pass
+    if not ok:
+        raise ValueError("format")
+    rest = rest[n:]
+    flag, sig = rest[56], rest[57:]
+    if (flag, len(sig)) not in ((0, 0), (1, 96)):
+        raise ValueError("format")
+    return {"address": text, "height": int.from_bytes(rest[:8], "little"), "onetime_address": rest[8:40].hex(),
+            "anchor": rest[40:56].hex(), "signature": sig.hex() if flag else None}
 
 
-# ---- the vectors -----------------------------------------------------------------------------------------
-def det(label, n):
-    return I.det_bytes(b"proofs " + label, n)
+# ---- the cases --------------------------------------------------------------------------------------------------------
+def det(label, n=32):
+    out, i = b"", 0
+    while len(out) < n:
+        out += hashlib.sha256(f"tenero proofs vectors {label} {i}".encode()).digest()
+        i += 1
+    return out[:n]
 
 
-def seed_of(label):
-    return det(b"seed " + label, 32)
+def keys(label):
+    """An address's secrets and keys: K = a G + b T; the view key some other point."""
+    a = int.from_bytes(det(label + " a"), "little") % L
+    b = int.from_bytes(det(label + " b"), "little") % L
+    spend = encode(add(mul(a, G), mul(b, T)))
+    view = encode(mul(int.from_bytes(det(label + " v"), "little") % L, decode(spend)))
+    return a, b, spend, view
 
 
-def message_cases():
+SMALL_ORDER = bytes.fromhex("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05")   # a point of order 8
+
+
+def signature_cases():
     out = []
-    for note, label, msg in [
-        ("a short message", b"alice", b"hello"),
-        ("the empty message", b"alice", b""),
-        ("a message with every byte value", b"bob", bytes(range(256))),
-        ("non-ASCII text", b"carol", "Tenero: 試験 ✓".encode()),
-    ]:
-        seed = seed_of(label)
-        sp, vp = I.address_bytes(seed)
-        rnd = det(b"rnd " + label + msg[:4], 32)
-        sig = sign_message(seed, msg, rnd)
-        assert verify_message(sp, vp, msg, sig)
-        out.append({"note": note, "seed": seed.hex(), "address": I.address_text(sp, vp), "message": msg.hex(),
-                    "rnd": rnd.hex(), "signature": sig.hex()})
+    for i, msg in enumerate([b"", b"hello", "fee, pay, rent: €5".encode(), bytes(range(256)) * 3]):
+        a, b, spend, view = keys(f"sig {i}")
+        rnd = det(f"sig rnd {i}")
+        sig = sign_message(a, b, spend, view, msg, rnd)
+        assert verify_message(spend, view, msg, sig)
+        out.append({"a": le32(a).hex(), "b": le32(b).hex(), "spend": spend.hex(), "view": view.hex(),
+                    "message": msg.hex(), "rnd": rnd.hex(), "signature": sig.hex(), "text": signature_text(sig)})
     return out
 
 
-def output_cases():
-    """Outputs made by the interim scheme, for the proofs to be about."""
-    cases = []
-    specs = [
-        ("an ordinary output", b"alice", 123456789, ("tx", det(b"ki a", 32)), 0, False, 5000, 17),
-        ("the second output of a transaction", b"bob", 7, ("tx", det(b"ki b", 32)), 1, False, 5001, 18),
-        ("a block reward", b"alice", 4000000000, ("coinbase", 1000), 0, True, 1000, 3),
+def refused_signature_cases():
+    """Signatures that must NOT verify, each with why."""
+    a, b, spend, view = keys("refused")
+    msg = b"the message"
+    sig = sign_message(a, b, spend, view, msg, det("refused rnd"))
+    _, _, other_spend, other_view = keys("refused other")
+    torsioned = encode(add(decode(spend), decode(SMALL_ORDER)))
+    cases = [
+        ("another message", spend, view, b"the messagE", sig),
+        ("another address's spend key", other_spend, view, msg, sig),
+        ("another view key (the address is bound)", spend, other_view, msg, sig),
+        ("c changed", spend, view, msg, le32(int.from_bytes(sig[:32], "little") + 1) + sig[32:]),
+        ("s_g changed", spend, view, msg, sig[:32] + le32(int.from_bytes(sig[32:64], "little") + 1) + sig[64:]),
+        ("s_t changed", spend, view, msg, sig[:64] + le32(int.from_bytes(sig[64:], "little") + 1)),
+        ("s_g not canonical (s + l)", spend, view, msg,
+         sig[:32] + (int.from_bytes(sig[32:64], "little") + L).to_bytes(32, "little") + sig[64:]),
+        ("a spend key with a small-order part", torsioned, view, msg, sig),
+        ("the identity as the spend key", encode(IDENTITY), view, msg, sig),
+        ("a spend key that is not a point", bytes([2]) + bytes(31), view, msg, sig),
+        ("cut short", spend, view, msg, sig[:95]),
     ]
-    for note, label, amount, ctx_spec, index, coinbase, height, gi in specs:
-        seed = seed_of(label)
-        sp, vp = I.address_bytes(seed)
-        ctx = I.tx_context(ctx_spec[1]) if ctx_spec[0] == "tx" else I.coinbase_context(ctx_spec[1])
-        rng = det(b"enote rng " + label + bytes([index]), 80)
-        e = I.make_enote(sp, vp, amount, ctx, index, coinbase, rng)
-        r = int.from_bytes(rng[:64], "little") % L
-        out = {k: e[k] for k in ("onetime_address", "amount_commitment", "amount_enc", "view_tag", "ephemeral_pubkey")}
-        out.update({"context": ctx.hex(), "index": index, "coinbase": coinbase, "public_amount": amount if coinbase else 0})
-        cases.append((note, seed, sp, vp, amount, height, gi, out, r))
-    return cases
+    out = []
+    for note, sp, vw, m, s in cases:
+        assert not verify_message(sp, vw, m, s), note
+        out.append({"note": note, "spend": sp.hex(), "view": vw.hex(), "message": m.hex(), "signature": s.hex()})
+    return out
 
 
 def proof_cases():
     out = []
-    for note, seed, sp, vp, amount, height, gi, o, r in output_cases():
-        for kind, name in [(KIND_RECEIVED, "received"), (KIND_SENT, "sent"), (KIND_KEY, "key")]:
-            rnd = det(b"proof rnd " + name.encode() + bytes([gi]), 32)
-            proof = make_proof(kind, seed if kind == KIND_RECEIVED else r, sp, vp, height, gi, o, rnd)
-            shown = check_proof(proof, o)
-            assert shown == amount, (note, name, shown, amount)
-            out.append({"note": f"{note}: {name}", "kind": kind, "receiver_seed": seed.hex(), "tx_secret": le32(r).hex(),
-                        "address": I.address_text(sp, vp), "height": height, "global_index": gi, "output": o,
-                        "rnd": rnd.hex(), "proof": proof.hex(), "amount": amount})
+    for i, (network, kind, signed, message) in enumerate([
+            ("gamma", "main", False, b""), ("gamma", "subaddress", True, b"invoice 42"),
+            ("test", "integrated", True, b""), ("dev", "main", True, b"x" * MAX_PROOF_MESSAGE)]):
+        a, b, spend, view = keys(f"proof {i}")
+        pid = det(f"proof pid {i}", 8) if kind == "integrated" else None
+        address = A.encode(network, kind, spend, view, pid)
+        height, onetime, anchor = 1000 + 37 * i, det(f"proof ko {i}"), det(f"proof anchor {i}", 16)
+        sig = None
+        if signed:
+            sig = sign_raw(PAYMENT_DOMAIN, a, b, spend, view, proof_bound(height, onetime, anchor, message),
+                           det(f"proof rnd {i}"))
+            assert verify_raw(PAYMENT_DOMAIN, spend, view, proof_bound(height, onetime, anchor, message), sig)
+            # bound to the message and to every field
+            assert not verify_raw(PAYMENT_DOMAIN, spend, view, proof_bound(height + 1, onetime, anchor, message), sig)
+            assert not verify_raw(MESSAGE_DOMAIN, spend, view, proof_bound(height, onetime, anchor, message), sig)
+        b_ = proof_bytes(address, height, onetime, anchor, sig)
+        parsed = parse_proof(b_)
+        assert parsed["address"] == address and parsed["height"] == height
+        out.append({"network": network, "address": address, "height": height, "onetime_address": onetime.hex(),
+                    "anchor": anchor.hex(), "message": message.hex(), "a": le32(a).hex(), "b": le32(b).hex(),
+                    "rnd": det(f"proof rnd {i}").hex() if signed else None,
+                    "signature": sig.hex() if sig else None, "bytes": b_.hex(), "text": proof_text(b_)})
+    return out
+
+
+def invalid_proof_cases():
+    good = proof_bytes(A.encode("gamma", "main", *keys("bad")[2:]), 5, det("bad ko"), det("bad anchor", 16), None)
+    signed = proof_bytes(A.encode("gamma", "main", *keys("bad")[2:]), 5, det("bad ko"), det("bad anchor", 16),
+                         bytes(96))
+    n = good[1]
+    cases = [
+        ("empty", b""),
+        ("an unknown version", bytes([2]) + good[1:]),
+        ("cut short", good[:-1]),
+        ("a byte after the end", good + b"\x00"),
+        ("a signature flag of 2", good[:-1] + b"\x02"),
+        ("a signature cut short", signed[:-1]),
+        ("a flag of 1 with no signature", good[:-1] + b"\x01"),
+        ("an address with a changed character", good[:22] + bytes([good[22] ^ 0x02]) + good[23:]),
+        ("an address length that runs past the end", good[:1] + bytes([255]) + good[2:]),
+        ("not an address", good[:2] + b"x" * n + good[2 + n:]),
+    ]
+    out = []
+    for note, b in cases:
+        try:
+            parse_proof(b)
+        except ValueError:
+            out.append({"note": note, "bytes": b.hex()})
+            continue
+        raise AssertionError(f"the reference accepted an invalid proof: {note}")
     return out
 
 
@@ -246,15 +331,23 @@ def build():
     return {
         "schema": 1,
         "name": NAME,
-        "description": "Message signatures and payment proofs of the INTERIM wallet scheme (crates/tenero-wallet/src/proofs.rs, "
-                       "docs/WALLET_PROOFS.md). UNAUDITED. An independent Python reference (reference/tools/make_vectors_proofs.py).",
-        "messages": message_cases(),
+        "description": "Message signatures (our own construction: a Schnorr proof of knowledge of a, b with K = a G + b T, "
+                       "Carrot's Blake2b hash; UNREVIEWED) and the payment proofs' bytes, text and signatures, from an "
+                       "independent Python reference (reference/tools/make_vectors_proofs.py; docs/WALLET_PROOFS.md). The "
+                       "payment check itself is Carrot's sender scan, checked against Monero's C++ elsewhere.",
+        "domains": {"message": MESSAGE_DOMAIN, "payment": PAYMENT_DOMAIN, "nonce": NONCE_DOMAIN},
+        "prefixes": {"signature": SIGNATURE_PREFIX, "proof": PROOF_PREFIX},
+        "generators": {"T": T_BYTES.hex()},
+        "max_proof_message": MAX_PROOF_MESSAGE,
+        "signatures": signature_cases(),
+        "refused_signatures": refused_signature_cases(),
         "proofs": proof_cases(),
+        "invalid_proofs": invalid_proof_cases(),
     }
 
 
 def jdump(obj):
-    return json.dumps(obj, indent=1, sort_keys=True) + "\n"
+    return json.dumps(obj, indent=1, sort_keys=True, ensure_ascii=True) + "\n"
 
 
 def path_of():
@@ -272,11 +365,10 @@ def main(argv=None):
     text = jdump(build())
     path = path_of()
     if args.check:
-        same = os.path.exists(path) and open(path).read() == text
+        same = os.path.exists(path) and open(path, encoding="utf-8").read() == text
         print(f"{'ok      ' if same else 'DIFFERS '}{NAME}")
         return 0 if same else 1
-    os.makedirs(VECTOR_DIR, exist_ok=True)
-    with open(path, "w", newline="\n") as f:
+    with open(path, "w", newline="\n", encoding="utf-8") as f:
         f.write(text)
     print(f"wrote {os.path.relpath(path, ROOT)}  ({len(text) / 1024:.0f} KiB)")
     return 0
