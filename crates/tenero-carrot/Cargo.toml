@@ -1,0 +1,27 @@
+[package]
+name = "tenero-carrot"
+description = "Carrot, Monero's addressing protocol, transcribed into Rust for the gamma network (experimental; UNAUDITED)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A transcription of the Carrot specification (jeffro256/carrot, BSD-3-Clause) that must reproduce Monero's C++
+# `carrot_core` bit for bit (docs/FCMP_CARROT_PLAN.md, G2). Owner-approved exception to rule 3, 2026-10-08: the
+# composition is written here and has had NO audit. Only audited building blocks underneath: curve25519-dalek, and
+# from monero-oxide (pinned, MIT) the Monero hash `Blake2bMonero`, the point decoding and the generators T and H.
+[dependencies]
+monero-ed25519 = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+monero-primitives = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+# already in the tree (curve25519-dalek BSD-3-Clause; blake2, zeroize, rand_core MIT OR Apache-2.0)
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }
+blake2 = { version = "0.10", default-features = false }
+zeroize = { version = "1", features = ["zeroize_derive"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+[dev-dependencies]
+tenero-core = { path = "../tenero-core" }
+rand_chacha = "0.3"
+
+[lints]
+workspace = true
