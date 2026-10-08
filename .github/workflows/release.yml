@@ -99,6 +99,7 @@ jobs:
           cp LICENSE THIRD-PARTY-LICENCES.txt README.md "$NAME/"
           cp docs/RUNNING.md "$NAME/RUNNING.md"
           cp docs/RUNNING_A_POOL.md "$NAME/RUNNING_A_POOL.md"
+          cp docs/WALLET_PROOFS.md "$NAME/WALLET_PROOFS.md"
           if [ -f "docs/releases/v$VERSION.md" ]; then cp "docs/releases/v$VERSION.md" "$NAME/RELEASE-NOTES.md"; fi
           ls -l "$NAME"
       # the packaged programs must run and say which build they are (the exact version and the commit this run is building); the two
@@ -169,6 +170,6 @@ jobs:
           cat tenero-*.sha256 > SHA256SUMS
           cat SHA256SUMS
           gh release create "$GITHUB_REF_NAME" --draft --prerelease \
-            --title "Tenero $GITHUB_REF_NAME (beta, experimental)" \
+            --title "Tenero $GITHUB_REF_NAME (gamma, experimental, unaudited)" \
             --notes-file "docs/releases/$GITHUB_REF_NAME.md" \
             tenero-*.zip tenero-*.tar.gz SHA256SUMS

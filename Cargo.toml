@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/tenero-core", "crates/tenero-gpu", "crates/tenero-store", "crates/tenero-chain", "crates/tenero-crypto", "crates/tenero-carrot", "crates/tenero-tree", "crates/tenero-node", "crates/tenero-net", "crates/tenero-miner", "crates/tenero-wallet", "crates/tenero-app", "crates/tenero-fuzzcases", "crates/tenero-gui", "crates/tenero-explorer"]
 
 [workspace.package]
-version = "0.2.0-beta.4"
+version = "0.3.0-gamma.1"
 edition = "2021"
 license = "BSD-3-Clause"
 publish = false

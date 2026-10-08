@@ -146,6 +146,9 @@ struct ProveForm {
 struct Prompt {
     /// `Some` while the "type your password" window for showing the words is open.
     reveal: Option<Zeroizing<String>>,
+    /// `Some` while the window asking for the password before a view key is open: the password, the account, and
+    /// whether the view-received tier is wanted.
+    view_key: Option<(Zeroizing<String>, usize, bool)>,
     change: Option<(Zeroizing<String>, Zeroizing<String>, bool)>,
 }
 
@@ -180,6 +183,7 @@ pub struct App {
     proof_window: Option<(String, String)>,
     /// The secret of a sent payment, shown on request in a window until closed.
     tx_key_window: Option<Zeroizing<String>>,
+    view_key_window: Option<(Zeroizing<String>, bool)>,
     miner_tail: (Instant, String),
     /// The pool fields of the Mining tab as typed: (address, key, worker), and the settings they were read from.
     pool_form: Option<(String, String, String)>,
@@ -250,6 +254,7 @@ impl App {
             request: RequestForm::default(),
             proof_window: None,
             tx_key_window: None,
+            view_key_window: None,
             miner_tail: (now, String::new()),
             pool_form: None,
         };
@@ -341,6 +346,7 @@ impl App {
                 Event::Signed { signature } => self.prove.signature = Some(signature),
                 Event::Proof { text, note } => self.proof_window = Some((text, note)),
                 Event::TxKey { key, .. } => self.tx_key_window = Some(key),
+                Event::ViewKey { key, received } => self.view_key_window = Some((key, received)),
                 Event::ProofChecked(r) => self.prove.checked = Some(r),
                 Event::Notice(m) => self.toast(m, false),
                 Event::Error(m) => {
@@ -898,6 +904,9 @@ impl App {
             if ui.button("Show my 24 words…").clicked() {
                 self.prompt.reveal = Some(Zeroizing::default());
             }
+            if ui.button("Show a view key…").clicked() {
+                self.prompt.view_key = Some((Zeroizing::default(), 0, false));
+            }
             if ui.button("Change the password…").clicked() {
                 self.prompt.change = Some((Zeroizing::default(), Zeroizing::default(), false));
             }
@@ -937,6 +946,53 @@ impl App {
                 self.prompt.reveal = None;
             } else if cancel {
                 self.prompt.reveal = None;
+            }
+        }
+        if self.prompt.view_key.is_some() {
+            let mut send = None;
+            let mut cancel = false;
+            let accounts: Vec<String> = match &self.snap.wallet {
+                WalletView::Unlocked(d) => d.accounts.iter().map(|a| a.label.clone()).collect(),
+                _ => Vec::new(),
+            };
+            egui::Window::new("Show a view key")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("A view key lets a wallet SEE this account's payments without being able to spend them (the wallet program's restore-view makes such a wallet).");
+                    if let Some((pw, account, received)) = self.prompt.view_key.as_mut() {
+                        egui::ComboBox::from_label("Account")
+                            .selected_text(accounts.get(*account).cloned().unwrap_or_default())
+                            .show_ui(ui, |ui| {
+                                for (i, label) in accounts.iter().enumerate() {
+                                    ui.selectable_value(account, i, label);
+                                }
+                            });
+                        ui.radio_value(received, false, "View-all: incoming and outgoing payments, and the balance");
+                        ui.radio_value(received, true, "View-received: incoming payments only");
+                        ui.label("Type your password again (leave it empty if you set none).");
+                        let r = ui.add(egui::TextEdit::singleline(&mut **pw).password(true));
+                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        ui.horizontal(|ui| {
+                            if ui.button("Show").clicked() || enter {
+                                send = Some(Cmd::RevealViewKey {
+                                    password: std::mem::take(pw),
+                                    account: *account,
+                                    received: *received,
+                                });
+                            }
+                            if ui.button("Cancel").clicked() {
+                                cancel = true;
+                            }
+                        });
+                    }
+                });
+            if let Some(cmd) = send {
+                self.backend.send(cmd);
+                self.prompt.view_key = None;
+            } else if cancel {
+                self.prompt.view_key = None;
             }
         }
         if self.prompt.change.is_some() {
@@ -2479,6 +2535,35 @@ impl App {
         }
         if close_key {
             self.tx_key_window = None;
+        }
+        let mut close_view = false;
+        if let Some((key, received)) = &self.view_key_window {
+            egui::Window::new("View key (secret)")
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.colored_label(
+                        AMBER,
+                        if *received {
+                            "Anyone who has this key sees every payment this account RECEIVES. It cannot spend anything. Keep it as secret as what it shows."
+                        } else {
+                            "Anyone who has this key sees every payment of this account, in and out, and its balance. It cannot spend anything. Keep it as secret as what it shows."
+                        },
+                    );
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(RichText::new(key.as_str()).monospace()).selectable(true).wrap());
+                    ui.horizontal(|ui| {
+                        if ui.button("Copy key").clicked() {
+                            ui.ctx().copy_text(key.to_string());
+                        }
+                        if ui.button("Hide").clicked() {
+                            close_view = true;
+                        }
+                    });
+                });
+        }
+        if close_view {
+            self.view_key_window = None;
         }
     }
 

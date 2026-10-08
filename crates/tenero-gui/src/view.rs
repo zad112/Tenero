@@ -271,6 +271,12 @@ pub enum Cmd {
         message: String,
     },
     MakeProof(ProofRequest),
+    /// Shows an account's view key after asking for the password: view-all, or view-received with `received`.
+    RevealViewKey {
+        password: Zeroizing<String>,
+        account: usize,
+        received: bool,
+    },
     /// Shows the secret of a sent payment (the person clicked to reveal it).
     RevealTxKey {
         id: [u8; 32],
@@ -323,6 +329,11 @@ pub enum Event {
     Proof {
         text: String,
         note: String,
+    },
+    /// An account's view key (a secret), and whether it is the view-received tier.
+    ViewKey {
+        key: Zeroizing<String>,
+        received: bool,
     },
     /// The secret of a sent payment, for a window that says what it is.
     TxKey {
