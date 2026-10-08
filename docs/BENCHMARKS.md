@@ -333,6 +333,23 @@ The upstream crate proves on one thread; nothing here was parallelised. **Proof 
 today's `MAX_PROOF` of 64 KiB is 126 at 1 layer, 69 at 4, 48 at 7 and 31 at 12, before the pseudo-outputs and the range proof
 also take their room. The version 3 limits are set from this in G4.
 
+## The FCMP++ curve tree (measured on the owner's machine, 2026-10-08)
+
+**Measured**, release build, one thread, Ryzen 9 5900X: `cargo test --release -p tenero-crypto --test curve_tree_timing -- --ignored
+--nocapture` (100,000 outputs, 4 layers; `docs/FCMP_CARROT_PLAN.md` G3).
+
+| | time |
+|---|---|
+| an output to its leaf (decode `O` and `C`, `I = Hp²(O)`) | 55 µs |
+| a leaf to its six Selene scalars (Weierstrass coordinates) | 156 µs |
+| growing the tree, blocks of 10 / 100 / 1,000 outputs | 3.7 ms / 28 ms / 274 ms a block (about 280-370 µs an output) |
+| undoing a block of 100 outputs (a reorganisation) | 8 ms |
+| a path for a wallet's proof | 0.6 ms |
+
+Most of the cost is the coordinate conversion. Rebuilding the tree of a chain with a million outputs from nothing would take about
+five minutes at this rate (an estimate from the measurement, not measured); Monero's code batches the field inversions, an
+optimisation not made here yet. The hashes above the leaves are small: about 2,800 points (90 KB) for 100,000 outputs.
+
 ## Caveats
 
 - Multi-thread attempt timings are noisy: each thread does only 3 attempts, and one run gave 2 threads at
