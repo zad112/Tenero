@@ -20,7 +20,7 @@ Inspired by Monero's design ideas; not affiliated with or endorsed by the Monero
 | | |
 |---|---|
 | **Built** | a node (pruned by default), a miner (GPU and CPU), a command-line wallet, a wallet app with a window, a block explorer, a seed checker, a network protocol with an encrypted channel, **a mining pool** (`tenero-pool`, with a miner mode and an app option that need no node, and a checker for pools), and **the `gamma` network: FCMP++ and Carrot from block 0** (version 0.3.0) |
-| **Tested** | TESTS_LINE |
+| **Tested** | about 1,170 automated tests (1,134 passing and 36 skipped in the last full run, 2026-10-08, on the author's PC; the skipped ones need the author's GPU or are long runs started by hand), the Rust code checked bit for bit against an independent Python reference and, for Carrot and FCMP++, against Monero's own C++ results and test proofs |
 | **Run on `gamma`** | **nothing yet: `gamma` starts with the `v0.3.0-gamma.1` release.** Every number about `gamma` on this page is from tests on the author's PC or worked out from the rules, not seen on the real network |
 | **Reviewed by anyone else** | **no.** There has been no independent cryptographic, security or hardware review. Parts of the FCMP++ libraries have been audited for Monero; how this project uses them has not |
 | **Released** | **the latest is `v0.3.0-gamma.1`** (the `gamma` network); before it, `v0.2.0-beta.1` to `beta.4` (the `beta` network, 2026-10-07) and `v0.1.0-alpha.1` to `alpha.4` (the `alpha` network, 2026-10-05 and 06), all on the [Releases](../../releases) page. **They are TEST releases**: "released" means published for people to try, not finished, reviewed or safe; see [Get it](#get-it) |
