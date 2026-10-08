@@ -143,6 +143,9 @@ fn requests() -> Vec<Request> {
             max_body_bytes: 1_000_000,
         },
         Request::SubmitBlock(sample_block()),
+        Request::Headers { from: 0, count: 1 },
+        Request::Mempool,
+        Request::ChainStats,
     ]
 }
 
@@ -266,6 +269,17 @@ fn an_answer_has_its_requests_kind_with_the_top_bit_set() {
         ),
         (Request::Info, Response::Info(sample_info())),
         (Request::Stop, Response::Stopping),
+        (
+            Request::Headers { from: 0, count: 1 },
+            Response::Headers(vec![]),
+        ),
+        (
+            Request::Mempool,
+            Response::Mempool {
+                total: 0,
+                txs: vec![],
+            },
+        ),
     ];
     for (q, a) in pairs {
         assert_eq!(a.kind(), q.kind() | 0x80);
@@ -280,7 +294,7 @@ fn malformed_requests_are_refused_not_guessed() {
         Request::from_body(&[]),
         Err(ControlError::BadLength(0))
     ));
-    for kind in [0u8, 17, 0x80, 0xFF] {
+    for kind in [0u8, 20, 0x80, 0xFF] {
         assert_eq!(
             Request::from_body(&[kind]),
             Err(ControlError::UnknownKind(kind))
@@ -714,6 +728,123 @@ fn the_same_transaction_twice_is_refused_the_second_time() {
         "the node says it has it"
     );
     assert_eq!(engine.node().pool().len(), 1);
+}
+
+#[test]
+fn a_block_explorer_sees_the_blocks_the_pool_and_the_numbers_as_the_node_has_them() {
+    use tenero_core::v2::Wire;
+    let rig = Rig::new("explorer");
+    let mut engine = rig.engine();
+    let (handle, mut hook) = start(
+        "127.0.0.1:0".parse().unwrap(),
+        COOKIE,
+        Arc::new(AtomicBool::new(false)),
+        meta(),
+    )
+    .unwrap();
+    let (mut alice, bob) = (
+        Wallet::from_seed(&[1; 32], 0),
+        Wallet::from_seed(&[2; 32], 0),
+    );
+    for _ in 0..5 {
+        mine(&mut engine, &alice.address());
+    }
+    alice.sync(engine.node()).unwrap();
+    let built = alice
+        .build_payment(engine.node(), &mut OsRng, &bob.address(), 1_000)
+        .unwrap();
+    let tx = built.tx.clone();
+    let tx_id = tenero_core::v2::ids::tx_id(&tx).unwrap();
+    let addr = handle.addr;
+    // the transaction goes in through the interface (so the node's clock stamps it), then the pool is listed
+    let (total, listed) = with_client(&mut engine, &mut hook, move || {
+        let remote = RemoteNode::connect(addr, &COOKIE).unwrap();
+        remote.request(&Request::SubmitTx(tx)).unwrap();
+        remote.mempool().unwrap()
+    });
+    assert_eq!(total, 1);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, tx_id);
+    assert_eq!(listed[0].fee, built.tx.prefix.fee);
+    assert_eq!(listed[0].size, built.tx.to_bytes().unwrap().len() as u64);
+    // `pump`'s clock, in seconds
+    assert_eq!(listed[0].received, T0 + 60 * 500);
+
+    // a block takes it in; the summaries must match the blocks as stored, byte for byte in size
+    mine(&mut engine, &alice.address());
+    let store = engine.node().store();
+    let tip = store.tip().unwrap().0;
+    assert_eq!(tip, 6);
+    let mut want = Vec::new();
+    for h in 0..=tip {
+        let index = store.block_index(h).unwrap().unwrap();
+        let (size, paid) = match store.get_block(h).unwrap() {
+            Some(b) => {
+                let paid: u64 = b.coinbase.outputs.iter().map(|o| o.amount).sum();
+                (
+                    b.into_full().unwrap().to_bytes().unwrap().len() as u64,
+                    paid,
+                )
+            }
+            None => (index.header.to_bytes().unwrap().len() as u64, 0),
+        };
+        want.push((
+            h,
+            index.block_id,
+            index.header.timestamp,
+            index.target,
+            index.tx_count,
+            size,
+            paid,
+        ));
+    }
+    let next = engine.node().next_block().unwrap();
+    let emission = rig.params.emission;
+    let (summaries, stats, (total_after, _)) = with_client(&mut engine, &mut hook, move || {
+        let remote = RemoteNode::connect(addr, &COOKIE).unwrap();
+        // in pieces, and nothing past the tip
+        let mut s = remote.headers(0, 3).unwrap();
+        s.extend(remote.headers(3, 64).unwrap());
+        assert!(remote.headers(tip + 1, 5).unwrap().is_empty());
+        assert!(remote.headers(u64::MAX, 64).unwrap().is_empty());
+        (s, remote.chain_stats().unwrap(), remote.mempool().unwrap())
+    });
+    let got: Vec<_> = summaries
+        .iter()
+        .map(|b| {
+            (
+                b.height,
+                b.id,
+                b.timestamp,
+                b.target,
+                b.tx_count,
+                b.size,
+                b.coinbase_total,
+            )
+        })
+        .collect();
+    assert_eq!(got, want);
+    assert_eq!(summaries[6].tx_count, 1, "the payment's block");
+    assert!(
+        summaries[6].coinbase_total > summaries[5].coinbase_total,
+        "it paid a fee"
+    );
+    // the work grows block by block
+    for w in summaries.windows(2) {
+        assert!(w[1].cumulative_work > w[0].cumulative_work);
+    }
+    assert_eq!(total_after, 0, "the block emptied the pool");
+    assert_eq!(stats.height, tip);
+    assert_eq!(stats.next_target, next.target.to_be_bytes());
+    assert_eq!(stats.cumulative_work, summaries[6].cumulative_work);
+    assert_eq!(stats.next_reward, next.reward);
+    assert_eq!(
+        stats.emitted,
+        (1..=tip).map(|h| emission.reward_at(h)).sum::<u64>()
+    );
+    assert_eq!(stats.max_supply, emission.max_supply);
+    assert_eq!(stats.tail_reward, emission.tail_reward);
+    assert_eq!(stats.block_time, rig.params.difficulty.block_time);
 }
 
 #[test]

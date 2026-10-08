@@ -267,7 +267,23 @@ cargo build --release -p tenero-gui -p tenero-app --bins      # the app and the 
 * **Mining:** off until you press Start; says what it uses (the GPU at full load, or CPU cores); shows the rate over 10 s, 60 s, 15 min and the run, the card's temperature, power and clocks, and the blocks found. It stops when you lock the wallet or stop the node.
 * **A balance is never shown as final** while the wallet is reading the chain or no node is running (without a node there is no number at all).
 * **Settings** are in `settings.conf` in the app folder (`%LOCALAPPDATA%\Tenero`, or `TENERO_APP_DIR`): no secrets in it. One node folder and one wallet file per network.
-* **What is not built yet:** a tiny block explorer, a payment *request* with a label, exporting the history, a transaction detail view, and a wallet-file folder permission warning. The window has been drawn and read in automated tests (all screens, all states) but **how it looks and feels is checked by hand**.
+* **What is not built yet:** a payment *request* with a label, exporting the history, a transaction detail view, and a wallet-file folder permission warning (the block explorer is a program of its own: below). The window has been drawn and read in automated tests (all screens, all states) but **how it looks and feels is checked by hand**.
+
+## The block explorer: `tenero-explorer`
+
+A window onto a node running on this computer. It shows the height, the **difficulty** (the expected number of proof-of-work attempts for the next block, worked out exactly from the target), an **estimated network hash rate** and the mean block time, the coins **emitted** so far against the cap, the block reward, the **transaction pool** (each transaction's hash, when this node received it, its fee, its fee rate and its size, best fee rate first), and the **latest 30 blocks** (height, time, size, transactions, what the coinbase paid, hash). A hash is shown cut short; hover over it to see all of it, click to copy it. It asks the node again every 5 seconds ("Refresh now" asks at once), and it only reads: it cannot send anything or change the node.
+
+```powershell
+cargo build --release -p tenero-explorer
+.\target\release\tenero-explorer.exe                                   # the node the wallet app runs (its settings say where)
+.\target\release\tenero-explorer.exe --data $HOME\scratch --network test # any node: its data folder, and its network or --control IP:PORT
+```
+
+* **The hash rate is an estimate.** Nobody can measure it. It is the work the last 30 blocks proved divided by the time their timestamps say they took. Miners write those timestamps, and over a few blocks luck matters, so read it as a rough figure.
+* **Emitted** is the schedule's total (the base rewards of every block so far), not what was paid: an oversize penalty, which creates fewer coins, is not subtracted. Past the cap the tail goes on for ever.
+* **"Received"** is when *this* node got a transaction (its own clock). It is "unknown" for a transaction taken before the node was updated to record it.
+* **Everything shown is what one node says.** The explorer cannot tell whether that node is on the best chain; it shows whether the node says it is catching up.
+* It talks to the node through the control interface with the node's cookie (requests `headers`, `mempool` and `chain_stats`, added 2026-10-07: `docs/CONTROL_PROTOCOL.md`), so it runs only on the node's own computer and needs a node of this version or later.
 
 ## The seed check: `tenero-seedcheck`
 

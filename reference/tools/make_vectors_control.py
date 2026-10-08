@@ -1,7 +1,7 @@
 """The reference for the CONTROL protocol (docs/CONTROL_PROTOCOL.md) and its golden vectors.
 
 An independent implementation, in Python and the standard library only, of how crates/tenero-app turns the requests
-a wallet makes of a node, and the node's answers, into bytes: the frame, the eleven requests, the answers, and the
+a wallet (or a block explorer) makes of a node, and the node's answers, into bytes: the frame, the requests, the answers, and the
 order in which a decoder checks a message. The transaction and coinbase encodings inside come from the version 2
 data-model reference (`reference/tools/make_vectors_v2.py`).
 
@@ -30,15 +30,16 @@ MAX_NAME = 64
 MAX_BLOCKS_PER_REQUEST = 64
 MAX_KEY_IMAGES = 4096
 MAX_OUTPUTS_PER_REQUEST = 1024
+MAX_MEMPOOL_LIST = 4096
 ANSWER = 0x80
 ERROR = 0xFF
 
 REQUESTS = {"auth": 1, "tip": 2, "block": 3, "output": 4, "output_count": 5, "key_image_spent": 6, "rules": 7,
             "submit_tx": 8, "info": 9, "stop": 10, "blocks": 11, "block_template": 12, "submit_block": 13,
-            "key_images_spent": 14, "outputs": 15, "check_pow": 16}
+            "key_images_spent": 14, "outputs": 15, "check_pow": 16, "headers": 17, "mempool": 18, "chain_stats": 19}
 RESPONSES = {"authed": 1, "tip": 2, "block": 3, "output": 4, "output_count": 5, "spent": 6, "rules": 7,
              "tx_accepted": 8, "info": 9, "stopping": 10, "blocks": 11, "template": 12, "block_submitted": 13,
-             "spent_many": 14, "outputs_many": 15, "pow_checked": 16}
+             "spent_many": 14, "outputs_many": 15, "pow_checked": 16, "headers": 17, "mempool": 18, "chain_stats": 19}
 
 
 class ControlError(Exception):
@@ -109,6 +110,29 @@ def dec_stored_output(r):
             "height": r.u64(), "coinbase": dec_flag(r)}
 
 
+# ---- what a block explorer is told ---------------------------------------------------------------------------
+
+def enc_summary(b):
+    return (u64(b["height"]) + fixed(b["id"], 32) + u64(b["timestamp"]) + fixed(b["target"], 32)
+            + fixed(b["cumulative_work"], 32) + u64(b["size"]) + u32(b["tx_count"]) + u64(b["coinbase_total"]))
+
+
+def dec_summary(r):
+    return {"height": r.u64(), "id": r.fixed(32), "timestamp": r.u64(), "target": r.fixed(32),
+            "cumulative_work": r.fixed(32), "size": r.u64(), "tx_count": r.u32(), "coinbase_total": r.u64()}
+
+
+def enc_pool_entry(t):
+    return fixed(t["id"], 32) + u64(t["received"]) + u64(t["fee"]) + u64(t["size"])
+
+
+def dec_pool_entry(r):
+    return {"id": r.fixed(32), "received": r.u64(), "fee": r.u64(), "size": r.u64()}
+
+
+STATS_FIELDS = ("next_reward", "emitted", "max_supply", "tail_reward", "block_time")
+
+
 def dec_flag(r):
     b = r.u8()
     if b not in (0, 1):
@@ -147,7 +171,7 @@ def enc_request(m):
         body += u32(len(m["key_images"])) + b"".join(fixed(k, 32) for k in m["key_images"])
     elif t == "submit_tx":
         body += v2.enc_tx(m["tx"])
-    elif t == "blocks":
+    elif t in ("blocks", "headers"):
         assert 1 <= m["count"] <= MAX_BLOCKS_PER_REQUEST
         body += u64(m["from"]) + u16(m["count"])
     elif t == "block_template":
@@ -187,7 +211,7 @@ def dec_request(body):
             m["key_images"] = [r.fixed(32) for _ in range(r.count(1, MAX_KEY_IMAGES))]
         elif t == "submit_tx":
             m["tx"] = v2.dec_tx(r)
-        elif t == "blocks":
+        elif t in ("blocks", "headers"):
             m["from"] = r.u64()
             m["count"] = r.u16()
             if not 1 <= m["count"] <= MAX_BLOCKS_PER_REQUEST:
@@ -249,6 +273,15 @@ def enc_response(m):
         body += u64(m["height"]) + fixed(m["target"], 32) + v2.enc_block(m["block"])
     elif t == "block_submitted":
         body += fixed(m["id"], 32) + flag(m["in_chain"])
+    elif t == "headers":
+        assert len(m["blocks"]) <= MAX_BLOCKS_PER_REQUEST
+        body += u32(len(m["blocks"])) + b"".join(enc_summary(b) for b in m["blocks"])
+    elif t == "mempool":
+        assert len(m["txs"]) <= min(MAX_MEMPOOL_LIST, m["total"])
+        body += u32(m["total"]) + u32(len(m["txs"])) + b"".join(enc_pool_entry(t) for t in m["txs"])
+    elif t == "chain_stats":
+        body += (u64(m["height"]) + fixed(m["next_target"], 32) + fixed(m["cumulative_work"], 32)
+                 + b"".join(u64(m[k]) for k in STATS_FIELDS))
     return body
 
 
@@ -306,6 +339,18 @@ def dec_response(body):
             elif t == "block_submitted":
                 m["id"] = r.fixed(32)
                 m["in_chain"] = dec_flag(r)
+            elif t == "headers":
+                m["blocks"] = [dec_summary(r) for _ in range(r.count(0, MAX_BLOCKS_PER_REQUEST))]
+            elif t == "mempool":
+                m["total"] = r.u32()
+                # a list longer than the pool it lists is not an answer
+                m["txs"] = [dec_pool_entry(r) for _ in range(r.count(0, min(MAX_MEMPOOL_LIST, m["total"])))]
+            elif t == "chain_stats":
+                m["height"] = r.u64()
+                m["next_target"] = r.fixed(32)
+                m["cumulative_work"] = r.fixed(32)
+                for k in STATS_FIELDS:
+                    m[k] = r.u64()
         else:
             raise ControlError("kind")
     except v2.DecodeError:
@@ -382,6 +427,30 @@ def info(**kw):
     return m
 
 
+def sample_summary(height=12, txs=2):
+    return {"height": height, "id": "%02x" % (height % 256) * 32, "timestamp": 1700000000 + 60 * height,
+            "target": "00" * 3 + "0f" + "ff" * 28, "cumulative_work": "00" * 30 + "%04x" % (height * 7),
+            "size": 300 + 2000 * txs, "tx_count": txs, "coinbase_total": 2000012345}
+
+
+def genesis_summary():
+    """The genesis block: no target, no coinbase, no transactions; its size is its header."""
+    return {"height": 0, "id": "cd" * 32, "timestamp": 1700000000, "target": "00" * 32, "cumulative_work": "00" * 32,
+            "size": 146, "tx_count": 0, "coinbase_total": 0}
+
+
+def sample_pool_entry(i, received=1700000123):
+    return {"id": "%02x" % (i + 0x40) * 32, "received": received, "fee": 1000000 * (i + 1), "size": 1500 + i}
+
+
+def chain_stats(**kw):
+    m = {"type": "chain_stats", "height": 812, "next_target": "00" * 2 + "3a" + "ff" * 29,
+         "cumulative_work": "00" * 28 + "01020304", "next_reward": 2000000000, "emitted": 1624000000000,
+         "max_supply": 2000000000000000, "tail_reward": 50000000, "block_time": 60}
+    m.update(kw)
+    return m
+
+
 def valid_requests():
     return [
         ("authenticate", {"type": "auth", "cookie": "09" * 32}),
@@ -410,6 +479,10 @@ def valid_requests():
                                                       "max_body_bytes": 0}),
         ("a mined block", {"type": "submit_block", "block": sample_block(txs=0)}),
         ("a mined block with two transactions", {"type": "submit_block", "block": sample_block(txs=2)}),
+        ("one block summary", {"type": "headers", "from": 7, "count": 1}),
+        ("the most block summaries at once, from the largest height", {"type": "headers", "from": 2 ** 64 - 1, "count": 64}),
+        ("the pool", {"type": "mempool"}),
+        ("the chain's numbers", {"type": "chain_stats"}),
     ]
 
 
@@ -453,6 +526,18 @@ def valid_responses():
                                              "block": sample_block(1, txs=0)}),
         ("the block is in the chain", {"type": "block_submitted", "id": "33" * 32, "in_chain": True}),
         ("the block lost a race", {"type": "block_submitted", "id": "44" * 32, "in_chain": False}),
+        ("no block summaries", {"type": "headers", "blocks": []}),
+        ("the genesis summary and the next two", {"type": "headers",
+                                                  "blocks": [genesis_summary(), sample_summary(1, 0), sample_summary(2)]}),
+        ("a summary with the largest numbers", {"type": "headers", "blocks": [
+            {"height": 2 ** 64 - 1, "id": "ff" * 32, "timestamp": 2 ** 64 - 1, "target": "ff" * 32,
+             "cumulative_work": "ff" * 32, "size": 2 ** 64 - 1, "tx_count": 2 ** 32 - 1, "coinbase_total": 2 ** 64 - 1}]}),
+        ("an empty pool", {"type": "mempool", "total": 0, "txs": []}),
+        ("a pool of three", {"type": "mempool", "total": 3,
+                             "txs": [sample_pool_entry(0), sample_pool_entry(1, received=0), sample_pool_entry(2)]}),
+        ("a pool larger than its list", {"type": "mempool", "total": 9000, "txs": [sample_pool_entry(5)]}),
+        ("the chain's numbers", chain_stats()),
+        ("the chain's numbers at genesis", chain_stats(height=0, cumulative_work="00" * 32, emitted=0)),
         ("an error", {"type": "error", "message": "no"}),
         ("an error with accents", {"type": "error", "message": "fée trop basse: пять"}),
         ("the longest error", {"type": "error", "message": "x" * MAX_TEXT}),
@@ -491,9 +576,9 @@ def invalid_cases():
     # nothing, and kinds that do not exist
     for d in ("request", "response"):
         out.append(bad(d, "an empty body", b"", "length"))
-    for k in (0, 17, 0x80, 0x8F, 0xFE):
+    for k in (0, 20, 0x80, 0x8F, 0xFE):
         out.append(bad("request", f"unknown request kind {k}", bytes([k]), "kind"))
-    for k in (0, 1, 11, 12, 13, 14, 15, 0x91, 0xFE):
+    for k in (0, 1, 11, 12, 13, 14, 15, 17, 0x94, 0xFE):
         out.append(bad("response", f"unknown response kind {k}", bytes([k]), "kind"))
     # every message cut short and with a byte too many
     for note, m in valid_requests():
@@ -544,6 +629,23 @@ def invalid_cases():
     out.append(bad("request", "check_pow: no height", u8(16), "malformed"))
     out.append(bad("response", "pow_checked: a flag of 2", u8(16 | ANSWER) + bytes([2]), "malformed"))
     out.append(bad("response", "pow_checked: no flag", u8(16 | ANSWER), "malformed"))
+    # headers: how many, asked and answered
+    for count in (0, 65, 65535):
+        out.append(bad("request", f"headers: a count of {count}", u8(17) + u64(1) + u16(count), "malformed"))
+    out.append(bad("response", "headers: 65 of them, every one there",
+                   u8(17 | ANSWER) + u32(65) + b"".join(enc_summary(sample_summary(i)) for i in range(65)), "malformed"))
+    out.append(bad("response", "headers: a summary one byte short",
+                   u8(17 | ANSWER) + u32(1) + enc_summary(sample_summary())[:-1], "malformed"))
+    # the pool: a list longer than the pool, or over the cap
+    out.append(bad("response", "mempool: more listed than the pool holds",
+                   u8(18 | ANSWER) + u32(1) + u32(2) + enc_pool_entry(sample_pool_entry(0)) + enc_pool_entry(sample_pool_entry(1)),
+                   "malformed"))
+    out.append(bad("response", "mempool: a list over the cap",
+                   u8(18 | ANSWER) + u32(10000) + u32(MAX_MEMPOOL_LIST + 1), "malformed"))
+    out.append(bad("response", "mempool: fewer entries than the count",
+                   u8(18 | ANSWER) + u32(5) + u32(2) + enc_pool_entry(sample_pool_entry(0)), "malformed"))
+    out.append(bad("response", "mempool: no total", u8(18 | ANSWER), "malformed"))
+    out.append(bad("response", "chain_stats: one byte short", enc_response(chain_stats())[:-1], "malformed"))
     # Blocks: how many
     for count in (0, 65, 65535):
         out.append(bad("request", f"blocks: a count of {count}", u8(11) + u64(1) + u16(count), "malformed"))
@@ -583,7 +685,7 @@ def build():
                        "(reference/tools/make_vectors_control.py).",
         "limits": {"max_frame": MAX_FRAME, "max_text": MAX_TEXT, "max_name": MAX_NAME,
                    "max_blocks_per_request": MAX_BLOCKS_PER_REQUEST, "max_key_images": MAX_KEY_IMAGES,
-                   "max_outputs_per_request": MAX_OUTPUTS_PER_REQUEST},
+                   "max_outputs_per_request": MAX_OUTPUTS_PER_REQUEST, "max_mempool_list": MAX_MEMPOOL_LIST},
         "kinds": {"requests": REQUESTS, "responses": {k: v | ANSWER for k, v in RESPONSES.items()}, "error": ERROR},
         "valid": valid_cases(),
         "invalid": invalid_cases(),

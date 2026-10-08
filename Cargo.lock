@@ -2855,6 +2855,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenero-explorer"
+version = "0.2.0-beta.3"
+dependencies = [
+ "eframe",
+ "tenero-app",
+ "tenero-core",
+ "tenero-gui",
+ "tenero-node",
+]
+
+[[package]]
 name = "tenero-fuzzcases"
 version = "0.2.0-beta.3"
 dependencies = [

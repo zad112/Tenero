@@ -29,8 +29,8 @@ use tenero_net::{Engine, Event};
 use tenero_wallet::ChainView;
 
 use crate::control::{
-    read_frame, scan_block_size, write_frame, NodeInfo, NodeKind, Request, Response, Template,
-    MAX_BLOCKS_BYTES,
+    read_frame, scan_block_size, write_frame, BlockSummary, ChainStats, NodeInfo, NodeKind,
+    Request, Response, Template, MAX_BLOCKS_BYTES, MAX_MEMPOOL_LIST,
 };
 
 /// Connections served at once; more are closed at once.
@@ -268,6 +268,45 @@ fn err(m: impl Into<String>) -> Response {
     Response::Error(m.into())
 }
 
+/// The bytes of a coinbase in its consensus encoding (the genesis block has none: 0).
+fn coinbase_size(cb: Option<&tenero_core::v2::Coinbase>) -> u64 {
+    use tenero_core::v2::Wire;
+    cb.and_then(|cb| cb.to_bytes().ok())
+        .map_or(0, |b| b.len() as u64)
+}
+
+/// What an explorer shows of the block at `height`, or `None` above the tip. Reads the index record and the coinbase only,
+/// never the transactions.
+fn summary(store: &tenero_store::Store, height: u64) -> Result<Option<BlockSummary>, String> {
+    use tenero_core::v2::Wire;
+    let Some(index) = store.block_index(height).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let coinbase = store.coinbase(height).map_err(|e| e.to_string())?;
+    let header = index.header.to_bytes().map_err(|e| e.to_string())?.len() as u64;
+    // header, coinbase, the count of transactions (u32) and the transactions: the block's consensus encoding
+    let size = if height == 0 {
+        header
+    } else {
+        header + coinbase_size(coinbase.as_ref()) + 4 + index.body_size
+    };
+    let coinbase_total = coinbase.as_ref().map_or(0, |cb| {
+        cb.outputs
+            .iter()
+            .fold(0u64, |acc, o| acc.saturating_add(o.amount))
+    });
+    Ok(Some(BlockSummary {
+        height,
+        id: index.block_id,
+        timestamp: index.header.timestamp,
+        target: index.target,
+        cumulative_work: index.cumulative_work,
+        size,
+        tx_count: index.tx_count,
+        coinbase_total,
+    }))
+}
+
 /// What the loop did with a request. (One answer in flight at a time, so the size of the largest, a block template, is
 /// of no consequence.)
 #[allow(clippy::large_enum_variant)]
@@ -354,6 +393,43 @@ impl ControlHook {
                 Ok(b) => Response::PowChecked(b),
                 Err(e) => err(e),
             },
+            Request::Headers { from, count } => {
+                let mut out = Vec::new();
+                for h in from..from.saturating_add(u64::from(count)) {
+                    match summary(node.store(), h) {
+                        Ok(Some(b)) => out.push(b),
+                        Ok(None) => break,
+                        Err(e) => return Outcome::Reply(err(e)),
+                    }
+                }
+                Response::Headers(out)
+            }
+            Request::Mempool => {
+                let pool = node.pool();
+                Response::Mempool {
+                    total: u32::try_from(pool.len()).unwrap_or(u32::MAX),
+                    txs: pool.listing(MAX_MEMPOOL_LIST),
+                }
+            }
+            Request::ChainStats => {
+                let next = match node.next_block() {
+                    Ok(n) => n,
+                    Err(e) => return Outcome::Reply(err(e.to_string())),
+                };
+                let p = node.params();
+                let height = next.height.saturating_sub(1);
+                Response::ChainStats(ChainStats {
+                    height,
+                    next_target: next.target.to_be_bytes(),
+                    cumulative_work: next.cumulative_work.to_be_bytes(),
+                    next_reward: next.reward,
+                    // only past the end of a u64 of coins, which no schedule here comes near
+                    emitted: p.emission.paid_through(height).unwrap_or(u64::MAX),
+                    max_supply: p.emission.max_supply,
+                    tail_reward: p.emission.tail_reward,
+                    block_time: p.difficulty.block_time,
+                })
+            }
             Request::Rules => match ChainView::rules(node) {
                 Ok(r) => Response::Rules(r),
                 Err(e) => err(e),

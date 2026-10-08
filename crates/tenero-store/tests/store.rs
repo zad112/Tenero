@@ -305,6 +305,7 @@ fn a_new_store_holds_only_the_genesis_block() {
     );
     assert_eq!(s.height_of(&ids::genesis_id(LABEL)).unwrap(), Some(0));
     assert!(s.get_block(0).unwrap().is_none() && s.get_block(1).unwrap().is_none());
+    assert!(s.coinbase(0).unwrap().is_none() && s.coinbase(1).unwrap().is_none());
     assert_eq!(s.state_digest().unwrap(), model_digest(&[]));
 }
 
@@ -320,6 +321,7 @@ fn blocks_are_stored_indexed_and_read_back_exactly() {
         let height = i as u64 + 1;
         let stored = s.get_block(height).unwrap().unwrap();
         assert!(!stored.is_pruned());
+        assert_eq!(s.coinbase(height).unwrap().as_ref(), Some(&b.coinbase));
         assert_eq!(
             stored.index.first_output_index, expected_first,
             "height {height}"

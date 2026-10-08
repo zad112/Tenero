@@ -2,7 +2,7 @@
 //! `docs/CONTROL_PROTOCOL.md` is the description, `tests/vectors/control.json` the golden vectors.
 //!
 //! A frame is `length u32 little-endian | body`, the body `kind u8 | payload`, the length at most [`MAX_FRAME`].
-//! Requests have kinds 1 to 10; the answer to request `k` has kind `k | 0x80`; an error answer is `0xFF`.
+//! Requests have kinds 1 to 19; the answer to request `k` has kind `k | 0x80`; an error answer is `0xFF`.
 //! Decoding is strict: an unknown kind, a short payload, a trailing byte, a count out of range or text that is not
 //! UTF-8 is an error, and one message has one encoding. **Experimental and unaudited.**
 
@@ -11,7 +11,7 @@ use tenero_core::v2::{
     Block, BlockHeader, Coinbase, CoinbaseOutput, Transaction, TxPrefix, MAX_BLOCK_TXS,
     MAX_COINBASE_OUTPUTS, MAX_EXTRA,
 };
-use tenero_node::Payout;
+use tenero_node::{Payout, PoolEntry};
 use tenero_store::StoredOutput;
 use tenero_wallet::{Rules, ScanBlock};
 
@@ -22,6 +22,8 @@ pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_BLOCKS_PER_REQUEST: u16 = 64;
 pub const MAX_BLOCKS_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_TEXT: usize = 512;
+/// The most pooled transactions one `Mempool` answer lists (the best fee rates; the answer also says how many there are).
+pub const MAX_MEMPOOL_LIST: usize = 4096;
 pub const MAX_NAME: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +32,47 @@ pub enum NodeKind {
     Archive,
     /// Throws away the proofs of old blocks (`CONSENSUS_V2.md` 14).
     Pruned,
+}
+
+/// What a block explorer shows of a block: its header's time, the target it met, the work so far, its size and what its
+/// coinbase paid. Nothing a wallet's privacy rests on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockSummary {
+    pub height: u64,
+    pub id: [u8; 32],
+    /// The header's timestamp (Unix seconds, as the miner wrote it).
+    pub timestamp: u64,
+    /// The target the block met (big-endian; all zeros for the genesis block).
+    pub target: [u8; 32],
+    /// The chain's total work up to and including this block (big-endian).
+    pub cumulative_work: [u8; 32],
+    /// The whole block's size in its consensus encoding (header, coinbase, transactions), in bytes.
+    pub size: u64,
+    /// Transactions besides the coinbase.
+    pub tx_count: u32,
+    /// The coinbase's outputs added up: the reward and the fees, less any penalty.
+    pub coinbase_total: u64,
+}
+
+/// The chain's numbers for a block explorer: what the next block must meet and what the schedule has paid.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainStats {
+    /// The tip's height.
+    pub height: u64,
+    /// The target the next block's id must be below (big-endian).
+    pub next_target: [u8; 32],
+    /// The chain's total work up to the tip (big-endian).
+    pub cumulative_work: [u8; 32],
+    /// The next block's base reward.
+    pub next_reward: u64,
+    /// The base rewards of blocks 1 to the tip added up (`Emission::paid_through`): the schedule, with no penalty
+    /// subtracted.
+    pub emitted: u64,
+    /// The main emission's cap, and the reward each block pays once it is reached.
+    pub max_supply: u64,
+    pub tail_reward: u64,
+    /// The time between blocks the difficulty aims at, in seconds.
+    pub block_time: u64,
 }
 
 /// What a node says about itself.
@@ -101,6 +144,16 @@ pub enum Request {
     /// A mined block. The answer says whether it is in the chain, or on a side branch (it lost a race); a block the
     /// node refuses is an error answer.
     SubmitBlock(Block),
+    /// Up to `count` [`BlockSummary`]s from height `from` on (`count` is 1 to [`MAX_BLOCKS_PER_REQUEST`]): a block explorer's
+    /// list of blocks.
+    Headers {
+        from: u64,
+        count: u16,
+    },
+    /// The transactions in the node's pool, best fee rate first.
+    Mempool,
+    /// The chain's numbers: difficulty, work, reward and emission.
+    ChainStats,
 }
 
 /// What a miner searches: the block with an empty nonce and mix, the height, and the target its id must be below
@@ -144,6 +197,15 @@ pub enum Response {
         id: [u8; 32],
         in_chain: bool,
     },
+    /// Block summaries in order from the requested height: fewer than asked at the tip.
+    Headers(Vec<BlockSummary>),
+    /// `total` is how many transactions the pool holds; `txs` the best of them by fee rate, at most
+    /// [`MAX_MEMPOOL_LIST`], never more than `total`.
+    Mempool {
+        total: u32,
+        txs: Vec<PoolEntry>,
+    },
+    ChainStats(ChainStats),
     Error(String),
 }
 
@@ -205,6 +267,10 @@ pub const K_STOP: u8 = 10;
 pub const K_BLOCKS: u8 = 11;
 pub const K_BLOCK_TEMPLATE: u8 = 12;
 pub const K_SUBMIT_BLOCK: u8 = 13;
+/// `headers`, `mempool` and `chain_stats`: what a block explorer shows (added 2026-10-07).
+pub const K_HEADERS: u8 = 17;
+pub const K_MEMPOOL: u8 = 18;
+pub const K_CHAIN_STATS: u8 = 19;
 pub const K_ERROR: u8 = 0xFF;
 const ANSWER: u8 = 0x80;
 
@@ -247,6 +313,9 @@ impl Request {
             Request::Blocks { .. } => K_BLOCKS,
             Request::BlockTemplate { .. } => K_BLOCK_TEMPLATE,
             Request::SubmitBlock(_) => K_SUBMIT_BLOCK,
+            Request::Headers { .. } => K_HEADERS,
+            Request::Mempool => K_MEMPOOL,
+            Request::ChainStats => K_CHAIN_STATS,
         }
     }
 
@@ -260,7 +329,9 @@ impl Request {
             | Request::OutputCount
             | Request::Rules
             | Request::Info
-            | Request::Stop => {}
+            | Request::Stop
+            | Request::Mempool
+            | Request::ChainStats => {}
             Request::Block { height } => w.u64(*height),
             Request::Output { index } => w.u64(*index),
             Request::CheckPow { height, header } => {
@@ -281,7 +352,7 @@ impl Request {
                 }
             }
             Request::SubmitTx(tx) => tx.write(&mut w)?,
-            Request::Blocks { from, count } => {
+            Request::Blocks { from, count } | Request::Headers { from, count } => {
                 w.u64(*from);
                 w.u16(*count);
             }
@@ -332,14 +403,20 @@ impl Request {
             K_SUBMIT_TX => Request::SubmitTx(Transaction::read(&mut r)?),
             K_INFO => Request::Info,
             K_STOP => Request::Stop,
-            K_BLOCKS => {
+            K_BLOCKS | K_HEADERS => {
                 let from = r.u64()?;
                 let count = r.u16()?;
                 if count == 0 || count > MAX_BLOCKS_PER_REQUEST {
                     return Err(DecodeError::CountOutOfRange.into());
                 }
-                Request::Blocks { from, count }
+                if kind == K_BLOCKS {
+                    Request::Blocks { from, count }
+                } else {
+                    Request::Headers { from, count }
+                }
             }
+            K_MEMPOOL => Request::Mempool,
+            K_CHAIN_STATS => Request::ChainStats,
             K_BLOCK_TEMPLATE => Request::BlockTemplate {
                 payout: Payout {
                     onetime_address: r.array()?,
@@ -377,6 +454,39 @@ fn write_scan_block(w: &mut Writer, b: &ScanBlock) -> Result<(), EncodeError> {
     Ok(())
 }
 
+fn write_summary(w: &mut Writer, b: &BlockSummary) {
+    w.u64(b.height);
+    w.raw(&b.id);
+    w.u64(b.timestamp);
+    w.raw(&b.target);
+    w.raw(&b.cumulative_work);
+    w.u64(b.size);
+    w.u32(b.tx_count);
+    w.u64(b.coinbase_total);
+}
+
+fn read_summary(r: &mut Reader<'_>) -> Result<BlockSummary, DecodeError> {
+    Ok(BlockSummary {
+        height: r.u64()?,
+        id: r.array()?,
+        timestamp: r.u64()?,
+        target: r.array()?,
+        cumulative_work: r.array()?,
+        size: r.u64()?,
+        tx_count: r.u32()?,
+        coinbase_total: r.u64()?,
+    })
+}
+
+fn read_pool_entry(r: &mut Reader<'_>) -> Result<PoolEntry, DecodeError> {
+    Ok(PoolEntry {
+        id: r.array()?,
+        received: r.u64()?,
+        fee: r.u64()?,
+        size: r.u64()?,
+    })
+}
+
 fn read_scan_block(r: &mut Reader<'_>) -> Result<ScanBlock, DecodeError> {
     Ok(ScanBlock {
         height: r.u64()?,
@@ -412,6 +522,9 @@ impl Response {
             Response::Blocks(_) => K_BLOCKS | ANSWER,
             Response::Template(_) => K_BLOCK_TEMPLATE | ANSWER,
             Response::BlockSubmitted { .. } => K_SUBMIT_BLOCK | ANSWER,
+            Response::Headers(_) => K_HEADERS | ANSWER,
+            Response::Mempool { .. } => K_MEMPOOL | ANSWER,
+            Response::ChainStats(_) => K_CHAIN_STATS | ANSWER,
             Response::Error(_) => K_ERROR,
         }
     }
@@ -511,6 +624,37 @@ impl Response {
                 w.raw(id);
                 put_flag(&mut w, *in_chain);
             }
+            Response::Headers(v) => {
+                w.count(v.len(), 0, usize::from(MAX_BLOCKS_PER_REQUEST))?;
+                for b in v {
+                    write_summary(&mut w, b);
+                }
+            }
+            Response::Mempool { total, txs } => {
+                if txs.len() > *total as usize {
+                    return Err(ControlError::Encode(
+                        "more pooled transactions listed than the pool holds".into(),
+                    ));
+                }
+                w.u32(*total);
+                w.count(txs.len(), 0, MAX_MEMPOOL_LIST)?;
+                for t in txs {
+                    w.raw(&t.id);
+                    w.u64(t.received);
+                    w.u64(t.fee);
+                    w.u64(t.size);
+                }
+            }
+            Response::ChainStats(c) => {
+                w.u64(c.height);
+                w.raw(&c.next_target);
+                w.raw(&c.cumulative_work);
+                w.u64(c.next_reward);
+                w.u64(c.emitted);
+                w.u64(c.max_supply);
+                w.u64(c.tail_reward);
+                w.u64(c.block_time);
+            }
             Response::Error(m) => text(&mut w, m, MAX_TEXT)?,
         }
         Ok(w.into_bytes())
@@ -601,6 +745,25 @@ impl Response {
                 id: r.array()?,
                 in_chain: flag(&mut r)?,
             },
+            x if x == K_HEADERS | ANSWER => {
+                Response::Headers(r.list(0, usize::from(MAX_BLOCKS_PER_REQUEST), read_summary)?)
+            }
+            x if x == K_MEMPOOL | ANSWER => {
+                let total = r.u32()?;
+                // a list longer than the pool it lists is not an answer
+                let txs = r.list(0, MAX_MEMPOOL_LIST.min(total as usize), read_pool_entry)?;
+                Response::Mempool { total, txs }
+            }
+            x if x == K_CHAIN_STATS | ANSWER => Response::ChainStats(ChainStats {
+                height: r.u64()?,
+                next_target: r.array()?,
+                cumulative_work: r.array()?,
+                next_reward: r.u64()?,
+                emitted: r.u64()?,
+                max_supply: r.u64()?,
+                tail_reward: r.u64()?,
+                block_time: r.u64()?,
+            }),
             K_ERROR => Response::Error(read_text(&mut r, MAX_TEXT)?),
             other => return Err(ControlError::UnknownKind(other)),
         };

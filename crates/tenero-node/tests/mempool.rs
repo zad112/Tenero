@@ -541,6 +541,41 @@ fn a_block_template_takes_the_best_fee_rates_within_the_budget() {
 }
 
 #[test]
+fn the_pool_listing_is_in_block_order_with_fee_size_and_arrival_time() {
+    let rig = Rig::new("listing", None);
+    let mut net = Net::new("listing-net", 7, None);
+    let mut node = rig.node(BIG);
+    grow(&mut net, &mut node, 4);
+    let deltas = [5, 40, 20];
+    let txs: Vec<Transaction> = deltas
+        .iter()
+        .enumerate()
+        .map(|(i, d)| net.std_tx(i as u64 + 1, *d))
+        .collect();
+    // the second arrives with no time, the others with one
+    node.submit_tx_at(txs[0].clone(), T0 + 10).unwrap();
+    node.submit_tx(txs[1].clone()).unwrap();
+    node.submit_tx_at(txs[2].clone(), T0 + 30).unwrap();
+    let list = node.pool().listing(100);
+    let ids: Vec<[u8; 32]> = list.iter().map(|e| e.id).collect();
+    assert_eq!(ids, vec![id_of(&txs[1]), id_of(&txs[2]), id_of(&txs[0])]);
+    // the same order as a block template takes them
+    let template: Vec<[u8; 32]> = node.block_template_txs(BIG).iter().map(id_of).collect();
+    assert_eq!(ids, template);
+    assert_eq!(
+        list.iter().map(|e| e.received).collect::<Vec<_>>(),
+        vec![0, T0 + 30, T0 + 10]
+    );
+    for (e, t) in list.iter().zip([&txs[1], &txs[2], &txs[0]]) {
+        assert_eq!(e.fee, t.prefix.fee);
+        assert_eq!(e.size, t.to_bytes().unwrap().len() as u64);
+    }
+    // a limit keeps the best
+    assert_eq!(node.pool().listing(1)[0].id, id_of(&txs[1]));
+    assert!(node.pool().listing(0).is_empty());
+}
+
+#[test]
 fn a_node_refuses_to_run_without_real_proof_checking() {
     let rig = Rig::new("refuse", None);
     let r = Node::with_proof_check(
