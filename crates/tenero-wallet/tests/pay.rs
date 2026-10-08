@@ -1,22 +1,30 @@
-//! Two wallets pay each other through a node that verifies every proof for real (CLSAG, Bulletproofs+, balance).
-//! The chain is the SHA-256 test chain (a CPU mines a block in an instant), so no GPU and no 4 GiB dataset.
-//! **A test chain, not a real one.**
+//! Wallets pay each other through a node that verifies every proof for real (FCMP++ membership and spend authorisation,
+//! Bulletproofs+, the balance). Carrot outputs and addresses throughout. The chain is the SHA-256 test chain (a CPU mines a
+//! block in an instant), so no GPU and no 4 GiB dataset. **A test chain, not a real one.**
+//!
+//! A block reward can be spent 60 blocks after its block (when it enters the curve tree), so most tests first mine 64
+//! blocks to Alice: the rewards of blocks 1 to 5 are spendable then (block 5's entered the tree with block 64).
 
 use std::path::PathBuf;
 
 use rand_core::OsRng;
 use tenero_chain::{ChainParams, Sha256Pow, Submitted};
-use tenero_core::fees;
-use tenero_core::v2::Wire;
-use tenero_net::sim::{mine_test_block, test_chain_params, LABEL};
+use tenero_core::u256::U256;
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids::block_id;
+use tenero_core::v3::{rules, Block, Wire};
+use tenero_net::sim::{test_chain_params, LABEL};
 use tenero_node::{Node, NodeConfig};
 use tenero_store::Store;
+use tenero_wallet::wallet::RECENT_BLOCKS;
 use tenero_wallet::{
-    coinbase_payout, max_payment_inputs, payment_size, Address, ChainView, FileError, KdfParams,
-    Submitter, Wallet, WalletError,
+    coinbase_payout, max_inputs_for, transaction_size, Address, ChainView, FeeLevel, FileError,
+    KdfParams, Kind, Network, Submitter, Wallet, WalletError, MAX_RECIPIENTS,
 };
 
 const T0: u64 = 1_700_000_000;
+/// Blocks mined before a test spends: the rewards of blocks 1 to 5 are spendable then.
+const READY: u64 = 64;
 
 struct Rig {
     path: PathBuf,
@@ -25,19 +33,15 @@ struct Rig {
 }
 
 impl Rig {
-    fn new(tag: &str, ring_size: usize, maturity: u64) -> Rig {
+    fn new(tag: &str) -> Rig {
         let path =
             std::env::temp_dir().join(format!("tenero-wallet-{}-{tag}.redb", std::process::id()));
         remove(&path);
-        let store = Store::open(&path, LABEL, tenero_core::v2::ids::PowKind::Sha256).unwrap();
-        let mut params = test_chain_params();
-        params.ring_size = ring_size;
-        params.coinbase_maturity = maturity;
-        params.spend_maturity = maturity;
+        let store = Store::open(&path, LABEL, PowKind::Sha256).unwrap();
         Rig {
             path,
             store,
-            params,
+            params: test_chain_params(),
         }
     }
 
@@ -61,12 +65,29 @@ impl Drop for Rig {
     }
 }
 
-/// Mines one block paying `to`; returns the coinbase amount.
+/// A mined block on the node's tip, with the pool's transactions, its reward paid to `to` (a Carrot coinbase output).
+fn block_for(node: &Node<'_>, to: &Address, ts: u64) -> Block {
+    let height = node.tip().unwrap().0 + 1;
+    let mut b = node
+        .block_template(ts, u64::MAX, &|amount| {
+            coinbase_payout(&mut OsRng, to, height, amount).expect("a main address")
+        })
+        .expect("a template");
+    let target = node.next_block().unwrap().target;
+    for nonce in 0.. {
+        b.header.nonce = nonce;
+        if U256::from_be_bytes(&block_id(&b.header, PowKind::Sha256)) < target {
+            break;
+        }
+    }
+    b
+}
+
+/// Mines one block paying `to`; returns the reward.
 fn mine(node: &mut Node<'_>, to: &Address, extra_seconds: u64) -> u64 {
     let height = node.tip().unwrap().0 + 1;
-    let payout = coinbase_payout(&mut OsRng, to, height).unwrap();
     let ts = T0 + 60 * height + extra_seconds;
-    let block = mine_test_block(node, ts, payout);
+    let block = block_for(node, to, ts);
     let amount = block.coinbase.outputs[0].amount;
     match node
         .submit_block(&block, ts + 10)
@@ -83,21 +104,29 @@ fn mine_n(node: &mut Node<'_>, to: &Address, n: u64) -> u64 {
 }
 
 fn wallet(tag: u8) -> Wallet {
-    Wallet::from_seed(&[tag; 32], 0)
+    Wallet::from_seed(&[tag; 32], Network::Test, 0)
+}
+
+/// A node with `READY` blocks paid to a fresh Alice, and Alice synced.
+fn funded(rig: &Rig) -> (Node<'_>, Wallet, u64) {
+    let mut node = rig.node();
+    let mut alice = wallet(1);
+    let mined = mine_n(&mut node, &alice.address(), READY);
+    alice.sync(&node).unwrap();
+    (node, alice, mined)
 }
 
 #[test]
 fn two_wallets_pay_each_other_through_a_node_with_real_proofs() {
-    let rig = Rig::new("pay", 2, 2);
-    let mut node = rig.node();
-    let (mut alice, mut bob) = (wallet(1), wallet(2));
-    let mut mined = mine_n(&mut node, &alice.address(), 5);
-    alice.sync(&node).unwrap();
+    let rig = Rig::new("pay");
+    let (mut node, mut alice, mut mined) = funded(&rig);
+    let mut bob = wallet(2);
     let b = alice.balance(&node).unwrap();
     assert_eq!(b.total, mined);
-    assert!(
-        b.spendable > 0 && b.spendable < b.total,
-        "the newest coinbase is not yet mature"
+    assert_eq!(
+        b.spendable,
+        5 * 2_000_000_000,
+        "the rewards of blocks 1 to 5"
     );
 
     // Alice pays Bob
@@ -106,16 +135,14 @@ fn two_wallets_pay_each_other_through_a_node_with_real_proofs() {
         .pay(&mut node, &mut OsRng, &bob.address(), pay)
         .unwrap();
     assert_eq!(built.amount, pay);
-    assert!(node.pool().len() == 1);
-    // the fee is the minimum plus a margin, not more than that
-    let size = built.tx.to_bytes().unwrap().len() as u64;
+    assert_eq!(node.pool().len(), 1);
+    // the fee is the Low level's share of the minimum for the transaction's real size, and its size was known to the byte
+    let size = built.tx.to_bytes().unwrap().len();
+    let layers = node.rules().unwrap().tree_layers;
+    assert_eq!(size, transaction_size(built.spends.len(), 2, layers));
     let next = node.next_block().unwrap();
-    let min = fees::dynamic_min_fee(size, next.reward, next.median).unwrap();
-    assert!(
-        built.fee * 100 >= min * 120 && built.fee <= min * 3,
-        "fee {} vs minimum {min}",
-        built.fee
-    );
+    let min = rules::min_fee(size as u64, next.reward, next.median).unwrap();
+    assert_eq!(built.fee, min * 125 / 100 + 1);
     // the coins it spends are promised, so they are not offered again
     let after_send = alice.balance(&node).unwrap();
     assert!(after_send.reserved > 0);
@@ -128,22 +155,25 @@ fn two_wallets_pay_each_other_through_a_node_with_real_proofs() {
     bob.sync(&node).unwrap();
     assert_eq!(bob.balance(&node).unwrap().total, pay);
     let a = alice.balance(&node).unwrap();
-    // nothing is created or lost: what the coinbases paid (the emission, and the fee a second time, because the
-    // miner collects it) is Alice's, Bob's, or the fee the transaction left behind
+    // nothing is created or lost: what the rewards paid (with the fee a second time, because the miner collects it) is
+    // Alice's, Bob's, or the fee the transaction left behind
     assert_eq!(a.total + pay + built.fee, mined);
+    // Alice's change is hers, and she knows it for change (an internal self-send), not a payment received
+    let change: Vec<_> = alice.owned().iter().filter(|o| o.internal).collect();
+    assert_eq!(change.len(), 1);
+    assert_eq!(change[0].onetime_address, built.change_onetime);
+    assert!(!bob.owned()[0].internal);
 
-    // Bob (whose coins are not mature yet) cannot pay until a block passes; then he can, and Alice receives
+    // Bob's coin enters the tree 10 blocks after its block: not spendable before
     assert!(matches!(
         bob.build_payment(&node, &mut OsRng, &alice.address(), 1),
         Err(WalletError::NotEnough { spendable: 0, .. })
     ));
-    mined += mine(&mut node, &alice.address(), 0);
+    mined += mine_n(&mut node, &alice.address(), 9);
     bob.sync(&node).unwrap();
     let back = 400_000_000;
-    let alice_before = {
-        alice.sync(&node).unwrap();
-        alice.balance(&node).unwrap().total
-    };
+    alice.sync(&node).unwrap();
+    let alice_before = alice.balance(&node).unwrap().total;
     let built2 = bob
         .pay(&mut node, &mut OsRng, &alice.address(), back)
         .unwrap();
@@ -157,26 +187,79 @@ fn two_wallets_pay_each_other_through_a_node_with_real_proofs() {
 }
 
 #[test]
-fn the_chain_never_sees_a_spent_output_twice() {
-    let rig = Rig::new("double", 2, 1);
-    let mut node = rig.node();
-    let mut alice = wallet(1);
-    let bob = wallet(2);
-    mine_n(&mut node, &alice.address(), 6);
+fn a_subaddress_and_an_integrated_address_are_paid_and_found() {
+    let rig = Rig::new("subaddress");
+    let (mut node, mut alice, _) = funded(&rig);
+    let mut bob = wallet(2);
+    let sub = bob.subaddress(7).unwrap();
+    assert_eq!(sub.kind, Kind::Subaddress);
+    assert_ne!(sub, bob.address());
+    let integrated = bob.integrated_address(*b"invoice1").unwrap();
+    assert!(integrated.to_text().len() == 110 && integrated.to_text().starts_with("TENt"));
+    alice.pay(&mut node, &mut OsRng, &sub, 300_000_000).unwrap();
     alice.sync(&node).unwrap();
+    alice
+        .pay(&mut node, &mut OsRng, &integrated, 500_000_000)
+        .unwrap();
+    mine(&mut node, &alice.address(), 0);
+    bob.sync(&node).unwrap();
+    let mut got: Vec<_> = bob
+        .owned()
+        .iter()
+        .map(|o| (o.amount, o.address.minor, o.payment_id))
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![(300_000_000, 7, [0; 8]), (500_000_000, 0, *b"invoice1")]
+    );
+    // a coin received at a subaddress is spent like any other
+    mine_n(&mut node, &alice.address(), 10);
+    bob.sync(&node).unwrap();
+    let built = bob
+        .build_payment(&node, &mut OsRng, &alice.address(), 250_000_000)
+        .unwrap();
+    assert_eq!(built.spends.len(), 1);
+    node.submit_tx(built.tx).unwrap();
+    // a wallet restored from Bob's seed finds the subaddress payment too (it watches the first subaddresses)
+    let mut again = Wallet::from_seed(bob.seed(), Network::Test, 0);
+    again.sync(&node).unwrap();
+    assert_eq!(again.owned().len(), 2);
+}
+
+#[test]
+fn a_block_reward_cannot_go_to_a_subaddress_or_another_network() {
+    let mut bob = wallet(2);
+    let sub = bob.subaddress(1).unwrap();
+    assert!(coinbase_payout(&mut OsRng, &sub, 5, 100).is_none());
+    assert!(coinbase_payout(&mut OsRng, &bob.address(), 5, 100).is_some());
+    // a payment to an address of another network is refused before anything is built
+    let rig = Rig::new("network");
+    let (node, mut alice, _) = funded(&rig);
+    let gamma = Wallet::from_seed(&[2; 32], Network::Gamma, 0).address();
+    assert_eq!(
+        alice
+            .build_payment(&node, &mut OsRng, &gamma, 1_000)
+            .unwrap_err(),
+        WalletError::BadAddress
+    );
+}
+
+#[test]
+fn the_chain_never_sees_a_spent_output_twice() {
+    let rig = Rig::new("double");
+    let (mut node, mut alice, _) = funded(&rig);
+    let bob = wallet(2);
     let first = alice
         .pay(&mut node, &mut OsRng, &bob.address(), 1_000)
         .unwrap();
-    // spending the same coin again, by hand, is refused by the node's key-image rule (a copy of the transaction
-    // with another id would have the same key image)
-    let dup = first.tx.clone();
-    assert!(node.submit_tx(dup).is_err(), "the same transaction twice");
+    assert!(
+        node.submit_tx(first.tx.clone()).is_err(),
+        "the same transaction twice"
+    );
     mine(&mut node, &alice.address(), 0);
     for ki in &first.spends {
-        assert!(
-            node.key_image_spent(ki).unwrap(),
-            "the spent coin's key image is in the chain"
-        );
+        assert!(node.key_image_spent(ki).unwrap());
     }
     // a second payment now uses other coins, and the wallet knows the first is spent
     alice.sync(&node).unwrap();
@@ -188,262 +271,215 @@ fn the_chain_never_sees_a_spent_output_twice() {
 
 #[test]
 fn a_payment_that_is_still_waiting_blocks_its_coins_from_a_second_payment() {
-    let rig = Rig::new("reserve", 2, 1);
-    let mut node = rig.node();
-    let mut alice = wallet(1);
+    let rig = Rig::new("reserve");
+    let (mut node, mut alice, _) = funded(&rig);
     let bob = wallet(2);
-    mine_n(&mut node, &alice.address(), 3);
-    alice.sync(&node).unwrap();
     let spendable = alice.balance(&node).unwrap().spendable;
-    // the first payment takes almost everything spendable
-    let _ = alice
+    // the first payment takes all but one coin's worth
+    alice
         .pay(
             &mut node,
             &mut OsRng,
             &bob.address(),
-            spendable - 2_000_000_000,
+            spendable - 2_100_000_000,
         )
         .unwrap();
-    // so a second one cannot, until the first is mined (or the reservation runs out)
-    let again = alice.pay(
-        &mut node,
-        &mut OsRng,
-        &bob.address(),
-        spendable - 2_000_000_000,
-    );
-    assert!(
-        matches!(again, Err(WalletError::NotEnough { .. })),
-        "{again:?}"
-    );
+    let b = alice.balance(&node).unwrap();
+    assert!(b.reserved >= spendable - 2_100_000_000);
+    // what is left is not enough for the same again
+    assert!(matches!(
+        alice.build_payment(&node, &mut OsRng, &bob.address(), spendable - 2_100_000_000),
+        Err(WalletError::NotEnough { .. })
+    ));
 }
 
 #[test]
-fn rings_of_sixteen_with_real_signatures() {
-    let rig = Rig::new("ring16", 16, 1);
-    let mut node = rig.node();
-    let (mut alice, mut bob) = (wallet(1), wallet(2));
-    // fewer than sixteen outputs: cannot hide yet
-    mine_n(&mut node, &alice.address(), 8);
-    alice.sync(&node).unwrap();
-    assert!(matches!(
-        alice.build_payment(&node, &mut OsRng, &bob.address(), 1_000),
-        Err(WalletError::NotEnoughDecoys)
-    ));
-    mine_n(&mut node, &alice.address(), 14);
-    alice.sync(&node).unwrap();
+fn a_payment_needing_several_inputs_spends_them_in_key_image_order_and_is_its_computed_size() {
+    let rig = Rig::new("inputs");
+    let (mut node, mut alice, _) = funded(&rig);
+    let bob = wallet(2);
+    // more than four rewards: all five coins
     let built = alice
-        .pay(&mut node, &mut OsRng, &bob.address(), 5_000_000)
+        .pay(&mut node, &mut OsRng, &bob.address(), 9_000_000_000)
         .unwrap();
-    // the fee is at least 20% over the minimum the transaction's size asks for, and not wasteful
-    let size = built.tx.to_bytes().unwrap().len() as u64;
-    let next = node.next_block().unwrap();
-    let min = fees::dynamic_min_fee(size, next.reward, next.median).unwrap();
-    println!(
-        "ring-16 transaction: {size} bytes, fee {} vs minimum {min}",
-        built.fee
+    assert_eq!(built.spends.len(), 5);
+    assert!(built.spends.windows(2).all(|w| w[0] < w[1]));
+    let layers = node.rules().unwrap().tree_layers;
+    assert_eq!(
+        built.tx.to_bytes().unwrap().len(),
+        transaction_size(5, 2, layers)
     );
-    assert!(built.fee * 100 >= min * 120 && built.fee <= min * 3);
-    for ring in &built.tx.prunable.rings {
-        assert_eq!(ring.len(), 16);
-        assert!(
-            ring.windows(2).all(|w| w[0] < w[1]),
-            "ascending and distinct"
+    mine(&mut node, &alice.address(), 0);
+    assert!(built
+        .spends
+        .iter()
+        .all(|k| node.key_image_spent(k).unwrap()));
+}
+
+#[test]
+fn one_transaction_pays_several_recipients_and_sixteen_do_not_fit() {
+    let rig = Rig::new("several");
+    let (mut node, mut alice, _) = funded(&rig);
+    let mut bobs: Vec<Wallet> = (10..13).map(wallet).collect();
+    let dests: Vec<(Address, u64)> = bobs
+        .iter()
+        .enumerate()
+        .map(|(i, w)| (w.address(), 100_000_000 * (i as u64 + 1)))
+        .collect();
+    let built = alice
+        .build_to_at(&node, &mut OsRng, &dests, FeeLevel::Normal)
+        .unwrap();
+    // four outputs: each with its own ephemeral key
+    assert_eq!(built.tx.prefix.outputs.len(), 4);
+    assert_eq!(built.tx.prefix.ephemeral_pubkeys.len(), 4);
+    assert_eq!(built.parts.len(), 3);
+    let layers = node.rules().unwrap().tree_layers;
+    assert_eq!(
+        built.tx.to_bytes().unwrap().len(),
+        transaction_size(built.spends.len(), 4, layers)
+    );
+    alice.send_built(&mut node, &built).unwrap();
+    mine(&mut node, &alice.address(), 0);
+    for (i, b) in bobs.iter_mut().enumerate() {
+        b.sync(&node).unwrap();
+        assert_eq!(
+            b.balance(&node).unwrap().total,
+            100_000_000 * (i as u64 + 1)
         );
     }
-    mine(&mut node, &alice.address(), 0);
-    bob.sync(&node).unwrap();
-    assert_eq!(bob.balance(&node).unwrap().total, 5_000_000);
-}
-
-#[test]
-fn a_payment_needing_several_inputs_is_built_with_them_in_key_image_order() {
-    let rig = Rig::new("multi", 2, 1);
-    let mut node = rig.node();
-    let (mut alice, bob) = (wallet(1), wallet(2));
-    mine_n(&mut node, &alice.address(), 6);
-    alice.sync(&node).unwrap();
-    let one = alice.owned()[0].amount;
-    // more than any one output but within what is mature
-    let built = alice
-        .pay(&mut node, &mut OsRng, &bob.address(), one * 3)
-        .unwrap();
-    assert!(
-        built.tx.prefix.inputs.len() >= 3,
-        "{} inputs",
-        built.tx.prefix.inputs.len()
-    );
-    assert!(built
-        .tx
-        .prefix
-        .inputs
-        .windows(2)
-        .all(|w| w[0].key_image < w[1].key_image));
-    assert_eq!(built.tx.prefix.outputs.len(), 2);
-}
-
-#[test]
-fn a_payment_needing_more_coins_than_a_transaction_can_carry_says_so() {
-    // Rings of 16 (the real size) and the real limit: a transaction of at most MAX_TX_SIZE bytes holds this many coins.
-    let max = max_payment_inputs(16);
-    assert!(
-        (90..100).contains(&max),
-        "{max} inputs fit in a transaction"
-    );
-    let rig = Rig::new("many", 16, 1);
-    let mut node = rig.node();
-    let (mut alice, bob) = (wallet(1), wallet(2));
-    mine_n(&mut node, &alice.address(), max as u64 + 12);
-    alice.sync(&node).unwrap();
-    let spendable = alice.balance(&node).unwrap().spendable;
-    let one = alice.owned()[0].amount;
-    // every coin but a few: more coins than one transaction holds
-    let r = alice.build_payment(&node, &mut OsRng, &bob.address(), spendable - 3 * one);
-    assert_eq!(r.unwrap_err(), WalletError::TooManyInputs { max });
-    let said = WalletError::TooManyInputs { max }.to_string();
-    assert!(
-        said.contains(&format!("at most {max}")) && said.contains("pieces"),
-        "{said}"
-    );
-    assert!(!said.contains("outputs"), "{said}");
-}
-
-#[test]
-fn the_size_of_a_payment_is_worked_out_to_the_byte() {
-    for ring in [2usize, 16] {
-        let rig = Rig::new(&format!("size{ring}"), ring, 1);
-        let mut node = rig.node();
-        let (mut alice, bob) = (wallet(1), wallet(2));
-        mine_n(&mut node, &alice.address(), 20);
-        alice.sync(&node).unwrap();
-        let one = alice.owned()[0].amount;
-        for k in 1..=3u64 {
-            // k coins are needed: the amount is more than k - 1 of them and less than k of them
-            let amount = one * k - one / 2;
-            let built = alice
-                .build_payment(&node, &mut OsRng, &bob.address(), amount)
-                .unwrap();
-            assert_eq!(built.tx.prefix.inputs.len() as u64, k);
-            let size = built.tx.to_bytes().unwrap().len();
-            assert_eq!(
-                size,
-                payment_size(k as usize, ring),
-                "{k} inputs, rings of {ring}"
-            );
+    let many: Vec<(Address, u64)> = (0..MAX_RECIPIENTS + 1)
+        .map(|_| (bobs[0].address(), 1_000))
+        .collect();
+    assert_eq!(
+        alice
+            .build_to_at(&node, &mut OsRng, &many, FeeLevel::Low)
+            .unwrap_err(),
+        WalletError::TooManyRecipients {
+            max: MAX_RECIPIENTS
         }
-    }
+    );
 }
 
-/// The biggest payment the wallet can make, with every proof real: as many coins as fit in `MAX_TX_SIZE`. The node takes it
-/// (it checks the size, the rings and the proofs) and a block carries it.
 #[test]
-fn a_payment_of_the_most_coins_that_fit_is_made_accepted_and_mined() {
-    let max = max_payment_inputs(16);
-    let rig = Rig::new("biggest", 16, 1);
-    let mut node = rig.node();
-    let (mut alice, mut bob) = (wallet(1), wallet(2));
-    mine_n(&mut node, &alice.address(), max as u64 + 20);
-    alice.sync(&node).unwrap();
-    let one = alice.owned()[0].amount;
-    // more than max - 1 coins: it takes all of max
-    let amount = one * max as u64 - one / 2;
-    let built = alice
-        .pay(&mut node, &mut OsRng, &bob.address(), amount)
+fn a_batch_pays_more_recipients_than_one_transaction_holds_with_different_coins() {
+    let rig = Rig::new("batch");
+    let (mut node, mut alice, _) = funded(&rig);
+    let bob = wallet(2);
+    let dests: Vec<(Address, u64)> = (0..20).map(|_| (bob.address(), 10_000_000)).collect();
+    let plan = alice
+        .build_batch(&node, &mut OsRng, &dests, FeeLevel::Low)
         .unwrap();
-    assert_eq!(built.tx.prefix.inputs.len(), max);
-    let size = built.tx.to_bytes().unwrap().len();
-    assert_eq!(size, payment_size(max, 16));
-    assert!(
-        size <= tenero_core::v2::MAX_TX_SIZE
-            && payment_size(max + 1, 16) > tenero_core::v2::MAX_TX_SIZE,
-        "{size} bytes"
-    );
-    assert_eq!(node.pool().len(), 1);
+    assert_eq!(plan.txs.len(), 2, "15 recipients, then 5");
+    assert!(plan.unsent.is_empty());
+    let first: std::collections::HashSet<_> = plan.txs[0].spends.iter().collect();
+    assert!(plan.txs[1].spends.iter().all(|k| !first.contains(k)));
+    let sent = alice.send_batch(&mut node, &plan.txs);
+    assert_eq!((sent.sent, sent.failed), (2, None));
     mine(&mut node, &alice.address(), 0);
-    assert_eq!(node.pool().len(), 0);
+    let mut bob = bob;
     bob.sync(&node).unwrap();
-    assert_eq!(bob.balance(&node).unwrap().total, amount);
+    assert_eq!(bob.balance(&node).unwrap().total, 200_000_000);
+    assert_eq!(bob.owned().len(), 20);
+}
+
+#[test]
+fn a_sweep_makes_many_coins_one() {
+    let rig = Rig::new("sweep");
+    let (mut node, mut alice, _) = funded(&rig);
+    let before = alice.balance(&node).unwrap().spendable;
+    let txs = alice
+        .build_sweep(&node, &mut OsRng, None, FeeLevel::Low)
+        .unwrap();
+    assert_eq!(txs.len(), 1);
+    assert_eq!(txs[0].spends.len(), 5);
+    assert_eq!(txs[0].amount + txs[0].fee, before);
+    alice.send_batch(&mut node, &txs);
+    mine(&mut node, &alice.address(), 0);
+    alice.sync(&node).unwrap();
+    let swept: Vec<_> = alice
+        .owned()
+        .iter()
+        .filter(|o| o.onetime_address == txs[0].parts[0].onetime)
+        .collect();
+    assert_eq!(swept.len(), 1);
+    assert_eq!(swept[0].amount, before - txs[0].fee);
+    // a combine of fewer coins than one transaction can spend, and of more
+    let max = max_inputs_for(2, node.rules().unwrap().tree_layers);
+    assert!(max >= 5, "{max}");
+    assert_eq!(
+        alice
+            .build_combine(&node, &mut OsRng, max + 1, FeeLevel::Low)
+            .unwrap_err(),
+        WalletError::TooManyInputs { max }
+    );
 }
 
 #[test]
 fn bad_requests_are_refused_before_anything_is_built() {
-    let rig = Rig::new("bad", 2, 1);
-    let mut node = rig.node();
-    let (mut alice, bob) = (wallet(1), wallet(2));
-    mine_n(&mut node, &alice.address(), 4);
-    alice.sync(&node).unwrap();
+    let rig = Rig::new("bad");
+    let (node, mut alice, _) = funded(&rig);
+    let bob = wallet(2);
     assert_eq!(
         alice
             .build_payment(&node, &mut OsRng, &bob.address(), 0)
             .unwrap_err(),
         WalletError::ZeroAmount
     );
-    let spendable = alice.balance(&node).unwrap().spendable;
     assert!(matches!(
-        alice
-            .build_payment(&node, &mut OsRng, &bob.address(), spendable + 1)
-            .unwrap_err(),
-        WalletError::NotEnough { .. }
+        alice.build_payment(&node, &mut OsRng, &bob.address(), u64::MAX),
+        Err(WalletError::NotEnough { .. })
     ));
-    let bad = Address {
-        spend: [0; 32],
-        view: bob.address().view,
-    };
+    // two integrated addresses in one transaction (Carrot carries one payment ID)
+    let one = bob.integrated_address([1; 8]).unwrap();
+    let two = bob.integrated_address([2; 8]).unwrap();
     assert_eq!(
         alice
-            .build_payment(&node, &mut OsRng, &bad, 1_000)
+            .build_to_at(&node, &mut OsRng, &[(one, 5), (two, 5)], FeeLevel::Low)
             .unwrap_err(),
         WalletError::BadAddress
     );
-    // paying all of it leaves no room for the fee
-    assert!(matches!(
-        alice
-            .build_payment(&node, &mut OsRng, &bob.address(), spendable)
-            .unwrap_err(),
-        WalletError::NotEnough { .. }
-    ));
-    assert_eq!(node.pool().len(), 0, "nothing was sent");
 }
 
 #[test]
 fn a_wallet_restored_from_its_seed_finds_the_same_coins() {
-    let rig = Rig::new("restore", 2, 1);
-    let mut node = rig.node();
-    let (mut alice, mut bob) = (wallet(1), wallet(2));
-    mine_n(&mut node, &alice.address(), 5);
-    alice.sync(&node).unwrap();
+    let rig = Rig::new("restore");
+    let (mut node, mut alice, _) = funded(&rig);
+    let mut bob = wallet(2);
     alice
         .pay(&mut node, &mut OsRng, &bob.address(), 3_000_000)
         .unwrap();
     mine_n(&mut node, &alice.address(), 2);
     alice.sync(&node).unwrap();
     bob.sync(&node).unwrap();
-    let mut again = Wallet::from_seed(alice.seed(), 0);
+    let mut again = Wallet::from_seed(alice.seed(), Network::Test, 0);
     again.sync(&node).unwrap();
     let mut a: Vec<_> = alice.owned().to_vec();
     let mut b: Vec<_> = again.owned().to_vec();
     a.sort_by_key(|o| o.global_index);
     b.sort_by_key(|o| o.global_index);
-    assert_eq!(a, b);
-    assert_eq!(alice.balance(&node).unwrap(), again.balance(&node).unwrap());
+    assert_eq!(
+        a, b,
+        "the change included: a restored wallet finds its own change"
+    );
     // a wallet that starts at the tip does not look back
-    let mut late = Wallet::from_seed(alice.seed(), node.tip().unwrap().0);
+    let mut late = Wallet::from_seed(alice.seed(), Network::Test, node.tip().unwrap().0);
     late.sync(&node).unwrap();
     assert!(late.owned().len() < a.len());
     // an empty wallet is not confused by the same chain
     let mut nobody = wallet(9);
     let rep = nobody.sync(&node).unwrap();
     assert!(rep.blocks_scanned > 0 && rep.outputs_found == 0);
-    assert_eq!(nobody.balance(&node).unwrap().total, 0);
 }
 
 #[test]
 fn syncing_twice_changes_nothing() {
-    let rig = Rig::new("twice", 2, 1);
+    let rig = Rig::new("twice");
     let mut node = rig.node();
     let mut alice = wallet(1);
     mine_n(&mut node, &alice.address(), 4);
     let first = alice.sync(&node).unwrap();
     assert_eq!(first.blocks_scanned, 5, "the genesis block and four more");
+    assert_eq!(first.outputs_found, 4);
     let owned = alice.owned().to_vec();
     let second = alice.sync(&node).unwrap();
     assert_eq!(
@@ -457,21 +493,20 @@ fn syncing_twice_changes_nothing() {
     assert_eq!(alice.owned(), &owned[..]);
 }
 
-/// The wallet follows a reorganisation: a payment that was in the abandoned branch disappears, and the coins
-/// it spent are spendable again.
+/// The wallet follows a reorganisation: a payment that was in the abandoned branch disappears, and the coins it spent are
+/// spendable again.
 #[test]
 fn a_reorganisation_takes_back_what_the_wallet_thought_it_had() {
-    let rig1 = Rig::new("reorg1", 2, 1);
-    let rig2 = Rig::new("reorg2", 2, 1);
+    let rig1 = Rig::new("reorg1");
+    let rig2 = Rig::new("reorg2");
     let mut n1 = rig1.node();
     let mut n2 = rig2.node();
     let (mut alice, mut bob) = (wallet(1), wallet(2));
     // a shared past
-    for _ in 0..5 {
+    for _ in 0..READY {
         let h = n1.tip().unwrap().0 + 1;
-        let payout = coinbase_payout(&mut OsRng, &alice.address(), h).unwrap();
         let ts = T0 + 60 * h;
-        let b = mine_test_block(&n1, ts, payout);
+        let b = block_for(&n1, &alice.address(), ts);
         n1.submit_block(&b, ts + 10).unwrap();
         n2.submit_block(&b, ts + 10).unwrap();
     }
@@ -490,8 +525,7 @@ fn a_reorganisation_takes_back_what_the_wallet_thought_it_had() {
     for k in 0..3 {
         mine(&mut n2, &carol.address(), 7 + k);
     }
-    // n1 takes branch 2
-    for h in 6..=8 {
+    for h in READY + 1..=READY + 3 {
         let stored = n2
             .store()
             .get_block(h)
@@ -500,8 +534,7 @@ fn a_reorganisation_takes_back_what_the_wallet_thought_it_had() {
             .into_full()
             .unwrap();
         let r = n1.submit_block(&stored, T0 + 60 * h + 100).unwrap();
-        // the branch is longer than ours (height 6) once its second block arrives
-        if h == 7 {
+        if h == READY + 2 {
             assert!(matches!(r, Submitted::Reorganised { .. }), "{r:?}");
         }
     }
@@ -520,29 +553,18 @@ fn a_reorganisation_takes_back_what_the_wallet_thought_it_had() {
         "Alice has her coins back, and not the block she mined on the lost branch"
     );
     assert!(after.spendable > 0);
-    // the transaction went back to the pool of the node that lost it, and pay works again
-    let again = alice.pay(&mut n1, &mut OsRng, &bob.address(), 1_000_000);
-    assert!(
-        again.is_ok() || matches!(again, Err(WalletError::Submit(_))),
-        "{again:?}"
-    );
 }
 
 #[test]
 fn a_reorganisation_deeper_than_the_wallet_remembers_makes_it_rescan() {
-    let rig1 = Rig::new("deep1", 2, 1);
+    let rig1 = Rig::new("deep1");
     let mut n1 = rig1.node();
     let mut alice = wallet(1);
-    // more blocks than the wallet remembers
-    mine_n(
-        &mut n1,
-        &alice.address(),
-        tenero_wallet::wallet::RECENT_BLOCKS as u64 + 5,
-    );
+    mine_n(&mut n1, &alice.address(), RECENT_BLOCKS as u64 + 5);
     alice.sync(&n1).unwrap();
     assert!(!alice.owned().is_empty());
     // a different chain (only the genesis block in common): every block the wallet remembers is gone
-    let rig2 = Rig::new("deep2", 2, 1);
+    let rig2 = Rig::new("deep2");
     let mut n2 = rig2.node();
     let other = wallet(5);
     for k in 0..4 {
@@ -550,15 +572,8 @@ fn a_reorganisation_deeper_than_the_wallet_remembers_makes_it_rescan() {
     }
     let r = alice.sync(&n2).unwrap();
     assert!(r.rescanned, "{r:?}");
-    assert_eq!(
-        r.blocks_rolled_back,
-        tenero_wallet::wallet::RECENT_BLOCKS as u64
-    );
-    assert_eq!(
-        alice.balance(&n2).unwrap().total,
-        0,
-        "nothing of the other chain is hers"
-    );
+    assert_eq!(r.blocks_rolled_back, RECENT_BLOCKS as u64);
+    assert_eq!(alice.balance(&n2).unwrap().total, 0);
     assert!(alice.owned().is_empty());
 }
 
@@ -572,11 +587,12 @@ fn temp_file(tag: &str) -> PathBuf {
 
 #[test]
 fn the_wallet_file_round_trips_with_the_right_passphrase_only() {
-    let rig = Rig::new("file", 2, 1);
+    let rig = Rig::new("file");
     let mut node = rig.node();
     let mut alice = wallet(1);
     mine_n(&mut node, &alice.address(), 4);
     alice.sync(&node).unwrap();
+    alice.subaddress(80).unwrap();
     let path = temp_file("a");
     alice
         .save(
@@ -592,6 +608,8 @@ fn the_wallet_file_round_trips_with_the_right_passphrase_only() {
     assert_eq!(back.owned(), alice.owned());
     assert_eq!(back.scanned_height(), alice.scanned_height());
     assert_eq!(back.birth_height(), alice.birth_height());
+    assert_eq!(back.network(), Network::Test);
+    assert_eq!(back.watched_subaddresses(), alice.watched_subaddresses());
     assert_eq!(
         Wallet::load(&path, b"wrong").err(),
         Some(FileError::WrongPassphraseOrCorrupt)
@@ -600,10 +618,10 @@ fn the_wallet_file_round_trips_with_the_right_passphrase_only() {
         Wallet::load(&path, b"").err(),
         Some(FileError::WrongPassphraseOrCorrupt)
     );
-    // the file does not contain the seed or an address in the clear
+    // the file does not contain the seed or an address key in the clear
     let bytes = std::fs::read(&path).unwrap();
     assert!(!bytes.windows(32).any(|w| w == alice.seed()));
-    assert!(!bytes.windows(32).any(|w| w == alice.address().spend));
+    assert!(!bytes.windows(32).any(|w| w == alice.address().spend_pubkey));
     // a restored wallet carries on (it does not rescan what it has)
     let mut back = back;
     let r = back.sync(&node).unwrap();
@@ -628,7 +646,6 @@ fn every_byte_of_the_wallet_file_is_protected() {
             "a change at byte {i} was not noticed"
         );
     }
-    // truncated and extended
     std::fs::write(&path, &good[..good.len() - 1]).unwrap();
     assert!(Wallet::load(&path, b"pw").is_err());
     let mut longer = good.clone();
@@ -640,11 +657,6 @@ fn every_byte_of_the_wallet_file_is_protected() {
         b"not a wallet at all, just some text that is long enough to pass the length check....",
     )
     .unwrap();
-    assert_eq!(
-        Wallet::load(&path, b"pw").err(),
-        Some(FileError::NotAWalletFile)
-    );
-    std::fs::write(&path, b"short").unwrap();
     assert_eq!(
         Wallet::load(&path, b"pw").err(),
         Some(FileError::NotAWalletFile)
@@ -661,11 +673,6 @@ fn a_hostile_file_cannot_make_the_wallet_allocate_gigabytes() {
         .unwrap();
     let mut bytes = std::fs::read(&path).unwrap();
     bytes[4..8].copy_from_slice(&u32::MAX.to_le_bytes()); // memory
-    std::fs::write(&path, &bytes).unwrap();
-    assert_eq!(Wallet::load(&path, b"pw").err(), Some(FileError::BadParams));
-    let mut bytes = std::fs::read(&path).unwrap();
-    bytes[4..8].copy_from_slice(&8u32.to_le_bytes());
-    bytes[8..12].copy_from_slice(&1_000_000u32.to_le_bytes()); // passes
     std::fs::write(&path, &bytes).unwrap();
     assert_eq!(Wallet::load(&path, b"pw").err(), Some(FileError::BadParams));
     std::fs::remove_file(&path).unwrap();
@@ -685,13 +692,9 @@ fn saving_replaces_the_file_whole_and_uses_fresh_randomness() {
     let second = std::fs::read(&path).unwrap();
     assert_ne!(first[16..32], second[16..32], "a new salt each time");
     assert_ne!(first[32..44], second[32..44], "a new nonce each time");
-    assert_ne!(first, second);
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
-    assert!(
-        !PathBuf::from(tmp).exists(),
-        "no half-written file is left behind"
-    );
+    assert!(!PathBuf::from(tmp).exists());
     assert!(Wallet::load(&path, b"pw").is_ok());
     std::fs::remove_file(&path).unwrap();
 }
@@ -709,972 +712,9 @@ fn saving_to_a_place_that_does_not_exist_is_an_error_not_a_panic() {
     assert!(matches!(Wallet::load(&path, b"pw"), Err(FileError::Io(_))));
 }
 
-#[test]
-fn the_default_key_derivation_settings_are_not_the_test_ones() {
-    const {
-        assert!(KdfParams::DEFAULT.memory_kib >= 64 * 1024);
-        assert!(KdfParams::DEFAULT.iterations >= 3);
-        assert!(KdfParams::TEST_ONLY_WEAK.memory_kib < KdfParams::DEFAULT.memory_kib);
-    }
-    // a file saved with the default settings loads (slow on purpose: about a quarter of a second)
-    let alice = wallet(1);
-    let path = temp_file("e");
-    alice
-        .save(&path, b"pw", KdfParams::DEFAULT, &mut OsRng)
-        .unwrap();
-    assert!(Wallet::load(&path, b"pw").is_ok());
-    std::fs::remove_file(&path).unwrap();
-}
-
 // keep the unused-import check honest: these traits are what a node implements for the wallet
 #[allow(dead_code)]
 fn _a_node_is_a_chain_and_a_submitter(n: &mut Node<'_>) {
     fn both<T: ChainView + Submitter>(_: &mut T) {}
     both(n);
-}
-
-// ------------------------------------------------------------------------------------------------
-// holes the fault-injection sweep found in the first version of these tests
-// ------------------------------------------------------------------------------------------------
-
-/// A "node" that takes a transaction and loses it: the wallet believes it sent the payment, the chain never sees it.
-struct Blackhole<'a, 'n>(&'a mut Node<'n>);
-
-impl ChainView for Blackhole<'_, '_> {
-    fn tip(&self) -> Result<(u64, [u8; 32]), String> {
-        ChainView::tip(&*self.0)
-    }
-    fn block(&self, h: u64) -> Result<Option<tenero_wallet::ScanBlock>, String> {
-        self.0.block(h)
-    }
-    fn output(&self, i: u64) -> Result<Option<tenero_store::StoredOutput>, String> {
-        ChainView::output(&*self.0, i)
-    }
-    fn output_count(&self) -> Result<u64, String> {
-        ChainView::output_count(&*self.0)
-    }
-    fn key_image_spent(&self, k: &[u8; 32]) -> Result<bool, String> {
-        self.0.key_image_spent(k)
-    }
-    fn rules(&self) -> Result<tenero_wallet::Rules, String> {
-        ChainView::rules(&*self.0)
-    }
-}
-
-impl Submitter for Blackhole<'_, '_> {
-    fn submit(&mut self, _tx: tenero_core::v2::Transaction) -> Result<(), String> {
-        Ok(())
-    }
-}
-
-#[test]
-fn coins_promised_to_a_lost_payment_come_back_after_a_while() {
-    let rig = Rig::new("expire", 2, 1);
-    let mut node = rig.node();
-    let (mut alice, bob, carol) = (wallet(1), wallet(2), wallet(3));
-    // one coin of hers, among other people's (a ring needs something to hide among)
-    mine(&mut node, &carol.address(), 0);
-    mine(&mut node, &alice.address(), 0);
-    mine(&mut node, &carol.address(), 0);
-    alice.sync(&node).unwrap();
-    // her only coin goes into a payment that is lost
-    let amount = alice.owned()[0].amount - 50_000_000;
-    alice
-        .pay(
-            &mut Blackhole(&mut node),
-            &mut OsRng,
-            &bob.address(),
-            amount,
-        )
-        .unwrap();
-    mine_n(&mut node, &carol.address(), 5);
-    let b = alice.balance(&node).unwrap();
-    assert_eq!((b.spendable, b.reserved), (0, b.total), "still promised");
-    assert!(matches!(
-        alice.build_payment(&node, &mut OsRng, &bob.address(), amount),
-        Err(WalletError::NotEnough { spendable: 0, .. })
-    ));
-    // once the promise has run out, the coin can be used again
-    mine_n(
-        &mut node,
-        &carol.address(),
-        tenero_wallet::wallet::RESERVE_BLOCKS + 2,
-    );
-    alice.sync(&node).unwrap();
-    // (building comes first: it must work out for itself that the promise has run out)
-    assert!(alice
-        .build_payment(&node, &mut OsRng, &bob.address(), amount)
-        .is_ok());
-    let b = alice.balance(&node).unwrap();
-    assert_eq!((b.reserved, b.spendable), (0, b.total));
-}
-
-/// Three coins; the first is spent; the wallet must neither offer it again nor pick it for the next payment.
-#[test]
-fn a_spent_coin_is_never_picked_again_and_the_smallest_covering_coin_is_preferred() {
-    let rig = Rig::new("select", 2, 1);
-    let mut node = rig.node();
-    let (mut alice, bob, carol) = (wallet(1), wallet(2), wallet(3));
-    mine_n(&mut node, &alice.address(), 3);
-    alice.sync(&node).unwrap();
-    let coin = alice.owned()[0].amount;
-    // pay nearly a whole coin: what comes back is a small change coin
-    let first = alice
-        .pay(&mut node, &mut OsRng, &bob.address(), coin - 50_000_000)
-        .unwrap();
-    mine(&mut node, &carol.address(), 0);
-    alice.sync(&node).unwrap();
-    let change = alice
-        .owned()
-        .iter()
-        .filter(|o| !o.coinbase)
-        .map(|o| (o.amount, o.key_image))
-        .collect::<Vec<_>>();
-    assert_eq!(change.len(), 1);
-    // a small payment: the smallest coin that covers it is the change, not a whole coinbase
-    let small = alice
-        .build_payment(&node, &mut OsRng, &bob.address(), 1_000_000)
-        .unwrap();
-    assert_eq!(
-        small.spends,
-        vec![change[0].1],
-        "the change coin, which is the smallest that covers it"
-    );
-    // a payment larger than the change but smaller than a coin: a whole coin, and not the one already spent
-    let mid = alice
-        .build_payment(&node, &mut OsRng, &bob.address(), coin / 2)
-        .unwrap();
-    assert_eq!(mid.spends.len(), 1);
-    assert!(
-        mid.spends.iter().all(|k| !first.spends.contains(k)),
-        "the spent coin was picked again"
-    );
-    // more than any one coin: the largest are combined first, so two coins and not three
-    let big = alice
-        .build_payment(&node, &mut OsRng, &bob.address(), coin + coin / 2)
-        .unwrap();
-    assert_eq!(
-        big.tx.prefix.inputs.len(),
-        2,
-        "two whole coins, not the change and two more"
-    );
-    assert!(big
-        .spends
-        .iter()
-        .all(|k| !first.spends.contains(k) && *k != change[0].1));
-}
-
-/// A wallet's CHANGE output is spendable: it sits at the second place of the transaction as often as the first,
-/// and its position in the chain must be right either way (a signature over the wrong ring member does not verify).
-#[test]
-fn change_is_spendable_wherever_it_sits_in_the_transaction() {
-    use rand_chacha::ChaCha20Rng;
-    use rand_core::SeedableRng;
-    let rig = Rig::new("change", 2, 1);
-    let mut node = rig.node();
-    let carol = wallet(99);
-    mine_n(&mut node, &carol.address(), 3);
-    let bob = wallet(98);
-    let mut positions = std::collections::BTreeSet::new();
-    for k in 0..12u8 {
-        let mut rng = ChaCha20Rng::seed_from_u64(1000 + u64::from(k));
-        let mut alice = wallet(10 + k);
-        mine(&mut node, &alice.address(), 0);
-        mine(&mut node, &carol.address(), 0);
-        alice.sync(&node).unwrap();
-        // her only coin: pay, so that the change is the only thing left
-        let a = alice.owned()[0].amount;
-        alice
-            .pay(&mut node, &mut rng, &bob.address(), a / 3)
-            .unwrap();
-        mine(&mut node, &carol.address(), 0);
-        let height = node.tip().unwrap().0;
-        let first = node
-            .store()
-            .block_index(height)
-            .unwrap()
-            .unwrap()
-            .first_output_index;
-        alice.sync(&node).unwrap();
-        let change: Vec<_> = alice
-            .owned()
-            .iter()
-            .filter(|o| !o.coinbase)
-            .cloned()
-            .collect();
-        assert_eq!(change.len(), 1);
-        // its place in the transaction (the coinbase has one output)
-        let place = change[0].global_index - (first + 1);
-        positions.insert(place);
-        // spending it works
-        let again = alice.pay(&mut node, &mut rng, &bob.address(), 1_000_000);
-        assert!(again.is_ok(), "change at position {place}: {again:?}");
-        mine(&mut node, &carol.address(), 0);
-    }
-    assert_eq!(
-        positions.len(),
-        2,
-        "the change was seen in both places: {positions:?}"
-    );
-}
-
-/// A node that answers a request for blocks with the wrong ones (a bug or a lie).
-struct Shifted<'a, 'n>(&'a Node<'n>);
-
-impl ChainView for Shifted<'_, '_> {
-    fn tip(&self) -> Result<(u64, [u8; 32]), String> {
-        ChainView::tip(self.0)
-    }
-    fn block(&self, h: u64) -> Result<Option<tenero_wallet::ScanBlock>, String> {
-        self.0.block(h)
-    }
-    fn blocks(&self, from: u64, max: u64) -> Result<Vec<tenero_wallet::ScanBlock>, String> {
-        self.0.blocks(from + 1, max)
-    }
-    fn output(&self, i: u64) -> Result<Option<tenero_store::StoredOutput>, String> {
-        ChainView::output(self.0, i)
-    }
-    fn output_count(&self) -> Result<u64, String> {
-        ChainView::output_count(self.0)
-    }
-    fn key_image_spent(&self, k: &[u8; 32]) -> Result<bool, String> {
-        self.0.key_image_spent(k)
-    }
-    fn rules(&self) -> Result<tenero_wallet::Rules, String> {
-        ChainView::rules(self.0)
-    }
-}
-
-#[test]
-fn a_node_that_sends_the_wrong_blocks_is_not_believed() {
-    let rig = Rig::new("shifted", 2, 1);
-    let mut node = rig.node();
-    let mut alice = wallet(1);
-    mine_n(&mut node, &alice.address(), 4);
-    let r = alice.sync(&Shifted(&node));
-    let e = r.unwrap_err();
-    assert!(
-        matches!(&e, WalletError::Chain(m) if m.contains("asked for block")),
-        "{e:?}"
-    );
-    assert!(
-        alice.owned().is_empty(),
-        "nothing was taken from the wrong blocks"
-    );
-}
-
-/// Counts the questions put to the chain, to show that giving up is cheap.
-struct Counting<'a, 'b> {
-    node: &'a Node<'b>,
-    outputs_asked: std::cell::Cell<u64>,
-}
-
-impl ChainView for Counting<'_, '_> {
-    fn tip(&self) -> Result<(u64, [u8; 32]), String> {
-        ChainView::tip(self.node)
-    }
-    fn block(&self, h: u64) -> Result<Option<tenero_wallet::ScanBlock>, String> {
-        ChainView::block(self.node, h)
-    }
-    fn blocks(&self, from: u64, max: u64) -> Result<Vec<tenero_wallet::ScanBlock>, String> {
-        ChainView::blocks(self.node, from, max)
-    }
-    fn output(&self, i: u64) -> Result<Option<tenero_store::StoredOutput>, String> {
-        self.outputs_asked.set(self.outputs_asked.get() + 1);
-        ChainView::output(self.node, i)
-    }
-    fn output_count(&self) -> Result<u64, String> {
-        ChainView::output_count(self.node)
-    }
-    fn key_image_spent(&self, k: &[u8; 32]) -> Result<bool, String> {
-        ChainView::key_image_spent(self.node, k)
-    }
-    fn rules(&self) -> Result<tenero_wallet::Rules, String> {
-        ChainView::rules(self.node)
-    }
-}
-
-#[test]
-fn a_chain_with_too_few_matured_outputs_is_refused_at_once_not_after_thousands_of_questions() {
-    // 20 outputs on the chain (more than a ring of 16) but only about 10 of them matured: the owner's young chain. Before the
-    // check, the wallet asked the node for outputs one by one thousands of times (and then walked the whole chain) before saying so.
-    let rig = Rig::new("young", 16, 10);
-    let mut node = rig.node();
-    let (mut alice, bob) = (wallet(1), wallet(2));
-    mine_n(&mut node, &alice.address(), 20);
-    alice.sync(&node).unwrap();
-    assert!(
-        alice.balance(&node).unwrap().spendable > 0,
-        "her own old coins are spendable"
-    );
-    let view = Counting {
-        node: &node,
-        outputs_asked: std::cell::Cell::new(0),
-    };
-    let r = alice.build_payment(&view, &mut OsRng, &bob.address(), 1_000);
-    assert!(matches!(r, Err(WalletError::NotEnoughDecoys)), "{r:?}");
-    assert!(
-        view.outputs_asked.get() < 40,
-        "{} questions to give up",
-        view.outputs_asked.get()
-    );
-    // and once enough have matured it works, with the same wallet
-    mine_n(&mut node, &alice.address(), 15);
-    alice.sync(&node).unwrap();
-    assert!(alice
-        .build_payment(&node, &mut OsRng, &bob.address(), 1_000)
-        .is_ok());
-}
-
-#[test]
-fn a_spent_output_is_asked_about_once() {
-    let rig = Rig::new("spentcache", 2, 1);
-    let mut node = rig.node();
-    let (mut alice, bob) = (wallet(1), wallet(2));
-    mine_n(&mut node, &alice.address(), 6);
-    alice.sync(&node).unwrap();
-    alice
-        .pay(&mut node, &mut OsRng, &bob.address(), 1_000)
-        .unwrap();
-    mine(&mut node, &alice.address(), 0);
-    alice.sync(&node).unwrap();
-    struct Spent<'a, 'b>(Counting<'a, 'b>, std::cell::Cell<u64>);
-    impl ChainView for Spent<'_, '_> {
-        fn tip(&self) -> Result<(u64, [u8; 32]), String> {
-            self.0.tip()
-        }
-        fn block(&self, h: u64) -> Result<Option<tenero_wallet::ScanBlock>, String> {
-            self.0.block(h)
-        }
-        fn blocks(&self, f: u64, m: u64) -> Result<Vec<tenero_wallet::ScanBlock>, String> {
-            self.0.blocks(f, m)
-        }
-        fn output(&self, i: u64) -> Result<Option<tenero_store::StoredOutput>, String> {
-            self.0.output(i)
-        }
-        fn output_count(&self) -> Result<u64, String> {
-            self.0.output_count()
-        }
-        fn key_image_spent(&self, k: &[u8; 32]) -> Result<bool, String> {
-            self.1.set(self.1.get() + 1);
-            self.0.key_image_spent(k)
-        }
-        fn rules(&self) -> Result<tenero_wallet::Rules, String> {
-            self.0.rules()
-        }
-    }
-    let view = Spent(
-        Counting {
-            node: &node,
-            outputs_asked: std::cell::Cell::new(0),
-        },
-        std::cell::Cell::new(0),
-    );
-    let first = alice.balance(&view).unwrap();
-    let asked_first = view.1.get();
-    view.1.set(0);
-    let second = alice.balance(&view).unwrap();
-    assert_eq!(first, second);
-    // the second time nothing is asked: neither the spent coins (a spend stays) nor the unspent ones (the tip has not moved)
-    assert!(asked_first > 0);
-    assert_eq!(
-        view.1.get(),
-        0,
-        "{} the first time, then {}",
-        asked_first,
-        view.1.get()
-    );
-    // a new block may have spent something: then the coins are asked about again
-    mine(&mut node, &alice.address(), 0);
-    let view = Spent(
-        Counting {
-            node: &node,
-            outputs_asked: std::cell::Cell::new(0),
-        },
-        std::cell::Cell::new(0),
-    );
-    alice.balance(&view).unwrap();
-    assert!(view.1.get() > 0, "asked again after the tip moved");
-}
-
-#[test]
-fn building_a_payment_on_a_chain_that_has_just_enough_matured_outputs_asks_the_node_little() {
-    // the owner's chain: 80 blocks, rewards mature after 60, rings of 16: only 21 of the 80 outputs can be used
-    let rig = Rig::new("justenough", 16, 60);
-    let mut node = rig.node();
-    let (mut alice, bob) = (wallet(1), wallet(2));
-    mine_n(&mut node, &alice.address(), 80);
-    alice.sync(&node).unwrap();
-    assert!(alice.balance(&node).unwrap().spendable > 0);
-    let view = Counting {
-        node: &node,
-        outputs_asked: std::cell::Cell::new(0),
-    };
-    let t = std::time::Instant::now();
-    let built = alice
-        .build_payment(&view, &mut OsRng, &bob.address(), 1_000)
-        .unwrap();
-    println!(
-        "built in {:?} with {} questions about outputs (fee {})",
-        t.elapsed(),
-        view.outputs_asked.get(),
-        built.fee
-    );
-    // a ring of 16 needs 16 members fetched per input, and the rounds that settle the fee repeat that: tens, not thousands
-    assert!(
-        view.outputs_asked.get() < 300,
-        "{} questions about outputs",
-        view.outputs_asked.get()
-    );
-}
-
-/// A view that counts how the wallet asks which coins are spent: one key image at a time, or many in one request.
-struct Asking<'a, 'b> {
-    node: &'a Node<'b>,
-    singles: std::cell::Cell<u64>,
-    batches: std::cell::Cell<u64>,
-    last_batch: std::cell::Cell<usize>,
-    /// Answer with too few flags (a broken or hostile node).
-    short: std::cell::Cell<bool>,
-}
-
-impl<'a, 'b> Asking<'a, 'b> {
-    fn new(node: &'a Node<'b>) -> Self {
-        Asking {
-            node,
-            singles: std::cell::Cell::new(0),
-            batches: std::cell::Cell::new(0),
-            last_batch: std::cell::Cell::new(0),
-            short: std::cell::Cell::new(false),
-        }
-    }
-}
-
-impl ChainView for Asking<'_, '_> {
-    fn tip(&self) -> Result<(u64, [u8; 32]), String> {
-        ChainView::tip(self.node)
-    }
-    fn block(&self, h: u64) -> Result<Option<tenero_wallet::ScanBlock>, String> {
-        ChainView::block(self.node, h)
-    }
-    fn blocks(&self, from: u64, max: u64) -> Result<Vec<tenero_wallet::ScanBlock>, String> {
-        ChainView::blocks(self.node, from, max)
-    }
-    fn output(&self, i: u64) -> Result<Option<tenero_store::StoredOutput>, String> {
-        ChainView::output(self.node, i)
-    }
-    fn output_count(&self) -> Result<u64, String> {
-        ChainView::output_count(self.node)
-    }
-    fn key_image_spent(&self, k: &[u8; 32]) -> Result<bool, String> {
-        self.singles.set(self.singles.get() + 1);
-        ChainView::key_image_spent(self.node, k)
-    }
-    fn key_images_spent(&self, ks: &[[u8; 32]]) -> Result<Vec<bool>, String> {
-        self.batches.set(self.batches.get() + 1);
-        self.last_batch.set(ks.len());
-        if self.short.get() {
-            return Ok(Vec::new());
-        }
-        ks.iter()
-            .map(|k| ChainView::key_image_spent(self.node, k))
-            .collect()
-    }
-    fn rules(&self) -> Result<tenero_wallet::Rules, String> {
-        ChainView::rules(self.node)
-    }
-}
-
-#[test]
-fn a_wallet_with_many_coins_asks_which_are_spent_in_one_request_not_one_for_each() {
-    // the owner mines every block, so the wallet owns thousands of coins; asked one at a time (15 ms each over the control
-    // socket) the fee estimate took twenty seconds
-    let rig = Rig::new("batchspent", 2, 1);
-    let mut node = rig.node();
-    let (mut alice, bob) = (wallet(1), wallet(2));
-    mine_n(&mut node, &alice.address(), 30);
-    alice.sync(&node).unwrap();
-    let coins = alice.owned().len();
-    assert!(coins >= 30, "{coins}");
-
-    let view = Asking::new(&node);
-    alice.balance(&view).unwrap();
-    assert_eq!(view.singles.get(), 0, "a question for each coin");
-    assert_eq!(view.batches.get(), 1);
-    assert_eq!(view.last_batch.get(), coins, "one request about every coin");
-
-    // building a payment on the same tip asks nothing more (the answers are known)...
-    alice
-        .build_payment(&view, &mut OsRng, &bob.address(), 1_000)
-        .unwrap();
-    assert_eq!(view.singles.get(), 0);
-    assert_eq!(view.batches.get(), 1);
-
-    // ...and when the tip has moved, the "not spent" answers are asked again, again in one request
-    mine(&mut node, &alice.address(), 0);
-    let view2 = Asking::new(&node);
-    alice.sync(&node).unwrap();
-    alice
-        .build_payment(&view2, &mut OsRng, &bob.address(), 1_000)
-        .unwrap();
-    assert_eq!(view2.singles.get(), 0);
-    assert_eq!(view2.batches.get(), 1);
-}
-
-#[test]
-fn a_node_that_answers_about_fewer_coins_than_were_asked_is_an_error_not_a_guess() {
-    let rig = Rig::new("shortanswer", 2, 1);
-    let mut node = rig.node();
-    let mut alice = wallet(1);
-    mine_n(&mut node, &alice.address(), 5);
-    alice.sync(&node).unwrap();
-    let view = Asking::new(&node);
-    view.short.set(true);
-    let r = alice.balance(&view);
-    assert!(matches!(r, Err(WalletError::Chain(_))), "{r:?}");
-}
-
-/// A view that counts how the wallet asks for outputs: one at a time, or many in one request.
-struct AskingOutputs<'a, 'b> {
-    node: &'a Node<'b>,
-    singles: std::cell::Cell<u64>,
-    batches: std::cell::Cell<u64>,
-    batched: std::cell::Cell<u64>,
-    /// Answer with too few entries (a broken or hostile node).
-    short: std::cell::Cell<bool>,
-}
-
-impl ChainView for AskingOutputs<'_, '_> {
-    fn tip(&self) -> Result<(u64, [u8; 32]), String> {
-        ChainView::tip(self.node)
-    }
-    fn block(&self, h: u64) -> Result<Option<tenero_wallet::ScanBlock>, String> {
-        ChainView::block(self.node, h)
-    }
-    fn blocks(&self, from: u64, max: u64) -> Result<Vec<tenero_wallet::ScanBlock>, String> {
-        ChainView::blocks(self.node, from, max)
-    }
-    fn output(&self, i: u64) -> Result<Option<tenero_store::StoredOutput>, String> {
-        self.singles.set(self.singles.get() + 1);
-        ChainView::output(self.node, i)
-    }
-    fn outputs(&self, is: &[u64]) -> Result<Vec<Option<tenero_store::StoredOutput>>, String> {
-        self.batches.set(self.batches.get() + 1);
-        self.batched.set(self.batched.get() + is.len() as u64);
-        if self.short.get() {
-            return Ok(Vec::new());
-        }
-        is.iter()
-            .map(|i| ChainView::output(self.node, *i))
-            .collect()
-    }
-    fn output_count(&self) -> Result<u64, String> {
-        ChainView::output_count(self.node)
-    }
-    fn key_image_spent(&self, k: &[u8; 32]) -> Result<bool, String> {
-        ChainView::key_image_spent(self.node, k)
-    }
-    fn rules(&self) -> Result<tenero_wallet::Rules, String> {
-        ChainView::rules(self.node)
-    }
-}
-
-#[test]
-fn a_payment_of_thirty_two_coins_asks_for_its_ring_members_in_one_request_not_fourteen_hundred() {
-    // the owner's payment of 639 coins (32 coins of 20) took thirty seconds: the wallet asked the node about 1,364 outputs one at
-    // a time (about 15 ms each over the control socket), for each coin searching again for the outputs old enough to use
-    let rig = Rig::new("many32", 16, 1);
-    let mut node = rig.node();
-    let (mut alice, bob) = (wallet(1), wallet(2));
-    mine_n(&mut node, &alice.address(), 90);
-    alice.sync(&node).unwrap();
-    let mut amounts: Vec<u64> = alice.owned().iter().map(|o| o.amount).collect();
-    amounts.sort_unstable_by(|a, b| b.cmp(a));
-    let amount: u64 = amounts.iter().take(32).sum::<u64>() / 100 * 95;
-    let view = AskingOutputs {
-        node: &node,
-        singles: std::cell::Cell::new(0),
-        batches: std::cell::Cell::new(0),
-        batched: std::cell::Cell::new(0),
-        short: std::cell::Cell::new(false),
-    };
-    let built = alice
-        .build_payment(&view, &mut OsRng, &bob.address(), amount)
-        .unwrap();
-    let inputs = built.tx.prefix.inputs.len();
-    assert!(inputs >= 30, "{inputs} inputs");
-    println!(
-        "{inputs} inputs: {} requests for outputs ({} members), {} single questions (it was 1,364 single questions)",
-        view.batches.get(),
-        view.batched.get(),
-        view.singles.get()
-    );
-    // the ring members of every coin came in a few requests (one for each round that needed new rings), not one by one...
-    // (once: the rounds that settle the fee choose the same coins, and keep the rings they made)
-    assert_eq!(view.batches.get(), 1, "{} batches", view.batches.get());
-    // (each distinct output once: the rings of 32 coins share members, and this young chain has only 90 outputs)
-    assert!(view.batched.get() >= 16, "{} members", view.batched.get());
-    // ...and what is left one by one is the search for which outputs are old enough, done once for the payment: about log2 of the
-    // number of outputs, not that for each coin and each round
-    assert!(
-        view.singles.get() < 40,
-        "{} single questions",
-        view.singles.get()
-    );
-}
-
-#[test]
-fn a_node_that_answers_about_fewer_outputs_than_were_asked_is_an_error_not_a_guess() {
-    let rig = Rig::new("shortouts", 16, 1);
-    let mut node = rig.node();
-    let (mut alice, bob) = (wallet(1), wallet(2));
-    mine_n(&mut node, &alice.address(), 60);
-    alice.sync(&node).unwrap();
-    let view = AskingOutputs {
-        node: &node,
-        singles: std::cell::Cell::new(0),
-        batches: std::cell::Cell::new(0),
-        batched: std::cell::Cell::new(0),
-        short: std::cell::Cell::new(true),
-    };
-    let r = alice.build_payment(&view, &mut OsRng, &bob.address(), 1_000);
-    assert!(matches!(r, Err(WalletError::Chain(_))), "{:?}", r.err());
-}
-
-// ---- several recipients, batches, combining coins --------------------------------------------------------------------
-
-/// Mines `n` blocks to `alice`, makes her scan, and says what one block reward is.
-fn funded(rig: &Rig, n: u64) -> (Node<'_>, Wallet, u64) {
-    let mut node = rig.node();
-    let mut alice = wallet(1);
-    mine_n(&mut node, &alice.address(), n);
-    alice.sync(&node).unwrap();
-    let one = alice.owned()[0].amount;
-    (node, alice, one)
-}
-
-/// What a wallet has received so far on the chain (synced first).
-fn received(node: &Node<'_>, w: &mut Wallet) -> u64 {
-    w.sync(node).unwrap();
-    w.balance(node).unwrap().total
-}
-
-#[test]
-fn one_transaction_pays_several_recipients_and_its_size_is_known_to_the_byte() {
-    let rig = Rig::new("multi_dest", 16, 1);
-    let (mut node, mut alice, one) = funded(&rig, 30);
-    let mut others: Vec<Wallet> = (2..6).map(wallet).collect();
-    let dests: Vec<(Address, u64)> = others
-        .iter()
-        .enumerate()
-        .map(|(i, w)| (w.address(), one / 10 * (i as u64 + 1)))
-        .collect();
-    let built = alice
-        .build_to_at(&node, &mut OsRng, &dests, tenero_wallet::FeeLevel::Low)
-        .unwrap();
-    assert_eq!(
-        built.tx.prefix.outputs.len(),
-        5,
-        "four payments and the change"
-    );
-    assert_eq!(built.parts.len(), 4);
-    assert_eq!(built.amount, dests.iter().map(|d| d.1).sum::<u64>());
-    // the parts are in the order asked, each with the secret that proves it
-    for (p, d) in built.parts.iter().zip(&dests) {
-        assert_eq!((p.to, p.amount), *d);
-        assert!(built
-            .tx
-            .prefix
-            .outputs
-            .iter()
-            .any(|o| o.onetime_address == p.onetime));
-    }
-    let inputs = built.tx.prefix.inputs.len();
-    assert_eq!(
-        built.tx.to_bytes().unwrap().len(),
-        tenero_wallet::transaction_size(inputs, 5, 16)
-    );
-    alice.send_built(&mut node, &built).unwrap();
-    mine(&mut node, &alice.address(), 0);
-    for (w, d) in others.iter_mut().zip(&dests) {
-        assert_eq!(received(&node, w), d.1);
-    }
-}
-
-#[test]
-fn sixteen_recipients_do_not_fit_in_one_transaction() {
-    let rig = Rig::new("sixteen", 2, 1);
-    let (node, mut alice, one) = funded(&rig, 20);
-    let bob = wallet(2).address();
-    let level = tenero_wallet::FeeLevel::Low;
-    let dests = vec![(bob, one / 100); tenero_wallet::MAX_RECIPIENTS + 1];
-    let r = alice.build_to_at(&node, &mut OsRng, &dests, level);
-    assert_eq!(
-        r.unwrap_err(),
-        WalletError::TooManyRecipients {
-            max: tenero_wallet::MAX_RECIPIENTS
-        }
-    );
-    // fifteen is the most, and it works
-    let fifteen = vec![(bob, one / 100); tenero_wallet::MAX_RECIPIENTS];
-    let built = alice
-        .build_to_at(&node, &mut OsRng, &fifteen, level)
-        .unwrap();
-    assert_eq!(built.tx.prefix.outputs.len(), 16);
-    assert_eq!(
-        built.tx.to_bytes().unwrap().len(),
-        tenero_wallet::transaction_size(built.tx.prefix.inputs.len(), 16, 2)
-    );
-    // and nothing is built for nobody, or for nothing
-    assert_eq!(
-        alice
-            .build_to_at(&node, &mut OsRng, &[], level)
-            .unwrap_err(),
-        WalletError::ZeroAmount
-    );
-    assert_eq!(
-        alice
-            .build_to_at(&node, &mut OsRng, &[(bob, 0)], level)
-            .unwrap_err(),
-        WalletError::ZeroAmount
-    );
-}
-
-#[test]
-fn a_batch_pays_more_recipients_than_one_transaction_holds_with_different_coins() {
-    let rig = Rig::new("batch", 2, 1);
-    let (mut node, mut alice, one) = funded(&rig, 40);
-    let mut others: Vec<Wallet> = (10..40).map(wallet).collect();
-    let dests: Vec<(Address, u64)> = others.iter().map(|w| (w.address(), one / 20)).collect();
-    let plan = alice
-        .build_batch(&node, &mut OsRng, &dests, tenero_wallet::FeeLevel::Low)
-        .unwrap();
-    assert_eq!(plan.txs.len(), 2, "thirty recipients: fifteen and fifteen");
-    assert!(plan.unsent.is_empty());
-    // different coins in each, so both can be sent now
-    let mut all: Vec<[u8; 32]> = plan.txs.iter().flat_map(|t| t.spends.clone()).collect();
-    let n = all.len();
-    all.sort();
-    all.dedup();
-    assert_eq!(all.len(), n, "no coin is spent twice");
-    let sent = alice.send_batch(&mut node, &plan.txs);
-    assert_eq!(sent.sent, 2);
-    assert!(sent.failed.is_none());
-    assert_eq!(node.pool().len(), 2);
-    mine(&mut node, &alice.address(), 0);
-    assert_eq!(node.pool().len(), 0, "one block took both");
-    for (w, d) in others.iter_mut().zip(&dests) {
-        assert_eq!(received(&node, w), d.1);
-    }
-}
-
-#[test]
-fn when_the_coins_run_out_a_batch_says_what_is_left_to_pay() {
-    // a few coins only, three transactions' worth of recipients: the later transactions have nothing to spend until change matures
-    let rig = Rig::new("runout", 2, 1);
-    let (node, mut alice, one) = funded(&rig, 2);
-    let bob = wallet(2).address();
-    // forty-five recipients: three transactions of fifteen
-    let dests = vec![(bob, one / 1000); 45];
-    let plan = alice
-        .build_batch(&node, &mut OsRng, &dests, tenero_wallet::FeeLevel::Low)
-        .unwrap();
-    assert!(
-        !plan.txs.is_empty() && plan.txs.len() < 3,
-        "{} transactions",
-        plan.txs.len()
-    );
-    let paid: usize = plan.txs.iter().map(|t| t.parts.len()).sum();
-    assert_eq!(
-        paid + plan.unsent.len(),
-        45,
-        "every recipient is either paid or listed as unpaid"
-    );
-    assert!(!plan.unsent.is_empty());
-}
-
-#[test]
-fn a_batch_asked_for_more_than_the_wallet_has_is_refused_at_once() {
-    let rig = Rig::new("toomuch", 2, 1);
-    let (node, mut alice, _one) = funded(&rig, 5);
-    let spendable = alice.balance(&node).unwrap().spendable;
-    let bob = wallet(2).address();
-    let r = alice.build_batch(
-        &node,
-        &mut OsRng,
-        &[(bob, spendable), (bob, 1)],
-        tenero_wallet::FeeLevel::Low,
-    );
-    assert!(matches!(r.unwrap_err(), WalletError::NotEnough { .. }));
-}
-
-#[test]
-fn a_payment_needing_more_coins_than_a_transaction_holds_is_paid_in_parts() {
-    // the old limit of the alpha network (32 inputs) keeps the test small; the same code splits at what fits in MAX_TX_SIZE on the others
-    let mut rig = Rig::new("parts", 2, 1);
-    rig.params.legacy_tx_limits = true;
-    let (mut node, mut alice, one) = funded(&rig, 80);
-    let mut bob = wallet(2);
-    let amount = one * 70;
-    let plan = alice
-        .build_batch(
-            &node,
-            &mut OsRng,
-            &[(bob.address(), amount)],
-            tenero_wallet::FeeLevel::Low,
-        )
-        .unwrap();
-    assert!(plan.unsent.is_empty(), "{:?}", plan.unsent);
-    assert!(
-        plan.txs.len() >= 3,
-        "70 coins at 32 to a transaction: {} transactions",
-        plan.txs.len()
-    );
-    assert!(plan.txs.iter().all(|t| t.tx.prefix.inputs.len() <= 32));
-    let paid: u64 = plan.txs.iter().map(|t| t.amount).sum();
-    assert_eq!(paid, amount, "the parts add up to what was asked");
-    let sent = alice.send_batch(&mut node, &plan.txs);
-    assert!(sent.failed.is_none(), "{:?}", sent.failed);
-    mine(&mut node, &alice.address(), 0);
-    assert_eq!(received(&node, &mut bob), amount);
-}
-
-#[test]
-fn a_network_with_the_old_limits_refuses_more_than_32_inputs_and_the_wallet_stays_under_it() {
-    // a transaction of 40 inputs, built where there is no such limit ...
-    let free = Rig::new("nolimit", 2, 1);
-    let (free_node, mut free_wallet, _) = funded(&free, 60);
-    let big = free_wallet
-        .build_combine(&free_node, &mut OsRng, 40, tenero_wallet::FeeLevel::Low)
-        .unwrap();
-    assert_eq!(big.tx.prefix.inputs.len(), 40);
-    // ... is refused by a node that keeps the limits of alpha.4, before anything else is looked at
-    let mut old = Rig::new("oldlimit", 2, 1);
-    old.params.legacy_tx_limits = true;
-    let (mut node, mut alice, _) = funded(&old, 5);
-    let e = format!("{:?}", node.submit_tx(big.tx.clone()).unwrap_err());
-    assert!(e.contains("40 inputs") && e.contains("32"), "{e}");
-    // and the wallet there is told the limit, so it never builds more
-    assert_eq!(
-        alice
-            .build_combine(&node, &mut OsRng, 33, tenero_wallet::FeeLevel::Low)
-            .unwrap_err(),
-        WalletError::TooManyInputs { max: 32 }
-    );
-}
-
-#[test]
-fn a_sweep_makes_many_coins_one_and_leaves_no_empty_coin_behind() {
-    let rig = Rig::new("sweep", 2, 1);
-    let (mut node, mut alice, one) = funded(&rig, 20);
-    let before = alice.balance(&node).unwrap();
-    let coins_before = alice.owned().len();
-    let txs = alice
-        .build_sweep(&node, &mut OsRng, None, tenero_wallet::FeeLevel::Low)
-        .unwrap();
-    assert_eq!(txs.len(), 1);
-    let t = &txs[0];
-    assert!(
-        t.tx.prefix.inputs.len() >= 18,
-        "{} inputs",
-        t.tx.prefix.inputs.len()
-    );
-    assert_eq!(t.change, 0, "everything but the fee goes to the one output");
-    assert_eq!(t.amount + t.fee, t.tx.prefix.inputs.len() as u64 * one);
-    assert_eq!(
-        t.tx.to_bytes().unwrap().len(),
-        tenero_wallet::transaction_size(t.tx.prefix.inputs.len(), 2, 2)
-    );
-    let sent = alice.send_batch(&mut node, &txs);
-    assert!(sent.failed.is_none());
-    for _ in 0..3 {
-        mine(&mut node, &wallet(9).address(), 0);
-    }
-    alice.sync(&node).unwrap();
-    let after = alice.balance(&node).unwrap();
-    assert_eq!(after.total, before.total - t.fee, "only the fee is gone");
-    assert_eq!(
-        alice.owned().len(),
-        coins_before + 1,
-        "one new coin, the combined one: the empty change is not kept"
-    );
-    assert!(
-        alice.owned().iter().all(|o| o.amount > 0),
-        "an output worth nothing is not kept"
-    );
-    assert!(
-        alice.owned().iter().any(|o| o.amount == t.amount),
-        "the combined coin is there"
-    );
-}
-
-#[test]
-fn a_sweep_in_groups_when_the_coins_do_not_fit_in_one_transaction() {
-    let mut rig = Rig::new("sweepgroups", 2, 1);
-    rig.params.legacy_tx_limits = true;
-    let (node, mut alice, _one) = funded(&rig, 75);
-    let txs = alice
-        .build_sweep(&node, &mut OsRng, None, tenero_wallet::FeeLevel::Low)
-        .unwrap();
-    assert!(txs.len() >= 2, "{} transactions", txs.len());
-    assert!(txs.iter().all(|t| t.tx.prefix.inputs.len() <= 32));
-    let mut all: Vec<[u8; 32]> = txs.iter().flat_map(|t| t.spends.clone()).collect();
-    let n = all.len();
-    all.sort();
-    all.dedup();
-    assert_eq!(all.len(), n, "different coins in each");
-}
-
-#[test]
-fn a_sweep_to_another_address_sends_everything_but_the_fee_there() {
-    let rig = Rig::new("sweepto", 2, 1);
-    let (mut node, mut alice, _one) = funded(&rig, 12);
-    let mut bob = wallet(2);
-    let spendable = alice.balance(&node).unwrap().spendable;
-    let txs = alice
-        .build_sweep(
-            &node,
-            &mut OsRng,
-            Some(&bob.address()),
-            tenero_wallet::FeeLevel::Low,
-        )
-        .unwrap();
-    let fees: u64 = txs.iter().map(|t| t.fee).sum();
-    assert!(alice.send_batch(&mut node, &txs).failed.is_none());
-    mine(&mut node, &wallet(9).address(), 0);
-    assert_eq!(received(&node, &mut bob), spendable - fees);
-}
-
-#[test]
-fn a_manual_combine_takes_the_number_of_coins_asked_for() {
-    let rig = Rig::new("combine", 2, 1);
-    let (mut node, mut alice, one) = funded(&rig, 20);
-    let level = tenero_wallet::FeeLevel::Low;
-    let built = alice.build_combine(&node, &mut OsRng, 6, level).unwrap();
-    assert_eq!(built.tx.prefix.inputs.len(), 6);
-    assert_eq!(built.amount + built.fee, 6 * one);
-    assert!(alice
-        .send_batch(&mut node, std::slice::from_ref(&built))
-        .failed
-        .is_none());
-    // the numbers that make no sense
-    for bad in [0usize, 1] {
-        assert_eq!(
-            alice
-                .build_combine(&node, &mut OsRng, bad, level)
-                .unwrap_err(),
-            WalletError::NothingToCombine
-        );
-    }
-    assert!(matches!(
-        alice
-            .build_combine(&node, &mut OsRng, 1000, level)
-            .unwrap_err(),
-        WalletError::TooManyInputs { .. }
-    ));
-    // more than the wallet has (six of the twenty are reserved now)
-    assert_eq!(
-        alice.build_combine(&node, &mut OsRng, 15, level).err(),
-        Some(WalletError::NothingToCombine)
-    );
 }

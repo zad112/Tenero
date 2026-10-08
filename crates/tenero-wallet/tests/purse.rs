@@ -5,16 +5,22 @@ use std::path::PathBuf;
 
 use rand_core::OsRng;
 use tenero_chain::{ChainParams, Sha256Pow, Submitted};
-use tenero_net::sim::{mine_test_block, test_chain_params, LABEL};
+use tenero_core::u256::U256;
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids::block_id;
+use tenero_net::sim::{test_chain_params, LABEL};
 use tenero_node::{Node, NodeConfig};
 use tenero_store::Store;
 use tenero_wallet::purse::{account_seed, GAP, MAX_ACCOUNTS, MAX_LABEL};
 use tenero_wallet::{
     coinbase_payout, phrase_of, seed_of, Address, EntryKind, FeeLevel, FileError, KdfParams,
-    PhraseError, Purse, PurseError, SentStatus, Wallet, WalletError,
+    Network, PhraseError, Purse, PurseError, SentStatus, Wallet, WalletError,
 };
 
 const T0: u64 = 1_700_000_000;
+/// Blocks mined to an account before it spends: the rewards of blocks 1 to 5 are spendable then (a block reward enters the
+/// curve tree 60 blocks after its block).
+const READY: usize = 64;
 
 // ---------------------------------------------------------------------------------------------------------------
 // the words
@@ -164,18 +170,18 @@ fn account_zero_is_the_master_seed_and_the_others_are_distinct_and_repeatable() 
     assert_eq!(*a1, *account_seed(&m, 1));
     assert_ne!(*a1, *account_seed(&[6u8; 32], 1));
     // distinct addresses, so a payment to one is not seen by another
-    let mut p = Purse::from_seed(&m, 0);
+    let mut p = Purse::from_seed(&m, Network::Test, 0);
     p.add_account("Savings", 0).unwrap();
     p.add_account("Bills", 0).unwrap();
     let addrs: Vec<Address> = p.accounts().iter().map(|a| a.address()).collect();
     assert!(addrs[0] != addrs[1] && addrs[1] != addrs[2] && addrs[0] != addrs[2]);
     // an old one-account wallet of the same seed has the address of account 0
-    assert_eq!(addrs[0], Wallet::from_seed(&m, 0).address());
+    assert_eq!(addrs[0], Wallet::from_seed(&m, Network::Test, 0).address());
 }
 
 #[test]
 fn account_names_are_checked_and_the_number_of_accounts_is_limited() {
-    let mut p = Purse::from_seed(&[1; 32], 0);
+    let mut p = Purse::from_seed(&[1; 32], Network::Test, 0);
     assert_eq!(p.accounts()[0].label(), "Main");
     assert_eq!(p.add_account("", 0).err(), Some(PurseError::BadLabel));
     assert_eq!(p.add_account("   ", 0).err(), Some(PurseError::BadLabel));
@@ -214,7 +220,7 @@ fn tmp(tag: &str) -> PathBuf {
 #[test]
 fn a_purse_file_keeps_every_account_and_its_name() {
     let path = tmp("roundtrip");
-    let mut p = Purse::from_seed(&[8; 32], 12);
+    let mut p = Purse::from_seed(&[8; 32], Network::Test, 12);
     p.add_account("Savings", 20).unwrap();
     p.add_account("Bills", 30).unwrap();
     p.save(
@@ -253,7 +259,7 @@ fn a_purse_file_keeps_every_account_and_its_name() {
 #[test]
 fn the_phrase_of_a_purse_is_not_in_the_file_in_the_clear() {
     let path = tmp("clear");
-    let p = Purse::from_seed(&[0x42; 32], 0);
+    let p = Purse::from_seed(&[0x42; 32], Network::Test, 0);
     p.save(&path, b"pw", KdfParams::TEST_ONLY_WEAK, &mut OsRng)
         .unwrap();
     let bytes = std::fs::read(&path).unwrap();
@@ -272,7 +278,7 @@ fn the_phrase_of_a_purse_is_not_in_the_file_in_the_clear() {
 #[test]
 fn an_old_one_account_wallet_file_opens_as_a_purse_and_a_changed_purse_file_is_refused() {
     let path = tmp("old");
-    let old = Wallet::from_seed(&[4; 32], 7);
+    let old = Wallet::from_seed(&[4; 32], Network::Test, 7);
     old.save(&path, b"pw", KdfParams::TEST_ONLY_WEAK, &mut OsRng)
         .unwrap();
     let p = Purse::load(&path, b"pw").unwrap();
@@ -316,15 +322,11 @@ impl Rig {
             std::process::id()
         ));
         remove(&path);
-        let store = Store::open(&path, LABEL, tenero_core::v2::ids::PowKind::Sha256).unwrap();
-        let mut params = test_chain_params();
-        params.ring_size = 2;
-        params.coinbase_maturity = 2;
-        params.spend_maturity = 2;
+        let store = Store::open(&path, LABEL, PowKind::Sha256).unwrap();
         Rig {
             path,
             store,
-            params,
+            params: test_chain_params(),
         }
     }
 
@@ -349,9 +351,19 @@ impl Drop for Rig {
 
 fn mine(node: &mut Node<'_>, to: &Address) -> u64 {
     let height = node.tip().unwrap().0 + 1;
-    let payout = coinbase_payout(&mut OsRng, to, height).unwrap();
     let ts = T0 + 60 * height;
-    let block = mine_test_block(node, ts, payout);
+    let mut block = node
+        .block_template(ts, u64::MAX, &|amount| {
+            coinbase_payout(&mut OsRng, to, height, amount).expect("a main address")
+        })
+        .unwrap();
+    let target = node.next_block().unwrap().target;
+    for nonce in 0.. {
+        block.header.nonce = nonce;
+        if U256::from_be_bytes(&block_id(&block.header, PowKind::Sha256)) < target {
+            break;
+        }
+    }
     let amount = block.coinbase.outputs[0].amount;
     match node.submit_block(&block, ts + 10).expect("a valid block") {
         Submitted::Extended(_) => {}
@@ -364,7 +376,7 @@ fn mine(node: &mut Node<'_>, to: &Address) -> u64 {
 fn restoring_from_the_words_finds_the_accounts_that_were_used() {
     let rig = Rig::new("restore");
     let mut node = rig.node();
-    let mut p = Purse::from_seed(&[11; 32], 0);
+    let mut p = Purse::from_seed(&[11; 32], Network::Test, 0);
     p.add_account("Savings", 0).unwrap();
     p.add_account("Bills", 0).unwrap();
     let to0 = p.accounts()[0].address();
@@ -380,7 +392,7 @@ fn restoring_from_the_words_finds_the_accounts_that_were_used() {
     // a new computer: only the words
     let words = p.phrase();
     let seed = seed_of(&words).unwrap();
-    let mut back = Purse::from_seed(&seed, 0);
+    let mut back = Purse::from_seed(&seed, Network::Test, 0);
     assert_eq!(back.accounts().len(), 1);
     let n = back.discover(&node).unwrap();
     // 0 used, 1 empty, 2 used, then GAP empty ones
@@ -396,7 +408,7 @@ fn restoring_from_the_words_finds_the_accounts_that_were_used() {
 fn an_account_after_a_long_enough_gap_is_not_found_by_the_search_but_can_be_added_by_hand() {
     let rig = Rig::new("gap");
     let mut node = rig.node();
-    let mut p = Purse::from_seed(&[12; 32], 0);
+    let mut p = Purse::from_seed(&[12; 32], Network::Test, 0);
     for i in 1..=GAP + 1 {
         p.add_account(&format!("A{i}"), 0).unwrap();
     }
@@ -406,7 +418,7 @@ fn an_account_after_a_long_enough_gap_is_not_found_by_the_search_but_can_be_adde
     let m0 = mine(&mut node, &to0);
     let mf = mine(&mut node, &to_far);
 
-    let mut back = Purse::from_seed(p.master_seed(), 0);
+    let mut back = Purse::from_seed(p.master_seed(), Network::Test, 0);
     let n = back.discover(&node).unwrap();
     assert_eq!(
         n,
@@ -428,10 +440,10 @@ fn an_account_after_a_long_enough_gap_is_not_found_by_the_search_but_can_be_adde
 fn a_payment_comes_from_one_account_and_lands_in_another() {
     let rig = Rig::new("pay");
     let mut node = rig.node();
-    let mut p = Purse::from_seed(&[13; 32], 0);
+    let mut p = Purse::from_seed(&[13; 32], Network::Test, 0);
     p.add_account("Savings", 0).unwrap();
     let (a0, a1) = (p.accounts()[0].address(), p.accounts()[1].address());
-    (0..6).for_each(|_| {
+    (0..READY).for_each(|_| {
         mine(&mut node, &a0);
     });
     p.sync(&node).unwrap();
@@ -482,10 +494,10 @@ fn a_payment_comes_from_one_account_and_lands_in_another() {
 fn the_three_fee_levels_pay_one_and_a_quarter_two_and_five_times_the_minimum() {
     let rig = Rig::new("fees");
     let mut node = rig.node();
-    let mut p = Purse::from_seed(&[14; 32], 0);
-    let to = Purse::from_seed(&[15; 32], 0).accounts()[0].address();
+    let mut p = Purse::from_seed(&[14; 32], Network::Test, 0);
+    let to = Purse::from_seed(&[15; 32], Network::Test, 0).accounts()[0].address();
     let me = p.accounts()[0].address();
-    (0..8).for_each(|_| {
+    (0..READY).for_each(|_| {
         mine(&mut node, &me);
     });
     p.sync(&node).unwrap();
@@ -494,9 +506,9 @@ fn the_three_fee_levels_pay_one_and_a_quarter_two_and_five_times_the_minimum() {
         let built = p
             .build_payment(0, &node, &mut OsRng, &to, 1_000, level)
             .unwrap();
-        let size = tenero_core::v2::Wire::to_bytes(&built.tx).unwrap().len() as u64;
+        let size = tenero_core::v3::Wire::to_bytes(&built.tx).unwrap().len() as u64;
         let next = node.next_block().unwrap();
-        let min = tenero_core::fees::dynamic_min_fee(size, next.reward, next.median).unwrap();
+        let min = tenero_core::v3::rules::min_fee(size, next.reward, next.median).unwrap();
         let want = min * level.percent_of_minimum() / 100 + 1;
         assert_eq!(
             built.fee,
@@ -522,10 +534,10 @@ fn the_history_lists_what_came_in_what_went_out_and_where_each_payment_stands_an
 {
     let rig = Rig::new("history");
     let mut node = rig.node();
-    let mut alice = Purse::from_seed(&[16; 32], 0);
-    let mut bob = Purse::from_seed(&[17; 32], 0);
+    let mut alice = Purse::from_seed(&[16; 32], Network::Test, 0);
+    let mut bob = Purse::from_seed(&[17; 32], Network::Test, 0);
     let (a, b) = (alice.accounts()[0].address(), bob.accounts()[0].address());
-    (0..6).for_each(|_| {
+    (0..READY).for_each(|_| {
         mine(&mut node, &a);
     });
     alice.sync(&node).unwrap();
@@ -581,10 +593,10 @@ fn the_history_lists_what_came_in_what_went_out_and_where_each_payment_stands_an
         })
         .count();
     assert_eq!(confirmed, 1);
-    // seven block rewards, and none of them is the change that came back
+    // the block rewards, and none of them is the change that came back
     let mined: Vec<_> = h.iter().filter(|e| e.kind == EntryKind::Mined).collect();
     let received = h.iter().filter(|e| e.kind == EntryKind::Received).count();
-    assert_eq!(mined.len(), 7);
+    assert_eq!(mined.len(), READY + 1);
     assert_eq!(received, 0, "the change is not a payment received");
     // the change IS in the balance, though
     let bal = alice.total_balance(&node).unwrap().total;
@@ -609,14 +621,15 @@ fn the_history_lists_what_came_in_what_went_out_and_where_each_payment_stands_an
         .unwrap();
     let back = Purse::load(&path, b"pw").unwrap();
     assert_eq!(back.sent_records(), alice.sent_records());
-    let mut restored = Purse::from_seed(alice.master_seed(), 0);
+    let mut restored = Purse::from_seed(alice.master_seed(), Network::Test, 0);
     restored.sync(&node).unwrap();
     let hr = restored.history(&node).unwrap();
     assert!(hr.iter().all(|e| !matches!(e.kind, EntryKind::Sent { .. })));
-    // without the record, the change looks like something received: this is the cost of having no outgoing view key
+    // even without the record, the change is not taken for something received: Carrot change is an internal self-send,
+    // which the wallet recognises as its own (the interim scheme of beta could not)
     assert_eq!(
         hr.iter().filter(|e| e.kind == EntryKind::Received).count(),
-        1
+        0
     );
     let _ = std::fs::remove_file(&path);
 }
@@ -625,10 +638,10 @@ fn the_history_lists_what_came_in_what_went_out_and_where_each_payment_stands_an
 fn a_payment_the_node_dropped_is_shown_as_not_confirmed_once_its_reservation_runs_out() {
     let rig = Rig::new("dropped");
     let mut node = rig.node();
-    let mut p = Purse::from_seed(&[18; 32], 0);
+    let mut p = Purse::from_seed(&[18; 32], Network::Test, 0);
     let me = p.accounts()[0].address();
-    let to = Purse::from_seed(&[19; 32], 0).accounts()[0].address();
-    (0..6).for_each(|_| {
+    let to = Purse::from_seed(&[19; 32], Network::Test, 0).accounts()[0].address();
+    (0..READY).for_each(|_| {
         mine(&mut node, &me);
     });
     p.sync(&node).unwrap();
@@ -659,221 +672,6 @@ fn a_payment_the_node_dropped_is_shown_as_not_confirmed_once_its_reservation_run
     );
 }
 
-#[test]
-fn a_sent_payment_is_proved_three_ways_and_a_received_one_and_a_block_reward_and_the_secret_stays_hidden(
-) {
-    use tenero_wallet::proofs::{check_on_chain, PaymentProof, ProofError, ProofKind};
-    let rig = Rig::new("proofs");
-    let mut node = rig.node();
-    let mut p = Purse::from_seed(&[21; 32], 0);
-    p.add_account("Savings", 0).unwrap();
-    let (a0, a1) = (p.accounts()[0].address(), p.accounts()[1].address());
-    (0..6).for_each(|_| {
-        mine(&mut node, &a0);
-    });
-    p.sync(&node).unwrap();
-    let amount = 1_234_567_890;
-    let built = p
-        .pay(
-            0,
-            &mut node,
-            &mut OsRng,
-            &a1,
-            amount,
-            FeeLevel::Low,
-            1_700_000_000,
-        )
-        .unwrap();
-    let id = built.id;
-
-    // not in a block yet: there is nothing on the chain to prove
-    let early = p.prove_sent(&id, ProofKind::Sent, &node, &mut OsRng);
-    assert!(
-        matches!(early, Err(PurseError::Proof(ProofError::NotInChain))),
-        "{:?}",
-        early.err()
-    );
-
-    mine(&mut node, &a0);
-    p.sync(&node).unwrap();
-    for kind in [ProofKind::Sent, ProofKind::Key] {
-        let proof = p.prove_sent(&id, kind, &node, &mut OsRng).unwrap();
-        // anyone with the text and a node can check it: no wallet is involved
-        let again = PaymentProof::from_text(&proof.to_text()).unwrap();
-        let (checked, confirmations) = check_on_chain(&node, &again).unwrap();
-        assert_eq!(
-            (checked.amount, checked.address, checked.kind),
-            (amount, a1, kind)
-        );
-        assert!(confirmations >= 1);
-        assert!(!checked.block_reward);
-    }
-    // the proof names a place on the chain: the same proof one block over is about nothing
-    let proof = p
-        .prove_sent(&id, ProofKind::Sent, &node, &mut OsRng)
-        .unwrap();
-    let mut moved = proof.to_bytes();
-    moved[1] ^= 1;
-    let moved = PaymentProof::from_bytes(&moved).unwrap();
-    assert!(check_on_chain(&node, &moved).is_err());
-    let mut elsewhere = proof.to_bytes();
-    elsewhere[9] ^= 2;
-    assert!(check_on_chain(&node, &PaymentProof::from_bytes(&elsewhere).unwrap()).is_err());
-
-    // the receiving account proves its receipt from the history, with no record of the sending
-    bob_side(&mut p, &node, amount, a1);
-
-    // the secret is kept, shown only when asked for, and never printed by Debug
-    let secret = p.tx_secret(&id).unwrap();
-    assert_eq!(format!("{secret:?}"), "TxSecret(..)");
-    assert!(!format!("{:?}", p.sent_records()[0]).contains(
-        &secret
-            .expose()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    ));
-    // it survives the file
-    let path = tmp("proofs");
-    p.save(&path, b"pw", KdfParams::TEST_ONLY_WEAK, &mut OsRng)
-        .unwrap();
-    let back = Purse::load(&path, b"pw").unwrap();
-    assert_eq!(back.tx_secret(&id).unwrap(), secret);
-    assert_eq!(back.sent_records(), p.sent_records());
-    let _ = std::fs::remove_file(&path);
-
-    // after the person deletes it, this wallet can never prove that payment (the history still lists it)
-    p.forget_tx_secret(&id).unwrap();
-    assert!(matches!(
-        p.tx_secret(&id),
-        Err(PurseError::Proof(ProofError::NoTxSecret))
-    ));
-    let gone = p.prove_sent(&id, ProofKind::Sent, &node, &mut OsRng);
-    assert!(matches!(
-        gone,
-        Err(PurseError::Proof(ProofError::NoTxSecret))
-    ));
-    // and an id that was never sent
-    assert!(p.tx_secret(&[0; 32]).is_err());
-
-    // a block reward is proved with its public amount
-    let reward = p
-        .history(&node)
-        .unwrap()
-        .into_iter()
-        .find(|e| e.kind == EntryKind::Mined)
-        .unwrap();
-    let proof = p
-        .prove_received(0, reward.global_index.unwrap(), &node, &mut OsRng)
-        .unwrap();
-    let (c, _) = check_on_chain(&node, &proof).unwrap();
-    assert_eq!((c.amount, c.block_reward), (reward.amount, true));
-}
-
-fn bob_side(p: &mut Purse, node: &Node<'_>, amount: u64, a1: Address) {
-    use tenero_wallet::proofs::check_on_chain;
-    let h = p.history(node).unwrap();
-    let got = h
-        .iter()
-        .find(|e| e.account == 1 && e.kind == EntryKind::Received)
-        .expect("the savings account received it");
-    let proof = p
-        .prove_received(1, got.global_index.unwrap(), node, &mut OsRng)
-        .unwrap();
-    let (c, _) = check_on_chain(node, &proof).unwrap();
-    assert_eq!((c.amount, c.address), (amount, a1));
-    // account 0 cannot prove receipt of an output that is account 1's
-    assert!(p
-        .prove_received(0, got.global_index.unwrap(), node, &mut OsRng)
-        .is_err());
-}
-
-#[test]
-fn a_message_signed_by_an_account_verifies_for_its_address_and_no_other() {
-    use tenero_wallet::proofs::{verify_message, MessageSignature};
-    let mut p = Purse::from_seed(&[22; 32], 0);
-    p.add_account("Savings", 0).unwrap();
-    let msg = b"this account is mine";
-    let sig = p.sign_message(1, &mut OsRng, msg).unwrap();
-    let text = sig.to_text();
-    let sig = MessageSignature::from_text(&text).unwrap();
-    assert_eq!(
-        verify_message(&p.accounts()[1].address(), msg, &sig),
-        Ok(())
-    );
-    assert!(
-        verify_message(&p.accounts()[0].address(), msg, &sig).is_err(),
-        "another account's address"
-    );
-    assert!(p.sign_message(9, &mut OsRng, msg).is_err());
-}
-
-#[test]
-fn a_transaction_key_and_an_address_are_checked_by_finding_the_output_the_key_made() {
-    use tenero_wallet::proofs::{check_key, ProofError, ProofKind};
-    let rig = Rig::new("checkkey");
-    let mut node = rig.node();
-    let mut p = Purse::from_seed(&[24; 32], 0);
-    p.add_account("Savings", 0).unwrap();
-    let (a0, a1) = (p.accounts()[0].address(), p.accounts()[1].address());
-    (0..6).for_each(|_| {
-        mine(&mut node, &a0);
-    });
-    p.sync(&node).unwrap();
-    let amount = 777_000_000;
-    let built = p
-        .pay(0, &mut node, &mut OsRng, &a1, amount, FeeLevel::Low, 1)
-        .unwrap();
-    mine(&mut node, &a0);
-    mine(&mut node, &a0);
-    p.sync(&node).unwrap();
-    let key = *p.tx_secret(&built.id).unwrap().expose();
-
-    // the key and the address it paid: found from the start of the chain, and from a block at or before the payment
-    let (c, conf) = check_key(&node, &key, &a1, 0).unwrap();
-    assert_eq!((c.amount, c.address, c.kind), (amount, a1, ProofKind::Key));
-    assert!(conf >= 1);
-    let at = c.height;
-    assert!(
-        check_key(&node, &key, &a1, at).is_ok(),
-        "from the block it is in"
-    );
-    // a start after the output's block does not find it (and says which blocks were read)
-    let after = check_key(&node, &key, &a1, at + 1);
-    assert!(
-        matches!(after, Err(ProofError::NotFound { from, .. }) if from == at + 1),
-        "{after:?}"
-    );
-    // another address: the output is found but is not addressed to it
-    assert_eq!(
-        check_key(&node, &key, &a0, 0).err(),
-        Some(ProofError::NotAddressed)
-    );
-    // a key that made nothing, and one that is not a key at all
-    assert!(matches!(
-        check_key(&node, &[7; 32], &a1, 0),
-        Err(ProofError::NotFound { .. })
-    ));
-    assert!(matches!(
-        check_key(&node, &[0xff; 32], &a1, 0),
-        Err(ProofError::Format(_))
-    ));
-    // an address with an invalid key
-    let bad = Address {
-        spend: [0; 32],
-        view: a1.view,
-    };
-    assert_eq!(
-        check_key(&node, &key, &bad, 0).err(),
-        Some(ProofError::BadAddress)
-    );
-    // a start past the tip finds nothing and does not loop
-    assert!(matches!(
-        check_key(&node, &key, &a1, 1_000_000),
-        Err(ProofError::NotFound { .. })
-    ));
-}
-
 // ---------------------------------------------------------------------------------------------------------------
 // batches and combining
 // ---------------------------------------------------------------------------------------------------------------
@@ -882,12 +680,12 @@ fn a_transaction_key_and_an_address_are_checked_by_finding_the_output_the_key_ma
 fn a_batch_is_recorded_one_payment_at_a_time_with_the_fee_once_and_the_history_shows_each() {
     let rig = Rig::new("batchrec");
     let mut node = rig.node();
-    let mut alice = Purse::from_seed(&[21; 32], 0);
+    let mut alice = Purse::from_seed(&[21; 32], Network::Test, 0);
     let a = alice.accounts()[0].address();
     let others: Vec<Address> = (30..50u8)
-        .map(|i| Purse::from_seed(&[i; 32], 0).accounts()[0].address())
+        .map(|i| Purse::from_seed(&[i; 32], Network::Test, 0).accounts()[0].address())
         .collect();
-    (0..30).for_each(|_| {
+    (0..READY).for_each(|_| {
         mine(&mut node, &a);
     });
     alice.sync(&node).unwrap();
@@ -906,7 +704,7 @@ fn a_batch_is_recorded_one_payment_at_a_time_with_the_fee_once_and_the_history_s
     let fees: u64 = records.iter().map(|r| r.fee).sum();
     assert_eq!(fees, plan.txs.iter().map(|t| t.fee).sum::<u64>());
     for r in records {
-        assert!(r.tx_secret.is_some() && r.payment_onetime.is_some());
+        assert!(r.anchor.is_some() && r.payment_onetime.is_some());
     }
     let h = alice.history(&node).unwrap();
     let paid: Vec<_> = h
@@ -932,9 +730,9 @@ fn a_batch_is_recorded_one_payment_at_a_time_with_the_fee_once_and_the_history_s
 fn a_combine_is_recorded_as_a_payment_to_oneself_and_its_coin_is_not_money_received() {
     let rig = Rig::new("combinerec");
     let mut node = rig.node();
-    let mut p = Purse::from_seed(&[22; 32], 0);
+    let mut p = Purse::from_seed(&[22; 32], Network::Test, 0);
     let a = p.accounts()[0].address();
-    (0..12).for_each(|_| {
+    (0..READY).for_each(|_| {
         mine(&mut node, &a);
     });
     p.sync(&node).unwrap();
@@ -956,7 +754,7 @@ fn a_combine_is_recorded_as_a_payment_to_oneself_and_its_coin_is_not_money_recei
     for _ in 0..4 {
         mine(
             &mut node,
-            &Purse::from_seed(&[99; 32], 0).accounts()[0].address(),
+            &Purse::from_seed(&[99; 32], Network::Test, 0).accounts()[0].address(),
         );
     }
     p.sync(&node).unwrap();

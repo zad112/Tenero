@@ -172,6 +172,10 @@ What it covers, in the order of the specification:
   its vectors are regenerated (`make_vectors_control.py`).
 - **View-only wallets:** the "view-received" tier (incoming only) and the "view-all" tier (incoming and outgoing, from the
   view-balance secret). A view-only wallet cannot spend, and the program says so.
+- **Status (2026-10-08, G4b):** the wallet core is on Carrot and FCMP++ (addresses `TENg/TENd/TENt`, subaddresses, integrated
+  addresses, change found as an internal self-send, real FCMP++ spends; `CONSENSUS_V2.md` 15.9). The interim scheme's
+  `interim.rs` and `proofs.rs` are gone from the 0.3.0 wallet; a sent payment keeps its Janus anchor for the Carrot payment
+  proof below (G5).
 - **Payment proofs** (`proofs.rs`, `docs/WALLET_PROOFS.md`): message signatures carry over; proving a payment ("I sent X to this
   address in this transaction") is rebuilt on Carrot's derivations. **Spend proofs and reserve proofs have no published FCMP++
   design yet** (Monero's stressnet lists transaction proofs as unsupported); they are left out rather than invented, and the
