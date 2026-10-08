@@ -110,9 +110,9 @@ fn leaf_of(o: &StoredOutput, index: u64) -> Result<Leaf> {
 /// The on-disk layout version, in `meta`. Version 2: the prunable data is in segment files. Version 3: the
 /// block record also holds the block's target and body size. Version 4: every record in a segment file is followed by
 /// a 16-byte checksum (`CHECK_LEN`), which every read verifies. Version 5: the rules version 3 (`gamma`): its blocks and
-/// transactions, the block weight in place of its size, and the curve tree's four tables. A store of an older version is
-/// refused (`WrongFormat`), not guessed at.
-pub const FORMAT_VERSION: u32 = 5;
+/// transactions, the block weight in place of its size, and the curve tree's four tables. Version 6: the block record also
+/// holds the block's long-term weight. A store of an older version is refused (`WrongFormat`), not guessed at.
+pub const FORMAT_VERSION: u32 = 6;
 
 /// The bytes of checksum after each record in a segment file: the first 16 bytes of a SHA-256 of the record and of where it is.
 const CHECK_LEN: usize = 16;
@@ -202,6 +202,9 @@ pub struct Store {
     chain_id: [u8; 32],
     /// The curve tree at the tip (its layers above the leaves), kept in step with the database.
     tree: Mutex<CurveTree>,
+    /// The long-term weights of blocks 1 to the tip (8 bytes a block), for the long-term median, kept in step with the
+    /// database.
+    lt_weights: Mutex<Vec<u64>>,
 }
 
 impl Store {
@@ -281,6 +284,7 @@ impl Store {
                         cumulative_work: [0; 32],
                         target: [0; 32],
                         body_weight: 0,
+                        long_term_weight: 0,
                         first_output_index: 0,
                         output_count: 0,
                         tx_count: 0,
@@ -303,6 +307,7 @@ impl Store {
         }
         txn.commit()?;
         let tree = Store::load_tree(&db)?;
+        let lt_weights = Store::load_lt_weights(&db)?;
         let store = Store {
             db,
             path,
@@ -311,10 +316,23 @@ impl Store {
             pow,
             chain_id,
             tree: Mutex::new(tree),
+            lt_weights: Mutex::new(lt_weights),
         };
         // a segment file the database does not know (left by a crash) is an orphan
         store.sweep_segments()?;
         Ok(store)
+    }
+
+    /// The long-term weights of blocks 1 to the tip, from the block records.
+    fn load_lt_weights(db: &Database) -> Result<Vec<u64>> {
+        let txn = db.begin_read()?;
+        let index = txn.open_table(INDEX)?;
+        let mut out = Vec::new();
+        for entry in index.range(1u64..)? {
+            let (_, v) = entry?;
+            out.push(from_bytes::<BlockIndex>(v.value())?.long_term_weight);
+        }
+        Ok(out)
     }
 
     /// Reads the tree at the tip from the database, and checks its shape and its root.
@@ -639,6 +657,20 @@ impl Store {
         leaf_of(&o, index).map(Some)
     }
 
+    /// The long-term weights of the (at most) `n` blocks just below `before`, oldest first, from block 1 on: what the
+    /// long-term median of the block at `before` is taken over. `before` is at most the tip's height plus one.
+    pub fn long_term_weights(&self, before: u64, n: usize) -> Vec<u64> {
+        let all = self
+            .lt_weights
+            .lock()
+            .expect("the weights lock is never poisoned");
+        // block h is at all[h - 1]
+        let end = usize::try_from(before.saturating_sub(1))
+            .unwrap_or(usize::MAX)
+            .min(all.len());
+        all[end.saturating_sub(n)..end].to_vec()
+    }
+
     /// A copy of the curve tree at the tip.
     pub fn tree(&self) -> CurveTree {
         self.tree
@@ -889,6 +921,7 @@ impl Store {
                 cumulative_work: meta_in.cumulative_work,
                 target: meta_in.target,
                 body_weight: meta_in.body_weight,
+                long_term_weight: meta_in.long_term_weight,
                 first_output_index,
                 output_count,
                 tx_count: u32::try_from(block.transactions.len()).expect("at most MAX_BLOCK_TXS"),
@@ -910,6 +943,10 @@ impl Store {
         }
         txn.commit()?;
         *self.tree.lock().expect("the tree lock is never poisoned") = grown_tree;
+        self.lt_weights
+            .lock()
+            .expect("the weights lock is never poisoned")
+            .push(meta_in.long_term_weight);
         Ok(info)
     }
 
@@ -1088,6 +1125,10 @@ impl Store {
         }
         txn.commit()?;
         *self.tree.lock().expect("the tree lock is never poisoned") = trimmed_tree;
+        self.lt_weights
+            .lock()
+            .expect("the weights lock is never poisoned")
+            .pop();
         let (block, emptied_segment) = popped;
         if let Some(id) = emptied_segment {
             self.segments.remove(id)?;
