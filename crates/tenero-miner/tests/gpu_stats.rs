@@ -114,7 +114,7 @@ fn auto_tries_the_sizes_that_were_measured_and_one_more() {
 
 /// The owner's machine: measures for real (about 25 s) and picks.
 #[test]
-#[ignore = "needs an NVIDIA GPU, the CUDA DLLs and about 4.5 GiB of video memory"]
+#[ignore = "needs an NVIDIA GPU and about 4.5 GiB of video memory"]
 fn a_real_card_is_measured_and_a_batch_is_chosen() {
     let lines = std::sync::Mutex::new(vec![]);
     let log = |m: &str| {
@@ -144,7 +144,7 @@ fn a_real_card_is_measured_and_a_batch_is_chosen() {
 /// dataset it must not grow by anything near another 4 GiB. Needs the card to itself (other programs' video memory changing during the
 /// test would show up in the numbers), so stop any other miner first.
 #[test]
-#[ignore = "needs an NVIDIA GPU, the CUDA DLLs and about 4.5 GiB of video memory, and no other miner running"]
+#[ignore = "needs an NVIDIA GPU and about 4.5 GiB of video memory, and no other miner running"]
 fn on_a_real_card_one_dataset_is_held_in_video_memory_across_epoch_boundaries() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -205,7 +205,7 @@ fn on_a_real_card_one_dataset_is_held_in_video_memory_across_epoch_boundaries() 
 /// blocks found against 184 expected, because a batch of 512 attempts holds dozens of solutions and only the first becomes a block.
 /// With the attempts after the first solution left out, the blocks found and the blocks expected agree.
 #[test]
-#[ignore = "needs an NVIDIA GPU, the CUDA DLLs and about 4.5 GiB of video memory"]
+#[ignore = "needs an NVIDIA GPU and about 4.5 GiB of video memory"]
 fn on_a_real_card_at_an_easy_target_the_blocks_found_match_the_blocks_expected() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;

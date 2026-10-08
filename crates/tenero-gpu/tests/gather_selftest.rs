@@ -6,6 +6,7 @@
 
 use tenero_core::matmulhash::{self as mh, Dataset, Params};
 use tenero_gpu::gather::GatherEngine;
+use tenero_gpu::group::SliceGrouper;
 use tenero_gpu::Gpu;
 
 fn check(p: Params, attempts: usize, batch: usize) {
@@ -32,7 +33,7 @@ fn check(p: Params, attempts: usize, batch: usize) {
 }
 
 #[test]
-#[ignore = "needs an NVIDIA GPU and the CUDA toolkit"]
+#[ignore = "needs an NVIDIA GPU"]
 fn the_gathered_multiply_matches_the_cpu_on_small_shapes() {
     // a power-of-two number of columns, and one that is not (5 slices of 384)
     check(
@@ -58,7 +59,62 @@ fn the_gathered_multiply_matches_the_cpu_on_small_shapes() {
 }
 
 #[test]
-#[ignore = "needs an NVIDIA GPU, the CUDA toolkit and about 4.5 GiB of RAM and of video memory"]
+#[ignore = "needs an NVIDIA GPU and about 4.5 GiB of RAM and of video memory"]
 fn the_gathered_multiply_matches_the_cpu_at_the_real_parameters() {
     check(Params::DEFAULT, 3, 3);
+}
+
+/// The FIRST design (each attempt reads its whole slice) on our own multiply, as the miner runs it without cuBLASLt:
+/// nonces grouped by slice, every attempt against `matmulhash::compute_attempt`, bit for bit.
+fn check_slices(p: Params, group: usize, batch: usize, batches: usize) {
+    let g = Gpu::new(0).expect("a GPU");
+    let seed = mh::epoch_seed(4);
+    let cpu = Dataset::build(&p, &seed, p.num_blocks, 6).unwrap();
+    let dev = g.build_dataset(&p, &seed, p.num_blocks).unwrap();
+    let mut engine = GatherEngine::new(&g, &dev, batch).unwrap();
+    let header = [0x31u8; 32];
+    let mut grouper = SliceGrouper::new(header, p.num_blocks, group, u64::MAX - 100);
+    for _ in 0..batches {
+        let b = grouper.next_batch(batch / group);
+        let got = engine.slice_attempts(&b.seeds, &b.slices).unwrap();
+        for (&nonce, a) in b.nonces.iter().zip(&got) {
+            let want = mh::compute_attempt(&cpu, &header, nonce).unwrap();
+            assert_eq!(*a, want, "{p:?} group {group} nonce {nonce}");
+        }
+    }
+    // a slice outside the dataset is refused, not read
+    let b = grouper.next_batch(1);
+    assert!(engine
+        .slice_attempts(&b.seeds, &vec![p.num_blocks; b.len()])
+        .is_err());
+}
+
+#[test]
+#[ignore = "needs an NVIDIA GPU"]
+fn the_first_design_on_our_own_multiply_matches_the_cpu() {
+    let small = Params {
+        m: 64,
+        k: 1024,
+        nb: 256,
+        num_blocks: 8,
+    };
+    check_slices(small, 1, 32, 3);
+    check_slices(small, 4, 32, 3);
+    check_slices(
+        Params {
+            m: 64,
+            k: 640,
+            nb: 384,
+            num_blocks: 5,
+        },
+        8,
+        16,
+        3,
+    );
+}
+
+#[test]
+#[ignore = "needs an NVIDIA GPU and about 4.5 GiB of RAM and of video memory"]
+fn the_first_design_on_our_own_multiply_matches_the_cpu_at_the_real_parameters() {
+    check_slices(Params::DEFAULT, 2, 4, 1);
 }

@@ -2,7 +2,7 @@
 //!
 //!     cargo run --release -p tenero-gpu --example gpu_bench [-- --seconds 5]
 //!
-//! Needs an NVIDIA GPU, the CUDA toolkit's DLLs on PATH and about 4.5 GiB of video memory. The
+//! Needs an NVIDIA GPU (RTX 30 series or newer, a CUDA 13 driver) and about 4.5 GiB of video memory. The
 //! search uses a target that is never met, so every batch is fully computed; a real search stops
 //! at the first solution. What it prints is MEASURED on this machine, at these settings.
 
@@ -52,7 +52,7 @@ fn main() {
                 continue;
             }
         };
-        // warm up (kernel JIT caches, cuBLASLt heuristics, clocks)
+        // warm up (caches, clocks)
         engine
             .search(&header, &never, 0, (batch * 2) as u64)
             .unwrap();
@@ -72,7 +72,6 @@ fn main() {
         );
     }
     let pipeline = !args.iter().any(|a| a == "--no-pipeline");
-    let tune = args.iter().any(|a| a == "--tune");
     let groups_arg: Option<Vec<usize>> = args
         .iter()
         .position(|a| a == "--groups")
@@ -100,14 +99,6 @@ fn main() {
                     continue;
                 }
             };
-            if tune {
-                let times = engine.tune(group, 64).unwrap();
-                let ms: Vec<String> = times.iter().map(|t| format!("{:.3}", t * 1e3)).collect();
-                println!(
-                    "        cuBLASLt candidates for group {group}, ms per multiply: {}",
-                    ms.join(" ")
-                );
-            }
             let mut grouper = SliceGrouper::new(header, p.num_blocks, group, 0);
             // pipelined: the next batch is queued before the last one is collected, so the GPU never waits for the CPU
             let mut run = |grouper: &mut SliceGrouper| {

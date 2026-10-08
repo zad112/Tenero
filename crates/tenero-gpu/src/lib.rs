@@ -1,23 +1,26 @@
 //! The GPU miner's engine, in Rust, without Python. Experimental and unaudited.
 //!
-//! It runs the same three CUDA kernels as the Python miner (`kernels/matmulhash.cu`, kept
-//! identical to `reference/tenero/gpubackend.py` by `reference/tests/test_kernel_source_copy.py`), compiled at run time
-//! with NVRTC, and the exact int8 matrix multiply through cuBLASLt (`gemm`). Everything is checked
-//! against the CPU code in `tenero-core`, which is checked against the golden vectors.
+//! It runs the CUDA kernels of `kernels/` (`matmulhash.cu`, kept identical to `reference/tenero/gpubackend.py` by
+//! `reference/tests/test_kernel_source_copy.py`; `fast.cu`; `gather.cu`, the exact int8 multiply of both proof-of-work
+//! designs on the tensor cores). Everything is checked against the CPU code in `tenero-core`, which is checked against
+//! the golden vectors.
+//!
+//! **Only the NVIDIA driver is needed at run time** (no CUDA Toolkit, no NVRTC, no cuBLAS): the kernels are compiled ahead
+//! of time into fat binaries (`kernels/build_kernels.py`; machine code for sm_80 to sm_120 and PTX the driver compiles
+//! for newer GPUs), embedded in the program with `include_bytes!` and loaded by the driver. A GPU needs compute
+//! capability 8.0 or newer (RTX 30 series, A100 and later) and a driver for CUDA 13 (R580 or newer).
 //!
 //! Unsafe code is confined to the calls into CUDA, each with a `SAFETY` comment.
 
 pub mod gather;
-pub mod gemm;
 pub mod group;
 
-use cudarc::cublaslt::result::CublasError;
+use cudarc::driver::sys::CUfunction_attribute;
 use cudarc::driver::{
     CudaContext, CudaFunction, CudaSlice, CudaStream, DriverError, LaunchConfig, PinnedHostSlice,
     PushKernelArg,
 };
-use cudarc::nvrtc::{compile_ptx_with_opts, CompileError, CompileOptions};
-use gemm::Int8Gemm;
+use cudarc::nvrtc::Ptx;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tenero_core::matmulhash::{self as mh, Attempt, Params};
@@ -27,8 +30,27 @@ use tenero_core::u256::U256;
 pub const KERNEL_SOURCE: &str = include_str!("../kernels/matmulhash.cu");
 
 /// Faster versions of the keystream and the fold (the same values, better memory access), for this engine only.
-/// Compiled after `KERNEL_SOURCE`, in one program, because it uses its ChaCha20 functions.
+/// Compiled after `KERNEL_SOURCE`, in one module, because it uses its ChaCha20 functions.
 pub const FAST_KERNEL_SOURCE: &str = include_str!("../kernels/fast.cu");
+
+/// The multiply of both proof-of-work designs (`gather.cu`).
+pub const GATHER_KERNEL_SOURCE: &str = include_str!("../kernels/gather.cu");
+
+/// `KERNEL_SOURCE` and `FAST_KERNEL_SOURCE`, compiled ahead of time (`kernels/build_kernels.py`).
+pub const MATMULHASH_FATBIN: &[u8] = include_bytes!("../kernels/matmulhash.fatbin");
+
+/// `GATHER_KERNEL_SOURCE`, compiled ahead of time.
+pub const GATHER_FATBIN: &[u8] = include_bytes!("../kernels/gather.fatbin");
+
+/// The source hashes the fat binaries were built from (`kernels.sha256`; a test checks they are current).
+pub const KERNEL_HASHES: &str = include_str!("../kernels/kernels.sha256");
+
+/// The oldest GPU the kernels run on: compute capability 8.0 (the gathered multiply needs `cp.async` and int8
+/// `mma.sync m16n8k32`).
+pub const MIN_COMPUTE_CAPABILITY: (i32, i32) = (8, 0);
+
+/// `G_SMEM` in `gather.cu`: 3 stages of (64 + 128) rows of 144 bytes of shared memory.
+const GATHER_SMEM: u32 = 3 * (64 + 128) * 144;
 
 const THREADS: u32 = 256;
 const FOLD_BLOCKS: u32 = 4;
@@ -57,18 +79,6 @@ impl From<DriverError> for GpuError {
     }
 }
 
-impl From<CompileError> for GpuError {
-    fn from(e: CompileError) -> GpuError {
-        GpuError(format!("NVRTC: {e:?}"))
-    }
-}
-
-impl From<CublasError> for GpuError {
-    fn from(e: CublasError) -> GpuError {
-        GpuError(format!("cuBLASLt: {e:?}"))
-    }
-}
-
 impl From<String> for GpuError {
     fn from(e: String) -> GpuError {
         GpuError(e)
@@ -84,42 +94,122 @@ fn key_words_i64(key: &[u8; 32]) -> [i64; 8] {
     w.map(i64::from)
 }
 
-/// A CUDA device with the kernels compiled and loaded.
+/// A CUDA device with the kernels loaded.
 pub struct Gpu {
     stream: Arc<CudaStream>,
     keystream_fn: CudaFunction,
     fill_fn: CudaFunction,
     fold_fn: CudaFunction,
+    gather_fn: CudaFunction,
+    read_fn: CudaFunction,
     pub name: String,
     pub compute_capability: (i32, i32),
 }
 
+/// What a kernel load failure means, in words a miner can act on.
+fn load_error(name: &str, cc: (i32, i32), e: DriverError) -> GpuError {
+    GpuError(format!(
+        "the GPU kernels could not be loaded on {name} (compute capability {}.{}): {e:?}. They need an NVIDIA driver \
+         for CUDA 13 (R580 or newer): update the driver. (The CUDA Toolkit is NOT needed.)",
+        cc.0, cc.1
+    ))
+}
+
 impl Gpu {
-    /// Opens device `ordinal`, compiles the kernels for its architecture and loads them.
+    /// Opens device `ordinal` and loads the embedded kernels (the driver picks the machine code for this GPU, or
+    /// compiles the PTX for a GPU newer than all of them). Needs compute capability 8.0 or newer.
     pub fn new(ordinal: usize) -> Result<Gpu, GpuError> {
         let ctx = CudaContext::new(ordinal)?;
         let compute_capability = ctx.compute_capability()?;
         let name = ctx.name()?;
-        let arch: &'static str = Box::leak(
-            format!("compute_{}{}", compute_capability.0, compute_capability.1).into_boxed_str(),
-        );
-        let ptx = compile_ptx_with_opts(
-            format!("{KERNEL_SOURCE}\n{FAST_KERNEL_SOURCE}"),
-            CompileOptions {
-                arch: Some(arch),
-                ..Default::default()
-            },
+        if compute_capability < MIN_COMPUTE_CAPABILITY {
+            return Err(GpuError(format!(
+                "{name} has compute capability {}.{}; the miner needs {}.{} or newer (an RTX 30 series, A100 or later \
+                 NVIDIA GPU)",
+                compute_capability.0,
+                compute_capability.1,
+                MIN_COMPUTE_CAPABILITY.0,
+                MIN_COMPUTE_CAPABILITY.1
+            )));
+        }
+        let load = |image: &[u8]| {
+            ctx.load_module(Ptx::from_binary(image.to_vec()))
+                .map_err(|e| load_error(&name, compute_capability, e))
+        };
+        let module = load(MATMULHASH_FATBIN)?;
+        let gather = load(GATHER_FATBIN)?;
+        let gather_fn = gather.load_function("gather_gemm")?;
+        // more than the default 48 KiB of shared memory (G_SMEM in gather.cu), and as much of the cache as shared memory
+        gather_fn.set_attribute(
+            CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+            GATHER_SMEM as i32,
         )?;
-        let module = ctx.load_module(ptx)?;
+        gather_fn.set_attribute(
+            CUfunction_attribute::CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT,
+            100,
+        )?;
         Ok(Gpu {
             stream: ctx.new_stream()?,
             // the fast versions: the same arguments and results as keystream_kernel and fold_kernel
             keystream_fn: module.load_function("keystream_fast")?,
             fill_fn: module.load_function("fill_kernel")?,
             fold_fn: module.load_function("fold_fast")?,
+            gather_fn,
+            read_fn: gather.load_function("gather_read")?,
             name,
             compute_capability,
         })
+    }
+
+    /// `C = X @ W` for `n` attempts on the tensor cores (`gather_gemm`): attempt `a`'s 64 rows of X at `a * 64 * k` in
+    /// `x`, its result at `a * 64 * nb` in `c`. Its columns are, in slice mode (`slices: Some`), the `nb` columns of
+    /// slice `slices[a]` of `data` (the first design); otherwise dataset column `idx[a * idx_stride + n] % columns`
+    /// (the gathered attempt). The caller guarantees the buffer sizes and slice numbers (see the SAFETY comment).
+    #[allow(clippy::too_many_arguments)]
+    fn launch_multiply(
+        &self,
+        x: &CudaSlice<u8>,
+        data: &CudaSlice<u8>,
+        idx: &CudaSlice<u8>,
+        slices: Option<&CudaSlice<u32>>,
+        c: &CudaSlice<i32>,
+        (k, nb, columns): (usize, usize, usize),
+        idx_stride: u32,
+        n: usize,
+    ) -> Result<(), GpuError> {
+        let cfg = LaunchConfig {
+            grid_dim: ((nb / 128) as u32, n as u32, 1),
+            block_dim: (THREADS, 1, 1),
+            shared_mem_bytes: GATHER_SMEM,
+        };
+        let (k, nb, columns) = (k as u32, nb as u32, columns as u32);
+        let slice_mode: u32 = u32::from(slices.is_some());
+        // in gathered mode the kernel never reads `slices`; any device buffer will do for the argument
+        let mut b = self.stream.launch_builder(&self.gather_fn);
+        b.arg(x)
+            .arg(data)
+            .arg(idx)
+            .arg(c)
+            .arg(&k)
+            .arg(&nb)
+            .arg(&columns)
+            .arg(&idx_stride);
+        match slices {
+            Some(s) => b.arg(s),
+            None => b.arg(idx),
+        };
+        b.arg(&slice_mode);
+        // SAFETY: the kernel is `gather_gemm(u64 x, u64 data, u64 idx, u64 c, u32 k, u32 nb, u32 columns, u32 stride,
+        // u64 slices, u32 slice_mode)` and the arguments have those types. The callers guarantee: m == 64, k % 128 == 0,
+        // nb % 128 == 0; `x` holds n * 64 * k bytes and `c` n * 64 * nb int32; in slice mode `slices` holds n numbers,
+        // each with (slice + 1) * nb * k <= data's length; in gathered mode `idx` holds the words a * stride + [0, nb)
+        // for every a < n and `columns * k` <= data's length. The function was allowed GATHER_SMEM bytes of shared
+        // memory in `new`, which this launch asks for.
+        #[allow(unsafe_code)]
+        unsafe {
+            b.launch(cfg)?;
+        }
+        Ok(())
     }
 
     pub fn synchronize(&self) -> Result<(), GpuError> {
@@ -213,7 +303,8 @@ impl Gpu {
     }
 
     /// `x @ w` on the tensor cores, from host arrays: `x` is `m*k` int8 (row-major), `w` is one slice
-    /// as stored (`nb*k` bytes, the transposed matrix); the result is `m*nb` int32 (row-major).
+    /// as stored (`nb*k` bytes, the transposed matrix); the result is `m*nb` int32 (row-major). `m` must be a
+    /// multiple of 64 and `k` and `nb` multiples of 128 (the kernel's tiles; the chain's 64, 8192 and 2048 are).
     pub fn int8_matmul(
         &self,
         x: &[i8],
@@ -225,13 +316,29 @@ impl Gpu {
         if x.len() != m * k || w.len() != nb * k {
             return Err(GpuError::new("x must be m*k and w nb*k"));
         }
-        let mut gemm = Int8Gemm::new(self.stream.clone(), m, k, nb)?;
+        if m == 0 || !m.is_multiple_of(64) || !k.is_multiple_of(128) || !nb.is_multiple_of(128) {
+            return Err(GpuError::new(
+                "the multiply needs m a multiple of 64 and k and nb multiples of 128",
+            ));
+        }
+        // every 64 rows of X are one "attempt" against slice 0, which is `w`
+        let n = m / 64;
         let x_dev = self
             .stream
             .clone_htod(&x.iter().map(|&v| v as u8).collect::<Vec<u8>>())?;
         let w_dev = self.stream.clone_htod(w)?;
-        let mut c_dev = self.stream.alloc_zeros::<i32>(m * nb)?;
-        gemm.run(&w_dev, &x_dev, &mut c_dev)?;
+        let slices = self.stream.alloc_zeros::<u32>(n)?;
+        let c_dev = self.stream.alloc_zeros::<i32>(m * nb)?;
+        self.launch_multiply(
+            &x_dev,
+            &w_dev,
+            &w_dev,
+            Some(&slices),
+            &c_dev,
+            (k, nb, nb),
+            0,
+            n,
+        )?;
         Ok(self.stream.clone_dtoh(&c_dev)?)
     }
 
@@ -313,18 +420,22 @@ impl Gpu {
             .clone_dtoh(&data.buf.slice(j * sb..(j + 1) * sb))?)
     }
 
-    /// Buffers and a prepared GEMM for batches of up to `batch` attempts (two sets of buffers: one batch can be
-    /// computed while the next is prepared, `AttemptEngine::submit`).
+    /// Buffers for batches of up to `batch` attempts of the FIRST design (two sets of buffers: one batch can be
+    /// computed while the next is prepared, `AttemptEngine::submit`). Needs m == 64 and k and nb multiples of 128.
     pub fn attempt_engine<'a>(
         &'a self,
         data: &'a DeviceDataset,
         batch: usize,
     ) -> Result<AttemptEngine<'a>, GpuError> {
         let p = data.params;
-        if batch == 0 {
-            return Err(GpuError::new("the batch must be at least 1"));
+        if batch == 0 || batch > 65_535 {
+            return Err(GpuError::new("the batch must be 1..=65535"));
         }
-        let gemm = Int8Gemm::new(self.stream.clone(), p.m, p.k, p.nb)?;
+        if p.m != 64 || !p.k.is_multiple_of(128) || !p.nb.is_multiple_of(128) {
+            return Err(GpuError::new(
+                "the GPU engine needs m = 64 and k and nb multiples of 128",
+            ));
+        }
         let ctx = self.stream.context();
         let mut slots = Vec::new();
         for _ in 0..2 {
@@ -338,6 +449,8 @@ impl Gpu {
                 )
             };
             slots.push(Slot {
+                slices: self.stream.alloc_zeros::<u32>(batch)?,
+                slices_host: unsafe_pinned_u32(ctx, batch)?,
                 keys: self.stream.alloc_zeros::<i64>(batch * 8)?,
                 keys_host,
                 x: self.stream.alloc_zeros::<u8>(batch * p.m * p.k)?,
@@ -350,12 +463,20 @@ impl Gpu {
         Ok(AttemptEngine {
             gpu: self,
             data,
-            gemm,
             batch,
             slots,
             next: 0,
             queue: VecDeque::new(),
         })
+    }
+}
+
+/// Page-locked host memory for `len` u32 values.
+fn unsafe_pinned_u32(ctx: &Arc<CudaContext>, len: usize) -> Result<PinnedHostSlice<u32>, GpuError> {
+    // SAFETY: the memory is not read before it is written: `AttemptEngine::submit` fills it before each copy to the GPU.
+    #[allow(unsafe_code)]
+    unsafe {
+        Ok(ctx.alloc_pinned_with_flags::<u32>(len, 0)?)
     }
 }
 
@@ -386,6 +507,9 @@ pub struct Found {
 /// The buffers of one batch: device memory, and page-locked host memory for the copies (a copy from ordinary host
 /// memory waits for the whole stream, which would stop the next batch from being queued while one runs).
 struct Slot {
+    /// The slice of each attempt, in GPU order.
+    slices: CudaSlice<u32>,
+    slices_host: PinnedHostSlice<u32>,
     keys: CudaSlice<i64>,
     keys_host: PinnedHostSlice<i64>,
     x: CudaSlice<u8>,
@@ -411,7 +535,6 @@ struct Pending {
 pub struct AttemptEngine<'a> {
     gpu: &'a Gpu,
     data: &'a DeviceDataset,
-    gemm: Int8Gemm,
     batch: usize,
     slots: Vec<Slot>,
     /// The slot the next `submit` uses.
@@ -423,29 +546,6 @@ pub struct AttemptEngine<'a> {
 impl AttemptEngine<'_> {
     pub fn batch(&self) -> usize {
         self.batch
-    }
-
-    /// Picks the fastest of cuBLASLt's algorithms for a multiply of `group` attempts against one slice
-    /// (`Int8Gemm::tune`, `reps` multiplies each, on this engine's own buffers, going round the built slices); returns
-    /// the times.
-    /// Nothing may be in flight. The results do not depend on the algorithm, only the speed does.
-    pub fn tune(&mut self, group: usize, reps: usize) -> Result<Vec<f64>, GpuError> {
-        let p = self.data.params;
-        if group == 0 || group > self.batch {
-            return Err(GpuError::new("the group must be 1..=batch"));
-        }
-        if !self.queue.is_empty() {
-            return Err(GpuError::new("a submitted batch was not collected"));
-        }
-        let rows = group * p.m;
-        let slot = &mut self.slots[0];
-        let sb = p.slice_bytes();
-        let ws: Vec<_> = (0..self.data.slices)
-            .map(|j| self.data.buf.slice(j * sb..(j + 1) * sb))
-            .collect();
-        let x = slot.x.slice(0..rows * p.k);
-        let mut c = slot.c.slice_mut(0..rows * p.nb);
-        self.gemm.tune(rows, &ws, &x, &mut c, reps)
     }
 
     /// How many batches are submitted and not yet collected (0, 1 or 2).
@@ -489,8 +589,9 @@ impl AttemptEngine<'_> {
     /// Queues a batch on the GPU and returns without waiting (seeds and slices as in `attempts_of_seeds`). At most two
     /// can be in flight: `collect` one before submitting a third.
     ///
-    /// The attempts are multiplied grouped by slice (one multiply per slice in the batch, `Int8Gemm::run_rows`), so a
-    /// batch whose attempts share few slices reads less of the dataset (`group::SliceGrouper` makes such batches).
+    /// The attempts are sorted by slice and multiplied in one launch of our own kernel (`gather_gemm` in slice mode).
+    /// Attempts that share a slice then run one after another and find it in the GPU's L2 cache, so a batch whose
+    /// attempts share few slices reads less of the dataset (`group::SliceGrouper` makes such batches).
     pub fn submit(&mut self, seeds: Vec<[u8; 32]>, slices: Vec<usize>) -> Result<(), GpuError> {
         let p = self.data.params;
         let n = seeds.len();
@@ -514,15 +615,20 @@ impl AttemptEngine<'_> {
         let mut order: Vec<usize> = (0..n).collect();
         order.sort_by_key(|&i| slices[i]);
 
-        // 1. X for every attempt: the keystream keyed by its seed
+        // 1. X for every attempt: the keystream keyed by its seed (and each attempt's slice, in the same order)
         {
             // waits until the last copy out of these buffers has finished (it has: the batch was collected)
             let keys_host = slot.keys_host.as_mut_slice()?;
             for (j, &i) in order.iter().enumerate() {
                 keys_host[j * 8..j * 8 + 8].copy_from_slice(&key_words_i64(&seeds[i]));
             }
+            let slices_host = slot.slices_host.as_mut_slice()?;
+            for (j, &i) in order.iter().enumerate() {
+                slices_host[j] = slices[i] as u32;
+            }
         }
         stream.memcpy_htod(&slot.keys_host, &mut slot.keys)?;
+        stream.memcpy_htod(&slot.slices_host, &mut slot.slices)?;
         let bpk = (p.m * p.k / 64) as u64;
         let total = n as u64 * bpk;
         let cfg = LaunchConfig {
@@ -543,21 +649,18 @@ impl AttemptEngine<'_> {
             b.launch(cfg)?;
         }
 
-        // 2. C = X @ W_b, one multiply for each run of attempts against the same slice
-        let (sb, mk, mnb) = (p.slice_bytes(), p.m * p.k, p.m * p.nb);
-        let mut start = 0;
-        while start < n {
-            let slice = slices[order[start]];
-            let mut end = start + 1;
-            while end < n && slices[order[end]] == slice {
-                end += 1;
-            }
-            let w = self.data.buf.slice(slice * sb..(slice + 1) * sb);
-            let x = slot.x.slice(start * mk..end * mk);
-            let mut c = slot.c.slice_mut(start * mnb..end * mnb);
-            self.gemm.run_rows((end - start) * p.m, &w, &x, &mut c)?;
-            start = end;
-        }
+        // 2. C = X @ W_b for every attempt, in one launch (slice mode; `idx` is not read, the keys buffer stands in)
+        let mnb = p.m * p.nb;
+        self.gpu.launch_multiply(
+            &slot.x,
+            &self.data.buf,
+            &slot.x,
+            Some(&slot.slices),
+            &slot.c,
+            (p.k, p.nb, self.data.slices * p.nb),
+            0,
+            n,
+        )?;
 
         // 3. the fold of every product, into the sums, and the sums to the host (without waiting)
         stream.memset_zeros(&mut slot.sums)?;
@@ -634,5 +737,40 @@ impl AttemptEngine<'_> {
             nonce = nonce.wrapping_add(n as u64);
         }
         Ok((None, tried))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tenero_core::hash::{hex_lower, sha256};
+
+    /// The fat binaries are built from the sources by `kernels/build_kernels.py`, which records the sources' hashes in
+    /// `kernels.sha256`. A change to a `.cu` file without rebuilding them fails here (in CI too, which has no CUDA): the
+    /// program would otherwise run kernels that are not the ones in the repository.
+    #[test]
+    fn the_embedded_kernels_were_built_from_these_sources() {
+        let lf = |s: &str| s.replace("\r\n", "\n");
+        let modules = [
+            (
+                "matmulhash",
+                format!("{}\n{}", lf(KERNEL_SOURCE), lf(FAST_KERNEL_SOURCE)),
+            ),
+            ("gather", lf(GATHER_KERNEL_SOURCE)),
+        ];
+        for (name, source) in modules {
+            let want = KERNEL_HASHES
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .find_map(|l| l.split_once("  ").filter(|(_, m)| m.trim() == name))
+                .map(|(h, _)| h.trim().to_string())
+                .unwrap_or_else(|| panic!("{name} is not in kernels.sha256"));
+            assert_eq!(
+                hex_lower(&sha256(&[source.as_bytes()])),
+                want,
+                "kernels/{name}.fatbin is stale: run python crates/tenero-gpu/kernels/build_kernels.py and commit the result"
+            );
+        }
+        assert!(MATMULHASH_FATBIN.len() > 1024 && GATHER_FATBIN.len() > 1024);
     }
 }

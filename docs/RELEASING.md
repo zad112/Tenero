@@ -9,7 +9,7 @@ A release is made by the `release` workflow (`.github/workflows/release.yml`) fr
 2. The version in `Cargo.toml` (`[workspace.package]`) is the one you want, and the numbers in `crates/tenero-gui/tenero.rc` follow it (FILEVERSION `0,2,0,1` for
    `0.2.0-beta.1`). `crates/tenero-app/tests/version.rs` pins the version; change it with the version.
 3. The notes exist: `docs/releases/v<version>.md`. Read them: every sentence must still be true of this build.
-4. **Run the GPU checks** (CUDA 13.4 `bin\x64` on PATH), from a clean checkout of the commit you will tag, and write down the card and the result:
+4. **Run the GPU checks** (the driver is enough; the CUDA Toolkit is needed only to rebuild the kernels after a `.cu` change: `python crates/tenero-gpu/kernels/build_kernels.py`, and `--check` says whether the fat binaries are current), from a clean checkout of the commit you will tag, and write down the card and the result:
 
        cargo test --release -p tenero-gpu -- --ignored --test-threads=1
        cargo test --release -p tenero-miner --test gpu_mining -- --ignored --nocapture --test-threads=1

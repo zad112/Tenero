@@ -13,7 +13,7 @@ use tenero_core::vectors::{hex, load};
 use tenero_gpu::group::SliceGrouper;
 use tenero_gpu::{DeviceDataset, Gpu};
 
-const NEEDS_GPU: &str = "needs an NVIDIA GPU and the CUDA toolkit";
+const NEEDS_GPU: &str = "needs an NVIDIA GPU";
 
 fn gpu() -> Gpu {
     Gpu::new(0).unwrap_or_else(|e| panic!("cannot start the GPU: {e}"))
@@ -49,7 +49,7 @@ fn sha_hex(bytes: &[u8]) -> String {
 }
 
 #[test]
-#[ignore = "needs an NVIDIA GPU and the CUDA toolkit"]
+#[ignore = "needs an NVIDIA GPU"]
 fn the_kernels_compile_and_the_device_is_reported() {
     let g = gpu();
     println!(
@@ -64,7 +64,7 @@ fn the_kernels_compile_and_the_device_is_reported() {
 }
 
 #[test]
-#[ignore = "needs an NVIDIA GPU and the CUDA toolkit"]
+#[ignore = "needs an NVIDIA GPU"]
 fn the_keystream_kernel_matches_the_cpu() {
     let g = gpu();
     let mut rng = Rng(3);
@@ -84,7 +84,7 @@ fn the_keystream_kernel_matches_the_cpu() {
 }
 
 #[test]
-#[ignore = "needs an NVIDIA GPU and the CUDA toolkit"]
+#[ignore = "needs an NVIDIA GPU"]
 fn the_fold_kernel_matches_the_cpu_on_random_values_and_the_int32_extremes() {
     let g = gpu();
     let mut rng = Rng(5);
@@ -103,10 +103,10 @@ fn the_fold_kernel_matches_the_cpu_on_random_values_and_the_int32_extremes() {
 }
 
 #[test]
-#[ignore = "needs an NVIDIA GPU and the CUDA toolkit"]
+#[ignore = "needs an NVIDIA GPU"]
 fn the_int8_matmul_is_exact_at_the_extremes() {
     let g = gpu();
-    let (m, k, nb) = (32, 4096, 64);
+    let (m, k, nb) = (64, 4096, 128);
     for (xv, wv) in [(-128i8, -128i8), (127, -128), (127, 127)] {
         let c = g
             .int8_matmul(&vec![xv; m * k], &vec![wv as u8; nb * k], m, k, nb)
@@ -121,11 +121,11 @@ fn the_int8_matmul_is_exact_at_the_extremes() {
 }
 
 #[test]
-#[ignore = "needs an NVIDIA GPU and the CUDA toolkit"]
+#[ignore = "needs an NVIDIA GPU"]
 fn the_int8_matmul_matches_the_cpu_in_the_real_layout() {
     let g = gpu();
     let mut rng = Rng(11);
-    let (m, k, nb) = (32, 1024, 1024);
+    let (m, k, nb) = (128, 1024, 1024);
     let x = rng.i8s(m * k);
     let w: Vec<u8> = rng.i8s(nb * k).iter().map(|&v| v as u8).collect();
     let p = Params {
@@ -154,11 +154,11 @@ fn the_int8_matmul_matches_the_cpu_in_the_real_layout() {
 }
 
 #[test]
-#[ignore = "needs an NVIDIA GPU and the CUDA toolkit"]
+#[ignore = "needs an NVIDIA GPU"]
 fn a_small_dataset_and_full_attempts_match_the_cpu() {
     let g = gpu();
     let p = Params {
-        m: 32,
+        m: 64,
         k: 1024,
         nb: 1024,
         num_blocks: 8,
@@ -196,11 +196,11 @@ fn a_small_dataset_and_full_attempts_match_the_cpu() {
 /// The benchmark runs batches of up to 256; the equivalence tests above use small ones. Check that
 /// a big batch is bit-identical too (every attempt against the CPU), including nonces near 2^64.
 #[test]
-#[ignore = "needs an NVIDIA GPU and the CUDA toolkit"]
+#[ignore = "needs an NVIDIA GPU"]
 fn a_large_batch_matches_the_cpu_attempt_for_attempt() {
     let g = gpu();
     let p = Params {
-        m: 32,
+        m: 64,
         k: 1024,
         nb: 1024,
         num_blocks: 8,
@@ -223,14 +223,14 @@ fn a_large_batch_matches_the_cpu_attempt_for_attempt() {
     }
 }
 
-/// What the miner does: nonces chosen in groups that read the same slice, a multiply algorithm picked by timing, and two
+/// What the miner does: nonces chosen in groups that read the same slice, and two
 /// batches on the GPU at once. Every attempt must still be the CPU's, bit for bit, and a third batch must be refused.
 #[test]
-#[ignore = "needs an NVIDIA GPU and the CUDA toolkit"]
-fn grouped_and_pipelined_batches_match_the_cpu_whatever_multiply_algorithm_is_chosen() {
+#[ignore = "needs an NVIDIA GPU"]
+fn grouped_and_pipelined_batches_match_the_cpu() {
     let g = gpu();
     let p = Params {
-        m: 32,
+        m: 64,
         k: 1024,
         nb: 1024,
         num_blocks: 8,
@@ -241,11 +241,6 @@ fn grouped_and_pipelined_batches_match_the_cpu_whatever_multiply_algorithm_is_ch
     let header = [0x5au8; 32];
     for group in [1usize, 4, 8] {
         let mut engine = g.attempt_engine(&dev, 32).unwrap();
-        let times = engine.tune(group, 4).unwrap();
-        assert!(
-            times.iter().any(|t| t.is_finite()),
-            "group {group}: no algorithm ran"
-        );
         let mut grouper = SliceGrouper::new(header, p.num_blocks, group, u64::MAX - 40);
         let mut sent = vec![];
         for _ in 0..2 {
@@ -275,11 +270,11 @@ fn grouped_and_pipelined_batches_match_the_cpu_whatever_multiply_algorithm_is_ch
 }
 
 #[test]
-#[ignore = "needs an NVIDIA GPU and the CUDA toolkit"]
+#[ignore = "needs an NVIDIA GPU"]
 fn the_search_finds_only_valid_nonces_and_the_lowest_in_its_batch() {
     let g = gpu();
     let p = Params {
-        m: 32,
+        m: 64,
         k: 1024,
         nb: 1024,
         num_blocks: 8,
@@ -379,7 +374,7 @@ fn check_attempts(g: &Gpu, dev: &DeviceDataset, attempts: &[Value], what: &str) 
 }
 
 #[test]
-#[ignore = "needs an NVIDIA GPU and the CUDA toolkit"]
+#[ignore = "needs an NVIDIA GPU"]
 fn the_small_vectors_on_the_gpu() {
     let g = gpu();
     let v = load("matmulhash_small").unwrap();
@@ -395,19 +390,20 @@ fn the_small_vectors_on_the_gpu() {
                 "case {n} slice {j}"
             );
         }
-        // some small vector shapes are not multiples of 4 in nb/k for the tensor cores; those
-        // are skipped, and reported, rather than silently passed
+        // the attempts need the multiply's tiles (m = 64, k and nb multiples of 128), which no small vector shape has:
+        // they are checked on the CPU (`tenero-core`), and the GPU's attempts by the real and deep vectors and by the
+        // kernel tests. Said, not silently passed.
         let attempts = case["attempts"].as_array().unwrap();
-        if p.m.is_multiple_of(4) && p.k.is_multiple_of(4) && p.nb.is_multiple_of(4) {
+        if p.m == 64 && p.k.is_multiple_of(128) && p.nb.is_multiple_of(128) {
             check_attempts(&g, &dev, attempts, &format!("small case {n}"));
         } else {
-            println!("case {n}: shape {p:?} is not a multiple of 4; the GEMM part was skipped");
+            println!("case {n}: shape {p:?} does not fit the multiply's tiles; its attempts were skipped");
         }
     }
 }
 
 #[test]
-#[ignore = "needs an NVIDIA GPU and the CUDA toolkit"]
+#[ignore = "needs an NVIDIA GPU"]
 fn the_real_and_deep_vectors_on_the_gpu() {
     let g = gpu();
     for name in ["matmulhash_real", "matmulhash_deep"] {
@@ -423,7 +419,7 @@ fn the_real_and_deep_vectors_on_the_gpu() {
 }
 
 #[test]
-#[ignore = "needs an NVIDIA GPU and the CUDA toolkit (and about 4.5 GiB of video memory)"]
+#[ignore = "needs an NVIDIA GPU (and about 4.5 GiB of video memory)"]
 fn the_full_vector_on_the_gpu_every_one_of_the_256_slices() {
     let g = gpu();
     let v = load("matmulhash_full").unwrap();
