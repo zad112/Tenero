@@ -413,6 +413,11 @@ impl Core {
             }
             Cmd::MakeProof(req) => self.make_proof(req, &mut events),
             Cmd::RevealTxKey { id } => self.reveal_tx_key(&id, &mut events),
+            Cmd::RevealViewKey {
+                password,
+                account,
+                received,
+            } => self.reveal_view_key(&password, account, received, &mut events),
             Cmd::CheckKey {
                 key,
                 address,
@@ -636,6 +641,33 @@ impl Core {
             return Err("wrong password".into());
         }
         events.push(Event::Phrase { words, new: false });
+        Ok(())
+    }
+
+    fn reveal_view_key(
+        &mut self,
+        password: &str,
+        account: usize,
+        received: bool,
+        events: &mut Vec<Event>,
+    ) -> Result<(), String> {
+        let purse = self.purse.as_ref().ok_or("the wallet is locked")?;
+        // asked again, as for the words: a view key shows every payment of the account
+        if self.pass.as_ref().map(|p| p.as_slice()) != Some(password.as_bytes()) {
+            return Err("wrong password".into());
+        }
+        let tier = if received {
+            tenero_wallet::ViewTier::ViewReceived
+        } else {
+            tenero_wallet::ViewTier::ViewAll
+        };
+        let key = purse
+            .account(account)
+            .map_err(purse_err)?
+            .wallet()
+            .view_key(tier)
+            .ok_or("this wallet has no view key of that kind")?;
+        events.push(Event::ViewKey { key, received });
         Ok(())
     }
 

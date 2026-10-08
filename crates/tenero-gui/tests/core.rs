@@ -198,6 +198,32 @@ fn the_wallet_opens_with_no_node_and_never_shows_a_balance_it_cannot_know() {
         password: pw("correct horse battery"),
     });
     assert_eq!(words_of(&ev), Some((words.clone(), false)));
+
+    // a view key, too, only after the password; it makes a view-only wallet of the same address
+    let view_key = |ev: &[Event]| {
+        ev.iter().find_map(|e| match e {
+            Event::ViewKey { key, received } => Some((key.to_string(), *received)),
+            _ => None,
+        })
+    };
+    let ev = c.handle(Cmd::RevealViewKey {
+        password: pw("wrong"),
+        account: 0,
+        received: false,
+    });
+    assert!(view_key(&ev).is_none() && errors(&ev).len() == 1);
+    for received in [false, true] {
+        let ev = c.handle(Cmd::RevealViewKey {
+            password: pw("correct horse battery"),
+            account: 0,
+            received,
+        });
+        let (key, r) = view_key(&ev).unwrap();
+        assert_eq!(r, received);
+        let v = tenero_wallet::Wallet::from_view_key(&key, tenero_wallet::Network::Test).unwrap();
+        assert_eq!(v.address().to_text(), unlocked(&c).accounts[0].address);
+        assert!(v.seed().is_none());
+    }
 }
 
 #[test]
