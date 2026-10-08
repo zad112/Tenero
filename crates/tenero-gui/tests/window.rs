@@ -144,6 +144,7 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             global_index: None,
             has_secret: true,
             note: Some("Rent".into()),
+            payment_id: None,
         },
         HistoryRow {
             account: 0,
@@ -155,6 +156,7 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             global_index: Some(3),
             has_secret: false,
             note: None,
+            payment_id: None,
         },
         HistoryRow {
             account: 1,
@@ -166,6 +168,7 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             global_index: Some(5),
             has_secret: false,
             note: None,
+            payment_id: Some([0xab; 8]),
         },
     ];
     WalletView::Unlocked(Box::new(WalletData {
@@ -845,6 +848,7 @@ fn the_history_shows_what_came_in_what_went_out_and_where_a_payment_stands() {
         "2023-11-14 22:13 UTC",
         "Copy id",
         "sender unknown",
+        "payment ID abababababababab",
     ] {
         assert!(
             t.contains(needle),
@@ -1227,6 +1231,8 @@ fn the_receive_screen_makes_requests_and_the_send_screen_reads_them() {
     rig.app.goto("Receive");
     let (t, _) = rig.frame();
     for needle in [
+        "Integrated address",
+        "Make an integrated address",
         "Request a payment",
         "is not marked as paid",
         "Make request",

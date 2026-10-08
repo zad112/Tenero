@@ -176,7 +176,7 @@ impl PowCheck for NodePow {
 
 #[derive(Clone)]
 pub struct PoolConfig {
-    /// The network's name (`beta`): a miner that says another is refused.
+    /// The network's name (`gamma`): a miner that says another is refused.
     pub network: String,
     /// What the pool calls itself in `hello_ok`.
     pub name: String,

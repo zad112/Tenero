@@ -413,6 +413,7 @@ impl Core {
             }
             Cmd::MakeProof(req) => self.make_proof(req, &mut events),
             Cmd::RevealTxKey { id } => self.reveal_tx_key(&id, &mut events),
+            Cmd::MakeIntegrated { account } => self.make_integrated(account, &mut events),
             Cmd::RevealViewKey {
                 password,
                 account,
@@ -641,6 +642,26 @@ impl Core {
             return Err("wrong password".into());
         }
         events.push(Event::Phrase { words, new: false });
+        Ok(())
+    }
+
+    fn make_integrated(&mut self, account: usize, events: &mut Vec<Event>) -> Result<(), String> {
+        let purse = self.purse.as_ref().ok_or("the wallet is locked")?;
+        let wallet = purse.account(account).map_err(purse_err)?.wallet();
+        // a random ID: two integrated addresses made here never share one (all zero means "none", so it is never used)
+        let mut payment_id = [0u8; 8];
+        while payment_id == [0; 8] {
+            rand_core::RngCore::fill_bytes(&mut OsRng, &mut payment_id);
+        }
+        let address = wallet
+            .integrated_address(payment_id)
+            .ok_or("this account has no integrated address")?
+            .to_text();
+        events.push(Event::Integrated {
+            account,
+            address,
+            payment_id,
+        });
         Ok(())
     }
 
@@ -1594,6 +1615,7 @@ impl Core {
                 global_index: e.global_index,
                 has_secret: e.has_secret,
                 note: e.note,
+                payment_id: e.payment_id,
             })
             .collect();
         let scanned = purse

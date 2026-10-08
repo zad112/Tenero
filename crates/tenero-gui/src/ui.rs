@@ -163,6 +163,8 @@ pub struct App {
     phrase: Option<PhraseModal>,
     send: SendForm,
     receive_account: usize,
+    /// The last integrated address made (its account, the address, the payment ID).
+    integrated: Option<(usize, String, [u8; 8])>,
     new_account: String,
     renaming: Option<(usize, String)>,
     prompt: Prompt,
@@ -240,6 +242,7 @@ impl App {
             phrase: None,
             send: SendForm::default(),
             receive_account: 0,
+            integrated: None,
             new_account: String::new(),
             renaming: None,
             prompt: Prompt::default(),
@@ -344,6 +347,11 @@ impl App {
                     self.send = SendForm::default();
                 }
                 Event::Signed { signature } => self.prove.signature = Some(signature),
+                Event::Integrated {
+                    account,
+                    address,
+                    payment_id,
+                } => self.integrated = Some((account, address, payment_id)),
                 Event::Proof { text, note } => self.proof_window = Some((text, note)),
                 Event::TxKey { key, .. } => self.tx_key_window = Some(key),
                 Event::ViewKey { key, received } => self.view_key_window = Some((key, received)),
@@ -1460,7 +1468,35 @@ impl App {
             .small()
             .color(GREY),
         );
+        self.integrated_section(ui);
         self.requests_section(ui, &d);
+    }
+
+    fn integrated_section(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(14.0);
+        ui.separator();
+        ui.heading("Integrated address");
+        ui.label("Your address with a payment ID inside it, for someone who must tell your payments apart (a shop, an exchange): the History tab shows the ID of each payment made to it. A new one each time; any of them pays this account. A subaddress (another account) is the more private way to tell payers apart.");
+        if ui.button("Make an integrated address").clicked() {
+            self.backend.send(Cmd::MakeIntegrated {
+                account: self.receive_account,
+            });
+        }
+        if let Some((account, address, id)) = &self.integrated {
+            if *account == self.receive_account {
+                ui.add(
+                    egui::Label::new(RichText::new(address).monospace())
+                        .selectable(true)
+                        .wrap(),
+                );
+                ui.horizontal(|ui| {
+                    ui.label(format!("payment ID {}", tenero_core::hash::hex_lower(id)));
+                    if ui.button("Copy the integrated address").clicked() {
+                        ui.ctx().copy_text(address.clone());
+                    }
+                });
+            }
+        }
     }
 
     fn requests_section(&mut self, ui: &mut egui::Ui, d: &WalletData) {
@@ -1672,6 +1708,12 @@ impl App {
                                     )
                                     .color(GREY),
                                 );
+                                if let Some(pid) = &row.payment_id {
+                                    ui.label(format!(
+                                        "payment ID {}",
+                                        tenero_core::hash::hex_lower(pid)
+                                    ));
+                                }
                             }
                         }
                         if let Some(id) = row.id {

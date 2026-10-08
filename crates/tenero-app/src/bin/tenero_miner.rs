@@ -23,7 +23,7 @@ use tenero_miner::gpu::GpuBackend;
 use tenero_miner::{CpuMatmulBackend, Miner, Sha256Backend, WalletPayout, MAX_CORES};
 
 const USAGE: &str = "\
-tenero-miner: mines for a Tenero node in another process (EXPERIMENTAL, UNAUDITED; no launched network exists)
+tenero-miner: mines for a Tenero node in another process (EXPERIMENTAL, UNAUDITED; test networks only, nothing on them has value)
 
   tenero-miner --data DIR --address TENg... --backend sha256|cpu|gpu [options]
 

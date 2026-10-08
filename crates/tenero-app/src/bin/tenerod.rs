@@ -13,19 +13,19 @@ use tenero_app::log::{Level, Logger};
 use tenero_app::ui::{Event as UiEvent, Screen, Verbosity};
 
 const USAGE: &str = "\
-tenerod: the Tenero node (EXPERIMENTAL, UNAUDITED; no launched network exists)
+tenerod: the Tenero node (EXPERIMENTAL, UNAUDITED; test networks only, nothing on them has value)
 
   tenerod --config FILE [--key value ...]       run a node
-  tenerod --data DIR --network test|dev|beta|alpha [...] run a node with settings on the command line
+  tenerod --data DIR --network gamma|dev|test [...] run a node with settings on the command line
   tenerod --version                             which build this is (version and source commit)
   tenerod status --data DIR [--control IP:PORT] ask a running node about itself
   tenerod stop   --data DIR [--control IP:PORT] ask a running node to shut down cleanly
-  tenerod rewind --data DIR --network test|dev|beta|alpha --to HEIGHT [--yes]
+  tenerod rewind --data DIR --network gamma|dev|test --to HEIGHT [--yes]
                                                 emergency: with the node STOPPED, take the newest blocks off its chain down to HEIGHT.
                                                 Without --yes it only says what it would remove. See docs/EMERGENCY_PLAN.md
 
 Settings (the same keys in the file as `key = value` and on the command line as `--key value`):
-  data, network (test|dev|beta|alpha), listen, advertise (the ip:port others reach this node at), seed (repeatable), no_builtin_seeds, peers, max_inbound, allow_private_peers, control,
+  data, network (gamma|dev|test), listen, advertise (the ip:port others reach this node at), seed (repeatable), no_builtin_seeds, peers, max_inbound, allow_private_peers, control,
   prune_keep (0 = archive node), assume_valid (height:blockid), mine (off|sha256|cpu|gpu), mine_to (address),
   mine_cores, mine_pace, gpu_device, gpu_batch, log_level, log_file, status_every, quiet, verbose, color.
 

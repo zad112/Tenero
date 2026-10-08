@@ -46,6 +46,8 @@ struct Opts {
     passphrase_file: Option<PathBuf>,
     /// `view-key`: which tier (`all` or `received`).
     tier: Option<ViewTier>,
+    /// `integrated-address`: the payment ID (16 hexadecimal digits); a random one if not given.
+    payment_id: Option<[u8; 8]>,
     /// Test only: a fast key derivation, so tests do not each spend a quarter of a second.
     weak_kdf_for_tests: bool,
 }
@@ -65,6 +67,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         yes: false,
         passphrase_file: None,
         tier: None,
+        payment_id: None,
         weak_kdf_for_tests: false,
     };
     let mut seen = std::collections::BTreeSet::new();
@@ -121,6 +124,11 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
                 )
             }
             "passphrase-file" => o.passphrase_file = Some(PathBuf::from(value)),
+            "payment-id" => {
+                let b = parse_payment_id(value)
+                    .ok_or("--payment-id: 16 hexadecimal digits, not all zero")?;
+                o.payment_id = Some(b);
+            }
             "tier" => {
                 o.tier = Some(match value.as_str() {
                     "all" => ViewTier::ViewAll,
@@ -146,6 +154,7 @@ tenero-wallet: a wallet for the Tenero experimental coin (Carrot and FCMP++, una
   tenero-wallet sweep   --wallet FILE --data DIR [--to ADDRESS] [--yes] [--control IP:PORT]
   tenero-wallet combine --wallet FILE --data DIR --pieces N [--yes] [--control IP:PORT]
   tenero-wallet seed    --wallet FILE
+  tenero-wallet integrated-address --wallet FILE [--payment-id HEX16]
   tenero-wallet view-key --wallet FILE [--tier all|received]
   tenero-wallet restore-view --wallet FILE [--network gamma|dev|test]   (asks for the view key, hidden)
   tenero-wallet info    --data DIR [--network gamma|dev|test] [--control IP:PORT]
@@ -517,6 +526,25 @@ pub fn run(args: &[String], io: &mut dyn Io) -> Result<(), String> {
             io.say(&w.address().to_text());
             Ok(())
         }
+        "integrated-address" => {
+            let (w, _) = load(&o, io)?;
+            let id = match o.payment_id {
+                Some(id) => id,
+                None => {
+                    let mut id = [0u8; 8];
+                    while id == [0; 8] {
+                        rand_core::RngCore::fill_bytes(&mut OsRng, &mut id);
+                    }
+                    id
+                }
+            };
+            let a = w
+                .integrated_address(id)
+                .ok_or("this wallet has no integrated address")?;
+            io.say(&a.to_text());
+            io.say(&format!("payment ID {}", hex_lower(&id)));
+            Ok(())
+        }
         "view-key" => {
             let (w, _) = load(&o, io)?;
             let tier = o.tier.unwrap_or(ViewTier::ViewAll);
@@ -675,6 +703,18 @@ pub fn run(args: &[String], io: &mut dyn Io) -> Result<(), String> {
         }
         other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
     }
+}
+
+fn parse_payment_id(text: &str) -> Option<[u8; 8]> {
+    let t = text.trim();
+    if t.len() != 16 || !t.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut out = [0u8; 8];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&t[2 * i..2 * i + 2], 16).ok()?;
+    }
+    (out != [0; 8]).then_some(out)
 }
 
 fn parse_seed(text: &str) -> Result<[u8; 32], String> {

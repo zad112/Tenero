@@ -644,7 +644,7 @@ pub fn uptime(history: &str, seed: &str, last: usize) -> (usize, usize) {
 // ---- the command line ----------------------------------------------------------------------------------------------------------
 
 pub const USAGE: &str = "\
-tenero-seedcheck: checks the seeds of a Tenero network the way a new node would use them (EXPERIMENTAL, UNAUDITED; no launched network exists)
+tenero-seedcheck: checks the seeds of a Tenero network the way a new node would use them (EXPERIMENTAL, UNAUDITED; test networks only, nothing on them has value)
 
   tenero-seedcheck --network gamma|test|dev --seed HOST:PORT [--seed HOST:PORT ...] [options]
   tenero-seedcheck --network gamma --seeds-file seeds.txt

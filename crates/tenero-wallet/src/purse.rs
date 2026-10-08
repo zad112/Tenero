@@ -182,6 +182,8 @@ pub struct Entry {
     pub has_secret: bool,
     /// For a sent payment: what it was for, if it answered a request.
     pub note: Option<String>,
+    /// For something received at an integrated address: its payment ID (which says what the payment was for).
+    pub payment_id: Option<[u8; 8]>,
 }
 
 pub struct Account {
@@ -798,6 +800,8 @@ impl Purse {
                     global_index: Some(o.global_index),
                     has_secret: false,
                     note: None,
+                    payment_id: (o.payment_id != tenero_carrot::NULL_PAYMENT_ID)
+                        .then_some(o.payment_id),
                 });
             }
         }
@@ -834,6 +838,7 @@ impl Purse {
                 global_index: None,
                 has_secret: r.anchor.is_some(),
                 note: r.note.clone(),
+                payment_id: None,
             });
         }
         out.sort_by_key(|e| std::cmp::Reverse(e.height));
