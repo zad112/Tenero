@@ -9,14 +9,14 @@
 //! * [`mnemonic`]: the seed as 24 words. [`purse`]: several accounts from one seed, in one file.
 //! * [`request`]: payment requests as links.
 //!
-//! Message signatures and payment proofs (the interim scheme's `proofs.rs`) are rebuilt on Carrot in milestone G5
-//! (`docs/FCMP_CARROT_PLAN.md`); until then a 0.3.0 wallet keeps, for each payment it sends, what such a proof will need.
+//! * [`proofs`]: message signatures and payment proofs on Carrot (the signatures are our own construction, unreviewed).
 
 pub mod address;
 pub mod amount;
 pub mod chain;
 pub mod file;
 pub mod mnemonic;
+pub mod proofs;
 pub mod purse;
 pub mod request;
 pub mod testing;

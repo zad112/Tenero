@@ -1,81 +1,95 @@
-# Message signatures and payment proofs (M10.4; the wallet's INTERIM scheme)
+# Message signatures and payment proofs (0.3.0, Carrot)
 
-**Unaudited. Home-made in the sense of CLAUDE.md rule 3**: a Schnorr signature and a Chaum-Pedersen proof, both standard, composed
-from `curve25519-dalek` and SHA-256 with the owner's approval (2026-10-03), because the interim output scheme is already ours. An
-independent Python implementation (`reference/tools/make_vectors_proofs.py`, its own Ed25519 arithmetic) makes the vectors
-(`tests/vectors/wallet_proofs.json`); the Rust code (`crates/tenero-wallet/src/proofs.rs`) matches them bit for bit. **Nothing
-here is a legal or financial proof.** It all goes when Carrot replaces the interim scheme (the format will change).
+How a Tenero wallet signs a message as one of its addresses, and proves that an output paid an address. The code is
+`crates/tenero-wallet/src/proofs.rs`; the independent reference is `reference/tools/make_vectors_proofs.py` (Python, the
+standard library only), whose vectors `tests/vectors/wallet_proofs.json` the Rust reproduces byte for byte
+(`crates/tenero-wallet/tests/proofs.rs`, `reference/tests/test_vectors_proofs.py`).
 
-Notation: `G` the Ed25519 base point, `L` the group order, points are 32-byte compressed encodings and must be canonical, of
-prime order and not the identity ("strict"), scalars are 32 bytes little-endian and must be below `L` ("canonical").
-`Hs(tag, parts...)` is the interim scheme's hash to a scalar (two SHA-256 blocks of `"tenero interim v1" || tag || counter ||
-parts`, reduced mod `L`); `digest(tag, parts...)` is one SHA-256 of `"tenero interim v1" || tag || parts`.
+**Read this first.** Neither Monero nor the Carrot specification defines message signatures or payment proofs for Carrot
+addresses (checked 2026-10-08: Monero's FCMP++ wallet, `seraphis-migration/monero` branch `fcmp++-stage`, still has the
+pre-Carrot `wallet2::sign` and `get_tx_proof`; `jeffro256/carrot` has no proofs section). The owner chose to have them in
+0.3.0-gamma.1 anyway (decision F16, a second exception to rule 3). So:
 
-## What they do, and what they do not
+* **The signatures are this project's own construction**, from textbook parts (a Schnorr proof of knowledge of a
+  representation). **Nobody has reviewed them.**
+* **The payment check is not ours**: it is Carrot's sender scan (Monero's `try_scan_carrot_enote_external_sender`,
+  transcribed in `tenero-carrot` and checked against Monero's C++ vectors), which makes the whole output again from the
+  payment's anchor.
+* Nothing here is a legal or financial proof of anything. The 0.2.0 programs' signatures and proofs (on the interim scheme)
+  are a different design: they do not carry over.
 
-* **A signature** shows that whoever holds the spend key of an address signed these bytes. Nothing about when or where.
-* **A payment proof** shows that one OUTPUT of the chain is addressed to an address and holds an amount. The output is named by
-  its **block height and global output index** (the wallet's view of a block carries no transaction ids, only outputs and key
-  images), and a checker reads the output from a node. A proof that checks is about an output that IS in the node's chain.
-* **They do not show:** who sent a payment (the interim scheme has no sender identity), that it is final (only how many blocks lie
-  on top of it), or anything about the transaction's other outputs. The interim scheme has no Janus protection, so a proof says the
-  output is addressed to the address, not that the sender meant it for that wallet's owner.
-* **A proof reveals** the amount and the link between the output and the address to whoever holds it. The app warns before making
-  one, and never puts one on the clipboard without a click.
-* **A payment's secret `r`** (the sender's half of the key exchange, one per output) is kept in the wallet file for payments sent
-  by a wallet that has this feature, and shown only on a click. **A payment sent before that, or whose secret has been deleted, can
-  never be proved by its sender**; a receiver can always prove receipt (it needs only the view key). Losing the wallet loses the
-  secrets: that is intended.
+## Notation
 
-## Message signature (`tnsig1` + 128 hex digits)
+`G` is Ed25519's base point, `T` the FCMP++ generator (an output key is `x G + y T`; the encoding is in the vectors),
+`l` the group order. `H_n(domain, fields...)` is Carrot's hash to a scalar: Blake2b-512 personalised `"Monero"` over the
+transcript `len(domain) as one byte | domain | the fields as raw bytes`, read little-endian and reduced modulo `l`. Integers
+are little-endian; a variable-length field is preceded by its length as a `u64`.
 
-```text
-h   = digest("message", spend_pub || view_pub || len(message) as u64 LE || message)
-k   = Hs("sig nonce", s_bytes || h || rnd)          s = the spend scalar, rnd = 32 fresh random bytes
-R   = k*G                       c = Hs("sig challenge", R || spend_pub || h)        z = k + c*s mod L
-signature = R (32) || z (32)
-verify: spend_pub and view_pub strict, R strict, z canonical, and  z*G == R + c*spend_pub
+A Carrot address has a spend key `K` and a view key `V`. Its spend key has two secrets: `K = a G + b T`, with `a = s_j k_gi`
+and `b = s_j k_ps` (`k_gi` the generate-image key, `k_ps` the prove-spend key, `s_j` the subaddress scalar, one for the main
+address). An integrated address has its main address's keys.
+
+## Signatures
+
+To sign the fields `bound` under a domain, as the address `(K, V)` with secrets `a, b`:
+
+```
+rnd   = 32 fresh random bytes
+r_g   = H_n("Tenero signature nonce v1", "G", a, b, K, V, domain, bound..., rnd)
+r_t   = H_n("Tenero signature nonce v1", "T", a, b, K, V, domain, bound..., rnd)
+R     = r_g G + r_t T
+c     = H_n(domain, K, V, R, bound...)
+s_g   = r_g - c a          s_t = r_t - c b          (mod l)
+signature = c | s_g | s_t  (96 bytes)
 ```
 
-## Payment proof (`tnpay1` + hex of the bytes below)
+To verify: `c`, `s_g` and `s_t` must be canonical scalars; `K` must decode, lie in the prime-order group and not be the
+identity; `V` must decode. Then `R' = s_g G + s_t T + c K`, and the signature holds when `H_n(domain, K, V, R', bound...) = c`.
+The nonces are derived from the secrets, everything signed and fresh randomness, so a broken random source cannot make two
+signatures share a nonce. Both keys of the address are in the challenge, so a signature holds for that address only.
 
-```text
-kind u8 | height u64 LE | global_index u64 LE | spend_pub 32 | view_pub 32 | body
-body for kind 1 (received) and 2 (sent): D 32 | c 32 | z 32          (96 bytes)
-body for kind 3 (key):                   r 32                         (32 bytes)
+* **A message signature:** the domain `"Tenero message signature v1"`, `bound = len(message) | message`. Text:
+  `TENsig1` and the 96 bytes in Monero's block base58 (the alphabet and blocks of the address text).
+
+## Payment proofs
+
+A payment proof says: the output with one-time address `Ko`, in the block at height `h`, pays the address `A`. It carries the
+payment's **Janus anchor** (Carrot's 16 bytes of randomness for the output), from which the checker makes the output again.
+
+```
+bytes = version (1) | n (u8) | A's text (n bytes) | h (u64) | Ko (32) | anchor (16) | flag (u8) | signature (96, if flag = 1)
+text  = "TENpay1" + base58(bytes)
 ```
 
-The output's fields (`onetime_address`, `ephemeral_pubkey` `De`, the commitment, the encrypted amount) and its context and number
-`i` in the transaction come from the chain. The shared secret is `S = compress(8*D)` where `D` is the Diffie-Hellman point:
+Decoding is strict (one proof has one encoding): the version is 1, the address is a valid address of some network, written
+exactly in its own text, the flag is 0 or 1, and nothing follows.
 
-* **kind 1, received (made with the view key `v`):** `D = v*De`. Proves `K_view = v*G` and `D = v*De` with the same `v`.
-* **kind 2, sent (made with the output's secret `r`):** `D = r*K_view`. Proves `De = r*G` and `D = r*K_view` with the same `r`.
-* **kind 3, key:** the body is `r`; the checker needs `r*G == De`, and `D = r*K_view`. (It reveals this output's `r`, which lets anyone
-  decode this output and nothing else.)
+**Checking** (against the checker's own node):
 
-The proof of kinds 1 and 2 (Chaum-Pedersen, Fiat-Shamir): with `P1 = x*G`, `P2 = x*B2` (kind 1: `x=v, P1=K_view, B2=De, P2=D`; kind 2:
-`x=r, P1=De, B2=K_view, P2=D`) and `bind = kind || height || global_index || spend_pub || view_pub || De`:
+1. The node's chain has a block at `h`, and it has an output `Ko`.
+2. A block reward: `A` is a main address, and Carrot's coinbase output for `A`, the height, the output's public amount and
+   the anchor is exactly the output (one-time address, view tag, ephemeral key, encrypted anchor).
+3. Any other output: Carrot's sender scan with `A` and the anchor succeeds: the ephemeral key re-derives from the anchor,
+   the transaction's first key image and `A` (the Janus check), the shared secret opens the output to `A`'s spend key and
+   its amount commitment, and for an integrated address the payment ID is `A`'s. The amount is what the scan opened.
+4. A signature, if there is one, holds for `A` under the domain `"Tenero payment proof signature v1"` with
+   `bound = h | Ko | anchor | len(message) | message`.
 
-```text
-k  = Hs("pay nonce", x_bytes || bind || rnd)           rnd = 32 fresh random bytes
-A1 = k*G     A2 = k*B2      c = Hs("pay challenge", bind || D || A1 || A2)      z = k + c*x mod L
-verify: D strict, c and z canonical;  A1' = z*G - c*P1,  A2' = z*B2 - c*D,  and  c == Hs("pay challenge", bind || D || A1' || A2')
-```
+What a proof shows, and what it does not:
 
-Then what `S` says about the output is recomputed, as the receiver's scan does:
-`t = Hs("onetime", S || ctx || i)`; the output's one-time address must equal `t*G + spend_pub` (this is what binds the address). A block
-reward's amount is public. Any other output's amount is `amount_enc XOR digest("amount", S || ctx || i)[..8]`, and the commitment
-`mask*G + amount*H` with `mask = Hs("mask", S || ctx || i)` must equal the output's commitment.
+* **A payment proof** (no signature): this output, in this block, pays `A` that amount. The sender makes it from the anchor
+  it kept; **the receiver can make the same one** (it decrypts the anchor from the output), so it does not say who sent the
+  payment.
+* **A received proof** (with a signature): the same, and the holder of `A` signed this output and a message: the prover
+  holds the receiving address. The wallet app signs an empty message.
+* **The anchor is a secret of one payment.** Whoever holds a proof can see that one output's amount and that it paid `A`,
+  as with Monero's "tx key". It cannot spend anything. The anchor alone, with the address, is a **payment key**: the checker
+  looks for the output it makes in the blocks from a height on (at most 20,000 blocks).
+* A proof of the wallet's own change is refused: there is nothing to prove.
+* **Spend proofs and reserve proofs** (proving that an output was spent, or that a wallet holds an amount) have no published
+  FCMP++ design, and are not built.
 
-## Checking a bare transaction key
+## Where the wallet keeps what it needs
 
-A key alone does not say which output it made. `proofs::check_key(chain, key, address, from_height)` computes `De = r*G`, reads blocks from
-`from_height` on (at most `MAX_KEY_SEARCH_BLOCKS` = 50,000) until an output with that ephemeral key is found, and checks it as a key proof
-(kind 3). It says "not found" with the blocks it read if there is none (the key is wrong, or the start is after the payment's block), and
-"not addressed" if the output was not paid to the address given.
-
-## Where it is used
-
-`tenero-wallet`: `proofs.rs` (the functions), `Purse::sign_message`, `prove_received`, `prove_sent`, `tx_secret`,
-`forget_tx_secret`; the wallet file version 3 (`purse.rs`) stores each sent payment's secret and its output's one-time address.
-`tenero-gui`: see `docs/RUNNING.md`.
+A sent payment keeps its anchor and its output's one-time address in the wallet file (`SentRecord`; the app can forget it).
+A received output's anchor is not stored: it is decrypted again from the chain with the view key when a proof is asked for.

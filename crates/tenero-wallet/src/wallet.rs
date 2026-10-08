@@ -355,6 +355,88 @@ impl Wallet {
         Some(Address::of(self.network, &d))
     }
 
+    /// The address of one of the wallet's indexes (the main address for `(0, 0)`).
+    pub fn address_of(&self, index: AddressIndex) -> Option<Address> {
+        let d = self.account.address(index).ok()?;
+        Some(Address::of(self.network, &d))
+    }
+
+    /// The two secrets of an address's spend key, `K^j_s = a G + b T`: `a = s_j k_gi`, `b = s_j k_ps`, with `s_j` the
+    /// subaddress scalar (one for the main address). What signs as that address.
+    fn signing_secrets(&self, index: AddressIndex) -> (Zeroizing<Scalar>, Zeroizing<Scalar>) {
+        let s = Zeroizing::new(tenero_carrot::account::subaddress_scalar(
+            &self.account.public,
+            &self.account.s_generate_address,
+            index,
+        ));
+        (
+            Zeroizing::new(*s * self.account.k_generate_image),
+            Zeroizing::new(*s * self.account.k_prove_spend),
+        )
+    }
+
+    /// Signs `message` as the address of `index` (the main address for `(0, 0)`): our own construction, unreviewed
+    /// (`proofs.rs`). Gives the address too, which is what a verifier checks it against.
+    pub fn sign_message(
+        &self,
+        index: AddressIndex,
+        message: &[u8],
+        rng: &mut (impl RngCore + CryptoRng),
+    ) -> Option<(Address, crate::proofs::Signature)> {
+        let address = self.address_of(index)?;
+        let (a, b) = self.signing_secrets(index);
+        let sig = crate::proofs::sign_message(&a, &b, &address, message, rng);
+        Some((address, sig))
+    }
+
+    /// A RECEIVED proof of the output with `global_index`: its anchor, decrypted with the view key, and the receiving
+    /// address's signature over it and `message`. Refused for the wallet's own change.
+    pub fn prove_received(
+        &self,
+        chain: &impl ChainView,
+        global_index: u64,
+        message: &[u8],
+        rng: &mut (impl RngCore + CryptoRng),
+    ) -> Result<crate::proofs::PaymentProof, crate::proofs::ProofError> {
+        use crate::proofs::ProofError;
+        let o = self
+            .owned
+            .iter()
+            .find(|o| o.global_index == global_index)
+            .ok_or(ProofError::Unknown)?;
+        if o.internal {
+            return Err(ProofError::Change);
+        }
+        let block = chain
+            .block(o.height)
+            .map_err(ProofError::Chain)?
+            .ok_or(ProofError::NoBlock(o.height))?;
+        let anchor = crate::proofs::received_anchor(
+            &self.account.k_view_incoming,
+            &block,
+            &o.onetime_address,
+        )?;
+        let mut proof = crate::proofs::PaymentProof {
+            address: self.address_of(o.address).ok_or(ProofError::Unknown)?,
+            height: o.height,
+            onetime_address: o.onetime_address,
+            anchor,
+            signature: None,
+        };
+        // a payment to an integrated address proves as the integrated address (its payment ID is checked too)
+        if o.payment_id != NULL_PAYMENT_ID && !o.address.is_subaddress() {
+            proof.address = proof
+                .address
+                .with_payment_id(o.payment_id)
+                .ok_or(ProofError::Unknown)?;
+        }
+        let (a, b) = self.signing_secrets(o.address);
+        proof.sign(&a, &b, message, rng)?;
+        // the proof must check before it is handed out
+        crate::proofs::check_payment(chain, &proof, message)?;
+        Ok(proof)
+    }
+
     /// The main address with a payment ID: an integrated address.
     pub fn integrated_address(&self, payment_id: PaymentId) -> Option<Address> {
         self.address().with_payment_id(payment_id)
