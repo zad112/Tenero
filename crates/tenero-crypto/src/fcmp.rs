@@ -262,8 +262,9 @@ impl Default for FcmpProofs {
 }
 
 impl FcmpProofs {
-    /// Up to 4 threads (fewer if the machine has fewer cores): a full block of about 1,800 typical transactions takes
-    /// about 34 s of one core (`docs/FCMP_CARROT_PLAN.md` F14).
+    /// Up to 4 threads (fewer if the machine has fewer cores). A block at the ceiling (about 6,300 typical transactions)
+    /// takes about 2 minutes of one 5900X core, so about 30 s on 4 (`docs/FCMP_CARROT_PLAN.md` F14); a quiet block, a few
+    /// hundred milliseconds.
     pub fn new() -> FcmpProofs {
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
         FcmpProofs::with_threads(cores.min(4))

@@ -67,11 +67,36 @@ def test_weight_rounds_up_and_a_typical_v3_transaction_weighs_less_than_a_v2_one
 
 def test_a_block_is_limited_by_weight_and_by_real_bytes():
     f = load("v3_weight")
-    assert f["max_block_bytes"] == 12 * 1024 * 1024
+    assert f["max_block_weight"] == 12 * 1024 * 1024 and f["max_block_bytes"] == 48 * 1024 * 1024
     for c in f["limits"]:
-        assert c["too_large"] == (c["weight"] > min(2 * c["median"], 4 * 1024 * 1024) or c["size"] > f["max_block_bytes"])
-    # the real-byte ceiling binds before the network frame (16 MiB) and leaves room for a block's header and coinbase
-    assert f["max_block_bytes"] < 16 * 1024 * 1024 - 1024 * 1024
+        assert c["too_large"] == (c["weight"] > min(2 * c["median"], f["max_block_weight"])
+                                  or c["size"] > f["max_block_bytes"])
+    # about 100 typical transactions a second at the ceiling (60-second blocks), whichever limit binds
+    typical = f["transactions"][0]
+    per_block = min(f["max_block_weight"] // typical["weight"], f["max_block_bytes"] // typical["size"])
+    assert 95 <= per_block / 60 <= 110
+
+
+def test_the_medians_follow_their_definition_written_again_here():
+    f = load("v3_median")
+    floor, short_window, multiple = f["min_block_median"], f["median_window"], f["short_term_multiple"]
+    num, den = f["long_term_growth"]
+
+    def upper_median(xs):
+        return sorted(xs)[len(xs) // 2]
+
+    for c in f["cases"]:
+        window, weights, lts = c["window"], [], []
+        for d, b in zip(c["demand"], c["blocks"]):
+            recent = lts[-window:]
+            ltm = max(floor, upper_median(recent + [floor] * (window - len(recent))))
+            short = max(floor, upper_median(weights[-short_window:]) if weights else floor)
+            median = min(short, multiple * ltm)
+            weight = min(d, 2 * median, 12 * 1024 * 1024)
+            lt = min(weight, ltm * num // den)
+            assert (b["median"], b["long_term_median"], b["weight"], b["long_term_weight"]) == (median, ltm, weight, lt)
+            weights.append(weight)
+            lts.append(lt)
 
 
 def test_every_output_enters_the_tree_once_and_exactly_when_it_becomes_spendable():

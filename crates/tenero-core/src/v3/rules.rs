@@ -16,16 +16,63 @@ pub const MAX_REFERENCE_AGE: u64 = 1440;
 pub const COINBASE_MATURITY: u64 = 60;
 pub const SPEND_MATURITY: u64 = 10;
 
-/// The most REAL transaction bytes a block may carry, whatever its weight (`docs/CONSENSUS_V2.md` 15.4; my recommendation,
-/// 2026-10-08, easy to change before launch). The quarter weight of proofs would otherwise let a block at the 4 MiB weight
-/// ceiling reach about 16.5 MB, at the edge of the 16 MiB network frame, and cost verifiers and archive nodes four times the
-/// bytes. At about 7,000 bytes a typical transaction, it holds about 1,800: about 30 a second, as `beta`'s ceiling.
-pub const MAX_BLOCK_BYTES: u64 = 12 * 1024 * 1024;
+/// The most a block's transactions may weigh, whatever the median says, and the most REAL bytes they may be, whatever
+/// their weight (`docs/CONSENSUS_V2.md` 15.4; owner, 2026-10-08: the chain can grow to about 100 transactions a second).
+/// The real-byte ceiling stops proof-heavy blocks from being four times bigger than their weight. About 6,300 typical
+/// transactions a block.
+pub const MAX_BLOCK_WEIGHT: u64 = 12 * 1024 * 1024;
+pub const MAX_BLOCK_BYTES: u64 = 48 * 1024 * 1024;
+/// The medians never go below this (version 2's 150,000).
+pub const MIN_BLOCK_MEDIAN: u64 = crate::fees::V2_MIN_BLOCK_MEDIAN;
+/// Slow growth, as Monero's long-term median (owner, 2026-10-08; the numbers are recommendations): the median a block is
+/// judged by is the short-term one (the last `fees::MEDIAN_WINDOW` = 10 weights), but at most `SHORT_TERM_MULTIPLE` times
+/// the long-term median, the median of the last `LONG_TERM_WINDOW` long-term weights; a block's long-term weight is its
+/// weight, at most 1.4 times the long-term median. Blocks can jump tenfold for a spike, and grow lastingly by 1.4 times
+/// per half a window of demand: from the floor to the ceiling takes about 2.5 windows (5 to 6 months) of full blocks.
+pub const LONG_TERM_WINDOW: usize = 100_000;
+pub const SHORT_TERM_MULTIPLE: u64 = 10;
+pub const LONG_TERM_GROWTH_NUM: u64 = 7;
+pub const LONG_TERM_GROWTH_DEN: u64 = 5;
 
-/// Whether a block of transactions of total `weight` and `size` real bytes is too large at the block-weight `median`:
-/// its weight over version 2's limit (twice the median, at most 4 MiB), or its real bytes over [`MAX_BLOCK_BYTES`].
+/// The most a block may weigh at this median: twice it, at most [`MAX_BLOCK_WEIGHT`].
+pub fn block_limit(median: u64) -> u64 {
+    median.saturating_mul(2).min(MAX_BLOCK_WEIGHT)
+}
+
+/// Whether a block of transactions of total `weight` and `size` real bytes is too large at the (effective) `median`.
 pub fn block_too_large(weight: u64, size: u64, median: u64) -> bool {
-    crate::fees::v2_over_limit(weight, median) || size > MAX_BLOCK_BYTES
+    weight > block_limit(median) || size > MAX_BLOCK_BYTES
+}
+
+/// The long-term median a block is judged by: the upper median of the last `window` long-term weights of the blocks
+/// before it (`lt_weights`, from position 1 on: the genesis block never counts), at least [`MIN_BLOCK_MEDIAN`]. While the
+/// chain is shorter than the window, the missing blocks count as [`MIN_BLOCK_MEDIAN`], so a young chain grows as slowly as
+/// an old one. Consensus uses [`LONG_TERM_WINDOW`]; tests use smaller windows.
+pub fn long_term_median(lt_weights: &[u64], window: usize) -> u64 {
+    if window == 0 {
+        return MIN_BLOCK_MEDIAN;
+    }
+    let last = &lt_weights[lt_weights.len().saturating_sub(window)..];
+    let mut all = Vec::with_capacity(window);
+    all.extend_from_slice(last);
+    all.resize(window, MIN_BLOCK_MEDIAN);
+    let k = window / 2;
+    (*all.select_nth_unstable(k).1).max(MIN_BLOCK_MEDIAN)
+}
+
+/// The median a block is judged by (its limit, its penalty, the minimum fee): the median of `recent_weights` (the last
+/// `fees::MEDIAN_WINDOW` blocks before it), at least [`MIN_BLOCK_MEDIAN`], at most [`SHORT_TERM_MULTIPLE`] times the
+/// long-term median `ltm`.
+pub fn effective_median(recent_weights: &[u64], ltm: u64) -> u64 {
+    let last = &recent_weights[recent_weights
+        .len()
+        .saturating_sub(crate::fees::MEDIAN_WINDOW)..];
+    crate::fees::median(last, MIN_BLOCK_MEDIAN).min(ltm.saturating_mul(SHORT_TERM_MULTIPLE))
+}
+
+/// A block's long-term weight: its weight, at most 1.4 times the long-term median `ltm` it was judged by.
+pub fn long_term_weight(weight: u64, ltm: u64) -> u64 {
+    weight.min(ltm.saturating_mul(LONG_TERM_GROWTH_NUM) / LONG_TERM_GROWTH_DEN)
 }
 
 /// The minimum fee of a transaction of `size` real bytes: version 2's formula with [`FEE_REFERENCE_WEIGHT`],

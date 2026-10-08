@@ -17,9 +17,11 @@ pub struct BlockMeta {
     /// The block's WEIGHT for the median, the limit and the penalty (`docs/CONSENSUS_V2.md` 15.4): its transactions'
     /// weights, without the coinbase.
     pub body_weight: u64,
+    /// Its long-term weight (15.4): its weight, at most 1.4 times the long-term median it was judged by.
+    pub long_term_weight: u64,
 }
 
-/// What is kept about a block besides its transactions: 266 bytes.
+/// What is kept about a block besides its transactions: 274 bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockIndex {
     pub block_id: [u8; 32],
@@ -30,6 +32,8 @@ pub struct BlockIndex {
     pub target: [u8; 32],
     /// The weight of the block's transactions (supplied by the caller). 0 for the genesis block.
     pub body_weight: u64,
+    /// Its long-term weight (supplied by the caller). 0 for the genesis block.
+    pub long_term_weight: u64,
     /// The global index of the block's first output (its coinbase's first output).
     pub first_output_index: u64,
     /// How many outputs the block created: the coinbase's and every transaction's.
@@ -45,6 +49,7 @@ impl Wire for BlockIndex {
         w.raw(&self.cumulative_work);
         w.raw(&self.target);
         w.u64(self.body_weight);
+        w.u64(self.long_term_weight);
         w.u64(self.first_output_index);
         w.u32(self.output_count);
         w.u32(self.tx_count);
@@ -58,6 +63,7 @@ impl Wire for BlockIndex {
             cumulative_work: r.array()?,
             target: r.array()?,
             body_weight: r.u64()?,
+            long_term_weight: r.u64()?,
             first_output_index: r.u64()?,
             output_count: r.u32()?,
             tx_count: r.u32()?,

@@ -183,31 +183,44 @@
    "weight": 300001
   },
   {
-   "median": 4194304,
-   "size": 12582912,
+   "median": 12582912,
+   "size": 50331648,
    "too_large": false,
-   "weight": 4194304
+   "weight": 12582912
   },
   {
-   "median": 4194304,
-   "size": 12582912,
+   "median": 12582912,
+   "size": 50331648,
    "too_large": true,
-   "weight": 4194305
+   "weight": 12582913
   },
   {
-   "median": 4194304,
-   "size": 12582913,
+   "median": 12582912,
+   "size": 50331649,
    "too_large": true,
-   "weight": 4194304
+   "weight": 12582912
   },
   {
-   "median": 41943040,
-   "size": 12582913,
+   "median": 125829120,
+   "size": 50331649,
    "too_large": true,
    "weight": 3000000
+  },
+  {
+   "median": 4000000,
+   "size": 30000000,
+   "too_large": false,
+   "weight": 8000000
+  },
+  {
+   "median": 4000000,
+   "size": 30000000,
+   "too_large": true,
+   "weight": 8000001
   }
  ],
- "max_block_bytes": 12582912,
+ "max_block_bytes": 50331648,
+ "max_block_weight": 12582912,
  "name": "v3_weight",
  "proof_weight_divisor": 4,
  "schema": 1,

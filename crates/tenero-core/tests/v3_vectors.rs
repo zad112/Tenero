@@ -298,6 +298,7 @@ fn weight_is_the_reference_s() {
         .unwrap();
         assert_eq!(fee, c["fee"].as_u64().unwrap());
     }
+    assert_eq!(f["max_block_weight"], rules::MAX_BLOCK_WEIGHT);
     assert_eq!(f["max_block_bytes"], rules::MAX_BLOCK_BYTES);
     for c in f["limits"].as_array().unwrap() {
         let n = |k: &str| c[k].as_u64().unwrap();
@@ -376,5 +377,47 @@ fn the_tree_schedule_is_the_reference_s() {
             .map(|x| x.as_u64().unwrap())
             .collect();
         assert_eq!(got, want, "height {height}");
+    }
+}
+
+#[test]
+fn the_long_term_median_is_the_reference_s() {
+    let f = load("v3_median").unwrap();
+    assert_eq!(f["min_block_median"], rules::MIN_BLOCK_MEDIAN);
+    assert_eq!(f["median_window"], tenero_core::fees::MEDIAN_WINDOW);
+    assert_eq!(f["long_term_window"], rules::LONG_TERM_WINDOW);
+    assert_eq!(f["short_term_multiple"], rules::SHORT_TERM_MULTIPLE);
+    assert_eq!(
+        f["long_term_growth"],
+        serde_json::json!([rules::LONG_TERM_GROWTH_NUM, rules::LONG_TERM_GROWTH_DEN])
+    );
+    for c in f["cases"].as_array().unwrap() {
+        let window = c["window"].as_u64().unwrap() as usize;
+        let (mut weights, mut lts) = (Vec::new(), Vec::new());
+        for (d, b) in c["demand"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(c["blocks"].as_array().unwrap())
+        {
+            let ltm = rules::long_term_median(&lts, window);
+            let median = rules::effective_median(&weights, ltm);
+            let weight = d.as_u64().unwrap().min(rules::block_limit(median));
+            let lt = rules::long_term_weight(weight, ltm);
+            let n = |k: &str| b[k].as_u64().unwrap();
+            assert_eq!(
+                (median, ltm, weight, lt),
+                (
+                    n("median"),
+                    n("long_term_median"),
+                    n("weight"),
+                    n("long_term_weight")
+                ),
+                "{}",
+                c["note"]
+            );
+            weights.push(weight);
+            lts.push(lt);
+        }
     }
 }

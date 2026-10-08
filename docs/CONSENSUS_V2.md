@@ -739,11 +739,29 @@ Labels: `"tenero gamma network 1"`, `"tenero development network v3"`, `"tenero 
 
 A transaction's **weight** is its prefix bytes plus a quarter of its prunable bytes, rounded up. A block's weight is the
 sum of its transactions' weights (the coinbase, as in version 2, is not counted). The block-size median, the block limit
-(twice the median, at most 4 MiB) and the oversize penalty are version 2's rules **applied to weight**. A block's **real**
-transaction bytes are also at most **`MAX_BLOCK_BYTES` = 12 MiB** (12,582,912; a recommendation, 2026-10-08, easy to change
-before launch): without it the quarter weight would let a block at the 4 MiB weight ceiling reach about 16.5 MB, at the edge
-of the 16 MiB network frame, and cost verifiers and archive nodes four times the bytes. It holds about 1,800 typical
-transactions (about 30 a second at 60-second blocks, as version 2's ceiling of about 1,750). The **minimum fee**
+(twice the median, at most 4 MiB) and the oversize penalty are version 2's rules **applied to weight**. **The ceilings** (owner, 2026-10-08: the chain can grow to
+about 100 transactions a second): a block weighs at most **`MAX_BLOCK_WEIGHT` = 12 MiB** (version 2's ceiling was 4 MiB),
+and its **real** transaction bytes are at most **`MAX_BLOCK_BYTES` = 48 MiB**, which stops proof-heavy blocks from being
+four times bigger than their weight. A typical transaction weighs about 1,980 and is about 7,000 bytes, so a block holds
+about 6,300 of them (about 106 a second at 60-second blocks).
+
+**The median, with slow growth** (owner, 2026-10-08, as Monero's long-term median; the numbers are recommendations). For
+the block at height `h`, with the weights `w` and long-term weights `lw` of the blocks before it (from block 1: the genesis
+block never counts):
+
+```text
+long_term_median(h) = max(150,000, upper median of the last LONG_TERM_WINDOW = 100,000 values of lw,
+                          the blocks a young chain lacks counting as 150,000)
+median(h)           = min(max(150,000, upper median of the last 10 values of w), 10 * long_term_median(h))
+long_term_weight(h) = min(weight(h), long_term_median(h) * 7 / 5)          (integer division)
+```
+
+`median(h)` is the median the block is judged by: its limit (`min(2 * median, MAX_BLOCK_WEIGHT)`), its penalty and the
+minimum fee. Blocks can jump tenfold above the long-term median for a spike (to about 1,500 typical transactions while it
+is at the floor), and grow lastingly only as the long-term median does, by 1.4 times per half a window of full blocks: from
+the floor to the ceiling takes about 2.5 windows, 5 to 6 months of sustained demand. Counting the blocks a young chain
+lacks at the floor (Monero does not) makes a new chain grow as slowly as an old one. Vectors: `v3_median.json` (with
+smaller windows too, to see the long-term median move). The **minimum fee**
 is version 2's formula with **`FEE_REFERENCE_WEIGHT = 1000`** (version 2: 3000; owner, 2026-10-08) applied to the
 transaction's **real size** and the (weight) median: a typical transaction, about three times as big as in version 2, costs
 what a version 2 one did (about 0.0062 coins at the start, 0.00016 at the tail emission, at the 150,000 floor), and the fee

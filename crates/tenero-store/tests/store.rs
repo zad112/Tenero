@@ -97,6 +97,7 @@ fn meta_for(height: u64) -> BlockMeta {
         cumulative_work: work_for(height),
         target: [0xff; 32],
         body_weight: 0,
+        long_term_weight: height * 7,
     }
 }
 
@@ -1338,6 +1339,27 @@ fn undoing_blocks_gives_back_each_earlier_tree_and_reopening_keeps_it() {
         "the tree is the same after closing and opening"
     );
     assert_eq!(reopened.tree(), model_tree(&blocks, 70));
+}
+
+#[test]
+fn the_long_term_weights_follow_appends_undoing_and_reopening() {
+    let db = TempDb::new("lt-weights");
+    let mut c = Chain::new(&db, 23);
+    c.push_n(30);
+    let expect = |from: u64, to: u64| (from..=to).map(|h| h * 7).collect::<Vec<u64>>();
+    assert_eq!(c.store.long_term_weights(31, 1000), expect(1, 30));
+    assert_eq!(c.store.long_term_weights(11, 5), expect(6, 10));
+    assert_eq!(
+        c.store.long_term_weights(1, 5),
+        Vec::<u64>::new(),
+        "the genesis block never counts"
+    );
+    for _ in 0..5 {
+        c.pop();
+    }
+    assert_eq!(c.store.long_term_weights(31, 1000), expect(1, 25));
+    drop(c);
+    assert_eq!(db.open().long_term_weights(26, 10), expect(16, 25));
 }
 
 #[test]

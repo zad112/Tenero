@@ -33,7 +33,7 @@ from make_vectors_v2 import (  # noqa: E402
 ROOT = v2.ROOT
 VECTOR_DIR = v2.VECTOR_DIR
 SCHEMA = 1
-FILES = ("v3_serialization", "v3_ids", "v3_genesis", "v3_weight", "v3_shape", "v3_tree_schedule")
+FILES = ("v3_serialization", "v3_ids", "v3_genesis", "v3_weight", "v3_shape", "v3_tree_schedule", "v3_median")
 
 # ---------------------------------------------------------------- constants
 VERSION = 3
@@ -49,10 +49,21 @@ MAX_PROOF = v2.MAX_PROOF
 MAX_BLOCK_TXS = v2.MAX_BLOCK_TXS
 OUTPUT_SIZE = 91
 PROOF_WEIGHT_DIVISOR = 4           # a prunable byte weighs a quarter
-# the most REAL transaction bytes a block may carry, whatever its weight (owner's limit pending; my recommendation,
-# 2026-10-08): the quarter weight of proofs would otherwise let a 4 MiB-weight block reach about 16.5 MB, at the edge
-# of the 16 MiB network frame, and cost archive nodes and verifiers four times the bytes
-MAX_BLOCK_BYTES = 12 * 1024 * 1024
+# The ceilings (owner, 2026-10-08: the chain can grow to about 100 transactions a second): the most a block may weigh,
+# whatever the median says, and the most REAL transaction bytes it may carry, whatever its weight (the quarter weight of
+# proofs would otherwise let a block be four times bigger than its weight). About 6,300 typical transactions a block.
+MAX_BLOCK_WEIGHT = 12 * 1024 * 1024
+MAX_BLOCK_BYTES = 48 * 1024 * 1024
+MIN_BLOCK_MEDIAN = v2.MIN_BLOCK_MEDIAN       # 150,000: the medians never go below it
+MEDIAN_WINDOW = v2.MEDIAN_WINDOW             # 10 blocks: the short-term median
+# Slow growth, as Monero's long-term median (owner, 2026-10-08; the numbers are recommendations): the median a block is
+# judged by is the short-term one, but at most SHORT_TERM_MULTIPLE times the long-term median, the median of the last
+# LONG_TERM_WINDOW blocks' long-term weights; a block's long-term weight is its weight, but at most 1.4 times the long-term
+# median. So blocks can jump tenfold for a spike, but grow lastingly only by 1.4 times per half a window of demand. Blocks
+# the chain does not have yet count as MIN_BLOCK_MEDIAN.
+LONG_TERM_WINDOW = 100_000
+LONG_TERM_GROWTH_NUM, LONG_TERM_GROWTH_DEN = 7, 5
+SHORT_TERM_MULTIPLE = 10
 FEE_REFERENCE_WEIGHT = 1000        # a third of version 2's 3000 (owner, 2026-10-08): a typical v3 transaction costs what a v2 one did
 MAX_REFERENCE_AGE = 1440           # a transaction's reference block is at most this many blocks below the tip
 COINBASE_MATURITY = 60
@@ -262,17 +273,39 @@ def dynamic_min_fee(size, base_reward, median):
     return fee if fee <= U64_MAX else None
 
 
-block_limit = v2.block_limit
+def block_limit(median):
+    """The most a block may weigh at this median: twice it, but never more than MAX_BLOCK_WEIGHT."""
+    return min(2 * median, MAX_BLOCK_WEIGHT)
 
 
 def block_too_large(weight, size, median):
-    """Too large: its weight over version 2's limit of the (weight) median, or its real transaction bytes over
-    MAX_BLOCK_BYTES."""
+    """Too large: its weight over block_limit(median), or its real transaction bytes over MAX_BLOCK_BYTES."""
     return weight > block_limit(median) or size > MAX_BLOCK_BYTES
 
 
 oversize_penalty = v2.oversize_penalty
 block_median = v2.block_median
+
+
+def long_term_median(lt_weights, window=LONG_TERM_WINDOW):
+    """The median of the last `window` long-term weights (`lt_weights`: the blocks before, from position 1 on), at least
+    MIN_BLOCK_MEDIAN. While the chain is shorter than the window, the missing blocks count as MIN_BLOCK_MEDIAN: so a young
+    chain grows as slowly as an old one (unlike Monero's, whose median of a few blocks moves at once)."""
+    last = lt_weights[-window:] if window else []
+    return block_median(last + [MIN_BLOCK_MEDIAN] * (window - len(last)), MIN_BLOCK_MEDIAN)
+
+
+def effective_median(weights, lt_weights, window=LONG_TERM_WINDOW):
+    """The median a block is judged by (its limit, penalty and minimum fee): the median of the last MEDIAN_WINDOW
+    weights, at least MIN_BLOCK_MEDIAN, but at most SHORT_TERM_MULTIPLE times the long-term median. `weights` and
+    `lt_weights` are the blocks before it, from position 1 on (the genesis block never counts)."""
+    short = block_median(weights[-MEDIAN_WINDOW:], MIN_BLOCK_MEDIAN)
+    return min(short, SHORT_TERM_MULTIPLE * long_term_median(lt_weights, window))
+
+
+def long_term_weight(weight, lt_weights, window=LONG_TERM_WINDOW):
+    """A block's long-term weight: its weight, but at most 1.4 times the long-term median before it."""
+    return min(weight, long_term_median(lt_weights, window) * LONG_TERM_GROWTH_NUM // LONG_TERM_GROWTH_DEN)
 
 
 # ---------------------------------------------------------------- the shape rules
@@ -499,17 +532,18 @@ def weight_vectors():
     # the fee of each transaction at a few medians (real size, median of weights)
     fee_cases = [{"size": c["size"], "base_reward": r, "median": m, "fee": dynamic_min_fee(c["size"], r, m)}
                  for c in tx_cases for r in (20 * v2.UNIT, v2.UNIT // 2) for m in (v2.MIN_BLOCK_MEDIAN, 1_000_000)]
-    big = v2.MAX_BLOCK_BODY
+    big = MAX_BLOCK_WEIGHT
     limit_cases = [{"weight": w, "size": z, "median": m, "too_large": block_too_large(w, z, m)}
                    for w, z, m in ((300_000, 1_000_000, 150_000), (300_001, 1_000_000, 150_000),
                                    (big, MAX_BLOCK_BYTES, big), (big + 1, MAX_BLOCK_BYTES, big),
-                                   (big, MAX_BLOCK_BYTES + 1, big), (3_000_000, MAX_BLOCK_BYTES + 1, 10 * big))]
+                                   (big, MAX_BLOCK_BYTES + 1, big), (3_000_000, MAX_BLOCK_BYTES + 1, 10 * big),
+                                   (8_000_000, 30_000_000, 4_000_000), (8_000_001, 30_000_000, 4_000_000))]
     return wrap("v3_weight", "Version 3 weight: prefix bytes + ceil(prunable bytes / 4); a block's weight is the sum of "
                 "its transactions'. Block limits, the median and the oversize penalty are version 2's functions of "
                 "weight, and a block's real transaction bytes are at most MAX_BLOCK_BYTES; the minimum fee is version "
                 "2's formula with FEE_REFERENCE_WEIGHT 1000 (version 2: 3000), of the REAL size and the (weight) median.",
                 {"proof_weight_divisor": PROOF_WEIGHT_DIVISOR, "fee_reference_weight": FEE_REFERENCE_WEIGHT,
-                 "max_block_bytes": MAX_BLOCK_BYTES, "transactions": tx_cases, "blocks": block_cases,
+                 "max_block_weight": MAX_BLOCK_WEIGHT, "max_block_bytes": MAX_BLOCK_BYTES, "transactions": tx_cases, "blocks": block_cases,
                  "fees": fee_cases, "limits": limit_cases})
 
 
@@ -552,6 +586,53 @@ def shape_vectors():
                  "reference": ref})
 
 
+def simulate_medians(demand, window):
+    """A chain whose block at position p (from 1) weighs min(demand[p-1], its limit): for each, the medians it was
+    judged by, its weight and its long-term weight."""
+    weights, lts, out = [], [], []
+    for d in demand:
+        m = effective_median(weights, lts, window)
+        ltm = long_term_median(lts, window)
+        w = min(d, block_limit(m))
+        lt = long_term_weight(w, lts, window)
+        out.append({"median": m, "long_term_median": ltm, "weight": w, "long_term_weight": lt})
+        weights.append(w)
+        lts.append(lt)
+    return out
+
+
+def median_vectors():
+    full = MAX_BLOCK_WEIGHT          # a spammer who fills every block to its limit
+    quiet = 50_000
+    cases = [
+        {"note": "a quiet chain stays at the floor", "window": LONG_TERM_WINDOW, "demand": [quiet] * 30},
+        {"note": "a sudden flood: blocks grow tenfold at most (to 3,000,000) while the long-term median stays at the "
+                 "floor", "window": LONG_TERM_WINDOW, "demand": [quiet] * 5 + [full] * 80},
+        {"note": "a flood that lasts (a window of 40 blocks, to see the long-term median move: by 1.4 times a half "
+                 "window)", "window": 40, "demand": [full] * 400},
+        {"note": "the flood stops: the short-term median falls back within a few blocks", "window": 40,
+         "demand": [full] * 150 + [quiet] * 30},
+        {"note": "weights just around the floor and its multiples", "window": 7,
+         "demand": [149_999, 150_000, 150_001, 210_000, 210_001, 300_000, 1_500_000, 2_100_000] * 6},
+    ]
+    for c in cases:
+        c["blocks"] = simulate_medians(c["demand"], c["window"])
+    # the flood is held to SHORT_TERM_MULTIPLE times the floor while the long-term median cannot move
+    assert max(b["median"] for b in cases[1]["blocks"]) == SHORT_TERM_MULTIPLE * MIN_BLOCK_MEDIAN
+    # a lasting flood reaches the ceiling, but only after the long-term median grew
+    assert cases[2]["blocks"][-1]["weight"] == MAX_BLOCK_WEIGHT
+    assert cases[2]["blocks"][-1]["long_term_median"] > MIN_BLOCK_MEDIAN
+    return wrap("v3_median", "Version 3's block-weight median (docs/CONSENSUS_V2.md 15.4): the median of the last "
+                "MEDIAN_WINDOW weights, at least MIN_BLOCK_MEDIAN, at most SHORT_TERM_MULTIPLE times the long-term median "
+                "(the median of the last `window` long-term weights, the blocks a young chain lacks counting as MIN_BLOCK_MEDIAN, "
+                "at least MIN_BLOCK_MEDIAN; consensus uses "
+                "LONG_TERM_WINDOW, smaller windows test the function). A block's long-term weight is its weight, at most "
+                "1.4 times the long-term median before it. Each block here weighs min(demand, its limit).",
+                {"min_block_median": MIN_BLOCK_MEDIAN, "median_window": MEDIAN_WINDOW,
+                 "long_term_window": LONG_TERM_WINDOW, "short_term_multiple": SHORT_TERM_MULTIPLE,
+                 "long_term_growth": [LONG_TERM_GROWTH_NUM, LONG_TERM_GROWTH_DEN], "cases": cases})
+
+
 def tree_schedule_vectors():
     # 140 blocks: one to three coinbase outputs, and from block 3 some transactions with outputs
     blocks = [(1 + (h % 3), (0 if h < 3 else (h * 7) % 9)) for h in range(140)]
@@ -570,7 +651,8 @@ def tree_schedule_vectors():
 
 
 BUILDERS = {"v3_serialization": serialization_vectors, "v3_ids": ids_vectors, "v3_genesis": genesis_vectors,
-            "v3_weight": weight_vectors, "v3_shape": shape_vectors, "v3_tree_schedule": tree_schedule_vectors}
+            "v3_weight": weight_vectors, "v3_shape": shape_vectors, "v3_tree_schedule": tree_schedule_vectors,
+            "v3_median": median_vectors}
 
 
 def main(argv=None):

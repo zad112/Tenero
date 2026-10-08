@@ -411,13 +411,13 @@ impl<'a> Chain<'a> {
         }
 
         // a side branch, or an orphan
-        let Some((parent_height, recent)) = self.branch_context(&prev)? else {
+        let Some((parent_height, recent, lt)) = self.branch_context(&prev)? else {
             self.insert_orphan(id, block);
             return Ok(Submitted::Orphan);
         };
         let height = parent_height + 1;
         let v = self.validator();
-        let next = v.next_block_from(height, &recent)?;
+        let next = v.next_block_from(height, &recent, &lt)?;
         let checked = match v.validate_block_on(block, &next, now, false) {
             Ok(o) => o,
             Err(e) => return Err(self.note_failure(id, e)),
@@ -433,6 +433,7 @@ impl<'a> Chain<'a> {
             cumulative_work: vb.meta.cumulative_work,
             target: vb.meta.target,
             body_weight: vb.meta.body_weight,
+            long_term_weight: vb.meta.long_term_weight,
             first_output_index: 0,
             output_count: 0,
             tx_count: 0,
@@ -462,12 +463,13 @@ impl<'a> Chain<'a> {
         e
     }
 
-    /// The height of `parent` and the last blocks of its branch (`Validator::next_block_from`), or `None` if
-    /// the branch does not lead back to the chain.
+    /// The height of `parent`, the last blocks of its branch and their long-term weights (`Validator::next_block_from`),
+    /// or `None` if the branch does not lead back to the chain.
+    #[allow(clippy::type_complexity)]
     fn branch_context(
         &self,
         parent: &[u8; 32],
-    ) -> Result<Option<(u64, Vec<BlockIndex>)>, BlockError> {
+    ) -> Result<Option<(u64, Vec<BlockIndex>, Vec<u64>)>, BlockError> {
         let mut side_rev: Vec<&SideBlock> = Vec::new();
         let mut cur = *parent;
         while let Some(e) = self.side.get(&cur) {
@@ -494,7 +496,12 @@ impl<'a> Chain<'a> {
                 recent.push(side_rev[(h - fork_height - 1) as usize].index.clone());
             }
         }
-        Ok(Some((parent_height, recent)))
+        // the long-term weights: the chain's up to the fork point, then the branch's own
+        let window = tenero_core::v3::rules::LONG_TERM_WINDOW;
+        let mut lt = self.store.long_term_weights(fork_height + 1, window);
+        lt.extend(side_rev.iter().map(|e| e.index.long_term_weight));
+        let lt = lt.split_off(lt.len().saturating_sub(window));
+        Ok(Some((parent_height, recent, lt)))
     }
 
     /// Switches the chain to the branch ending at `target_id` (which is in the side pool).
@@ -527,6 +534,7 @@ impl<'a> Chain<'a> {
                 cumulative_work: popped.index.cumulative_work,
                 target: popped.index.target,
                 body_weight: popped.index.body_weight,
+                long_term_weight: popped.index.long_term_weight,
             };
             let full = popped.into_full().ok_or_else(|| {
                 BlockError::Store("an undone block has no proofs to restore it with".into())
@@ -600,6 +608,7 @@ impl<'a> Chain<'a> {
                 cumulative_work: meta.cumulative_work,
                 target: meta.target,
                 body_weight: meta.body_weight,
+                long_term_weight: meta.long_term_weight,
                 first_output_index: 0,
                 output_count: 0,
                 tx_count: 0,

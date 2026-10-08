@@ -40,7 +40,7 @@ pub enum BlockError {
     /// The cheap check passed but the full proof of work does not reproduce the header's mix.
     PowInvalid(String),
     BadTxRoot,
-    /// Its transactions' weight over twice the median (at most 4 MiB), or their real bytes over 12 MiB.
+    /// Its transactions' weight over twice the median (at most 12 MiB), or their real bytes over 48 MiB.
     BlockTooLarge {
         weight: u64,
         size: u64,
@@ -144,8 +144,11 @@ pub struct NextBlock {
     pub min_timestamp: i64,
     /// The block's reward before any penalty.
     pub reward: u64,
-    /// The block-weight median the block is judged against.
+    /// The block-weight median the block is judged against (its limit, penalty and minimum fee): the short-term median,
+    /// at most ten times the long-term one.
     pub median: u64,
+    /// The long-term median it is judged against (what its long-term weight is capped by).
+    pub long_term_median: u64,
     /// The chain's total work up to the tip.
     pub cumulative_work: U256,
 }
@@ -249,16 +252,21 @@ impl<'a> Validator<'a> {
                     .ok_or_else(|| BlockError::Store(format!("block {h} is missing")))?,
             );
         }
-        self.next_block_from(height, &recent)
+        let lt = self
+            .store
+            .long_term_weights(height, rules::LONG_TERM_WINDOW);
+        self.next_block_from(height, &recent, &lt)
     }
 
     /// The next block at `height` on ANY branch: `recent` are that branch's last `min(height, lookback())`
-    /// blocks, oldest first, the last one being the parent. This is what a side branch is judged by: the
+    /// blocks, oldest first, the last one being the parent, and `long_term_weights` the long-term weights of its last
+    /// (at most) `LONG_TERM_WINDOW` blocks from block 1 on, oldest first. This is what a side branch is judged by: the
     /// rules look only at these blocks, never at the store's tip.
     pub fn next_block_from(
         &self,
         height: u64,
         recent: &[BlockIndex],
+        long_term_weights: &[u64],
     ) -> Result<NextBlock, BlockError> {
         let tip = recent
             .last()
@@ -293,8 +301,8 @@ impl<'a> Validator<'a> {
             .iter()
             .map(|r| r.body_weight)
             .collect();
-        let last = &weights[weights.len().saturating_sub(fees::MEDIAN_WINDOW)..];
-        let median = fees::median(last, self.params.min_block_median);
+        let long_term_median = rules::long_term_median(long_term_weights, rules::LONG_TERM_WINDOW);
+        let median = rules::effective_median(&weights, long_term_median);
 
         Ok(NextBlock {
             height,
@@ -303,6 +311,7 @@ impl<'a> Validator<'a> {
             min_timestamp,
             reward: self.params.emission.reward_at(height),
             median,
+            long_term_median,
             cumulative_work: U256::from_be_bytes(&tip.cumulative_work),
         })
     }
@@ -405,7 +414,7 @@ impl<'a> Validator<'a> {
             return Err(BlockError::BlockTooLarge {
                 weight: body_weight,
                 size: body_size,
-                weight_limit: fees::v2_block_limit(next.median),
+                weight_limit: rules::block_limit(next.median),
             });
         }
 
@@ -467,6 +476,7 @@ impl<'a> Validator<'a> {
                 cumulative_work: cumulative_work.to_be_bytes(),
                 target: next.target.to_be_bytes(),
                 body_weight,
+                long_term_weight: rules::long_term_weight(body_weight, next.long_term_median),
             },
             proofs_checked: self.proofs.checks_proofs() && !assumed && check_state,
         }))
