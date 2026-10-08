@@ -134,7 +134,7 @@ Monero's own test proofs (`tests/vectors/upstream_monero_fcmp_pp.json`) verify w
 
 A transcription of the specification (`jeffro256/carrot`, `carrot.md`, BSD-3-Clause; audited as a **specification** by Cypher Stack
 in November 2024 and September 2025, and Monero's C++ code in February 2026). **Our Rust code has had no audit.** It is built only
-from audited primitives: `curve25519-dalek` (Ed25519 and the point conversion), `x25519-dalek` (F7) and `blake2`.
+from audited primitives: `curve25519-dalek` (Ed25519, the point conversion and the X25519 ladder) and, from monero-oxide, `Blake2bMonero` and the generators. (`x25519-dalek`, approved as F7, turned out to be unusable: it always clamps, and Carrot multiplies unclamped. It is not a dependency.)
 
 What it covers, in the order of the specification:
 - **The key hierarchy (its 5.2, the "new" hierarchy only; `gamma` has no legacy wallets):** from a master secret `s_m`: the
@@ -196,7 +196,7 @@ transcription, and the reliance on a branch that Monero may still change.
 |---|---|---|
 | G0 | this plan agreed (section 11); `CLAUDE.md` records the rule 3 exception | the owner |
 | G1 | the pinned crates in the build (P1), licences listed; Monero's FCMP++ test proofs verify; **verify and prove times measured** on the owner's machine. **Done 2026-10-08** | nothing else |
-| G2 | `tenero-carrot`: keys, addresses, outputs, scanning, against the C++ vectors | the WSL harness |
+| G2 | `tenero-carrot`: keys, addresses, outputs, scanning, against the C++ vectors. **Done 2026-10-08**: Monero's 36 convergence values and the harness's 6 accounts, 12 output sets, coinbase outputs, X25519 and hash-to-point cases are reproduced bit for bit. Left for G5: `s_m` from the BIP39 seed and the base58 address text (Tenero's own, with Python reference vectors) | the WSL harness |
 | G3 | the curve tree, its storage and reorganisation, against the C++ vectors | G1 |
 | G4 | the `gamma` network: genesis, version 3 transactions, validation, the mempool; CLSAG and the version 2 rules out of the 0.3.0 path (P2); tested on `test` and `dev` | G1, G3 |
 | G5 | the wallet: Carrot receiving and sending, FCMP++ proving, the control requests, the CLI | G2, G4 |

@@ -137,28 +137,48 @@ pub struct ViewReceived {
     pub public: AccountPublic,
 }
 
-/// The view-all tier: the view-balance secret (from which the view-received tier follows), and the public keys.
+/// The view-all tier: the view-balance secret and the partial spend key `K_ps = k_ps T`. With them it finds incoming
+/// payments, its own change and self-sends, and computes key images (`k_gi` follows from `s_vb` and `K_ps`), so it also
+/// sees which outputs are spent. It cannot spend: that needs `k_ps`.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct ViewAll {
     pub s_view_balance: [u8; 32],
+    #[zeroize(skip)]
+    pub partial_spend_pubkey: [u8; 32],
     #[zeroize(skip)]
     pub public: AccountPublic,
 }
 
 impl ViewAll {
-    /// A view-all wallet is made from `s_vb` and the account spend key `K_s` (it cannot compute `K_s`: that needs `k_ps`).
-    pub fn new(s_view_balance: [u8; 32], spend_pubkey: [u8; 32]) -> Result<ViewAll, CarrotError> {
+    /// From `s_vb` and `K_ps`. The account spend key follows: `K_s = k_gi G + K_ps`.
+    pub fn new(
+        s_view_balance: [u8; 32],
+        partial_spend_pubkey: [u8; 32],
+    ) -> Result<ViewAll, CarrotError> {
+        let k_ps_pub = decompress(&partial_spend_pubkey).ok_or(CarrotError::InvalidPoint)?;
+        let k_gi = make_generateimage_key(
+            &make_generateimage_preimage(&s_view_balance),
+            &partial_spend_pubkey,
+        );
         let k_v = make_viewincoming_key(&s_view_balance);
-        let spend = decompress(&spend_pubkey).ok_or(CarrotError::InvalidPoint)?;
+        let spend = EdwardsPoint::mul_base(&k_gi) + k_ps_pub;
         let public = AccountPublic {
-            spend_pubkey,
+            spend_pubkey: compress(&spend),
             view_pubkey: compress(&(spend * k_v)),
             main_view_pubkey: compress(&EdwardsPoint::mul_base(&k_v)),
         };
         Ok(ViewAll {
             s_view_balance,
+            partial_spend_pubkey,
             public,
         })
+    }
+
+    pub fn k_generate_image(&self) -> Scalar {
+        make_generateimage_key(
+            &make_generateimage_preimage(&self.s_view_balance),
+            &self.partial_spend_pubkey,
+        )
     }
 
     pub fn view_received(&self) -> ViewReceived {
@@ -213,6 +233,7 @@ impl AccountSecrets {
     pub fn view_all(&self) -> ViewAll {
         ViewAll {
             s_view_balance: self.s_view_balance,
+            partial_spend_pubkey: make_partial_spend_pubkey(&self.k_prove_spend),
             public: self.public,
         }
     }
