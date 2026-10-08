@@ -10,6 +10,6 @@ pub mod store;
 
 pub use error::{Result, StoreError};
 pub use records::{
-    AppendInfo, BlockIndex, BlockMeta, PruneStats, StoredBlock, StoredOutput, StoredTx,
+    AppendInfo, BlockIndex, BlockMeta, PruneStats, StoredBlock, StoredOutput, StoredTx, TreeState,
 };
 pub use store::{Store, DEFAULT_SEGMENT_BLOCKS, FORMAT_VERSION};

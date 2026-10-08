@@ -22,7 +22,7 @@ use monero_fcmp_plus_plus::{
 use monero_fcmp_plus_plus_generators::{FCMP_PLUS_PLUS_U, FCMP_PLUS_PLUS_V};
 use rand_chacha::ChaCha20Rng;
 use rand_core::{OsRng, SeedableRng};
-use tenero_crypto::curve_tree::{CurveTree, Leaf};
+use tenero_tree::{CurveTree, Leaf};
 
 static T: LazyLock<EdwardsPoint> =
     LazyLock::new(|| EdwardsPoint(CompressedPoint::T.decompress().unwrap().into()));
