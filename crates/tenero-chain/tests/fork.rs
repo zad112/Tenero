@@ -8,12 +8,13 @@ use tenero_chain::{
     BlockError, Chain, ChainParams, ProofCheck, ProofsNotChecked, Sha256Pow, Submitted, TxContext,
     Validator,
 };
-use tenero_core::fees;
 use tenero_core::hash::sha256;
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{self, PowKind};
-use tenero_core::v2::*;
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::rules;
+use tenero_core::v3::*;
 use tenero_store::Store;
+use tenero_tree::hash_to_point;
 
 const LABEL: &str = "tenero chain test network";
 const NOW: u64 = 4_000_000_000;
@@ -61,16 +62,17 @@ impl Rng {
         }
         b
     }
+    fn point(&mut self) -> [u8; 32] {
+        hash_to_point(self.bytes())
+    }
 }
 
-/// Small rings and short maturity, so a few blocks are enough to build a spend.
 fn params() -> ChainParams {
-    let mut p = ChainParams::version_2(LABEL, PowKind::Sha256, U256::pow2(254).unwrap());
-    p.ring_size = 2;
-    p.coinbase_maturity = 1;
-    p.spend_maturity = 1;
-    p
+    ChainParams::version_3(LABEL, PowKind::Sha256, U256::pow2(254).unwrap())
 }
+
+/// Blocks before the first spend: the curve tree holds outputs from block 60 on (block 1's coinbase).
+const SPENDABLE: usize = 64;
 
 /// A transaction the real rules accept, but whose proof bytes start with this are refused by
 /// [`RejectMarked`]: a block that is valid to every rule except the proof check.
@@ -135,35 +137,38 @@ impl Net {
         U256::from_be_bytes(&self.store.tip().unwrap().1.cumulative_work)
     }
 
+    /// A spend whose reference block is this branch's tip (proofs that only `ProofsNotChecked` and `RejectMarked` take).
     fn spend_tx(&mut self, mark: bool) -> Transaction {
         let next = self.validator().next_block().unwrap();
         self.next_key += 1;
+        let mut outputs: Vec<Output> = (0..2)
+            .map(|_| Output {
+                onetime_address: self.rng.point(),
+                amount_commitment: self.rng.point(),
+                amount_enc: self.rng.bytes(),
+                view_tag: self.rng.bytes(),
+                anchor_enc: self.rng.bytes(),
+            })
+            .collect();
+        outputs.sort_by_key(|o| o.onetime_address);
         let mut t = Transaction {
             prefix: TxPrefix {
                 version: VERSION,
                 inputs: vec![Input {
-                    key_image: sha256(&[b"key image", &self.next_key.to_le_bytes()]),
+                    key_image: hash_to_point(sha256(&[b"key image", &self.next_key.to_le_bytes()])),
                 }],
-                outputs: (0..2)
-                    .map(|_| Output {
-                        onetime_address: self.rng.bytes(),
-                        amount_commitment: self.rng.bytes(),
-                        amount_enc: self.rng.bytes(),
-                        view_tag: self.rng.bytes(),
-                        ephemeral_pubkey: self.rng.bytes(),
-                        anchor_enc: self.rng.bytes(),
-                    })
-                    .collect(),
+                outputs,
+                ephemeral_pubkeys: vec![self.rng.point()],
                 fee: 0,
-                extra: vec![],
+                encrypted_payment_id: [0; 8],
             },
             prunable: Prunable {
-                rings: vec![vec![0, 1]],
+                reference_height: self.height(),
                 proof_data: vec![if mark { MARK } else { 7 }; 200],
             },
         };
         let size = t.to_bytes().unwrap().len() as u64;
-        t.prefix.fee = fees::dynamic_min_fee(size, next.reward, next.median).unwrap();
+        t.prefix.fee = rules::min_fee(size, next.reward, next.median).unwrap();
         t
     }
 
@@ -171,9 +176,9 @@ impl Net {
     fn build(&mut self, txs: Vec<Transaction>) -> Block {
         let v = self.validator();
         let next = v.next_block().unwrap();
-        let body: u64 = txs.iter().map(|t| t.to_bytes().unwrap().len() as u64).sum();
+        let weight: u64 = txs.iter().map(|t| rules::tx_weight(t).unwrap()).sum();
         let fees_total: u64 = txs.iter().map(|t| t.prefix.fee).sum();
-        let amount = v.coinbase_amount(&next, body, fees_total).unwrap();
+        let amount = v.coinbase_amount(&next, weight, fees_total).unwrap();
         let after_tip = if self.height() == 0 {
             T0
         } else {
@@ -184,10 +189,10 @@ impl Net {
             version: VERSION,
             height: next.height,
             outputs: vec![CoinbaseOutput {
-                onetime_address: self.rng.bytes(),
+                onetime_address: self.rng.point(),
                 amount,
                 view_tag: self.rng.bytes(),
-                ephemeral_pubkey: self.rng.bytes(),
+                ephemeral_pubkey: self.rng.point(),
                 anchor_enc: self.rng.bytes(),
             }],
             extra: vec![],
@@ -421,11 +426,11 @@ fn a_shorter_branch_with_more_work_wins() {
 
 #[test]
 fn a_branch_invalid_only_at_reorganisation_leaves_the_chain_exactly_as_it_was() {
-    // The main chain has 10 blocks; the side branch has 7 after a fork at 4, and its LAST block carries a
+    // The main chain has 6 blocks after a fork at SPENDABLE; the side branch has 7, and its LAST block carries a
     // transaction the proof check refuses. Every other rule accepts it, so it is found out only when the
     // branch is about to win.
     let mut a = Net::new("badreorg-a", 11, 60);
-    let shared = a.extend_n(4);
+    let shared = a.extend_n(SPENDABLE);
     let mut b = Net::new("badreorg-b", 22, 60);
     for blk in &shared {
         b.follow(blk);
@@ -627,7 +632,7 @@ fn a_side_branch_may_spend_what_the_chain_also_spent() {
     // The same key image is spent once on each branch: each is valid on its own. A side block must not be
     // judged against the chain's state, or it would be refused as a double spend.
     let mut a = Net::new("both-a", 11, 60);
-    let shared = a.extend_n(4);
+    let shared = a.extend_n(SPENDABLE);
     let mut b = Net::new("both-b", 22, 60);
     for blk in &shared {
         b.follow(blk);
@@ -678,17 +683,17 @@ fn a_reorganisation_exactly_at_the_pruning_boundary_is_allowed() {
 fn everything_built_on_a_block_found_invalid_is_dropped_and_remembered() {
     // the bad block is in the MIDDLE of the branch: the blocks after it were already waiting in the pool
     let mut a = Net::new("mid-a", 11, 60);
-    let shared = a.extend_n(4);
+    let shared = a.extend_n(SPENDABLE);
     let mut b = Net::new("mid-b", 22, 60);
     for blk in &shared {
         b.follow(blk);
     }
     let main = a.extend_n(6);
-    let mut side = b.extend_n(3); // heights 5..7
+    let mut side = b.extend_n(3);
     let marked = b.spend_tx(true);
-    let bad = b.extend(vec![marked]); // height 8
+    let bad = b.extend(vec![marked]); // the fourth of the branch
     side.push(bad.clone());
-    side.extend(b.extend_n(3)); // heights 9..11: the last one has enough work to trigger the reorg
+    side.extend(b.extend_n(3)); // the last one has enough work to trigger the reorg
 
     let node = Node::new("mid-node");
     let mut chain = Chain::new(&node.store, &node.params, &Sha256Pow, &RejectMarked);

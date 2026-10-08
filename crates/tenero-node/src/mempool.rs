@@ -4,8 +4,8 @@
 //! * every transaction in it passes `Validator::check_pool_tx` against the current tip, proofs included;
 //! * no two share a key image (a spend can be in the pool once; there is no replace-by-fee);
 //! * none is confirmed, and none spends a key image the chain has already spent;
-//! * its total size is at most `max_bytes`, and when full it drops the lowest fee rate first, and only for a
-//!   transaction that pays a strictly higher rate.
+//! * its total size is at most `max_bytes`, and when full it drops the lowest fee rate (fee per real byte) first, and
+//!   only for a transaction that pays a strictly higher rate.
 //!
 //! **What it does not do:** it lives in memory (a restart empties it), it does not relay anything (M8), and
 //! there are no chains of unconfirmed spends: an output cannot be spent before it is mature, so no pooled
@@ -14,9 +14,9 @@
 use std::collections::HashMap;
 
 use tenero_chain::{BlockError, ReorgReport, Validator};
-use tenero_core::fees;
-use tenero_core::v2::ids::tx_id;
-use tenero_core::v2::{Block, Transaction};
+use tenero_core::v3::ids::tx_id;
+use tenero_core::v3::rules;
+use tenero_core::v3::{Block, Transaction};
 
 pub type TxId = [u8; 32];
 
@@ -26,10 +26,14 @@ pub struct MempoolConfig {
     pub max_bytes: u64,
 }
 
+/// The default size of the mempool: about four blocks at the ceiling (`docs/FCMP_CARROT_PLAN.md` F14; a block at the
+/// ceiling is about 44 MB of typical transactions). Memory a node uses only while blocks are that full.
+pub const DEFAULT_MEMPOOL_BYTES: u64 = 192 * 1024 * 1024;
+
 impl Default for MempoolConfig {
     fn default() -> MempoolConfig {
         MempoolConfig {
-            max_bytes: 32 * 1024 * 1024,
+            max_bytes: DEFAULT_MEMPOOL_BYTES,
         }
     }
 }
@@ -39,9 +43,9 @@ pub enum PoolError {
     AlreadyKnown,
     /// It fails a rule against the tip's state (the error says which).
     Invalid(BlockError),
-    /// Larger than any block could hold.
+    /// Heavier than any block could hold now.
     TooLarge {
-        size: u64,
+        weight: u64,
         limit: u64,
     },
     /// Shares a key image with a transaction already in the pool.
@@ -62,6 +66,8 @@ pub enum AddOutcome {
 struct Entry {
     tx: Transaction,
     size: u64,
+    /// Its weight, what a block's limit counts.
+    weight: u64,
     fee: u64,
     /// Arrival order, to break ties between equal fee rates (older first).
     seq: u64,
@@ -79,6 +85,8 @@ pub struct PoolEntry {
     pub fee: u64,
     /// Its size in wire bytes.
     pub size: u64,
+    /// Its weight.
+    pub weight: u64,
 }
 
 /// Best fee rate first; among equals, the older first. The order a block takes them in.
@@ -187,11 +195,11 @@ impl Mempool {
             return Err(PoolError::AlreadyKnown);
         }
         let info = validator.check_pool_tx(&tx).map_err(PoolError::Invalid)?;
-        // a transaction no block could ever hold is not worth keeping
-        if fees::v2_over_limit(info.size, info.median) {
+        // a transaction no block could hold now is not worth keeping
+        if info.weight > rules::block_limit(info.median) {
             return Err(PoolError::TooLarge {
-                size: info.size,
-                limit: fees::v2_block_limit(info.median),
+                weight: info.weight,
+                limit: rules::block_limit(info.median),
             });
         }
         for input in &tx.prefix.inputs {
@@ -246,6 +254,7 @@ impl Mempool {
             Entry {
                 tx,
                 size: info.size,
+                weight: info.weight,
                 fee: info.fee,
                 seq: self.next_seq,
                 received: now,
@@ -278,7 +287,7 @@ impl Mempool {
         removed
     }
 
-    /// The minimum fee moves with the block-size median and the reward, so a new tip can raise it.
+    /// The minimum fee moves with the block-weight median and the reward, so a new tip can raise it.
     fn drop_below_min_fee(&mut self, validator: &Validator<'_>) -> Vec<TxId> {
         let Ok(next) = validator.next_block() else {
             return Vec::new();
@@ -287,7 +296,7 @@ impl Mempool {
             .entries
             .iter()
             .filter(|(_, e)| {
-                fees::dynamic_min_fee(e.size, next.reward, next.median)
+                rules::min_fee(e.size, next.reward, next.median)
                     .map(|min| e.fee < min)
                     .unwrap_or(true)
             })
@@ -306,7 +315,7 @@ impl Mempool {
             .entries
             .iter()
             .filter(|(_, e)| match validator.check_pool_tx(&e.tx) {
-                Ok(info) => fees::v2_over_limit(info.size, info.median),
+                Ok(info) => info.weight > rules::block_limit(info.median),
                 Err(_) => true,
             })
             .map(|(id, _)| *id)
@@ -333,16 +342,18 @@ impl Mempool {
         removed
     }
 
-    /// Transactions for a block, best fee rate first, at most `max_body_bytes` of them in total. A
-    /// transaction that does not fit is skipped and smaller ones after it may still be taken.
-    pub fn select(&self, max_body_bytes: u64) -> Vec<Transaction> {
+    /// Transactions for a block, best fee rate first, weighing at most `max_weight` and at most
+    /// `rules::MAX_BLOCK_BYTES` real bytes in total. A transaction that does not fit is skipped and smaller ones after
+    /// it may still be taken.
+    pub fn select(&self, max_weight: u64) -> Vec<Transaction> {
         let mut all: Vec<&Entry> = self.entries.values().collect();
         all.sort_by(|a, b| by_rate(a, b));
         let mut out = Vec::new();
-        let mut used = 0u64;
+        let (mut weight, mut bytes) = (0u64, 0u64);
         for e in all {
-            if used + e.size <= max_body_bytes {
-                used += e.size;
+            if weight + e.weight <= max_weight && bytes + e.size <= rules::MAX_BLOCK_BYTES {
+                weight += e.weight;
+                bytes += e.size;
                 out.push(e.tx.clone());
             }
         }
@@ -360,6 +371,7 @@ impl Mempool {
                 received: e.received,
                 fee: e.fee,
                 size: e.size,
+                weight: e.weight,
             })
             .collect()
     }

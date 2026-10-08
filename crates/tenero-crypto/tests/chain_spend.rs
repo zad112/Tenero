@@ -383,3 +383,24 @@ fn points_are_checked_even_in_a_block_assumed_valid() {
         .unwrap_err();
     assert_eq!(err, BlockError::BadOutputPoint { tx: 0, output: 0 });
 }
+
+#[test]
+fn a_transaction_checked_in_the_mempool_is_not_checked_again_but_a_changed_one_is() {
+    let net = ready("cache");
+    let proofs = FcmpProofs::new();
+    let tx = net.spend(&net.store.chain_id(), 3, 0, 1);
+    net.validator(&proofs).check_pool_tx(&tx).unwrap();
+    assert_eq!(proofs.remembered(), 1);
+
+    // the same proofs with one byte changed: a different transaction, so checked, and refused
+    let mut changed = tx.clone();
+    let n = changed.prunable.proof_data.len();
+    changed.prunable.proof_data[n - 1] ^= 1;
+    assert!(net.validator(&proofs).check_pool_tx(&changed).is_err());
+    assert_eq!(proofs.remembered(), 1, "a failure is never remembered");
+
+    // the block's check finds the verdict (no new one is added) and still says the proofs were checked
+    let b = net.block(vec![tx]);
+    assert!(net.accept(&proofs, &b).proofs_checked);
+    assert_eq!(proofs.remembered(), 1);
+}

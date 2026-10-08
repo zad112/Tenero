@@ -3408,6 +3408,7 @@ dependencies = [
  "tenero-core",
  "tenero-crypto",
  "tenero-store",
+ "tenero-tree",
 ]
 
 [[package]]

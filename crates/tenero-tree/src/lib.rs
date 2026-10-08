@@ -509,6 +509,12 @@ pub fn strict_point(bytes: &[u8; 32]) -> Option<curve25519_dalek::EdwardsPoint> 
     (p.is_torsion_free() && !IsIdentity::is_identity(&p)).then_some(p)
 }
 
+/// Monero's hash-to-point of 32 bytes, compressed: a point of prime order that no one knows the discrete log of. For
+/// tests (valid outputs, key images and keys without secrets) and as `I = Hp(O)`.
+pub fn hash_to_point(bytes: [u8; 32]) -> [u8; 32] {
+    monero_ed25519::Point::hash(bytes).compress().to_bytes()
+}
+
 /// The commitment of a coinbase output, whose amount is public: `1*G + amount*H` (Carrot 4.1, `docs/CONSENSUS_V2.md` 15.6).
 pub fn coinbase_commitment(amount: u64) -> [u8; 32] {
     monero_ed25519::Commitment::new(monero_ed25519::Scalar::ONE, amount)
