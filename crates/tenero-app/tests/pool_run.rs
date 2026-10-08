@@ -741,11 +741,17 @@ fn the_tool_fails_cleanly_when_there_is_no_pool_or_the_key_is_wrong() {
 // ---- the pool built into the program ---------------------------------------------------------------------------------------
 
 #[test]
-fn no_network_has_a_built_in_pool_until_gamma_s_pool_has_a_key() {
+fn the_built_in_pool_is_the_authors_gamma_pool_with_its_key_and_no_other_network_has_one() {
     use tenero_app::config::Network;
     use tenero_app::pool_miner::{default_pool, DEFAULT_POOLS};
-    // beta's pool belongs to the 0.2.0 programs; gamma's is added with the key its pool prints at its first start
-    for n in Network::ALL {
+    let (addr, key) = default_pool(Network::Gamma).expect("gamma has one");
+    assert_eq!(addr, "195.26.244.245:38335");
+    let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        hex, "4eb53ae8fee5bf1596b3c652896ebf5190c0415d92542c9c536842bd5cfa770a",
+        "the key made for the gamma pool (2026-10-08)"
+    );
+    for n in [Network::Test, Network::Dev] {
         assert!(
             default_pool(n).is_none(),
             "{} has no built-in pool",
