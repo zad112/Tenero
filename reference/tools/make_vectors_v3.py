@@ -49,6 +49,10 @@ MAX_PROOF = v2.MAX_PROOF
 MAX_BLOCK_TXS = v2.MAX_BLOCK_TXS
 OUTPUT_SIZE = 91
 PROOF_WEIGHT_DIVISOR = 4           # a prunable byte weighs a quarter
+# the most REAL transaction bytes a block may carry, whatever its weight (owner's limit pending; my recommendation,
+# 2026-10-08): the quarter weight of proofs would otherwise let a 4 MiB-weight block reach about 16.5 MB, at the edge
+# of the 16 MiB network frame, and cost archive nodes and verifiers four times the bytes
+MAX_BLOCK_BYTES = 12 * 1024 * 1024
 FEE_REFERENCE_WEIGHT = 1000        # a third of version 2's 3000 (owner, 2026-10-08): a typical v3 transaction costs what a v2 one did
 MAX_REFERENCE_AGE = 1440           # a transaction's reference block is at most this many blocks below the tip
 COINBASE_MATURITY = 60
@@ -259,6 +263,14 @@ def dynamic_min_fee(size, base_reward, median):
 
 
 block_limit = v2.block_limit
+
+
+def block_too_large(weight, size, median):
+    """Too large: its weight over version 2's limit of the (weight) median, or its real transaction bytes over
+    MAX_BLOCK_BYTES."""
+    return weight > block_limit(median) or size > MAX_BLOCK_BYTES
+
+
 oversize_penalty = v2.oversize_penalty
 block_median = v2.block_median
 
@@ -487,12 +499,18 @@ def weight_vectors():
     # the fee of each transaction at a few medians (real size, median of weights)
     fee_cases = [{"size": c["size"], "base_reward": r, "median": m, "fee": dynamic_min_fee(c["size"], r, m)}
                  for c in tx_cases for r in (20 * v2.UNIT, v2.UNIT // 2) for m in (v2.MIN_BLOCK_MEDIAN, 1_000_000)]
+    big = v2.MAX_BLOCK_BODY
+    limit_cases = [{"weight": w, "size": z, "median": m, "too_large": block_too_large(w, z, m)}
+                   for w, z, m in ((300_000, 1_000_000, 150_000), (300_001, 1_000_000, 150_000),
+                                   (big, MAX_BLOCK_BYTES, big), (big + 1, MAX_BLOCK_BYTES, big),
+                                   (big, MAX_BLOCK_BYTES + 1, big), (3_000_000, MAX_BLOCK_BYTES + 1, 10 * big))]
     return wrap("v3_weight", "Version 3 weight: prefix bytes + ceil(prunable bytes / 4); a block's weight is the sum of "
                 "its transactions'. Block limits, the median and the oversize penalty are version 2's functions of "
-                "weight; the minimum fee is version 2's formula with FEE_REFERENCE_WEIGHT 1000 (version 2: 3000), of the "
-                "REAL size and the (weight) median.",
-                {"proof_weight_divisor": PROOF_WEIGHT_DIVISOR, "fee_reference_weight": FEE_REFERENCE_WEIGHT, "transactions": tx_cases, "blocks": block_cases,
-                 "fees": fee_cases})
+                "weight, and a block's real transaction bytes are at most MAX_BLOCK_BYTES; the minimum fee is version "
+                "2's formula with FEE_REFERENCE_WEIGHT 1000 (version 2: 3000), of the REAL size and the (weight) median.",
+                {"proof_weight_divisor": PROOF_WEIGHT_DIVISOR, "fee_reference_weight": FEE_REFERENCE_WEIGHT,
+                 "max_block_bytes": MAX_BLOCK_BYTES, "transactions": tx_cases, "blocks": block_cases,
+                 "fees": fee_cases, "limits": limit_cases})
 
 
 def shape_vectors():

@@ -32,8 +32,10 @@ use monero_fcmp_plus_plus::{
 };
 use monero_fcmp_plus_plus_generators::{FCMP_PLUS_PLUS_U, FCMP_PLUS_PLUS_V};
 use rand_core::{CryptoRng, OsRng, RngCore};
+use tenero_chain::proofs::{ProofCheck, TxContext};
 use tenero_core::v3::ids::proof_message;
 use tenero_core::v3::Transaction;
+use tenero_store::TreeState;
 
 use crate::curve_tree::Leaf;
 
@@ -70,11 +72,7 @@ impl std::fmt::Display for ProofError {
 
 impl std::error::Error for ProofError {}
 
-/// A point that must be canonical, of prime order and not the identity.
-pub fn strict_point(bytes: &[u8; 32]) -> Option<DPoint> {
-    let p: DPoint = CompressedPoint::from(*bytes).decompress()?.into();
-    (p.is_torsion_free() && !IsIdentity::is_identity(&p)).then_some(p)
-}
+pub use crate::curve_tree::strict_point;
 
 fn h() -> DPoint {
     CompressedPoint::H
@@ -240,6 +238,96 @@ pub fn verify_tx(
         Ok(())
     } else {
         Err(ProofError::Membership)
+    }
+}
+
+/// The root and layer count of a stored tree state, as the verifier takes them.
+fn root_of(tree: &TreeState) -> Result<(TreeRoot<Selene, Helios>, usize), String> {
+    let layers = usize::from(tree.n_layers);
+    let root = crate::curve_tree::root_from_bytes(layers, &tree.root)
+        .ok_or("the reference block's tree root is not a point")?;
+    Ok((root, layers))
+}
+
+/// The block validator's proof check for version 3 (`tenero_chain::ProofCheck`): every transaction's proofs against
+/// the tree of its reference block. A block's transactions are verified as batches, one per thread.
+pub struct FcmpProofs {
+    threads: usize,
+}
+
+impl Default for FcmpProofs {
+    fn default() -> Self {
+        FcmpProofs::new()
+    }
+}
+
+impl FcmpProofs {
+    /// Up to 4 threads (fewer if the machine has fewer cores): a full block of about 1,800 typical transactions takes
+    /// about 34 s of one core (`docs/FCMP_CARROT_PLAN.md` F14).
+    pub fn new() -> FcmpProofs {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        FcmpProofs::with_threads(cores.min(4))
+    }
+
+    pub fn with_threads(threads: usize) -> FcmpProofs {
+        FcmpProofs {
+            threads: threads.max(1),
+        }
+    }
+
+    /// One batch over `txs` (whose first is the block's transaction `offset`), and if it fails, which transaction.
+    fn check_chunk(txs: &[TxContext<'_>], offset: usize) -> Result<(), (usize, String)> {
+        let mut batch = Batch::new();
+        for (i, ctx) in txs.iter().enumerate() {
+            let (root, layers) = root_of(&ctx.tree).map_err(|e| (offset + i, e))?;
+            batch
+                .add(&ctx.chain_id, ctx.tx, root, layers)
+                .map_err(|e| (offset + i, e.to_string()))?;
+        }
+        if batch.finish() {
+            return Ok(());
+        }
+        // a batch says only that something failed: find what, one by one (only an invalid block pays this)
+        for (i, ctx) in txs.iter().enumerate() {
+            let (root, layers) = root_of(&ctx.tree).map_err(|e| (offset + i, e))?;
+            verify_tx(&ctx.chain_id, ctx.tx, root, layers)
+                .map_err(|e| (offset + i, e.to_string()))?;
+        }
+        Err((offset, "the batch does not verify".into()))
+    }
+}
+
+impl ProofCheck for FcmpProofs {
+    fn check_tx(&self, ctx: &TxContext<'_>) -> Result<(), String> {
+        let (root, layers) = root_of(&ctx.tree)?;
+        verify_tx(&ctx.chain_id, ctx.tx, root, layers).map_err(|e| e.to_string())
+    }
+
+    fn check_block(&self, txs: &[TxContext<'_>]) -> Result<(), (usize, String)> {
+        if txs.len() <= 1 || self.threads == 1 {
+            return FcmpProofs::check_chunk(txs, 0);
+        }
+        let per = txs.len().div_ceil(self.threads.min(txs.len()));
+        let results: Vec<Result<(), (usize, String)>> = std::thread::scope(|s| {
+            let handles: Vec<_> = txs
+                .chunks(per)
+                .enumerate()
+                .map(|(k, chunk)| s.spawn(move || FcmpProofs::check_chunk(chunk, k * per)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err((0, "a proof check panicked".into())))
+                })
+                .collect()
+        });
+        // the first failing transaction in block order
+        results.into_iter().collect()
+    }
+
+    fn checks_proofs(&self) -> bool {
+        true
     }
 }
 

@@ -7,9 +7,10 @@
 //! **How a block is treated** ([`Chain::submit_block`]):
 //! * it extends the tip: fully validated and appended;
 //! * its parent is a block we know but not the tip (a side branch): it gets every check that needs only
-//!   the branch's own headers (version, parent, time, target, proof of work, Merkle root, size, coinbase),
-//!   using the branch's ancestors, and is kept in a bounded in-memory pool. Its transactions' fees, key
-//!   images, rings and proofs need the state at its parent and are checked only if the branch is about to
+//!   the branch's own headers (version, parent, time, target, proof of work, Merkle root, weight, coinbase, and each
+//!   transaction's shape, points and fee),
+//!   using the branch's ancestors, and is kept in a bounded in-memory pool. Its transactions' key
+//!   images, reference blocks and proofs need the state at its parent and are checked only if the branch is about to
 //!   become the chain;
 //! * its parent is unknown: [`Submitted::Orphan`]. It cannot be checked yet (its target needs its ancestors),
 //!   so it is held, **unvalidated**, in a small bounded pool (oldest dropped first) and handed back by
@@ -40,8 +41,8 @@ use crate::proofs::ProofCheck;
 use crate::validate::{BlockError, Outcome, ValidatedBlock, Validator};
 use tenero_core::hash::sha256;
 use tenero_core::u256::U256;
-use tenero_core::v2::ids;
-use tenero_core::v2::{Block, Wire};
+use tenero_core::v3::ids;
+use tenero_core::v3::{Block, Wire};
 use tenero_store::{BlockIndex, BlockMeta, Store};
 
 /// How many side-branch blocks are kept unless told otherwise.
@@ -431,7 +432,7 @@ impl<'a> Chain<'a> {
             header: block.header.clone(),
             cumulative_work: vb.meta.cumulative_work,
             target: vb.meta.target,
-            body_size: vb.meta.body_size,
+            body_weight: vb.meta.body_weight,
             first_output_index: 0,
             output_count: 0,
             tx_count: 0,
@@ -525,7 +526,7 @@ impl<'a> Chain<'a> {
             let meta = BlockMeta {
                 cumulative_work: popped.index.cumulative_work,
                 target: popped.index.target,
-                body_size: popped.index.body_size,
+                body_weight: popped.index.body_weight,
             };
             let full = popped.into_full().ok_or_else(|| {
                 BlockError::Store("an undone block has no proofs to restore it with".into())
@@ -598,7 +599,7 @@ impl<'a> Chain<'a> {
                 header: blk.header.clone(),
                 cumulative_work: meta.cumulative_work,
                 target: meta.target,
-                body_size: meta.body_size,
+                body_weight: meta.body_weight,
                 first_output_index: 0,
                 output_count: 0,
                 tx_count: 0,

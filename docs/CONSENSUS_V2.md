@@ -739,7 +739,11 @@ Labels: `"tenero gamma network 1"`, `"tenero development network v3"`, `"tenero 
 
 A transaction's **weight** is its prefix bytes plus a quarter of its prunable bytes, rounded up. A block's weight is the
 sum of its transactions' weights (the coinbase, as in version 2, is not counted). The block-size median, the block limit
-(twice the median, at most 4 MiB) and the oversize penalty are version 2's rules **applied to weight**. The **minimum fee**
+(twice the median, at most 4 MiB) and the oversize penalty are version 2's rules **applied to weight**. A block's **real**
+transaction bytes are also at most **`MAX_BLOCK_BYTES` = 12 MiB** (12,582,912; a recommendation, 2026-10-08, easy to change
+before launch): without it the quarter weight would let a block at the 4 MiB weight ceiling reach about 16.5 MB, at the edge
+of the 16 MiB network frame, and cost verifiers and archive nodes four times the bytes. It holds about 1,800 typical
+transactions (about 30 a second at 60-second blocks, as version 2's ceiling of about 1,750). The **minimum fee**
 is version 2's formula with **`FEE_REFERENCE_WEIGHT = 1000`** (version 2: 3000; owner, 2026-10-08) applied to the
 transaction's **real size** and the (weight) median: a typical transaction, about three times as big as in version 2, costs
 what a version 2 one did (about 0.0062 coins at the start, 0.00016 at the tail emission, at the 150,000 floor), and the fee

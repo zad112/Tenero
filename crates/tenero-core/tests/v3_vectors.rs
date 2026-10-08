@@ -298,6 +298,15 @@ fn weight_is_the_reference_s() {
         .unwrap();
         assert_eq!(fee, c["fee"].as_u64().unwrap());
     }
+    assert_eq!(f["max_block_bytes"], rules::MAX_BLOCK_BYTES);
+    for c in f["limits"].as_array().unwrap() {
+        let n = |k: &str| c[k].as_u64().unwrap();
+        assert_eq!(
+            rules::block_too_large(n("weight"), n("size"), n("median")),
+            c["too_large"].as_bool().unwrap(),
+            "{c}"
+        );
+    }
 }
 
 #[test]

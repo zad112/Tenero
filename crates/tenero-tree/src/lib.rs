@@ -409,7 +409,7 @@ impl CurveTree {
     /// Element `index` of layer `layer` as its 32 bytes (a Selene point in an even layer, a Helios point in an odd one).
     pub fn element_bytes(&self, layer: usize, index: usize) -> Option<[u8; 32]> {
         use ciphersuite::group::GroupEncoding;
-        if layer % 2 == 0 {
+        if layer.is_multiple_of(2) {
             Some(self.selene.get(layer / 2)?.get(index)?.to_bytes())
         } else {
             Some(self.helios.get(layer / 2)?.get(index)?.to_bytes())
@@ -432,13 +432,13 @@ impl CurveTree {
             if l % 2 == 0 {
                 let pts = layer
                     .iter()
-                    .map(|b| Option::from(SeleneG::from_bytes(&(*b).into())))
+                    .map(|b| Option::from(SeleneG::from_bytes(b)))
                     .collect::<Option<Vec<_>>>()?;
                 t.selene.push(pts);
             } else {
                 let pts = layer
                     .iter()
-                    .map(|b| Option::from(HeliosG::from_bytes(&(*b).into())))
+                    .map(|b| Option::from(HeliosG::from_bytes(b)))
                     .collect::<Option<Vec<_>>>()?;
                 t.helios.push(pts);
             }
@@ -500,6 +500,15 @@ impl CurveTree {
     }
 }
 
+/// A point consensus accepts in an output, a key image or a pseudo-output: canonical, of prime order, not the identity.
+pub fn strict_point(bytes: &[u8; 32]) -> Option<curve25519_dalek::EdwardsPoint> {
+    use curve25519_dalek::traits::IsIdentity;
+    let p: curve25519_dalek::EdwardsPoint = monero_ed25519::CompressedPoint::from(*bytes)
+        .decompress()?
+        .into();
+    (p.is_torsion_free() && !IsIdentity::is_identity(&p)).then_some(p)
+}
+
 /// The commitment of a coinbase output, whose amount is public: `1*G + amount*H` (Carrot 4.1, `docs/CONSENSUS_V2.md` 15.6).
 pub fn coinbase_commitment(amount: u64) -> [u8; 32] {
     monero_ed25519::Commitment::new(monero_ed25519::Scalar::ONE, amount)
@@ -514,7 +523,7 @@ pub fn root_from_bytes(layers: usize, bytes: &[u8; 32]) -> Option<TreeRoot<Selen
     use ciphersuite::group::GroupEncoding;
     match layers {
         0 => None,
-        l if l % 2 == 1 => Option::from(SeleneG::from_bytes(&(*bytes).into())).map(TreeRoot::C1),
-        _ => Option::from(HeliosG::from_bytes(&(*bytes).into())).map(TreeRoot::C2),
+        l if l % 2 == 1 => Option::from(SeleneG::from_bytes(bytes)).map(TreeRoot::C1),
+        _ => Option::from(HeliosG::from_bytes(bytes)).map(TreeRoot::C2),
     }
 }

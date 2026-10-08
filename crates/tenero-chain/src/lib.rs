@@ -11,7 +11,7 @@ pub mod proofs;
 pub mod validate;
 
 pub use chain::{Chain, ReorgReport, Submitted};
-pub use params::{ChainParams, COINBASE_MATURITY, FUTURE_LIMIT_SECONDS, RING_SIZE, SPEND_MATURITY};
+pub use params::{ChainParams, COINBASE_MATURITY, FUTURE_LIMIT_SECONDS, SPEND_MATURITY};
 pub use pow::{MatmulPow, PowCheck, Sha256Pow};
 pub use proofs::{ProofCheck, ProofsNotChecked, TxContext};
 pub use validate::{Accepted, BlockError, NextBlock, Outcome, PoolTx, ValidatedBlock, Validator};

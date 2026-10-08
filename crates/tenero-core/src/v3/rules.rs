@@ -16,6 +16,18 @@ pub const MAX_REFERENCE_AGE: u64 = 1440;
 pub const COINBASE_MATURITY: u64 = 60;
 pub const SPEND_MATURITY: u64 = 10;
 
+/// The most REAL transaction bytes a block may carry, whatever its weight (`docs/CONSENSUS_V2.md` 15.4; my recommendation,
+/// 2026-10-08, easy to change before launch). The quarter weight of proofs would otherwise let a block at the 4 MiB weight
+/// ceiling reach about 16.5 MB, at the edge of the 16 MiB network frame, and cost verifiers and archive nodes four times the
+/// bytes. At about 7,000 bytes a typical transaction, it holds about 1,800: about 30 a second, as `beta`'s ceiling.
+pub const MAX_BLOCK_BYTES: u64 = 12 * 1024 * 1024;
+
+/// Whether a block of transactions of total `weight` and `size` real bytes is too large at the block-weight `median`:
+/// its weight over version 2's limit (twice the median, at most 4 MiB), or its real bytes over [`MAX_BLOCK_BYTES`].
+pub fn block_too_large(weight: u64, size: u64, median: u64) -> bool {
+    crate::fees::v2_over_limit(weight, median) || size > MAX_BLOCK_BYTES
+}
+
 /// The minimum fee of a transaction of `size` real bytes: version 2's formula with [`FEE_REFERENCE_WEIGHT`],
 /// `max(1, ceil(base_reward * 1000 * size / median^2))`, `median` being the block-weight median. An error when the median is
 /// 0 or the fee does not fit a `u64`.
