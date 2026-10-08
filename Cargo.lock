@@ -3320,6 +3320,7 @@ dependencies = [
  "tenero-chain",
  "tenero-core",
  "tenero-store",
+ "tenero-tree",
  "zeroize",
 ]
 
@@ -3412,7 +3413,32 @@ dependencies = [
 name = "tenero-store"
 version = "0.2.0-beta.4"
 dependencies = [
+ "curve25519-dalek",
+ "monero-fcmp-plus-plus",
  "redb",
+ "tenero-core",
+ "tenero-tree",
+]
+
+[[package]]
+name = "tenero-tree"
+version = "0.2.0-beta.4"
+dependencies = [
+ "ciphersuite",
+ "curve25519-dalek",
+ "dalek-ff-group 0.5.0",
+ "ec-divisors",
+ "full-chain-membership-proofs",
+ "generalized-bulletproofs",
+ "helioselene",
+ "monero-ed25519",
+ "monero-fcmp-plus-plus",
+ "monero-fcmp-plus-plus-generators",
+ "monero-primitives",
+ "multiexp",
+ "proptest",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
  "tenero-core",
 ]
 

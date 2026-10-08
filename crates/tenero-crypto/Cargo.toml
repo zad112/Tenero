@@ -37,6 +37,7 @@ curve25519-dalek = { version = "4", default-features = false, features = ["alloc
 zeroize = "1"
 rand_core = { version = "0.6", features = ["getrandom"] }
 tenero-core = { path = "../tenero-core" }
+tenero-tree = { path = "../tenero-tree" }
 tenero-store = { path = "../tenero-store" }
 tenero-chain = { path = "../tenero-chain" }
 

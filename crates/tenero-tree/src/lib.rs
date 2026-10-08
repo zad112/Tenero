@@ -393,6 +393,71 @@ impl CurveTree {
         })
     }
 
+    /// The number of elements in each layer above the leaves, from the bottom (Selene, Helios, Selene, ...).
+    pub fn layer_lens(&self) -> Vec<usize> {
+        (0..self.n_layers())
+            .map(|l| {
+                if l % 2 == 0 {
+                    self.selene[l / 2].len()
+                } else {
+                    self.helios[l / 2].len()
+                }
+            })
+            .collect()
+    }
+
+    /// Element `index` of layer `layer` as its 32 bytes (a Selene point in an even layer, a Helios point in an odd one).
+    pub fn element_bytes(&self, layer: usize, index: usize) -> Option<[u8; 32]> {
+        use ciphersuite::group::GroupEncoding;
+        if layer % 2 == 0 {
+            Some(self.selene.get(layer / 2)?.get(index)?.to_bytes())
+        } else {
+            Some(self.helios.get(layer / 2)?.get(index)?.to_bytes())
+        }
+    }
+
+    /// Rebuilds a tree from its number of leaves and every element of every layer, as [`Self::element_bytes`] gave
+    /// them. `None` if a point does not decode or the shape is not that of a tree of `n_leaves` leaves.
+    pub fn from_layers(n_leaves: u64, layers: Vec<Vec<[u8; 32]>>) -> Option<CurveTree> {
+        use ciphersuite::group::GroupEncoding;
+        if layers.len() != n_layers(n_leaves) {
+            return None;
+        }
+        let mut t = CurveTree {
+            n_leaves,
+            selene: vec![],
+            helios: vec![],
+        };
+        for (l, layer) in layers.into_iter().enumerate() {
+            if l % 2 == 0 {
+                let pts = layer
+                    .iter()
+                    .map(|b| Option::from(SeleneG::from_bytes(&(*b).into())))
+                    .collect::<Option<Vec<_>>>()?;
+                t.selene.push(pts);
+            } else {
+                let pts = layer
+                    .iter()
+                    .map(|b| Option::from(HeliosG::from_bytes(&(*b).into())))
+                    .collect::<Option<Vec<_>>>()?;
+                t.helios.push(pts);
+            }
+        }
+        // each layer has the number of elements a tree of n_leaves has
+        let mut want = n_leaves.div_ceil(LEAF_CHUNK as u64) as usize;
+        for (l, len) in t.layer_lens().into_iter().enumerate() {
+            if len != want {
+                return None;
+            }
+            want = want.div_ceil(if l % 2 == 0 {
+                HELIOS_WIDTH
+            } else {
+                SELENE_WIDTH
+            });
+        }
+        Some(t)
+    }
+
     /// Builds a tree from all its leaves at once, the plain definition (for tests and audits).
     pub fn from_scratch(leaves: &[Leaf]) -> CurveTree {
         let mut t = CurveTree::new();
@@ -432,5 +497,24 @@ impl CurveTree {
         }
         t.n_leaves = leaves.len() as u64;
         t
+    }
+}
+
+/// The commitment of a coinbase output, whose amount is public: `1*G + amount*H` (Carrot 4.1, `docs/CONSENSUS_V2.md` 15.6).
+pub fn coinbase_commitment(amount: u64) -> [u8; 32] {
+    monero_ed25519::Commitment::new(monero_ed25519::Scalar::ONE, amount)
+        .commit()
+        .compress()
+        .to_bytes()
+}
+
+/// A root from its 32 bytes, for a tree of `layers` layers: a Selene point when `layers` is odd, a Helios point when it
+/// is even. `None` if the bytes are not such a point or `layers` is 0.
+pub fn root_from_bytes(layers: usize, bytes: &[u8; 32]) -> Option<TreeRoot<Selene, Helios>> {
+    use ciphersuite::group::GroupEncoding;
+    match layers {
+        0 => None,
+        l if l % 2 == 1 => Option::from(SeleneG::from_bytes(&(*bytes).into())).map(TreeRoot::C1),
+        _ => Option::from(HeliosG::from_bytes(&(*bytes).into())).map(TreeRoot::C2),
     }
 }

@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use curve25519_dalek::edwards::EdwardsPoint;
 use curve25519_dalek::scalar::Scalar;
 use proptest::prelude::*;
-use tenero_crypto::curve_tree::{CurveTree, Leaf};
+use tenero_tree::{CurveTree, Leaf};
 
 const MAX: usize = 1_500;
 
@@ -62,6 +62,35 @@ proptest! {
             }
             let n = sizes.last().copied().unwrap_or(0);
             prop_assert_eq!(&tree, &CurveTree::from_scratch(&LEAVES[..n]));
+        }
+    }
+}
+
+#[test]
+fn a_tree_saved_as_bytes_and_read_back_is_the_same_tree() {
+    for n in [0usize, 1, 38, 39, 700, 1_500] {
+        let tree = CurveTree::from_scratch(&LEAVES[..n]);
+        let layers: Vec<Vec<[u8; 32]>> = tree
+            .layer_lens()
+            .iter()
+            .enumerate()
+            .map(|(l, len)| {
+                (0..*len)
+                    .map(|i| tree.element_bytes(l, i).unwrap())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            CurveTree::from_layers(n as u64, layers.clone()),
+            Some(tree),
+            "{n} leaves"
+        );
+        if !layers.is_empty() {
+            assert_eq!(
+                CurveTree::from_layers(n as u64 + 100, layers),
+                None,
+                "a shape that does not fit"
+            );
         }
     }
 }

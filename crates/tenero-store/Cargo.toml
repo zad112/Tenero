@@ -8,7 +8,13 @@ publish.workspace = true
 
 [dependencies]
 tenero-core = { path = "../tenero-core" }
+tenero-tree = { path = "../tenero-tree" }
+monero-fcmp-plus-plus = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
 redb = "4"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# real curve points for the test blocks: outputs enter the curve tree (BSD-3-Clause, already in the tree)
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }

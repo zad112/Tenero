@@ -10,6 +10,6 @@
 //! what its audit covers). What is ours, and is not audited: the layout of `proof_data`, the message the
 //! signatures cover, the checks around the libraries, and the prover used by tests and the wallet.
 
-pub mod curve_tree;
+pub use tenero_tree as curve_tree;
 pub mod fcmp;
 pub mod ringct;

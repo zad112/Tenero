@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use curve25519_dalek::edwards::EdwardsPoint;
 use curve25519_dalek::scalar::Scalar;
-use tenero_crypto::curve_tree::{CurveTree, Leaf};
+use tenero_tree::{CurveTree, Leaf};
 
 #[test]
 #[ignore]

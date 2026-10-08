@@ -1,9 +1,9 @@
-//! The records the tables hold, in the same canonical fixed-width form as the rest of version 2.
+//! The records the tables hold, in the same canonical fixed-width form as the rest of version 3.
 
 use crate::error::Result;
-use tenero_core::v2::{
-    BlockHeader, Coinbase, DecodeError, EncodeError, Prunable, PrunedBlock, PrunedTransaction,
-    Reader, Transaction, Wire, Writer,
+use tenero_core::v3::{
+    Block, BlockHeader, Coinbase, DecodeError, EncodeError, Prunable, PrunedBlock,
+    PrunedTransaction, Reader, Transaction, Wire, Writer,
 };
 
 /// What the caller (the validator) tells the store about a block, which the store keeps but does not
@@ -14,8 +14,9 @@ pub struct BlockMeta {
     pub cumulative_work: [u8; 32],
     /// The target this block had to meet (big-endian): later blocks' difficulty is computed from these.
     pub target: [u8; 32],
-    /// The block's size for the fee and penalty rules: the bytes of its transactions, without the coinbase.
-    pub body_size: u64,
+    /// The block's WEIGHT for the median, the limit and the penalty (`docs/CONSENSUS_V2.md` 15.4): its transactions'
+    /// weights, without the coinbase.
+    pub body_weight: u64,
 }
 
 /// What is kept about a block besides its transactions: 266 bytes.
@@ -27,8 +28,8 @@ pub struct BlockIndex {
     pub cumulative_work: [u8; 32],
     /// The target the block had to meet (big-endian, supplied by the caller). All zeros for the genesis block.
     pub target: [u8; 32],
-    /// The size of the block's transactions in bytes (supplied by the caller). 0 for the genesis block.
-    pub body_size: u64,
+    /// The weight of the block's transactions (supplied by the caller). 0 for the genesis block.
+    pub body_weight: u64,
     /// The global index of the block's first output (its coinbase's first output).
     pub first_output_index: u64,
     /// How many outputs the block created: the coinbase's and every transaction's.
@@ -43,7 +44,7 @@ impl Wire for BlockIndex {
         self.header.write(w)?;
         w.raw(&self.cumulative_work);
         w.raw(&self.target);
-        w.u64(self.body_size);
+        w.u64(self.body_weight);
         w.u64(self.first_output_index);
         w.u32(self.output_count);
         w.u32(self.tx_count);
@@ -56,7 +57,7 @@ impl Wire for BlockIndex {
             header: BlockHeader::read(r)?,
             cumulative_work: r.array()?,
             target: r.array()?,
-            body_size: r.u64()?,
+            body_weight: r.u64()?,
             first_output_index: r.u64()?,
             output_count: r.u32()?,
             tx_count: r.u32()?,
@@ -68,8 +69,8 @@ impl Wire for BlockIndex {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredOutput {
     pub onetime_address: [u8; 32],
-    /// The amount commitment. All zeros for a coinbase output, whose amount is public (the fixed
-    /// commitment for a public amount is defined by the Carrot specification, later).
+    /// The amount commitment. All zeros for a coinbase output, whose amount is public: its commitment is
+    /// `1*G + amount*H` (`tenero_tree::coinbase_commitment`).
     pub amount_commitment: [u8; 32],
     /// The plaintext amount of a coinbase output; 0 for an ordinary one.
     pub public_amount: u64,
@@ -108,6 +109,32 @@ impl Wire for StoredOutput {
     }
 }
 
+/// The curve tree after a block (`docs/CONSENSUS_V2.md` 15.6): how many leaves, how many layers, and the root (all
+/// zeros for an empty tree). 41 bytes, kept for every height: a transaction names one as its reference block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TreeState {
+    pub n_leaves: u64,
+    pub n_layers: u8,
+    pub root: [u8; 32],
+}
+
+impl Wire for TreeState {
+    fn write(&self, w: &mut Writer) -> std::result::Result<(), EncodeError> {
+        w.u64(self.n_leaves);
+        w.raw(&[self.n_layers]);
+        w.raw(&self.root);
+        Ok(())
+    }
+
+    fn read(r: &mut Reader<'_>) -> std::result::Result<Self, DecodeError> {
+        Ok(TreeState {
+            n_leaves: r.u64()?,
+            n_layers: r.take(1)?[0],
+            root: r.array()?,
+        })
+    }
+}
+
 /// A transaction row: the height it is in, then the pruned form (prefix and prunable hash).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TxRow {
@@ -130,7 +157,7 @@ impl Wire for TxRow {
 }
 
 /// A transaction as stored: always the pruned form (prefix and prunable hash), and the prunable part
-/// (the rings and the proofs) while it has not been pruned.
+/// (the reference height and the proofs) while it has not been pruned.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredTx {
     pub tx: PrunedTransaction,
@@ -138,13 +165,12 @@ pub struct StoredTx {
 }
 
 impl StoredTx {
-    /// Decodes a stored prunable part, which needs the number of inputs of the transaction's prefix.
+    /// Decodes a stored prunable part.
     pub(crate) fn with_prunable_bytes(
         tx: PrunedTransaction,
         bytes: Option<Vec<u8>>,
     ) -> Result<StoredTx> {
-        let n = tx.prefix.inputs.len();
-        let prunable = bytes.map(|b| Prunable::from_bytes(&b, n)).transpose()?;
+        let prunable = bytes.map(|b| Prunable::from_bytes(&b)).transpose()?;
         Ok(StoredTx { tx, prunable })
     }
 }
@@ -158,8 +184,8 @@ pub struct StoredBlock {
 }
 
 impl StoredBlock {
-    /// The full block, if every transaction still has its rings and proofs.
-    pub fn into_full(self) -> Option<tenero_core::v2::Block> {
+    /// The full block, if every transaction still has its proofs.
+    pub fn into_full(self) -> Option<Block> {
         let mut txs = Vec::with_capacity(self.transactions.len());
         for t in self.transactions {
             txs.push(Transaction {
@@ -167,7 +193,7 @@ impl StoredBlock {
                 prunable: t.prunable?,
             });
         }
-        Some(tenero_core::v2::Block {
+        Some(Block {
             header: self.index.header,
             coinbase: self.coinbase,
             transactions: txs,
@@ -183,7 +209,7 @@ impl StoredBlock {
         }
     }
 
-    /// Whether any transaction has lost its rings and proofs.
+    /// Whether any transaction has lost its proofs.
     pub fn is_pruned(&self) -> bool {
         self.transactions.iter().any(|t| t.prunable.is_none())
     }
@@ -202,7 +228,7 @@ pub struct AppendInfo {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PruneStats {
     pub transactions_pruned: u64,
-    /// Bytes of prunable parts forgotten (the rings and the proofs): logically freed at once.
+    /// Bytes of prunable parts forgotten (the proofs): logically freed at once.
     pub prunable_bytes_freed: u64,
     /// Segment files deleted because every block in them is now pruned, and their size on disk.
     pub segments_deleted: u64,
