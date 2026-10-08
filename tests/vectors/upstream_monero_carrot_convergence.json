@@ -1,0 +1,158 @@
+{
+  "schema": 1,
+  "name": "upstream_monero_carrot_convergence",
+  "description": "Monero's Carrot convergence values, verbatim: one master secret (s_master) and the expected result of each Carrot derivation from it, as checked by Monero's own tests/unit_tests/carrot_convergence.cpp. Secret keys and scalars are 32 bytes little endian, points are compressed Ed25519, X25519 values are Montgomery u, the input context is 'R' and a key image (33 bytes).",
+  "source": {
+    "repo": "https://github.com/seraphis-migration/monero",
+    "tag": "v0.19.0.0-beta.3.0",
+    "commit": "d816367cb1aa405bfa68a20ac3e034d0759d968e",
+    "path": "tests/unit_tests/carrot_convergence.cpp",
+    "licence": "BSD-3-Clause"
+  },
+  "values": {
+    "s_master": {
+      "type": "crypto::secret_key",
+      "hex": "6e02e67b303dc713276bb1a4d70b0083b78e4f50e34e209da9f0377cdc3d376e"
+    },
+    "k_prove_spend": {
+      "type": "crypto::secret_key",
+      "hex": "c9651fc906015afeefdb8d3bf7be621c36e035de2a85cb22dd4b869a22086f0e"
+    },
+    "partial_spend_pubkey": {
+      "type": "crypto::public_key",
+      "hex": "0ea83cfaa5a4b8e3fcfd1073e84459b8ecbcfa4affe6a6bf5688c113b9e9ecc3"
+    },
+    "s_view_balance": {
+      "type": "crypto::secret_key",
+      "hex": "59b2ee8646923309384704613418f5982b0167eb3cd87c6c067ee10700c3af91"
+    },
+    "s_generate_image_preimage": {
+      "type": "crypto::secret_key",
+      "hex": "0f3bf96a0642ab4cd10e8c64fba1cc535379ec18dbc7d304d50eb753197e266f"
+    },
+    "k_generate_image": {
+      "type": "crypto::secret_key",
+      "hex": "b5d11670cbbbf7a70aa3a6eb88723d49f645162eb3603f70854a80a8dbceb404"
+    },
+    "k_view_incoming": {
+      "type": "crypto::secret_key",
+      "hex": "12624c702b4c1a22fd710a836894ed0705955502e6498e5c6e3ad6f5920bb00f"
+    },
+    "s_generate_address": {
+      "type": "crypto::secret_key",
+      "hex": "039f0744fb138954072ee6bcbda4b5c085fd05e09b476a7b34ad20bf9ad440bc"
+    },
+    "account_spend_pubkey": {
+      "type": "crypto::public_key",
+      "hex": "905f67e69c39948e03dacbcfaeb2e766bfb407cdae53f1b11a813df99d9444e5"
+    },
+    "account_view_pubkey": {
+      "type": "crypto::public_key",
+      "hex": "34e4a36c249e3e0d22a4ee4d6a4da5ee89b12dc42223a12195af8dd727eb35fc"
+    },
+    "address_index_preimage_1": {
+      "type": "crypto::secret_key",
+      "hex": "9c21bf89635102f5379f97b5d08074e6ed36084544262f92a93d7644945475f1"
+    },
+    "address_index_preimage_2": {
+      "type": "crypto::secret_key",
+      "hex": "97d954f490a552e9faa5db4866441c0973d0f42aec56c8c2d553f6b43b4e9580"
+    },
+    "subaddress_scalar": {
+      "type": "crypto::secret_key",
+      "hex": "fe701755513860e77ae77bdb4f3161714635e0d48cea3f4f330895e910670103"
+    },
+    "subaddress_spend_pubkey": {
+      "type": "crypto::public_key",
+      "hex": "97d227d0ff67e521b805d05d3a51390fd889181e334bf68156cb1e2d5aee6dd4"
+    },
+    "subaddress_view_pubkey": {
+      "type": "crypto::public_key",
+      "hex": "99a684cd429d88815cb1f90b794522b32812388a9f35120cfc08c7435f7bd51f"
+    },
+    "anchor_norm": {
+      "type": "carrot::janus_anchor_t",
+      "hex": "caee1381775487a0982557f0d2680b55"
+    },
+    "anchor_special": {
+      "type": "carrot::janus_anchor_t",
+      "hex": "ed214f5093ad9c5da37765459ac45837"
+    },
+    "input_context": {
+      "type": "carrot::input_context_t",
+      "hex": "9423f74f3e869dc8427d8b35bb24c917480409c3f4750bff3c742f8e4d5af7bef7"
+    },
+    "payment_id": {
+      "type": "carrot::payment_id_t",
+      "hex": "4321734f56621440"
+    },
+    "enote_ephemeral_privkey": {
+      "type": "crypto::secret_key",
+      "hex": "ae5802c6757d77bd7032e071f72fc99c31a01b9f1bc3af2671c482c8e458140e"
+    },
+    "enote_ephemeral_pubkey_cryptonote": {
+      "type": "mx25519_pubkey",
+      "hex": "f2296f8bd12d705b63d4d827011dd2b2834f2c3396e3546969110173fd14c11a"
+    },
+    "enote_ephemeral_pubkey_subaddress": {
+      "type": "mx25519_pubkey",
+      "hex": "09b26146c8e458ea0822958af12d5f99de17600849388d9f85eabda24934c346"
+    },
+    "s_sender_receiver": {
+      "type": "mx25519_pubkey",
+      "hex": "1ab57d1f23d12d3f67bb52587dd0c74123cbba6e1c4fd10d0a93067caff19647"
+    },
+    "s_sender_receiver_ctx": {
+      "type": "crypto::hash",
+      "hex": "911a15979c3d448aca2b81cd91d16ba2bf2ca4fa4f6dd16ad596c6304eb52227"
+    },
+    "amount_blinding_factor_payment": {
+      "type": "crypto::secret_key",
+      "hex": "dd8f4252476020ddab59df4ec0ca506e6d25618bfe465e13302276398b23550f"
+    },
+    "amount_blinding_factor_change": {
+      "type": "crypto::secret_key",
+      "hex": "dba0496c81efa9e25c55a65682024e6e42f1893d3ba57026d9a96468ea5d680b"
+    },
+    "amount_commitment": {
+      "type": "carrot::amount_commitment_t",
+      "hex": "a44cacd33bdacb1c86262987518885a6c22b569ffc89be13e730d5d175f2dede"
+    },
+    "onetime_address_coinbase": {
+      "type": "crypto::public_key",
+      "hex": "4f01c472b41a0d85f3c9bc88ad38b7fd47a24029508f84aea84f55d221a48d29"
+    },
+    "onetime_address": {
+      "type": "crypto::public_key",
+      "hex": "cd9610e64abdae97e2f8d8580550dbdd0ed543c99740c9c90f9f2cc854841bfa"
+    },
+    "view_tag": {
+      "type": "carrot::view_tag_t",
+      "hex": "13191c"
+    },
+    "anchor_encryption_mask": {
+      "type": "carrot::encrypted_janus_anchor_t",
+      "hex": "ed6dac7330268e639619551f662b19b5"
+    },
+    "amount_encryption_mask": {
+      "type": "carrot::encrypted_amount_t",
+      "hex": "f5ff32293fa31ed6"
+    },
+    "payment_id_encryption_mask": {
+      "type": "carrot::encrypted_payment_id_t",
+      "hex": "59220b6582addd7d"
+    },
+    "address_index_major": {
+      "type": "std::uint32_t",
+      "int": 5
+    },
+    "address_index_minor": {
+      "type": "std::uint32_t",
+      "int": 16
+    },
+    "amount": {
+      "type": "rct::xmr_amount",
+      "int": 67000000000000
+    }
+  }
+}

@@ -3264,6 +3264,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenero-carrot"
+version = "0.2.0-beta.4"
+dependencies = [
+ "blake2",
+ "curve25519-dalek",
+ "monero-ed25519",
+ "monero-primitives",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+ "tenero-core",
+ "zeroize",
+]
+
+[[package]]
 name = "tenero-chain"
 version = "0.2.0-beta.4"
 dependencies = [
