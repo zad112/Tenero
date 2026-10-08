@@ -287,7 +287,7 @@ impl Wallet {
     /// A new wallet with a fresh random seed. It will scan from `birth_height` (the chain's tip when it is made,
     /// so it never reads old blocks that cannot hold its coins).
     pub fn create(
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         network: Network,
         birth_height: u64,
     ) -> Wallet {
@@ -709,7 +709,7 @@ impl Wallet {
     pub fn build_payment(
         &mut self,
         chain: &impl ChainView,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         to: &Address,
         amount: u64,
     ) -> Result<Built, WalletError> {
@@ -720,7 +720,7 @@ impl Wallet {
     pub fn build_payment_at(
         &mut self,
         chain: &impl ChainView,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         to: &Address,
         amount: u64,
         level: FeeLevel,
@@ -737,7 +737,7 @@ impl Wallet {
     pub fn build_to_at(
         &mut self,
         chain: &impl ChainView,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         dests: &[(Address, u64)],
         level: FeeLevel,
     ) -> Result<Built, WalletError> {
@@ -755,7 +755,7 @@ impl Wallet {
     fn assemble(
         &self,
         chain: &impl ChainView,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         rules: &Rules,
         level: FeeLevel,
         mut chosen: Vec<Owned>,
@@ -944,7 +944,7 @@ impl Wallet {
     pub fn build_batch(
         &mut self,
         chain: &impl ChainView,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         dests: &[(Address, u64)],
         level: FeeLevel,
     ) -> Result<Plan, WalletError> {
@@ -1054,7 +1054,7 @@ impl Wallet {
     pub fn build_sweep(
         &mut self,
         chain: &impl ChainView,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         to: Option<&Address>,
         level: FeeLevel,
     ) -> Result<Vec<Built>, WalletError> {
@@ -1086,7 +1086,7 @@ impl Wallet {
     pub fn build_combine(
         &mut self,
         chain: &impl ChainView,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         count: usize,
         level: FeeLevel,
     ) -> Result<Built, WalletError> {
@@ -1114,7 +1114,7 @@ impl Wallet {
     fn consolidate(
         &self,
         chain: &impl ChainView,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         rules: &Rules,
         coins: Vec<Owned>,
         dest: Address,
@@ -1160,7 +1160,7 @@ impl Wallet {
     pub fn pay<C: ChainView + Submitter>(
         &mut self,
         node: &mut C,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         to: &Address,
         amount: u64,
     ) -> Result<Built, WalletError> {

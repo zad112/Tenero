@@ -341,7 +341,7 @@ impl App {
                     "Height",
                     "Time",
                     "",
-                    "Size",
+                    "Weight",
                     "Transactions",
                     "Coinbase paid",
                     "Hash",
@@ -359,7 +359,8 @@ impl App {
                         ui.label(utc_text(b.timestamp));
                         ui.label(RichText::new(ago_text(now, b.timestamp)).color(GREY));
                     }
-                    ui.label(bytes_text(b.size));
+                    // what the block limit counts: its transactions' prefixes and a quarter of their proofs
+                    ui.label(bytes_text(b.weight));
                     ui.label(grouped(u64::from(b.tx_count)));
                     if b.height == 0 {
                         ui.label(RichText::new("genesis").color(GREY));

@@ -236,6 +236,24 @@ pub fn proof_data_size(n_inputs: usize, n_outputs: usize, layers: usize) -> usiz
     32 * n_inputs + range_proof + FcmpPlusPlus::proof_size(n_inputs, layers)
 }
 
+/// The stack the FCMP++ prover and verifier run with. They recurse deeply and keep large values on the stack: a build
+/// without optimisation overflowed the 1 MiB stack of a Windows main thread while proving (2026-10-08), and the 2 MiB of
+/// an ordinary spawned thread is no margin either. The memory is reserved, not used, until it is needed.
+pub const PROOF_STACK: usize = 64 << 20;
+
+/// Runs `f` on a thread of its own with [`PROOF_STACK`] of stack, and gives back what it returns (a panic in it goes on in
+/// the caller, as if `f` had run here).
+pub fn on_proof_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| {
+        let h = std::thread::Builder::new()
+            .name("fcmp".into())
+            .stack_size(PROOF_STACK)
+            .spawn_scoped(s, f)
+            .expect("a thread for the proof");
+        h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))
+    })
+}
+
 /// Checks one transaction's proofs on their own (the mempool's case).
 pub fn verify_tx(
     chain_id: &[u8; 32],
@@ -243,13 +261,15 @@ pub fn verify_tx(
     root: TreeRoot<Selene, Helios>,
     layers: usize,
 ) -> Result<(), ProofError> {
-    let mut b = Batch::new();
-    b.add(chain_id, tx, root, layers)?;
-    if b.finish() {
-        Ok(())
-    } else {
-        Err(ProofError::Membership)
-    }
+    on_proof_stack(|| {
+        let mut b = Batch::new();
+        b.add(chain_id, tx, root, layers)?;
+        if b.finish() {
+            Ok(())
+        } else {
+            Err(ProofError::Membership)
+        }
+    })
 }
 
 /// The root and layer count of a stored tree state, as the verifier takes them.
@@ -399,19 +419,26 @@ impl ProofCheck for FcmpProofs {
             return Ok(());
         }
         let result = if todo.len() == 1 || self.threads == 1 {
-            FcmpProofs::check_chunk(&todo)
+            on_proof_stack(|| FcmpProofs::check_chunk(&todo))
         } else {
             let per = todo.len().div_ceil(self.threads.min(todo.len()));
             let results: Vec<Result<(), (usize, String)>> = std::thread::scope(|s| {
                 let handles: Vec<_> = todo
                     .chunks(per)
-                    .map(|chunk| s.spawn(move || FcmpProofs::check_chunk(chunk)))
+                    .map(|chunk| {
+                        std::thread::Builder::new()
+                            .name("fcmp".into())
+                            .stack_size(PROOF_STACK)
+                            .spawn_scoped(s, move || FcmpProofs::check_chunk(chunk))
+                    })
                     .collect();
                 handles
                     .into_iter()
-                    .map(|h| {
-                        h.join()
-                            .unwrap_or_else(|_| Err((0, "a proof check panicked".into())))
+                    .map(|h| match h {
+                        Ok(h) => h
+                            .join()
+                            .unwrap_or_else(|_| Err((0, "a proof check panicked".into()))),
+                        Err(e) => Err((0, format!("no thread for a proof check: {e}"))),
                     })
                     .collect()
             });
@@ -458,6 +485,18 @@ fn s(x: &DScalar) -> Scalar {
 /// reference height are already set, against a tree of `layers` layers. `None` if anything does not fit (a key image
 /// that is not `x * I`, an amount that does not balance, a path not in one tree).
 pub fn prove(
+    rng: &mut (impl RngCore + CryptoRng + Send),
+    chain_id: &[u8; 32],
+    tx: &Transaction,
+    spends: &[Spend],
+    outputs: &[OutputSecret],
+    layers: usize,
+) -> Option<Vec<u8>> {
+    on_proof_stack(|| prove_here(rng, chain_id, tx, spends, outputs, layers))
+}
+
+/// [`prove`], on the calling thread's stack.
+fn prove_here(
     rng: &mut (impl RngCore + CryptoRng),
     chain_id: &[u8; 32],
     tx: &Transaction,

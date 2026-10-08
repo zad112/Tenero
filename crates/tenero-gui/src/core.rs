@@ -17,7 +17,7 @@ use tenero_app::miner_report::MinerReport;
 use tenero_wallet::amount::parse_coins;
 use tenero_wallet::{
     Address, Balance, Built, ChainView, FeeLevel, FileError, KdfParams, Purse, PurseError, Rules,
-    ScanBlock,
+    ScanBlock, SpendPaths,
 };
 use zeroize::Zeroizing;
 
@@ -69,15 +69,6 @@ impl ChainView for Capped<'_> {
         }
         self.node.blocks(from, max.min(self.cap - from + 1))
     }
-    fn output(&self, i: u64) -> Result<Option<tenero_store::StoredOutput>, String> {
-        self.node.output(i)
-    }
-    fn outputs(&self, is: &[u64]) -> Result<Vec<Option<tenero_store::StoredOutput>>, String> {
-        self.node.outputs(is)
-    }
-    fn output_count(&self) -> Result<u64, String> {
-        self.node.output_count()
-    }
     fn key_image_spent(&self, k: &[u8; 32]) -> Result<bool, String> {
         self.node.key_image_spent(k)
     }
@@ -86,6 +77,9 @@ impl ChainView for Capped<'_> {
     }
     fn rules(&self) -> Result<Rules, String> {
         self.node.rules()
+    }
+    fn spend_paths(&self, global_indexes: &[u64]) -> Result<SpendPaths, String> {
+        self.node.spend_paths(global_indexes)
     }
 }
 
@@ -172,6 +166,11 @@ fn file_err(e: FileError) -> String {
         other => other.to_string(),
     }
 }
+
+/// What the signature and proof screens say until milestone G5: the 0.2.0 signatures and proofs were built on the interim
+/// scheme, which 0.3.0 does not have; they are rebuilt on Carrot before 0.3.0-gamma.1 ships (`docs/FCMP_CARROT_PLAN.md`).
+/// A payment sent meanwhile keeps what its proof will need.
+pub const PROOFS_IN_G5: &str = "message signatures and payment proofs are being rebuilt on Carrot for 0.3.0 and are not in this build yet; a payment you send now keeps what its proof will need";
 
 fn purse_err(e: PurseError) -> String {
     e.to_string()
@@ -539,7 +538,11 @@ impl Core {
         let pw = pass_ok(&password)?;
         let before = self.settings.wallet_file.clone();
         self.target_for_new(name)?;
-        let purse = Purse::create(&mut OsRng, self.birth_now());
+        let purse = Purse::create(
+            &mut OsRng,
+            self.settings.network.wallet_network(),
+            self.birth_now(),
+        );
         let words = purse.phrase();
         self.open(purse, pw);
         if let Err(e) = self.save_wallet() {
@@ -565,7 +568,11 @@ impl Core {
         let seed = tenero_wallet::seed_of(phrase).map_err(|e| e.to_string())?;
         let before = self.settings.wallet_file.clone();
         self.target_for_new(name)?;
-        let purse = Purse::from_seed(&seed, birth.unwrap_or(0));
+        let purse = Purse::from_seed(
+            &seed,
+            self.settings.network.wallet_network(),
+            birth.unwrap_or(0),
+        );
         self.open(purse, pw);
         // the number of accounts is not in the words: look for them once the node can be read
         self.needs_discovery = true;
@@ -719,7 +726,8 @@ impl Core {
     }
 
     fn parse_payment(&self, to: &str, amount: &str) -> Result<(Address, u64), String> {
-        let addr = Address::from_text(to.trim()).map_err(|e| format!("address: {e}"))?;
+        let addr = Address::parse(to.trim(), self.settings.network.wallet_network())
+            .map_err(|e| format!("address: {e}"))?;
         let units = parse_coins(amount.trim()).ok_or_else(|| {
             format!(
                 "amount: `{}` is not an amount (digits with up to 8 decimals)",
@@ -750,10 +758,12 @@ impl Core {
         // a payment that needs several transactions pays the fee of each
         let mut fees = [0u64; 3];
         for built in &plan.txs {
-            let size = tenero_core::v2::Wire::to_bytes(&built.tx)
+            // version 3's rule, the one the wallet builds by: real bytes, at a third of version 2's rate
+            let size = tenero_core::v3::Wire::to_bytes(&built.tx)
                 .map_err(|e| e.to_string())?
                 .len() as u64;
-            let min = tenero_core::fees::dynamic_min_fee(size, rules.reward, rules.median)?;
+            let min = tenero_core::v3::rules::min_fee(size, rules.reward, rules.median)
+                .map_err(|e| e.to_string())?;
             for (f, level) in fees.iter_mut().zip(FeeLevel::ALL) {
                 *f += min.saturating_mul(level.percent_of_minimum()) / 100 + 1;
             }
@@ -881,126 +891,37 @@ impl Core {
 
     fn sign_message(
         &mut self,
-        account: usize,
+        _account: usize,
         message: &str,
-        events: &mut Vec<Event>,
+        _events: &mut Vec<Event>,
     ) -> Result<(), String> {
         if message.is_empty() {
             return Err("type the message to sign".into());
         }
-        let purse = self.purse.as_ref().ok_or("the wallet is locked")?;
-        let sig = purse
-            .sign_message(account, &mut OsRng, message.as_bytes())
-            .map_err(purse_err)?;
-        events.push(Event::Signed {
-            signature: sig.to_text(),
-        });
-        Ok(())
+        Err(PROOFS_IN_G5.into())
     }
 
-    fn make_proof(&mut self, req: ProofRequest, events: &mut Vec<Event>) -> Result<(), String> {
-        let node = self
-            .node
-            .as_ref()
-            .ok_or("the node is not running: a proof is made against the chain (start the node on the Node tab)")?;
-        let purse = self.purse.as_ref().ok_or("the wallet is locked")?;
-        let (proof, what) = match req {
-            ProofRequest::Received {
-                account,
-                global_index,
-            } => (
-                purse
-                    .prove_received(account, global_index, node, &mut OsRng)
-                    .map_err(purse_err)?,
-                "Proves that this account received this output.",
-            ),
-            ProofRequest::Sent { id, key } => (
-                purse
-                    .prove_sent(
-                        &id,
-                        if key {
-                            tenero_wallet::proofs::ProofKind::Key
-                        } else {
-                            tenero_wallet::proofs::ProofKind::Sent
-                        },
-                        node,
-                        &mut OsRng,
-                    )
-                    .map_err(purse_err)?,
-                if key {
-                    "Contains the payment's secret key: anyone holding it can check this one output."
-                } else {
-                    "Proves this payment without giving away its secret key."
-                },
-            ),
-        };
-        events.push(Event::Proof {
-            text: proof.to_text(),
-            note: what.to_string(),
-        });
-        Ok(())
+    fn make_proof(&mut self, _req: ProofRequest, _events: &mut Vec<Event>) -> Result<(), String> {
+        Err(PROOFS_IN_G5.into())
     }
 
-    fn reveal_tx_key(&mut self, id: &[u8; 32], events: &mut Vec<Event>) -> Result<(), String> {
-        let purse = self.purse.as_ref().ok_or("the wallet is locked")?;
-        let secret = purse.tx_secret(id).map_err(purse_err)?;
-        let hex = tenero_core::hash::hex_lower(secret.expose());
-        events.push(Event::TxKey {
-            id: *id,
-            key: Zeroizing::new(hex),
-        });
-        Ok(())
+    fn reveal_tx_key(&mut self, _id: &[u8; 32], _events: &mut Vec<Event>) -> Result<(), String> {
+        Err(PROOFS_IN_G5.into())
     }
 
     /// Checks a transaction key and an address against the node's chain. Needs a node, not a wallet.
-    fn check_key(&self, key: &str, address: &str, from_height: u64) -> Result<CheckedView, String> {
-        let k = key.trim();
-        if k.len() != 64 || !k.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
-            return Err("a transaction key is 64 lower-case hexadecimal digits".into());
-        }
-        let mut bytes = [0u8; 32];
-        for (i, b) in bytes.iter_mut().enumerate() {
-            *b = u8::from_str_radix(&k[2 * i..2 * i + 2], 16).map_err(|e| e.to_string())?;
-        }
-        let address = tenero_wallet::Address::from_text(address.trim())
-            .map_err(|e| format!("address: {e}"))?;
-        let node = self
-            .node
-            .as_ref()
-            .ok_or("the node is not running: a key is checked against the chain (start the node on the Node tab)")?;
-        let (c, confirmations) =
-            tenero_wallet::proofs::check_key(node, &bytes, &address, from_height)
-                .map_err(|e| e.to_string())?;
-        Ok(CheckedView {
-            kind: c.kind.name(),
-            address: c.address.to_text(),
-            amount: c.amount,
-            height: c.height,
-            global_index: c.global_index,
-            confirmations,
-            block_reward: c.block_reward,
-        })
+    fn check_key(
+        &self,
+        _key: &str,
+        _address: &str,
+        _from_height: u64,
+    ) -> Result<CheckedView, String> {
+        Err(PROOFS_IN_G5.into())
     }
 
     /// Checks a proof against the node's chain. Needs a node, not a wallet.
-    fn check_proof(&self, text: &str) -> Result<CheckedView, String> {
-        let proof =
-            tenero_wallet::proofs::PaymentProof::from_text(text).map_err(|e| e.to_string())?;
-        let node = self
-            .node
-            .as_ref()
-            .ok_or("the node is not running: a proof is checked against the chain (start the node on the Node tab)")?;
-        let (c, confirmations) =
-            tenero_wallet::proofs::check_on_chain(node, &proof).map_err(|e| e.to_string())?;
-        Ok(CheckedView {
-            kind: c.kind.name(),
-            address: c.address.to_text(),
-            amount: c.amount,
-            height: c.height,
-            global_index: c.global_index,
-            confirmations,
-            block_reward: c.block_reward,
-        })
+    fn check_proof(&self, _text: &str) -> Result<CheckedView, String> {
+        Err(PROOFS_IN_G5.into())
     }
 
     // ---- the node ---------------------------------------------------------------------------------------

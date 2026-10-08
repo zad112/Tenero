@@ -30,6 +30,6 @@ jobs:
           "$RUNNER_TEMP/venv/bin/python" -m pytest -q
       - name: The committed vectors match the references
         run: |
-          for t in make_vectors make_vectors_v2 make_vectors_wire make_vectors_control make_vectors_interim make_vectors_proofs; do
+          for t in make_vectors make_vectors_v2 make_vectors_v3 make_vectors_address make_vectors_wire make_vectors_control make_vectors_pool make_vectors_interim make_vectors_proofs; do
             "$RUNNER_TEMP/venv/bin/python" reference/tools/$t.py --check
           done

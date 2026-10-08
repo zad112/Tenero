@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 
 use tenero_app::config::Network;
 
-pub const SETTINGS_FILE: &str = "settings.conf";
+/// The settings of the 0.3.0 app (the `gamma`, `dev` and `test` networks of version 3). The 0.2.0 app's `settings.conf`, beside it
+/// in the same folder, is left alone: the two can be installed side by side, and neither reads the other's networks.
+pub const SETTINGS_FILE: &str = "settings-v3.conf";
 
 /// What the node keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,9 +58,7 @@ impl MinerBackend {
     pub fn for_network(n: Network) -> &'static [MinerBackend] {
         match n {
             Network::Test => &[MinerBackend::Sha256],
-            Network::Dev | Network::Beta | Network::Alpha => {
-                &[MinerBackend::Gpu, MinerBackend::Cpu]
-            }
+            Network::Dev | Network::Gamma => &[MinerBackend::Gpu, MinerBackend::Cpu],
         }
     }
 }
@@ -159,18 +159,19 @@ pub fn default_inbound_port(n: Network) -> u16 {
     match n {
         Network::Test => 18331,
         Network::Dev => 28333,
-        Network::Alpha => 38333,
-        Network::Beta => 38343,
+        Network::Gamma => 38353,
     }
 }
 
 impl Settings {
-    /// The defaults for a network: an archive node, no extra seeds, the first backend the network can use, the
+    /// The defaults for a network: a pruned node (the 0.3.0 default, `config::DEFAULT_PRUNE_KEEP`), no extra seeds, the first backend the network can use, the
     /// miner paying account 0, data and wallet under `app_dir`.
     pub fn defaults(app_dir: &Path, network: Network) -> Settings {
         Settings {
             network,
-            node_kind: NodeKind::Archive,
+            node_kind: NodeKind::Pruned {
+                keep: tenero_app::config::DEFAULT_PRUNE_KEEP,
+            },
             control: default_control(network),
             seeds: Vec::new(),
             listen: None,
@@ -210,7 +211,7 @@ impl Settings {
             let (k, v) = (k.trim().to_string(), v.trim().to_string());
             if k == "network" {
                 network = Network::parse(&v)
-                    .ok_or_else(|| format!("network: `{v}` is not test, dev, beta or alpha"))?;
+                    .ok_or_else(|| format!("network: `{v}` is not gamma, dev or test"))?;
             }
             pairs.push((k, v));
         }
@@ -417,13 +418,13 @@ impl Settings {
         t
     }
 
-    /// Reads `settings.conf` from the app folder; a missing file gives the test network's defaults.
+    /// Reads [`SETTINGS_FILE`] from the app folder; a missing file gives the `gamma` network's defaults.
     pub fn load(app_dir: &Path) -> Result<Settings, String> {
         let path = app_dir.join(SETTINGS_FILE);
         match std::fs::read_to_string(&path) {
             Ok(t) => Settings::parse(app_dir, &t).map_err(|e| format!("{}: {e}", path.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(Settings::defaults(app_dir, Network::Test))
+                Ok(Settings::defaults(app_dir, Network::Gamma))
             }
             Err(e) => Err(format!("cannot read {}: {e}", path.display())),
         }

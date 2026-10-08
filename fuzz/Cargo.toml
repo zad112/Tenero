@@ -19,8 +19,8 @@ tenero-fuzzcases = { path = "../crates/tenero-fuzzcases" }
 [workspace]
 
 [[bin]]
-name = "decode_v2"
-path = "fuzz_targets/decode_v2.rs"
+name = "decode_v3"
+path = "fuzz_targets/decode_v3.rs"
 test = false
 doc = false
 bench = false
@@ -40,8 +40,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "wallet_proofs"
-path = "fuzz_targets/wallet_proofs.rs"
+name = "wallet_text"
+path = "fuzz_targets/wallet_text.rs"
 test = false
 doc = false
 bench = false

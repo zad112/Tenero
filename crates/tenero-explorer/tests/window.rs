@@ -33,7 +33,7 @@ fn texts(shapes: &[egui::epaint::ClippedShape]) -> String {
 fn source() -> Source {
     Source {
         data_dir: "D:/node".into(),
-        control: "127.0.0.1:38342".parse().unwrap(),
+        control: "127.0.0.1:38352".parse().unwrap(),
         found_by: "a test".into(),
     }
 }
@@ -69,7 +69,7 @@ fn snapshot(pool: usize) -> Snapshot {
                 t
             },
             cumulative_work: U256::from_u64(h << 24).to_be_bytes(),
-            size: 400 + 1_500 * (h % 3),
+            weight: 1_500 * (h % 3),
             tx_count: (h % 3) as u32,
             coinbase_total: 2_000_000_000 + 1_000 * (h % 3),
         })
@@ -86,8 +86,8 @@ fn snapshot(pool: usize) -> Snapshot {
             mempool_txs: pool as u32,
             syncing: false,
             kind: NodeKind::Archive,
-            network: "beta".into(),
-            version: "0.2.0-beta.3".into(),
+            network: "gamma".into(),
+            version: "0.3.0-gamma.1".into(),
         },
         stats: ChainStats {
             height: 812,
@@ -105,6 +105,7 @@ fn snapshot(pool: usize) -> Snapshot {
                 received: if i == 1 { 0 } else { NOW - 5 },
                 fee: 300_000,
                 size: 2_000,
+                weight: 1_500,
             })
             .collect(),
         pool_total: pool as u32,
@@ -120,7 +121,7 @@ fn a_window_with_no_answer_yet_says_it_is_asking() {
     let mut app = App::with_worker(w, Ok(source()), Box::new(|| NOW));
     let t = frame(&ctx, &mut app);
     assert!(t.contains("TEST NETWORK. NO VALUE. UNAUDITED."), "{t}");
-    assert!(t.contains("Asking the node at 127.0.0.1:38342"), "{t}");
+    assert!(t.contains("Asking the node at 127.0.0.1:38352"), "{t}");
     assert!(t.contains("Nothing to show yet"), "{t}");
 }
 
@@ -145,7 +146,7 @@ fn a_snapshot_shows_the_numbers_the_pool_and_the_blocks() {
     tx.send(Update::Snapshot(Box::new(snapshot(3)))).unwrap();
     let t = frame(&ctx, &mut app);
     // the node and the numbers
-    assert!(t.contains("beta network, version 0.2.0-beta.3"), "{t}");
+    assert!(t.contains("gamma network, version 0.3.0-gamma.1"), "{t}");
     assert!(
         t.contains("in step with its peers, 2 peers. Updated 2 s ago."),
         "{t}"
@@ -173,10 +174,10 @@ fn a_snapshot_shows_the_numbers_the_pool_and_the_blocks() {
         t.contains("0.003 TNR") && t.contains("0.0015 TNR /kB") && t.contains("2.00 kB"),
         "{t}"
     );
-    // the blocks: height, time, size, transactions, paid, hash
+    // the blocks: height, time, weight, transactions, paid, hash
     assert!(t.contains("Latest blocks"), "{t}");
     assert!(t.contains("30 s ago"), "{t}");
-    assert!(t.contains("3.40 kB") && t.contains("20.00002 TNR"), "{t}");
+    assert!(t.contains("3.00 kB") && t.contains("20.00002 TNR"), "{t}");
     assert!(
         t.contains(&tenero_explorer::core::short_hex(&[(812 % 251) as u8; 32])),
         "{t}"
@@ -217,7 +218,7 @@ fn the_genesis_block_shows_no_time_of_its_own() {
         timestamp: 0,
         target: [0; 32],
         cumulative_work: [0; 32],
-        size: 146,
+        weight: 0,
         tx_count: 0,
         coinbase_total: 0,
     });

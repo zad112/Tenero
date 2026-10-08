@@ -220,7 +220,7 @@ pub struct Purse {
 impl Purse {
     /// A new purse with a fresh random master seed and one account, "Main".
     pub fn create(
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         network: Network,
         birth_height: u64,
     ) -> Purse {
@@ -376,7 +376,7 @@ impl Purse {
         &mut self,
         index: usize,
         chain: &impl ChainView,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         to: &Address,
         amount: u64,
         level: FeeLevel,
@@ -435,7 +435,7 @@ impl Purse {
         &mut self,
         index: usize,
         node: &mut C,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         to: &Address,
         amount: u64,
         level: FeeLevel,
@@ -452,7 +452,7 @@ impl Purse {
         &mut self,
         index: usize,
         chain: &impl ChainView,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         dests: &[(Address, u64)],
         level: FeeLevel,
     ) -> Result<Plan, PurseError> {
@@ -513,7 +513,7 @@ impl Purse {
         &mut self,
         index: usize,
         chain: &impl ChainView,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         to: Option<&Address>,
         level: FeeLevel,
     ) -> Result<Vec<Built>, PurseError> {
@@ -529,7 +529,7 @@ impl Purse {
         &mut self,
         index: usize,
         chain: &impl ChainView,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
         count: usize,
         level: FeeLevel,
     ) -> Result<Built, PurseError> {
@@ -1017,7 +1017,7 @@ impl Purse {
         path: &Path,
         passphrase: &[u8],
         kdf: KdfParams,
-        rng: &mut (impl RngCore + CryptoRng),
+        rng: &mut (impl RngCore + CryptoRng + Send),
     ) -> Result<(), FileError> {
         let state = self.state_bytes()?;
         seal(path, MAGIC_PURSE, &state, passphrase, kdf, rng)
