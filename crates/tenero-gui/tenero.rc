@@ -1,12 +1,12 @@
 // The icon and the version information of tenero-wallet-gui.exe (compiled in by build.rs, on Windows only).
-// Keep the version numbers in step with Cargo.toml: FILEVERSION is 0.2.0.3 for 0.2.0-beta.3 (the fourth number counts the beta).
+// Keep the version numbers in step with Cargo.toml: FILEVERSION is 0.2.0.4 for 0.2.0-beta.4 (the fourth number counts the beta).
 #include <winver.h>
 
 1 ICON "../../assets/tenero.ico"
 
 1 VERSIONINFO
-FILEVERSION 0,2,0,3
-PRODUCTVERSION 0,2,0,3
+FILEVERSION 0,2,0,4
+PRODUCTVERSION 0,2,0,4
 FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
 FILEFLAGS VS_FF_PRERELEASE
 FILEOS VOS_NT_WINDOWS32
@@ -18,8 +18,8 @@ BEGIN
         BEGIN
             VALUE "ProductName", "Tenero\0"
             VALUE "FileDescription", "Tenero wallet app (experimental, unaudited, no value)\0"
-            VALUE "FileVersion", "0.2.0-beta.3\0"
-            VALUE "ProductVersion", "0.2.0-beta.3\0"
+            VALUE "FileVersion", "0.2.0-beta.4\0"
+            VALUE "ProductVersion", "0.2.0-beta.4\0"
             VALUE "LegalCopyright", "BSD-3-Clause, see LICENSE\0"
             VALUE "OriginalFilename", "tenero-wallet-gui.exe\0"
         END
