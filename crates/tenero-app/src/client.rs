@@ -170,6 +170,34 @@ impl RemoteNode {
         }
     }
 
+    /// Up to `count` block summaries (1 to 64) from height `from` on: fewer at the tip.
+    pub fn headers(
+        &self,
+        from: u64,
+        count: u16,
+    ) -> Result<Vec<crate::control::BlockSummary>, String> {
+        match self.request(&Request::Headers { from, count })? {
+            Response::Headers(v) => Ok(v),
+            other => Err(format!("unexpected answer: {other:?}")),
+        }
+    }
+
+    /// How many transactions the node's pool holds, and the best of them by fee rate.
+    pub fn mempool(&self) -> Result<(u32, Vec<tenero_node::PoolEntry>), String> {
+        match self.request(&Request::Mempool)? {
+            Response::Mempool { total, txs } => Ok((total, txs)),
+            other => Err(format!("unexpected answer: {other:?}")),
+        }
+    }
+
+    /// The chain's numbers: the next target, the work, the reward and the emission.
+    pub fn chain_stats(&self) -> Result<crate::control::ChainStats, String> {
+        match self.request(&Request::ChainStats)? {
+            Response::ChainStats(c) => Ok(c),
+            other => Err(format!("unexpected answer: {other:?}")),
+        }
+    }
+
     /// Asks the node to shut down cleanly.
     pub fn stop(&self) -> Result<(), String> {
         match self.request(&Request::Stop)? {

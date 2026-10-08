@@ -422,6 +422,20 @@ impl Store {
         }))
     }
 
+    /// The coinbase of the block at `height`, without reading its transactions. `None` for the genesis block (it has none)
+    /// and for heights above the tip.
+    pub fn coinbase(&self, height: u64) -> Result<Option<Coinbase>> {
+        if height == 0 {
+            return Ok(None);
+        }
+        let txn = self.db.begin_read()?;
+        let coinbase_t = txn.open_table(COINBASE)?;
+        let found = coinbase_t.get(height)?;
+        found
+            .map(|g| Ok(Coinbase::from_bytes(g.value())?))
+            .transpose()
+    }
+
     /// A transaction by id: the height it is in, and its stored form.
     pub fn tx(&self, id: &[u8; 32]) -> Result<Option<(u64, StoredTx)>> {
         let txn = self.db.begin_read()?;

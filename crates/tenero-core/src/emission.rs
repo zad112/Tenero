@@ -84,4 +84,106 @@ impl Emission {
             h = era_end + 1;
         }
     }
+
+    /// The base rewards of blocks `1..=height` added up: the coins the schedule has created by that height (main emission
+    /// and tail). It is the schedule, not what coinbases paid: an oversize penalty, which creates fewer coins, is not
+    /// subtracted. For a block explorer; no rule uses it. `None` if the total does not fit in a `u64`.
+    ///
+    /// The main rewards add up to `issued_before(height + 1)` (each block takes what the cap leaves), and the main reward
+    /// never grows, so the tail pays from one height on and the sum splits in two there.
+    pub fn paid_through(&self, height: u64) -> Option<u64> {
+        let main = self.issued_before(height.checked_add(1)?);
+        if height == 0 || !self.in_tail(height) {
+            return Some(main);
+        }
+        // the first height in the tail: `in_tail` is false below it and true from it on
+        let (mut lo, mut hi) = (1u64, height);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.in_tail(mid) {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        let tail_blocks = height - lo + 1;
+        self.issued_before(lo)
+            .checked_add(self.tail_reward.checked_mul(tail_blocks)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Emission;
+
+    fn by_hand(e: &Emission, height: u64) -> u64 {
+        (1..=height).map(|h| e.reward_at(h)).sum()
+    }
+
+    #[test]
+    fn paid_through_is_the_rewards_added_up() {
+        // small numbers, so the cap, the halvings and the tail all happen within a few hundred blocks
+        let shapes = [
+            Emission {
+                initial_reward: 100,
+                halving_interval: 10,
+                max_supply: 1_000,
+                tail_reward: 3,
+            },
+            // the cap bites in the middle of an era
+            Emission {
+                initial_reward: 100,
+                halving_interval: 10,
+                max_supply: 1_234,
+                tail_reward: 7,
+            },
+            // no tail
+            Emission {
+                initial_reward: 64,
+                halving_interval: 5,
+                max_supply: 10_000,
+                tail_reward: 0,
+            },
+            // the tail is above the first reward: every block is in the tail
+            Emission {
+                initial_reward: 5,
+                halving_interval: 3,
+                max_supply: 1_000,
+                tail_reward: 9,
+            },
+        ];
+        for e in shapes {
+            for h in 0..400 {
+                assert_eq!(e.paid_through(h), Some(by_hand(&e, h)), "{e:?} at {h}");
+            }
+        }
+    }
+
+    #[test]
+    fn paid_through_on_the_real_schedule() {
+        let e = Emission {
+            initial_reward: 2_000_000_000,
+            halving_interval: 525_600,
+            max_supply: 2_000_000_000_000_000,
+            tail_reward: 50_000_000,
+        };
+        assert_eq!(e.paid_through(0), Some(0));
+        assert_eq!(e.paid_through(1), Some(2_000_000_000));
+        assert_eq!(e.paid_through(10_000), Some(by_hand(&e, 10_000)));
+        // across the first halving
+        let h = 525_610;
+        assert_eq!(e.paid_through(h), Some(by_hand(&e, h)));
+        // long after the main emission ends, the tail goes on: the cap plus the tail of every block since
+        let end = e.main_emission_end(1).unwrap();
+        let far = end + 1_000_000;
+        let paid = e.paid_through(far).unwrap();
+        assert!(paid > e.max_supply);
+        assert_eq!(
+            paid - e.paid_through(far - 1).unwrap(),
+            e.tail_reward,
+            "one tail block more"
+        );
+        // and no overflow at the top of the range: it says None rather than a wrong number
+        assert_eq!(e.paid_through(u64::MAX), None);
+    }
 }

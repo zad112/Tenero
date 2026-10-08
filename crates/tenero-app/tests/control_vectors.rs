@@ -4,13 +4,14 @@
 
 use serde_json::Value;
 use tenero_app::control::{
-    frame, frame_len, ControlError, NodeInfo, NodeKind, Request, Response, Template,
-    MAX_BLOCKS_PER_REQUEST, MAX_FRAME, MAX_KEY_IMAGES, MAX_NAME, MAX_OUTPUTS_PER_REQUEST, MAX_TEXT,
+    frame, frame_len, BlockSummary, ChainStats, ControlError, NodeInfo, NodeKind, Request,
+    Response, Template, MAX_BLOCKS_PER_REQUEST, MAX_FRAME, MAX_KEY_IMAGES, MAX_MEMPOOL_LIST,
+    MAX_NAME, MAX_OUTPUTS_PER_REQUEST, MAX_TEXT,
 };
 use tenero_core::v2::{
     Block, BlockHeader, Coinbase, CoinbaseOutput, Input, Output, Prunable, Transaction, TxPrefix,
 };
-use tenero_node::Payout;
+use tenero_node::{Payout, PoolEntry};
 use tenero_store::StoredOutput;
 use tenero_wallet::{Rules, ScanBlock};
 
@@ -203,6 +204,12 @@ fn request(m: &Value) -> Request {
             max_body_bytes: u(&m["max_body_bytes"]) as u32,
         },
         "submit_block" => Request::SubmitBlock(block(&m["block"])),
+        "headers" => Request::Headers {
+            from: u(&m["from"]),
+            count: u(&m["count"]) as u16,
+        },
+        "mempool" => Request::Mempool,
+        "chain_stats" => Request::ChainStats,
         other => panic!("unknown request type {other}"),
     }
 }
@@ -309,6 +316,47 @@ fn response(m: &Value) -> Response {
             id: arr(&m["id"]),
             in_chain: m["in_chain"].as_bool().unwrap(),
         },
+        "headers" => Response::Headers(
+            m["blocks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| BlockSummary {
+                    height: u(&b["height"]),
+                    id: arr(&b["id"]),
+                    timestamp: u(&b["timestamp"]),
+                    target: arr(&b["target"]),
+                    cumulative_work: arr(&b["cumulative_work"]),
+                    size: u(&b["size"]),
+                    tx_count: u(&b["tx_count"]) as u32,
+                    coinbase_total: u(&b["coinbase_total"]),
+                })
+                .collect(),
+        ),
+        "mempool" => Response::Mempool {
+            total: u(&m["total"]) as u32,
+            txs: m["txs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| PoolEntry {
+                    id: arr(&t["id"]),
+                    received: u(&t["received"]),
+                    fee: u(&t["fee"]),
+                    size: u(&t["size"]),
+                })
+                .collect(),
+        },
+        "chain_stats" => Response::ChainStats(ChainStats {
+            height: u(&m["height"]),
+            next_target: arr(&m["next_target"]),
+            cumulative_work: arr(&m["cumulative_work"]),
+            next_reward: u(&m["next_reward"]),
+            emitted: u(&m["emitted"]),
+            max_supply: u(&m["max_supply"]),
+            tail_reward: u(&m["tail_reward"]),
+            block_time: u(&m["block_time"]),
+        }),
         "error" => Response::Error(m["message"].as_str().unwrap().to_string()),
         other => panic!("unknown response type {other}"),
     }
@@ -330,6 +378,7 @@ fn the_limits_are_the_references() {
         u(&l["max_outputs_per_request"]) as usize,
         MAX_OUTPUTS_PER_REQUEST
     );
+    assert_eq!(u(&l["max_mempool_list"]) as usize, MAX_MEMPOOL_LIST);
 }
 
 #[test]

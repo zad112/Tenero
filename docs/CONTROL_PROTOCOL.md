@@ -70,12 +70,30 @@ The answer to request `k` has kind `k | 0x80`. Any request may instead be answer
 | 14 | `key_images_spent` | a count u32 (1 to 4096) and that many key images (32 each) | `spent_many`: a count u32 and one flag for each key image, in order, 1 if the key image is in the chain. **Added 2026-10-07:** a wallet that has mined thousands of blocks owns thousands of coins, and asking `key_image_spent` about each in turn (about 15 ms a round trip, measured) took twenty seconds every time the tip moved. A client with more than 4096 splits the list |
 | 15 | `outputs` | a count u32 (1 to 1024) and that many global indexes (u64) | `outputs_many`: a count u32, then for each index a flag and (if 1) a *stored output*, in order (0 for an index past the end). **Added 2026-10-07:** the ring members of a payment. A payment of 32 coins asked about 1,364 outputs one at a time (about 15 ms each, measured), twenty seconds of waiting for half a second of work; the wallet now asks in one request. A client with more than 1024 splits the list |
 | 16 | `check_pow` | height u64, then a block header (146 bytes) | `pow_checked`: a flag, 1 when the header's mix is what the proof of work gives for its nonce (`PowCheck::check_full`, with the dataset the node already holds). **Added 2026-10-07** for the mining pool: a pool checks every share, and a dataset is 4 GiB, so the pool asks its own node instead of holding one. It says nothing about any target: the asker compares the id itself. Costs the node one proof-of-work attempt each time, so it is on the control interface only, **never in the miner service's allowlist** |
+| 17 | `headers` | from u64, count u16 (1 to 64) | `headers`: count u32 (0 to 64), then that many *block summaries*. **Added 2026-10-07** for the block explorer (`tenero-explorer`) |
+| 18 | `mempool` | | `mempool`: total u32 (the transactions the pool holds), count u32 (0 to 4096, and never more than total), then that many *pool entries*, best fee rate first. **Added 2026-10-07** for the block explorer |
+| 19 | `chain_stats` | | `chain_stats`: tip height u64, the next block's target (32, big-endian), the tip's cumulative work (32, big-endian), the next block's reward u64, emitted u64, max supply u64, tail reward u64, block time u64 (seconds). **Added 2026-10-07** for the block explorer |
 
 * A **scan block** is what a wallet needs: height u64, block id (32), the global index of its first output u64, the
   coinbase (version u16, height u64, a count of coinbase outputs from **0** to 16 and the outputs, extra as a var), and a
   count of transaction **prefixes** (0 to 8192) and the prefixes. It carries no rings and no proofs, so a pruned node can
   serve it. **The genesis block has no coinbase outputs** (the consensus coinbase encoding requires at least one), which
   is why a scan block writes the coinbase itself.
+* A **block summary** (132 bytes): height u64, block id (32), the header's timestamp u64, the target it met (32, big-endian; all
+  zeros for the genesis block), the chain's cumulative work up to and including it (32, big-endian), its size u64 (the whole
+  block in its consensus encoding: header, coinbase, count and transactions; the genesis block is its header alone), its
+  transaction count u32 (besides the coinbase) and what its coinbase paid u64 (its outputs added up: the reward and the fees,
+  less any penalty). The node reads the index record and the coinbase only, so a pruned node answers it too and it costs
+  no transaction reads.
+* A **pool entry** (56 bytes): transaction id (32), when this node received it u64 (Unix seconds by the node's own clock; 0 if not
+  known), its fee u64 and its size u64 in bytes. Nothing a wallet's privacy rests on: no keys, rings or amounts.
+* `chain_stats`'s **emitted** is the schedule's total, the base rewards of blocks 1 to the tip added up
+  (`Emission::paid_through`), not what coinbases paid: an oversize penalty, which creates fewer coins, is not subtracted. It
+  passes **max supply** in the tail, which goes on for ever. The **network hash rate is not in any answer**: nobody can
+  measure it. The explorer estimates it from the summaries (the work of the last blocks over the time their timestamps say
+  they took) and says that it is an estimate.
+* `headers`, `mempool` and `chain_stats` only read, and like everything on this page they are **not in the miner
+  service's allowlist**.
 * A **stored output**: one-time address (32), amount commitment (32; all zeros for a coinbase output), public amount u64
   (0 for an ordinary output), height u64, coinbase flag.
 * `blocks` is the way to scan a chain: up to 64 blocks from a height, in order; fewer at the tip, and **fewer if they would
@@ -104,7 +122,7 @@ node it is pointed at. That is a property of this design, not something the prot
 
 ## Vectors
 
-`tests/vectors/control.json`: 60 valid messages (both directions), 166 malformed bodies with the error class a decoder
+`tests/vectors/control.json`: 72 valid messages (both directions), 201 malformed bodies with the error class a decoder
 must give (`length`, `kind`, `trailing`, `malformed`), and the frame length rule. Every valid message encodes to exactly
 the reference's bytes in Rust and decodes back. The reference also checks, over every valid message and every
 single-bit change of it, that the result is refused or decodes to a message that encodes back to the same bytes.

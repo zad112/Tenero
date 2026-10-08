@@ -65,6 +65,32 @@ struct Entry {
     fee: u64,
     /// Arrival order, to break ties between equal fee rates (older first).
     seq: u64,
+    /// When this node took it (Unix seconds, from the caller's clock; 0 when the caller gave none). For showing only:
+    /// no choice the pool makes depends on it.
+    received: u64,
+}
+
+/// What a block explorer shows of a pooled transaction: no keys, amounts or rings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolEntry {
+    pub id: TxId,
+    /// When this node took it (Unix seconds); 0 if not known.
+    pub received: u64,
+    pub fee: u64,
+    /// Its size in wire bytes.
+    pub size: u64,
+}
+
+/// Best fee rate first; among equals, the older first. The order a block takes them in.
+fn by_rate(a: &Entry, b: &Entry) -> std::cmp::Ordering {
+    let (x, y) = ((a.fee, a.size), (b.fee, b.size));
+    if better_rate(x, y) {
+        std::cmp::Ordering::Less
+    } else if better_rate(y, x) {
+        std::cmp::Ordering::Greater
+    } else {
+        a.seq.cmp(&b.seq)
+    }
 }
 
 /// `a` pays a strictly higher fee per byte than `b`.
@@ -138,11 +164,22 @@ impl Mempool {
         }
     }
 
-    /// Checks `tx` against the tip's state and adds it if it is valid, does not conflict and fits.
+    /// Checks `tx` against the tip's state and adds it if it is valid, does not conflict and fits. It is
+    /// recorded as received at an unknown time ([`Mempool::add_at`] gives one).
     pub fn add(
         &mut self,
         validator: &Validator<'_>,
         tx: Transaction,
+    ) -> Result<AddOutcome, PoolError> {
+        self.add_at(validator, tx, 0)
+    }
+
+    /// [`Mempool::add`], recording `now` (Unix seconds) as the time it arrived.
+    pub fn add_at(
+        &mut self,
+        validator: &Validator<'_>,
+        tx: Transaction,
+        now: u64,
     ) -> Result<AddOutcome, PoolError> {
         let id =
             tx_id(&tx).map_err(|e| PoolError::Invalid(BlockError::Malformed(e.to_string())))?;
@@ -211,6 +248,7 @@ impl Mempool {
                 size: info.size,
                 fee: info.fee,
                 seq: self.next_seq,
+                received: now,
             },
         );
         self.next_seq += 1;
@@ -299,16 +337,7 @@ impl Mempool {
     /// transaction that does not fit is skipped and smaller ones after it may still be taken.
     pub fn select(&self, max_body_bytes: u64) -> Vec<Transaction> {
         let mut all: Vec<&Entry> = self.entries.values().collect();
-        all.sort_by(|a, b| {
-            let (x, y) = ((a.fee, a.size), (b.fee, b.size));
-            if better_rate(x, y) {
-                std::cmp::Ordering::Less
-            } else if better_rate(y, x) {
-                std::cmp::Ordering::Greater
-            } else {
-                a.seq.cmp(&b.seq)
-            }
-        });
+        all.sort_by(|a, b| by_rate(a, b));
         let mut out = Vec::new();
         let mut used = 0u64;
         for e in all {
@@ -318,5 +347,20 @@ impl Mempool {
             }
         }
         out
+    }
+
+    /// What is in the pool, in the order a block would take it (best fee rate first), at most `limit` entries.
+    pub fn listing(&self, limit: usize) -> Vec<PoolEntry> {
+        let mut all: Vec<(&TxId, &Entry)> = self.entries.iter().collect();
+        all.sort_by(|a, b| by_rate(a.1, b.1));
+        all.into_iter()
+            .take(limit)
+            .map(|(id, e)| PoolEntry {
+                id: *id,
+                received: e.received,
+                fee: e.fee,
+                size: e.size,
+            })
+            .collect()
     }
 }

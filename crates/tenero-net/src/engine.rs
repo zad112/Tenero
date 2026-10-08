@@ -704,7 +704,8 @@ impl<'a> Engine<'a> {
                 }
             }
             Event::LocalTx(t) => {
-                if let Ok(AddOutcome::Added { id, .. }) = self.node.submit_tx(t) {
+                if let Ok(AddOutcome::Added { id, .. }) = self.node.submit_tx_at(t, self.now / 1000)
+                {
                     self.announce_tx(id, &mut out);
                 }
             }
@@ -2733,7 +2734,7 @@ impl<'a> Engine<'a> {
                 }
                 continue;
             }
-            match self.node.submit_tx(t) {
+            match self.node.submit_tx_at(t, self.now / 1000) {
                 Ok(AddOutcome::Added { id, .. }) => self.announce_tx(id, out),
                 Err(PoolError::Invalid(_)) | Err(PoolError::TooLarge { .. }) => {
                     if self.rejected_txs.len() > 8192 {

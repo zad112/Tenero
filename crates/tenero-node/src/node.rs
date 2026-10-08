@@ -216,8 +216,13 @@ impl<'a> Node<'a> {
 
     /// Takes a loose transaction into the mempool if it is valid at the tip.
     pub fn submit_tx(&mut self, tx: Transaction) -> Result<AddOutcome, PoolError> {
+        self.submit_tx_at(tx, 0)
+    }
+
+    /// [`Node::submit_tx`], recording `now` (Unix seconds) as when the transaction arrived (a block explorer shows it).
+    pub fn submit_tx_at(&mut self, tx: Transaction, now: u64) -> Result<AddOutcome, PoolError> {
         let v = self.validator();
-        self.pool.add(&v, tx)
+        self.pool.add_at(&v, tx, now)
     }
 
     /// Whether a loose transaction would be taken now, and if not why not (nothing changes). A wallet's node link

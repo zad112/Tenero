@@ -1,0 +1,25 @@
+[package]
+name = "tenero-explorer"
+description = "Tenero's block explorer: a desktop window that shows a local node's chain, difficulty, estimated hash rate, emission, pool and latest blocks (experimental, unaudited, nothing here has value)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "tenero-explorer"
+path = "src/bin/tenero_explorer.rs"
+
+[dependencies]
+tenero-core = { path = "../tenero-core" }
+tenero-app = { path = "../tenero-app" }
+tenero-node = { path = "../tenero-node" }
+# only for the wallet app's settings file: where its node keeps its data and which port it answers on
+tenero-gui = { path = "../tenero-gui" }
+
+# The same owner-approved window library as the wallet app (eframe/egui, MIT OR Apache-2.0, approved 2026-10-03), with the
+# same cut-down features. No new dependency.
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "x11"] }
+
+[lints]
+workspace = true
