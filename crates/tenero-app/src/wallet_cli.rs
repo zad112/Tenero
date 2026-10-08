@@ -13,7 +13,7 @@ use rand_core::OsRng;
 use tenero_core::hash::hex_lower;
 use tenero_wallet::amount::{format_coins, parse_coins};
 use tenero_wallet::{
-    Address, Built, ChainView, FeeLevel, KdfParams, Network, Wallet, WalletError, BANNER,
+    Address, Built, ChainView, FeeLevel, KdfParams, Network, ViewTier, Wallet, WalletError, BANNER,
 };
 use zeroize::Zeroizing;
 
@@ -44,6 +44,8 @@ struct Opts {
     /// `sweep` and `combine` only preview unless this is given.
     yes: bool,
     passphrase_file: Option<PathBuf>,
+    /// `view-key`: which tier (`all` or `received`).
+    tier: Option<ViewTier>,
     /// Test only: a fast key derivation, so tests do not each spend a quarter of a second.
     weak_kdf_for_tests: bool,
 }
@@ -62,6 +64,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         unsent_file: None,
         yes: false,
         passphrase_file: None,
+        tier: None,
         weak_kdf_for_tests: false,
     };
     let mut seen = std::collections::BTreeSet::new();
@@ -118,6 +121,13 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
                 )
             }
             "passphrase-file" => o.passphrase_file = Some(PathBuf::from(value)),
+            "tier" => {
+                o.tier = Some(match value.as_str() {
+                    "all" => ViewTier::ViewAll,
+                    "received" => ViewTier::ViewReceived,
+                    _ => return Err(format!("--tier: `{value}` is not all or received")),
+                })
+            }
             other => return Err(format!("unknown option `--{other}`")),
         }
     }
@@ -136,6 +146,8 @@ tenero-wallet: a wallet for the Tenero experimental coin (Carrot and FCMP++, una
   tenero-wallet sweep   --wallet FILE --data DIR [--to ADDRESS] [--yes] [--control IP:PORT]
   tenero-wallet combine --wallet FILE --data DIR --pieces N [--yes] [--control IP:PORT]
   tenero-wallet seed    --wallet FILE
+  tenero-wallet view-key --wallet FILE [--tier all|received]
+  tenero-wallet restore-view --wallet FILE [--network gamma|dev|test]   (asks for the view key, hidden)
   tenero-wallet info    --data DIR [--network gamma|dev|test] [--control IP:PORT]
 
 A payment that needs more pieces than one transaction can carry (your balance is made of separate pieces, one for each payment you
@@ -144,6 +156,11 @@ makes N of the smallest into one: both only show a preview until --yes. Pieces t
 
 A wallet belongs to the network it was made for (gamma unless --network says otherwise): it takes only that network's
 addresses (TENg..., TENd..., TENt...) and refuses a node of another network.
+
+A VIEW-ONLY wallet sees and cannot spend or sign. `view-key` prints a wallet's view key (a SECRET: whoever has it sees
+what it shows): `--tier all` (the default) sees incoming and outgoing payments and the true balance; `--tier received`
+sees incoming payments only, so it shows what was received, not a balance. `restore-view` makes a view-only wallet from
+one.
 
 --data is the node's data directory (the wallet reads the node's cookie file from it). The control address defaults
 to the wallet's network's port on this machine: 127.0.0.1:38352 (gamma), 127.0.0.1:28332 (dev), 127.0.0.1:18332 (test).
@@ -227,9 +244,13 @@ fn save(w: &Wallet, path: &Path, pass: &str, o: &Opts) -> Result<(), String> {
 }
 
 fn show_seed(io: &mut dyn Io, w: &Wallet) {
+    let Some(seed) = w.seed() else {
+        io.say("this is a view-only wallet: it has no seed");
+        return;
+    };
     io.say("");
     io.say("YOUR SEED (write it down on paper and keep it somewhere safe):");
-    io.say(&format!("  {}", hex_lower(w.seed())));
+    io.say(&format!("  {}", hex_lower(seed)));
     io.say("Anyone who sees it can spend your coins. If you lose both it and the wallet file, the coins are gone.");
     io.say("There is no word-list backup yet; this is the raw seed.");
 }
@@ -496,6 +517,59 @@ pub fn run(args: &[String], io: &mut dyn Io) -> Result<(), String> {
             io.say(&w.address().to_text());
             Ok(())
         }
+        "view-key" => {
+            let (w, _) = load(&o, io)?;
+            let tier = o.tier.unwrap_or(ViewTier::ViewAll);
+            let key = w.view_key(tier).ok_or(
+                "this wallet does not hold that tier (a view-received wallet gives only a view-received key)",
+            )?;
+            io.say("");
+            io.say(match tier {
+                ViewTier::ViewAll => "VIEW KEY (view-all): whoever has it sees every payment of this wallet, in and out, and its balance. It cannot spend.",
+                _ => "VIEW KEY (view-received): whoever has it sees the payments this wallet receives. It cannot spend.",
+            });
+            io.say(&format!("  {}", key.as_str()));
+            io.say("Keep it as secret as what it shows.");
+            Ok(())
+        }
+        "restore-view" => {
+            let path = need(&o.wallet, "--wallet")?;
+            if path.exists() {
+                return Err(format!(
+                    "{} already exists; refusing to overwrite a wallet",
+                    path.display()
+                ));
+            }
+            let key = io.passphrase("View key (TENview1..., hidden): ")?;
+            let w = Wallet::from_view_key(&key, new_network)?;
+            let pass = read_passphrase(
+                &o,
+                io,
+                "Choose a passphrase (at least 8 characters): ",
+                true,
+            )?;
+            if pass.chars().count() < MIN_PASSPHRASE {
+                return Err(format!(
+                    "the passphrase must be at least {MIN_PASSPHRASE} characters"
+                ));
+            }
+            save(&w, path, &pass, &o)?;
+            io.say(&format!(
+                "view-only wallet ({}) for the {} network written to {}",
+                match w.tier() {
+                    ViewTier::ViewAll => "view-all",
+                    _ => "view-received",
+                },
+                new_network.name(),
+                path.display()
+            ));
+            io.say(&format!("address: {}", w.address().to_text()));
+            io.say(&format!(
+                "scanning will start at height {}",
+                w.birth_height()
+            ));
+            Ok(())
+        }
         "seed" => {
             let (w, _) = load(&o, io)?;
             show_seed(io, &w);
@@ -512,6 +586,13 @@ pub fn run(args: &[String], io: &mut dyn Io) -> Result<(), String> {
                 "node height {height}; scanned {} blocks, found {} outputs",
                 report.blocks_scanned, report.outputs_found
             ));
+            match w.tier() {
+                ViewTier::ViewReceived => io.say(
+                    "VIEW-RECEIVED wallet: it cannot see what is spent, so `total` is what was RECEIVED, not a balance",
+                ),
+                ViewTier::ViewAll => io.say("view-only wallet: it sees the balance, and cannot spend"),
+                ViewTier::Full => {}
+            }
             io.say(&format!("total      {}", format_coins(b.total)));
             io.say(&format!("spendable  {}", format_coins(b.spendable)));
             io.say(&format!("immature   {}", format_coins(b.immature)));

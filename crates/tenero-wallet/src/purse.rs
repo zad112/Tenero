@@ -246,9 +246,14 @@ impl Purse {
     }
 
     /// One account of an existing one-account wallet (how an old wallet file is read).
-    fn from_wallet(wallet: Wallet) -> Purse {
-        Purse {
-            master: Zeroizing::new(*wallet.seed()),
+    fn from_wallet(wallet: Wallet) -> Result<Purse, FileError> {
+        let seed = wallet.seed().ok_or_else(|| {
+            FileError::Corrupt(
+                "a view-only wallet: it opens in the wallet program (tenero-wallet), not as a purse".into(),
+            )
+        })?;
+        Ok(Purse {
+            master: Zeroizing::new(*seed),
             network: wallet.network(),
             birth_height: wallet.birth_height(),
             accounts: vec![Account {
@@ -257,7 +262,7 @@ impl Purse {
             }],
             sent: Vec::new(),
             requests: Vec::new(),
-        }
+        })
     }
 
     /// The master seed: the whole secret of every account. Never log it.
@@ -951,7 +956,7 @@ impl Purse {
             let wallet = Wallet::read_state(&mut ir)?;
             ir.finish().map_err(bad)?;
             // an account's seed must be the one its number derives from the master seed
-            if *wallet.seed() != *account_seed(&master, i as u32) {
+            if wallet.seed() != Some(&*account_seed(&master, i as u32)) {
                 return Err(FileError::Corrupt(
                     "an account does not belong to this seed".into(),
                 ));
@@ -1112,7 +1117,7 @@ impl Purse {
             let w = Wallet::read_state(&mut r)?;
             r.finish()
                 .map_err(|e| FileError::Corrupt(e.as_str().to_string()))?;
-            Ok(Purse::from_wallet(w))
+            Purse::from_wallet(w)
         }
     }
 }

@@ -222,7 +222,7 @@ fn a_subaddress_and_an_integrated_address_are_paid_and_found() {
     assert_eq!(built.spends.len(), 1);
     node.submit_tx(built.tx).unwrap();
     // a wallet restored from Bob's seed finds the subaddress payment too (it watches the first subaddresses)
-    let mut again = Wallet::from_seed(bob.seed(), Network::Test, 0);
+    let mut again = Wallet::from_seed(bob.seed().unwrap(), Network::Test, 0);
     again.sync(&node).unwrap();
     assert_eq!(again.owned().len(), 2);
 }
@@ -451,7 +451,7 @@ fn a_wallet_restored_from_its_seed_finds_the_same_coins() {
     mine_n(&mut node, &alice.address(), 2);
     alice.sync(&node).unwrap();
     bob.sync(&node).unwrap();
-    let mut again = Wallet::from_seed(alice.seed(), Network::Test, 0);
+    let mut again = Wallet::from_seed(alice.seed().unwrap(), Network::Test, 0);
     again.sync(&node).unwrap();
     let mut a: Vec<_> = alice.owned().to_vec();
     let mut b: Vec<_> = again.owned().to_vec();
@@ -462,7 +462,7 @@ fn a_wallet_restored_from_its_seed_finds_the_same_coins() {
         "the change included: a restored wallet finds its own change"
     );
     // a wallet that starts at the tip does not look back
-    let mut late = Wallet::from_seed(alice.seed(), Network::Test, node.tip().unwrap().0);
+    let mut late = Wallet::from_seed(alice.seed().unwrap(), Network::Test, node.tip().unwrap().0);
     late.sync(&node).unwrap();
     assert!(late.owned().len() < a.len());
     // an empty wallet is not confused by the same chain
@@ -620,7 +620,7 @@ fn the_wallet_file_round_trips_with_the_right_passphrase_only() {
     );
     // the file does not contain the seed or an address key in the clear
     let bytes = std::fs::read(&path).unwrap();
-    assert!(!bytes.windows(32).any(|w| w == alice.seed()));
+    assert!(!bytes.windows(32).any(|w| w == alice.seed().unwrap()));
     assert!(!bytes.windows(32).any(|w| w == alice.address().spend_pubkey));
     // a restored wallet carries on (it does not rescan what it has)
     let mut back = back;
