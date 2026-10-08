@@ -173,3 +173,27 @@ fn a_real_signature_with_any_byte_flipped_is_refused() {
         }
     }
 }
+
+/// Times the verification of one CLSAG ring signature (ring of 16), for comparison with FCMP++
+/// (`tests/upstream_fcmp_pp.rs`, `time_verification`). Build with `--release`. Rule 5: a number from the machine that ran it.
+#[test]
+#[ignore]
+fn time_verification() {
+    let r = real();
+    let runs = 200u32;
+    let start = std::time::Instant::now();
+    for _ in 0..runs {
+        for i in 0..r.clsags.len() {
+            r.clsags[i]
+                .verify(
+                    r.rings[i].clone(),
+                    &r.images[i],
+                    &r.pseudo_outs[i],
+                    &r.message,
+                )
+                .unwrap();
+        }
+    }
+    let per = start.elapsed() / (runs * r.clsags.len() as u32);
+    println!("CLSAG verify, ring of 16: {per:.2?} per input (one thread)");
+}

@@ -84,7 +84,8 @@ The transaction id keeps its definition (the prefix, then the hash of the prunab
   a transaction that waited too long in a mempool is rebuilt by its wallet.
 - **Limits:** `MAX_PROOF` is 64 KiB today and a transaction at most 75,000 bytes (decision 10). An FCMP++ proof grows with the
   number of inputs and the tree's depth; `FcmpPlusPlus::proof_size(inputs, layers)` gives it exactly, and milestone G1 tabulates it
-  to see how many inputs fit. Monero's own stressnet limits are 128 inputs, 16 outputs and 12 layers; we keep 16 outputs and
+  to see how many inputs fit. (G1: the FCMP++ proof alone fits 64 KiB with at most 126 inputs at 1 layer, 69 at 4, 48 at 7 and
+  31 at 12; `docs/BENCHMARKS.md`.) Monero's own stressnet limits are 128 inputs, 16 outputs and 12 layers; we keep 16 outputs and
   propose **at most 12 layers**. The minimum fee's reference weight is re-measured (it was set for CLSAG).
 - **Key images** are Carrot's: `L = x * Hp²(K_o)`, the **unbiased** hash-to-point, for every output. There is only one kind,
   because `gamma` has no older outputs.
@@ -119,14 +120,15 @@ G3 on the owner's machine.
 block's transactions as one batch, and a lone transaction (the mempool) as a batch of one. If a block's batch fails, the block is
 refused; a failed mempool transaction is refused.
 
-**The cost is unknown until measured (rule 5).** FCMP++ verification is far heavier than CLSAG, and proving is heavier still
-(seconds per input are reported for Monero's wallets, which I have not checked). That matters for:
+**Measured in G1** (`docs/BENCHMARKS.md`, the owner's Ryzen 9 5900X, one thread): checking costs about 25 ms for a 1-input
+proof and 16 to 20 ms an input for larger ones, against 1.92 ms an input for CLSAG; a block's proofs checked as one batch cost
+about 9.4 ms an input. Making a proof takes 0.5 to 0.9 s for one input (1 to 7 layers), 0.8 to 2.4 s for two and 2 to 5 s for
+four. That matters for:
 - denial of service: a peer that sends a large invalid proof costs us its verification time, so the per-peer limits in
   `THREAT_MODEL.md` get an entry;
 - the wallet on a small machine, and the pool's payout batches.
 
-G1 measures both on the owner's machine with Monero's own test proofs (`tests/data/fcmp_pp_verify_inputs_{1,2,4,8,128}in.bin` in
-Monero's stressnet release) before any limits are set.
+Monero's own test proofs (`tests/vectors/upstream_monero_fcmp_pp.json`) verify with the pinned crates (G1).
 
 ## 6. Carrot in Rust (crate `tenero-carrot`)
 
@@ -193,7 +195,7 @@ transcription, and the reliance on a branch that Monero may still change.
 | | what | needs |
 |---|---|---|
 | G0 | this plan agreed (section 11); `CLAUDE.md` records the rule 3 exception | the owner |
-| G1 | the pinned crates in the build (P1), licences listed; Monero's FCMP++ test proofs verify; **verify and prove times measured** on the owner's machine | nothing else |
+| G1 | the pinned crates in the build (P1), licences listed; Monero's FCMP++ test proofs verify; **verify and prove times measured** on the owner's machine. **Done 2026-10-08** | nothing else |
 | G2 | `tenero-carrot`: keys, addresses, outputs, scanning, against the C++ vectors | the WSL harness |
 | G3 | the curve tree, its storage and reorganisation, against the C++ vectors | G1 |
 | G4 | the `gamma` network: genesis, version 3 transactions, validation, the mempool; CLSAG and the version 2 rules out of the 0.3.0 path (P2); tested on `test` and `dev` | G1, G3 |
