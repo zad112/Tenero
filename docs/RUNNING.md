@@ -251,7 +251,7 @@ A desktop window (not a web page) for the wallet that also starts and stops the 
 
 ```powershell
 cargo build --release -p tenero-gui -p tenero-app --bins      # the app and the programs it starts
-.	argetelease	enero-wallet-gui.exe                        # tenerod and tenero-miner are looked for next to it
+.\target\release\tenero-wallet-gui.exe                        # tenerod and tenero-miner are looked for next to it
 ```
 
 * **The wallet opens first; the node is started from it** (Node tab). No terminal window opens: the node and the miner run hidden and write what they print to `node-output.txt` and `miner-output.txt` in the app folder (the Node and Mining tabs show the last lines).
