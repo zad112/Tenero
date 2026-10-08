@@ -14,7 +14,8 @@ curve tree. So the requests for ring members' outputs (kinds 4, 5 and 15) are **
 `spend_paths` (20) gives the tree paths a spend is proven with. `rules` lost the ring size, the maturities (consensus
 constants now) and the input limit, and gained the tree's layers; `block_template` takes the keys of a main address
 (a Carrot coinbase output depends on its amount, which only the node knows); a template carries the anchor its output
-was made with; a block summary gives its weight instead of its size; a pool entry gives its weight too. The objects inside
+was made with, and is COMPACT (the header, the coinbase and the transaction ids), and `submit_header` (21) hands a block
+found on one back as its header; a block summary gives its weight instead of its size; a pool entry gives its weight too. The objects inside
 are version 3's (`docs/CONSENSUS_V2.md` 15).
 
 ## Who may connect, and how
@@ -72,7 +73,7 @@ The answer to request `k` has kind `k | 0x80`. Any request may instead be answer
 | 9 | `info` | | `info`: height u64, tip id (32), peers u32, inbound u32, pruned-below u64, mempool transactions u32, syncing flag, node kind u8 (0 archive, 1 pruned), network (text, at most 64 bytes), version (text, at most 64 bytes) |
 | 10 | `stop` | | `stopping`: asks the node to shut down cleanly |
 | 11 | `blocks` | from u64, count u16 (1 to 64) | `blocks`: count u32 (0 to 64), then that many scan blocks |
-| 12 | `block_template` | the keys of the main address the reward goes to (spend key 32, view key 32) and the most transaction weight wanted u64 | `template`: height u64, target (32, big-endian), the **anchor** the coinbase output was made with (16), then a whole block with its nonce and mix empty; **an error if the node is syncing, or if the keys make no output** (not points). **Changed in 0.3.0**: it took a finished output |
+| 12 | `block_template` | the keys of the main address the reward goes to (spend key 32, view key 32) and the most transaction weight wanted u64 | `template`: height u64, target (32, big-endian), the **anchor** the coinbase output was made with (16), the header (146 bytes, its nonce and mix empty), the coinbase, and a count u32 (0 to 8192) and that many transaction ids (32 each), in the block's order; **an error if the node is syncing, or if the keys make no output** (not points). **Changed in 0.3.0**: it took a finished output, and the answer carried the whole block |
 | 13 | `submit_block` | a whole block | `block_submitted`: id (32) and a flag, 1 if the block is in the node's chain, 0 if it is valid but on a side branch (it lost a race); **an error if the node refuses it** |
 | 14 | `key_images_spent` | a count u32 (1 to 4096) and that many key images (32 each) | `spent_many`: a count u32 and one flag for each key image, in order, 1 if the key image is in the chain. **Added 2026-10-07:** a wallet that has mined thousands of blocks owns thousands of coins, and asking `key_image_spent` about each in turn (about 15 ms a round trip, measured) took twenty seconds every time the tip moved. A client with more than 4096 splits the list |
 | 15 | (`outputs`: version 2's ring members, many at once; **retired** in 0.3.0) | | |
@@ -80,6 +81,7 @@ The answer to request `k` has kind `k | 0x80`. Any request may instead be answer
 | 17 | `headers` | from u64, count u16 (1 to 64) | `headers`: count u32 (0 to 64), then that many *block summaries*. **Added 2026-10-07** for the block explorer (`tenero-explorer`) |
 | 18 | `mempool` | | `mempool`: total u32 (the transactions the pool holds), count u32 (0 to 4096, and never more than total), then that many *pool entries*, best fee rate first. **Added 2026-10-07** for the block explorer |
 | 19 | `chain_stats` | | `chain_stats`: tip height u64, the next block's target (32, big-endian), the tip's cumulative work (32, big-endian), the next block's reward u64, emitted u64, max supply u64, tail reward u64, block time u64 (seconds). **Added 2026-10-07** for the block explorer |
+| 21 | `submit_header` | a block header (146 bytes) | `header_submitted`: as `block_submitted`. **Added in 0.3.0**: a block found on one of this node's recent templates (the last 64 on the current tip), handed back as its header: the header's `tx_root` names the template, and the node puts the block together from the coinbase and the ids it kept, taking the transactions from its pool. **An error if no recent template has that root and parent, or one of its transactions has left the pool**: the work is stale |
 | 20 | `spend_paths` | a count u32 (1 to 512) and that many global indexes (u64) | `spend_paths`: the reference height u64 (the tip), its *tree* (leaves u64, layers u8, root 32), a count u32, then for each index a flag and (if 1) a *path*, in order (0 for an output not in that tree). **Added in 0.3.0**: what a wallet proves a spend with. Every path is in the tree of that ONE block; a client with more than 512 splits the list and asks again if the pieces came from different tips. **The node learns which outputs are about to be spent**: harmless for a node on the wallet's own machine, which is the only kind this interface reaches (a remote wallet needs another way, `docs/FCMP_CARROT_PLAN.md` 7) |
 
 * A **scan block** is what a wallet needs: height u64, block id (32), the global index of its first output u64, the
@@ -117,10 +119,12 @@ The answer to request `k` has kind `k | 0x80`. Any request may instead be answer
   block.**
 
 * `block_template` is how a miner in another process gets work (`tenero-miner`, `docs/RUNNING.md`). The node builds the
-  block exactly as its own miner would (the pool's best transactions within the weight asked for, never more than **3 MiB of
-  weight**, a quarter of the largest block, so that a template, whose bytes are at most four times its weight, and the mined
-  block always fit one 16 MiB frame; the block limit stays below that until the chain's median passes 1.5 MiB), and a
-  coinbase paying the whole reward to the address whose keys were given. **A Carrot coinbase output depends on its
+  block exactly as its own miner would (the pool's best transactions within the weight asked for and the block limit, and a
+  coinbase paying the whole reward to the address whose keys were given), and answers COMPACT: the header, the coinbase and
+  the transaction ids, about 32 bytes a transaction, so even a block at the ceiling (12 MiB of weight, up to 48 MiB of
+  bytes) is a message of a few hundred kilobytes (decision F17). The miner checks that the header's root is the root of the
+  coinbase and the ids (`Template::tx_root`), so the body cannot change under its work, and hands a found block back with
+  `submit_header`. **A Carrot coinbase output depends on its
   amount**, which only the node knows once it has chosen the transactions, so the node makes the output itself, with a fresh
   Janus anchor (randomness) each time, and hands the anchor back: the miner makes the same output from its address, the
   height, the amount and the anchor (`tenero_wallet::coinbase_payout_to_keys`), and mines nothing that does not pay it
@@ -140,7 +144,7 @@ node it is pointed at. That is a property of this design, not something the prot
 
 ## Vectors
 
-`tests/vectors/control.json`: 71 valid messages (both directions), 212 malformed bodies with the error class a decoder
+`tests/vectors/control.json`: 75 valid messages (both directions), 220 malformed bodies with the error class a decoder
 must give (the retired kinds 4, 5 and 15 among them, as unknown kinds) (`length`, `kind`, `trailing`, `malformed`), and the frame length rule. Every valid message encodes to exactly
 the reference's bytes in Rust and decodes back. The reference also checks, over every valid message and every
 single-bit change of it, that the result is refused or decodes to a message that encodes back to the same bytes.

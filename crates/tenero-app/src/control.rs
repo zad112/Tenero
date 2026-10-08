@@ -2,7 +2,7 @@
 //! `docs/CONTROL_PROTOCOL.md` is the description, `tests/vectors/control.json` the golden vectors.
 //!
 //! A frame is `length u32 little-endian | body`, the body `kind u8 | payload`, the length at most [`MAX_FRAME`].
-//! Requests have kinds 1 to 20 (4, 5 and 15, the ring members' outputs of version 2, are retired and unknown); the answer
+//! Requests have kinds 1 to 21 (4, 5 and 15, the ring members' outputs of version 2, are retired and unknown); the answer
 //! to request `k` has kind `k | 0x80`; an error answer is `0xFF`.
 //! Decoding is strict: an unknown kind, a short payload, a trailing byte, a count out of range or text that is not
 //! UTF-8 is an error, and one message has one encoding. **Experimental and unaudited.**
@@ -146,6 +146,11 @@ pub enum Request {
     /// A mined block. The answer says whether it is in the chain, or on a side branch (it lost a race); a block the
     /// node refuses is an error answer.
     SubmitBlock(Block),
+    /// A block found on one of this node's recent templates, handed back as its HEADER alone: the header's transaction
+    /// root names the template, and the node puts the block together from the coinbase and the transaction ids it kept
+    /// (the transactions are in its pool). Answered as `SubmitBlock` is; a template the node no longer has, or one whose
+    /// transactions have left its pool, is an error answer (the work is stale).
+    SubmitHeader(BlockHeader),
     /// Up to `count` [`BlockSummary`]s from height `from` on (`count` is 1 to [`MAX_BLOCKS_PER_REQUEST`]): a block explorer's
     /// list of blocks.
     Headers {
@@ -158,16 +163,31 @@ pub enum Request {
     ChainStats,
 }
 
-/// What a miner searches: the block with an empty nonce and mix, the height, and the target its id must be below
-/// (big-endian). `anchor` is the randomness the node made the coinbase output with (Carrot's Janus anchor): with it the
-/// miner makes the same output from its own address and the amount, and so knows the template pays it
-/// (`remote_miner::check_template`).
+/// What a miner searches, COMPACT: the header (its nonce and mix empty), the coinbase, and the ids of the transactions in
+/// order, not the transactions; the height and the target its id must be below (big-endian). The miner checks that the
+/// header's root is the root of the coinbase and those ids ([`Template::tx_root`]), so the body cannot be changed under
+/// its work, and hands a found block back as its header ([`Request::SubmitHeader`]). A template is about 32 bytes a
+/// transaction, so even a ceiling block (12 MiB of weight) is a small message. `anchor` is the randomness the node made
+/// the coinbase output with (Carrot's Janus anchor): with it the miner makes the same output from its own address and the
+/// amount, and so knows the template pays it (`remote_miner::check_template`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Template {
-    pub block: Block,
+    pub header: BlockHeader,
+    pub coinbase: Coinbase,
+    pub tx_ids: Vec<[u8; 32]>,
     pub height: u64,
     pub target: [u8; 32],
     pub anchor: [u8; 16],
+}
+
+impl Template {
+    /// The root of the coinbase and the transaction ids: what the header's `tx_root` must be.
+    pub fn tx_root(&self) -> Result<[u8; 32], EncodeError> {
+        let mut ids = Vec::with_capacity(1 + self.tx_ids.len());
+        ids.push(tenero_core::v3::ids::coinbase_id(&self.coinbase)?);
+        ids.extend_from_slice(&self.tx_ids);
+        Ok(tenero_core::v2::ids::merkle_root(&ids))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,6 +218,11 @@ pub enum Response {
     /// The block was taken: `in_chain` is true when it is part of the node's chain, false when it is on a side branch
     /// because another block took its place first.
     BlockSubmitted {
+        id: [u8; 32],
+        in_chain: bool,
+    },
+    /// The answer to `SubmitHeader`, the same as `BlockSubmitted`'s.
+    HeaderSubmitted {
         id: [u8; 32],
         in_chain: bool,
     },
@@ -259,6 +284,8 @@ pub const K_KEY_IMAGES_SPENT: u8 = 14;
 pub const K_CHECK_POW: u8 = 16;
 /// `spend_paths`: the curve-tree paths a spend is proven with (version 3).
 pub const K_SPEND_PATHS: u8 = 20;
+/// `submit_header`: a block found on a compact template, handed back as its header.
+pub const K_SUBMIT_HEADER: u8 = 21;
 /// The most outputs one `SpendPaths` request may ask about. A path is at most about 12 KiB (a leaf chunk of 38 outputs
 /// and a chunk for each of up to eight layers), so the answer stays well inside a frame.
 pub const MAX_SPEND_PATHS: usize = 512;
@@ -317,6 +344,7 @@ impl Request {
             Request::Blocks { .. } => K_BLOCKS,
             Request::BlockTemplate { .. } => K_BLOCK_TEMPLATE,
             Request::SubmitBlock(_) => K_SUBMIT_BLOCK,
+            Request::SubmitHeader(_) => K_SUBMIT_HEADER,
             Request::Headers { .. } => K_HEADERS,
             Request::Mempool => K_MEMPOOL,
             Request::ChainStats => K_CHAIN_STATS,
@@ -368,6 +396,7 @@ impl Request {
                 w.u64(*max_weight);
             }
             Request::SubmitBlock(b) => b.write(&mut w)?,
+            Request::SubmitHeader(h) => h.write(&mut w)?,
         }
         Ok(w.into_bytes())
     }
@@ -422,6 +451,7 @@ impl Request {
                 max_weight: r.u64()?,
             },
             K_SUBMIT_BLOCK => Request::SubmitBlock(Block::read(&mut r)?),
+            K_SUBMIT_HEADER => Request::SubmitHeader(BlockHeader::read(&mut r)?),
             other => return Err(ControlError::UnknownKind(other)),
         };
         r.finish().map_err(|_| ControlError::Trailing)?;
@@ -551,6 +581,7 @@ impl Response {
             Response::Blocks(_) => K_BLOCKS | ANSWER,
             Response::Template(_) => K_BLOCK_TEMPLATE | ANSWER,
             Response::BlockSubmitted { .. } => K_SUBMIT_BLOCK | ANSWER,
+            Response::HeaderSubmitted { .. } => K_SUBMIT_HEADER | ANSWER,
             Response::Headers(_) => K_HEADERS | ANSWER,
             Response::Mempool { .. } => K_MEMPOOL | ANSWER,
             Response::ChainStats(_) => K_CHAIN_STATS | ANSWER,
@@ -632,9 +663,15 @@ impl Response {
                 w.u64(t.height);
                 w.raw(&t.target);
                 w.raw(&t.anchor);
-                t.block.write(&mut w)?;
+                t.header.write(&mut w)?;
+                t.coinbase.write(&mut w)?;
+                w.count(t.tx_ids.len(), 0, MAX_BLOCK_TXS)?;
+                for id in &t.tx_ids {
+                    w.raw(id);
+                }
             }
-            Response::BlockSubmitted { id, in_chain } => {
+            Response::BlockSubmitted { id, in_chain }
+            | Response::HeaderSubmitted { id, in_chain } => {
                 w.raw(id);
                 put_flag(&mut w, *in_chain);
             }
@@ -746,9 +783,15 @@ impl Response {
                 height: r.u64()?,
                 target: r.array()?,
                 anchor: r.array()?,
-                block: Block::read(&mut r)?,
+                header: BlockHeader::read(&mut r)?,
+                coinbase: Coinbase::read(&mut r)?,
+                tx_ids: r.list(0, MAX_BLOCK_TXS, |r| r.array())?,
             }),
             x if x == K_SUBMIT_BLOCK | ANSWER => Response::BlockSubmitted {
+                id: r.array()?,
+                in_chain: flag(&mut r)?,
+            },
+            x if x == K_SUBMIT_HEADER | ANSWER => Response::HeaderSubmitted {
                 id: r.array()?,
                 in_chain: flag(&mut r)?,
             },

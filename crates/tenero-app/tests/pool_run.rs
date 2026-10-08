@@ -34,6 +34,8 @@ fn address(n: u8) -> Address {
 struct FakeNode {
     height: AtomicU64,
     submitted: Mutex<Vec<Block>>,
+    /// The coinbase of every template made (a header names its template by the root).
+    coinbases: Mutex<Vec<Coinbase>>,
 }
 
 impl FakeNode {
@@ -80,19 +82,30 @@ impl PoolNode for FakeNode {
             nonce: 0,
             mix: [0; 64],
         };
+        self.coinbases.lock().unwrap().push(coinbase.clone());
         Ok(Template {
-            block: Block {
-                header,
-                coinbase,
-                transactions: vec![],
-            },
+            header,
+            coinbase,
+            tx_ids: vec![],
             height,
             target: U256::pow2(250).unwrap().to_be_bytes(),
             anchor: ANCHOR,
         })
     }
-    fn submit_block(&self, block: Block) -> Result<BlockVerdict, String> {
-        self.submitted.lock().unwrap().push(block);
+    fn submit_header(&self, header: BlockHeader) -> Result<BlockVerdict, String> {
+        let coinbase = self
+            .coinbases
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|c| ids::block_tx_root(c, &[]).unwrap() == header.tx_root)
+            .cloned()
+            .expect("a header of one of this node's templates");
+        self.submitted.lock().unwrap().push(Block {
+            header,
+            coinbase,
+            transactions: vec![],
+        });
         Ok(BlockVerdict::InChain([9; 32]))
     }
     fn block_id_at(&self, _h: u64) -> Result<Option<[u8; 32]>, String> {
@@ -119,6 +132,7 @@ fn start(tweak: impl FnOnce(&mut PoolConfig)) -> Rig {
     let node = Arc::new(FakeNode {
         height: AtomicU64::new(10),
         submitted: Mutex::new(vec![]),
+        coinbases: Mutex::new(vec![]),
     });
     let mut cfg = PoolConfig::new("test", address(200), 5);
     cfg.handshake_timeout = Duration::from_millis(600);

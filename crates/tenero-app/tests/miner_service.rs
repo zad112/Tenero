@@ -531,12 +531,12 @@ fn handing_in_a_block_is_limited_apart_from_info_so_a_slowed_down_miner_can_stil
             // (the one request a minute is spent: the next is told to slow down)
             let second = n.info().map(|_| ());
             // a block that is not valid (its timestamp is zero): what matters is that it is not turned away for being asked too often
-            let mut b = t.block;
-            b.header.timestamp = 0;
-            let first = n.submit_block(b.clone()).unwrap();
+            let mut h = t.header;
+            h.timestamp = 0;
+            let first = n.submit_header(h.clone()).unwrap();
             let mut last = first.clone();
             for _ in 0..miner_service::SUBMITS_PER_MINUTE {
-                last = n.submit_block(b.clone()).unwrap();
+                last = n.submit_header(h.clone()).unwrap();
             }
             (second, first, last)
         });
