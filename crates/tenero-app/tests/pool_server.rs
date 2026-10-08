@@ -41,6 +41,8 @@ struct NodeState {
     target: U256,
     verdict: Option<BlockVerdict>,
     submitted: Vec<Block>,
+    /// The coinbase of every template made (a header names its template by the root).
+    coinbases: Vec<Coinbase>,
     chain: std::collections::HashMap<u64, [u8; 32]>,
     templates_made: u64,
     /// How many times the node was asked to check a mix.
@@ -102,21 +104,31 @@ impl PoolNode for FakeNode {
             nonce: 0,
             mix: [0; 64],
         };
+        s.coinbases.push(coinbase.clone());
         Ok(Template {
-            block: Block {
-                header,
-                coinbase,
-                transactions: vec![],
-            },
+            header,
+            coinbase,
+            tx_ids: vec![],
             height,
             target: s.target.to_be_bytes(),
             anchor: ANCHOR,
         })
     }
 
-    fn submit_block(&self, block: Block) -> Result<BlockVerdict, String> {
+    fn submit_header(&self, header: BlockHeader) -> Result<BlockVerdict, String> {
         let mut s = self.state.lock().unwrap();
-        s.submitted.push(block);
+        // the node puts the block together from the template it kept
+        let coinbase = s
+            .coinbases
+            .iter()
+            .find(|c| ids::block_tx_root(c, &[]).unwrap() == header.tx_root)
+            .cloned()
+            .expect("a header of one of this node's templates");
+        s.submitted.push(Block {
+            header,
+            coinbase,
+            transactions: vec![],
+        });
         match s.verdict.clone() {
             Some(v) => Ok(v),
             None => Err("the node did not answer".into()),
@@ -154,6 +166,7 @@ fn rig_with(tweak: impl FnOnce(&mut PoolConfig)) -> Rig {
             target: U256::pow2(250).unwrap(),
             verdict: Some(BlockVerdict::InChain([0; 32])),
             submitted: vec![],
+            coinbases: vec![],
             chain: Default::default(),
             templates_made: 0,
             pow_calls: 0,

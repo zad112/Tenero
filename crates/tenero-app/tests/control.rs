@@ -201,7 +201,9 @@ fn responses() -> Vec<Response> {
         }),
         Response::Stopping,
         Response::Template(tenero_app::control::Template {
-            block: sample_block(),
+            header: sample_block().header,
+            coinbase: sample_block().coinbase,
+            tx_ids: vec![[3; 32], [4; 32]],
             height: 9,
             target: [0xaa; 32],
             anchor: [0x5a; 16],
@@ -295,7 +297,7 @@ fn malformed_requests_are_refused_not_guessed() {
         Err(ControlError::BadLength(0))
     ));
     // 4, 5 and 15 were version 2's requests for ring members: retired, so unknown
-    for kind in [0u8, 4, 5, 15, 21, 0x80, 0xFF] {
+    for kind in [0u8, 4, 5, 15, 22, 0x80, 0xFF] {
         assert_eq!(
             Request::from_body(&[kind]),
             Err(ControlError::UnknownKind(kind))

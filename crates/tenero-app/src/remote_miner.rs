@@ -18,10 +18,8 @@ use std::time::{Duration, Instant};
 use tenero_core::u256::U256;
 use tenero_core::v2::ids::PowKind;
 use tenero_core::v3::ids;
-use tenero_core::v3::Block;
 use tenero_miner::{
-    block_reward, meets_target, Counters, EventSink, Job, Miner, MinerEvent, Msg, Solution,
-    WalletPayout,
+    meets_target, Counters, EventSink, Job, Miner, MinerEvent, Msg, Solution, WalletPayout,
 };
 use tenero_wallet::Address;
 
@@ -40,8 +38,8 @@ pub const TEMPLATE_CLOCK_SLACK_SECS: u64 = 3600;
 ///   output the template's anchor makes for `to` at that height and amount (Carrot: the node makes the output, since its
 ///   key depends on the amount; the anchor it hands back lets the miner make the same output itself). The amount is the
 ///   chain's rule and cannot be checked without the chain: a wrong amount makes the block invalid and costs only work;
-/// * the header's `tx_root` matches the coinbase and the transactions in the body, so the body cannot be swapped after
-///   the work is done;
+/// * the header's `tx_root` is the root of the coinbase and the transaction ids the template lists, so the body cannot
+///   be swapped after the work is done (the node puts the block together from them when the header comes back);
 /// * the nonce and mix are empty and the timestamp is within [`TEMPLATE_CLOCK_SLACK_SECS`] of `now_secs`.
 ///
 /// It cannot check that the target is the right difficulty or that the transactions are valid: both need the chain.
@@ -52,17 +50,16 @@ pub fn check_template(
     to: &Address,
     now_secs: u64,
 ) -> Result<(), String> {
-    let b = &t.block;
-    if t.height != height || b.coinbase.height != height {
+    if t.height != height || t.coinbase.height != height {
         return Err(format!(
             "the template is for height {}, not {height}",
             t.height
         ));
     }
-    if &b.header.prev_id != prev_id {
+    if &t.header.prev_id != prev_id {
         return Err("the template builds on another block than the tip".into());
     }
-    if !b.coinbase.extra.is_empty() {
+    if !t.coinbase.extra.is_empty() {
         return Err("the coinbase carries extra data".into());
     }
     let pays_us = |o: &tenero_core::v3::CoinbaseOutput| {
@@ -80,18 +77,18 @@ pub fn check_template(
                 && o.anchor_enc == p.anchor_enc
         })
     };
-    match b.coinbase.outputs.as_slice() {
+    match t.coinbase.outputs.as_slice() {
         [o] if to.kind == tenero_wallet::Kind::Main && pays_us(o) => {}
         _ => return Err("the coinbase does not pay the address this miner asked for".into()),
     }
-    match ids::block_tx_root(&b.coinbase, &b.transactions) {
-        Ok(root) if root == b.header.tx_root => {}
+    match t.tx_root() {
+        Ok(root) if root == t.header.tx_root => {}
         _ => return Err("the header's transaction root does not match the block's body".into()),
     }
-    if b.header.nonce != 0 || b.header.mix != [0u8; 64] {
+    if t.header.nonce != 0 || t.header.mix != [0u8; 64] {
         return Err("the template already carries a nonce or a mix".into());
     }
-    if b.header.timestamp.abs_diff(now_secs) > TEMPLATE_CLOCK_SLACK_SECS {
+    if t.header.timestamp.abs_diff(now_secs) > TEMPLATE_CLOCK_SLACK_SECS {
         return Err("the template's timestamp is far from this computer's clock".into());
     }
     Ok(())
@@ -177,7 +174,8 @@ pub struct RemoteStats {
 
 struct Current {
     job_id: u64,
-    block: Block,
+    /// The template mined (compact: a found block goes back as its header).
+    template: Template,
     /// The block it builds on.
     tip: [u8; 32],
     target: U256,
@@ -266,10 +264,10 @@ impl RemoteMiner {
             self.current = Some(cur);
             return Ok(());
         }
-        let mut block = cur.block;
-        block.header.nonce = sol.nonce;
-        block.header.mix = sol.mix;
-        let id = ids::block_id(&block.header, self.pow);
+        let mut header = cur.template.header.clone();
+        header.nonce = sol.nonce;
+        header.mix = sol.mix;
+        let id = ids::block_id(&header, self.pow);
         if !meets_target(&id, &cur.target) {
             self.stats.bad_solutions += 1;
             self.log(&format!(
@@ -278,8 +276,13 @@ impl RemoteMiner {
             ));
             return Ok(());
         }
-        let height = block.coinbase.height;
-        let reward = block_reward(&block);
+        let height = cur.template.coinbase.height;
+        let reward = cur
+            .template
+            .coinbase
+            .outputs
+            .iter()
+            .fold(0u64, |a, o| a.saturating_add(o.amount));
         let secs = cur.started.elapsed().as_secs_f64();
         self.stats.blocks_found += 1;
         self.last_found = Some(Instant::now());
@@ -288,14 +291,14 @@ impl RemoteMiner {
             sol.nonce,
             cur.started.elapsed().as_secs_f64()
         ));
-        let mut verdict = node.submit_block(block.clone())?;
+        let mut verdict = node.submit_header(header.clone())?;
         // a block the node would not take because it was asked too often is NOT an invalid block: it is handed in again
         for _ in 0..5 {
             match &verdict {
                 BlockVerdict::Refused(why) if is_slow_down(why) => {
                     self.stats.slowed_down += 1;
                     std::thread::sleep(self.cfg.slow_down_pause);
-                    verdict = node.submit_block(block.clone())?;
+                    verdict = node.submit_header(header.clone())?;
                 }
                 _ => break,
             }
@@ -396,10 +399,7 @@ impl RemoteMiner {
         let to = *self.payout.address();
         let t = node.block_template(&to, self.cfg.max_weight)?;
         self.stats.templates += 1;
-        if t.height != height
-            || t.block.coinbase.height != height
-            || t.block.header.prev_id != info.tip_id
-        {
+        if t.height != height || t.coinbase.height != height || t.header.prev_id != info.tip_id {
             // the tip moved between our two questions: the reward would not be readable by the wallet (its key
             // exchange binds the height), so this template is not used
             self.stats.stale_templates += 1;
@@ -425,10 +425,10 @@ impl RemoteMiner {
         }
         let id = self.next_id;
         self.next_id += 1;
-        let tip = t.block.header.prev_id;
+        let tip = t.header.prev_id;
         self.miner.submit(Job {
             id,
-            header: t.block.header.clone(),
+            header: t.header.clone(),
             height,
             target: U256::from_be_bytes(&t.target),
             stale: Arc::new(AtomicBool::new(false)),
@@ -436,9 +436,9 @@ impl RemoteMiner {
         });
         self.current = Some(Current {
             job_id: id,
-            block: t.block,
-            tip,
             target: U256::from_be_bytes(&t.target),
+            template: t,
+            tip,
             started: Instant::now(),
         });
         Ok(())

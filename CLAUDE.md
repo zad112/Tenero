@@ -69,6 +69,11 @@ The old Python miner, wallet and command line (`miner.py`, `cli.py`, `gpu_test.b
    **Owner-approved exception (2026-10-08):** the FCMP++ crates of monero-oxide (only partly audited), pinned to an exact
    commit, and a Rust transcription of the Carrot specification that must reproduce Monero's C++ `carrot_core` vectors bit for bit;
    both are labelled unaudited wherever the program shows privacy (`docs/FCMP_CARROT_PLAN.md`). Never design new cryptography.
+   **Second owner-approved exception (2026-10-08):** message signatures and payment proofs on Carrot, which neither Monero nor the
+   Carrot specification has designed: composed by us from textbook parts only (a Schnorr proof of knowledge of a representation
+   over G and T; payment proofs that reveal one output's contextual secret and are checked by recomputing Carrot), defined in
+   `docs/WALLET_PROOFS.md`, with an independent Python reference; labelled **our own, unreviewed** wherever the program offers them.
+   Nothing beyond that.
 4. **Bit for bit, or it is wrong.** Any implementation of ChaCha20, the dataset fill, the fold or the attempt
    must reproduce `tests/vectors/` exactly. CUDA changes must pass `reference/tests/test_fused_kernels.py` (which
    includes mutation tests), rebuild the embedded fat binaries (`crates/tenero-gpu/kernels/build_kernels.py`; a test fails while they are stale), keep `crates/tenero-gpu/kernels/matmulhash.cu` identical to the Python copy (`reference/tests/test_kernel_source_copy.py`), and, before they are called done, pass the Rust GPU checks on the owner's machine (`cargo test --release -p tenero-gpu -- --ignored --test-threads=1`).

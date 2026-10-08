@@ -117,29 +117,35 @@ fn scan_block(v: &Value) -> ScanBlock {
     }
 }
 
+fn header(h: &Value) -> BlockHeader {
+    BlockHeader {
+        version: u(&h["version"]) as u16,
+        prev_id: arr(&h["prev_id"]),
+        timestamp: u(&h["timestamp"]),
+        tx_root: arr(&h["tx_root"]),
+        nonce: u(&h["nonce"]),
+        mix: arr(&h["mix"]),
+    }
+}
+
+fn coinbase(cb: &Value) -> Coinbase {
+    Coinbase {
+        version: u(&cb["version"]) as u16,
+        height: u(&cb["height"]),
+        outputs: cb["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(cb_output)
+            .collect(),
+        extra: unhex(cb["extra"].as_str().unwrap()),
+    }
+}
+
 fn block(v: &Value) -> Block {
-    let h = &v["header"];
-    let cb = &v["coinbase"];
     Block {
-        header: BlockHeader {
-            version: u(&h["version"]) as u16,
-            prev_id: arr(&h["prev_id"]),
-            timestamp: u(&h["timestamp"]),
-            tx_root: arr(&h["tx_root"]),
-            nonce: u(&h["nonce"]),
-            mix: arr(&h["mix"]),
-        },
-        coinbase: Coinbase {
-            version: u(&cb["version"]) as u16,
-            height: u(&cb["height"]),
-            outputs: cb["outputs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(cb_output)
-                .collect(),
-            extra: unhex(cb["extra"].as_str().unwrap()),
-        },
+        header: header(&v["header"]),
+        coinbase: coinbase(&v["coinbase"]),
         transactions: v["transactions"]
             .as_array()
             .unwrap()
@@ -215,6 +221,7 @@ fn request(m: &Value) -> Request {
             max_weight: u(&m["max_weight"]),
         },
         "submit_block" => Request::SubmitBlock(block(&m["block"])),
+        "submit_header" => Request::SubmitHeader(header(&m["header"])),
         "headers" => Request::Headers {
             from: u(&m["from"]),
             count: u(&m["count"]) as u16,
@@ -294,12 +301,18 @@ fn response(m: &Value) -> Response {
                 .collect(),
         ),
         "template" => Response::Template(Template {
-            block: block(&m["block"]),
+            header: header(&m["header"]),
+            coinbase: coinbase(&m["coinbase"]),
+            tx_ids: m["tx_ids"].as_array().unwrap().iter().map(arr).collect(),
             height: u(&m["height"]),
             target: arr(&m["target"]),
             anchor: arr(&m["anchor"]),
         }),
         "block_submitted" => Response::BlockSubmitted {
+            id: arr(&m["id"]),
+            in_chain: m["in_chain"].as_bool().unwrap(),
+        },
+        "header_submitted" => Response::HeaderSubmitted {
             id: arr(&m["id"]),
             in_chain: m["in_chain"].as_bool().unwrap(),
         },

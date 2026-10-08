@@ -128,7 +128,10 @@ impl Drop for ServiceHandle {
 pub fn allowed(req: &Request) -> bool {
     matches!(
         req,
-        Request::Info | Request::BlockTemplate { .. } | Request::SubmitBlock(_)
+        Request::Info
+            | Request::BlockTemplate { .. }
+            | Request::SubmitBlock(_)
+            | Request::SubmitHeader(_)
     )
 }
 
@@ -396,7 +399,7 @@ fn serve(
                 return Ok(());
             }
         };
-        let submit = matches!(req, Request::SubmitBlock(_));
+        let submit = matches!(req, Request::SubmitBlock(_) | Request::SubmitHeader(_));
         let limit = if submit {
             SUBMITS_PER_MINUTE
         } else {

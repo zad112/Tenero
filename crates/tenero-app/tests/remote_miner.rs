@@ -19,7 +19,7 @@ use tenero_app::server::{start, ControlHook, Meta};
 use tenero_chain::Sha256Pow;
 use tenero_core::u256::U256;
 use tenero_core::v2::ids::PowKind;
-use tenero_core::v3::{Block, BlockHeader, Coinbase, CoinbaseOutput, VERSION};
+use tenero_core::v3::{BlockHeader, Coinbase, CoinbaseOutput, VERSION};
 use tenero_miner::{
     Backend, Counters, Job, Miner, MinerEvent, Sha256Backend, Solution, WalletPayout,
 };
@@ -189,11 +189,11 @@ fn a_template_is_a_block_on_the_tip_that_pays_the_miner_and_names_its_target() {
         node.block_template(&address(), 1_000_000).unwrap()
     });
     assert_eq!(t.height, tip_h + 1);
-    assert_eq!(t.block.coinbase.height, tip_h + 1);
-    assert_eq!(t.block.header.prev_id, tip_id);
+    assert_eq!(t.coinbase.height, tip_h + 1);
+    assert_eq!(t.header.prev_id, tip_id);
     assert_eq!(t.target, want_target);
     // the reward goes where the miner said, in full: the output the anchor makes for the miner's address and the amount
-    let o = &t.block.coinbase.outputs[0];
+    let o = &t.coinbase.outputs[0];
     assert!(o.amount > 0);
     let want =
         coinbase_payout_to_keys(&keys().0, &keys().1, t.height, o.amount, &t.anchor).unwrap();
@@ -221,7 +221,7 @@ fn a_template_is_a_block_on_the_tip_that_pays_the_miner_and_names_its_target() {
     wallet.sync(engine.node()).unwrap();
     assert_eq!(wallet.owned().len() as u64, tip_h, "the earlier rewards");
     // the nonce and mix are for the miner to fill
-    assert_eq!((t.block.header.nonce, t.block.header.mix), (0, [0; 64]));
+    assert_eq!((t.header.nonce, t.header.mix), (0, [0; 64]));
 }
 
 #[test]
@@ -277,6 +277,71 @@ fn a_mined_block_is_taken_and_a_late_one_is_said_to_have_lost_the_race() {
     assert!(matches!(a, BlockVerdict::InChain(_)), "{a:?}");
     assert!(matches!(b, BlockVerdict::LostRace(_)), "{b:?}");
     assert_eq!(engine.node().tip().unwrap().0, height);
+}
+
+/// The nonce that makes a header's id meet the target (the test chain's proof of work).
+fn solve(mut h: BlockHeader, target: &[u8; 32]) -> BlockHeader {
+    for nonce in 0.. {
+        h.nonce = nonce;
+        if U256::from_be_bytes(&tenero_core::v3::ids::block_id(&h, PowKind::Sha256))
+            < U256::from_be_bytes(target)
+        {
+            return h;
+        }
+    }
+    unreachable!()
+}
+
+#[test]
+fn a_block_found_on_a_compact_template_goes_back_as_its_header_and_stale_work_is_said_to_be_stale()
+{
+    let rig = Rig::new("compact");
+    let mut engine = rig.engine();
+    let (handle, mut hook) = start(
+        "127.0.0.1:0".parse().unwrap(),
+        COOKIE,
+        Arc::new(AtomicBool::new(false)),
+        meta(),
+    )
+    .unwrap();
+    for _ in 0..2 {
+        mine(&mut engine, &address());
+    }
+    let addr = handle.addr;
+    // a template, solved and handed back as its header: the node puts the block together and it joins the chain
+    let (t, verdict) = with_client(&mut engine, &mut hook, move || {
+        let node = RemoteNode::connect(addr, &COOKIE).unwrap();
+        let t = node.block_template(&address(), u64::MAX).unwrap();
+        // the header's root is the root of what the template lists
+        assert_eq!(t.tx_root().unwrap(), t.header.tx_root);
+        let v = node
+            .submit_header(solve(t.header.clone(), &t.target))
+            .unwrap();
+        (t, v)
+    });
+    assert!(matches!(verdict, BlockVerdict::InChain(_)), "{verdict:?}");
+    assert_eq!(engine.node().tip().unwrap().0, t.height);
+    let stored = engine.node().store().get_block(t.height).unwrap().unwrap();
+    assert_eq!(stored.coinbase, t.coinbase, "the block is the template's");
+    // the tip has moved: that template is gone, and so is any header naming a template the node never gave out
+    let (old, unknown) = with_client(&mut engine, &mut hook, move || {
+        let node = RemoteNode::connect(addr, &COOKIE).unwrap();
+        let old = node
+            .submit_header(solve(t.header.clone(), &t.target))
+            .unwrap();
+        let fresh = node.block_template(&address(), u64::MAX).unwrap();
+        let mut forged = fresh.header.clone();
+        forged.tx_root = [0x77; 32];
+        let unknown = node.submit_header(solve(forged, &fresh.target)).unwrap();
+        (old, unknown)
+    });
+    for v in [old, unknown] {
+        assert!(
+            matches!(&v, BlockVerdict::Refused(why) if why.contains("stale")),
+            "{v:?}"
+        );
+    }
+    assert_eq!(engine.node().tip().unwrap().0, 3);
 }
 
 #[test]
@@ -541,18 +606,16 @@ fn template(keys: &Keys, height: u64, tip: u8, target: [u8; 32]) -> Response {
         .unwrap()
         .as_secs();
     Response::Template(Template {
-        block: Block {
-            header: BlockHeader {
-                version: VERSION,
-                prev_id: [tip; 32],
-                timestamp: now,
-                tx_root: tenero_core::v3::ids::block_tx_root(&coinbase, &[]).unwrap(),
-                nonce: 0,
-                mix: [0; 64],
-            },
-            coinbase,
-            transactions: vec![],
+        header: BlockHeader {
+            version: VERSION,
+            prev_id: [tip; 32],
+            timestamp: now,
+            tx_root: tenero_core::v3::ids::block_tx_root(&coinbase, &[]).unwrap(),
+            nonce: 0,
+            mix: [0; 64],
         },
+        coinbase,
+        tx_ids: vec![],
         height,
         target,
         anchor: ANCHOR,
@@ -620,7 +683,7 @@ fn is_template(r: &Request) -> bool {
 }
 
 fn is_submit(r: &Request) -> bool {
-    matches!(r, Request::SubmitBlock(_))
+    matches!(r, Request::SubmitHeader(_))
 }
 
 // ---- what a node says about a block --------------------------------------------------------------------------------
@@ -634,7 +697,7 @@ fn verdict_miner(answer: Response) -> (Fake, RemoteMiner, Arc<Mutex<Vec<MinerEve
                 view_pubkey,
                 ..
             } => template(&(*spend_pubkey, *view_pubkey), 6, 5, EASY),
-            Request::SubmitBlock(_) => answer.clone(),
+            Request::SubmitHeader(_) => answer.clone(),
             _ => return None,
         })
     }));
@@ -657,11 +720,11 @@ fn a_block_in_the_chain_is_counted() {
     assert_eq!((rm.stats.blocks_lost_race, rm.stats.blocks_refused), (0, 0));
     // the screen is told, with the time it took and what the block pays (the reward of the block that was submitted)
     let seen = f.seen.lock().unwrap();
-    let Some(Request::SubmitBlock(b)) = seen.iter().find(|r| is_submit(r)) else {
+    let Some(Request::SubmitHeader(_)) = seen.iter().find(|r| is_submit(r)) else {
         panic!("no block was submitted")
     };
-    let paid = tenero_miner::block_reward(b);
-    assert!(paid > 0);
+    // what the fake's template pays
+    let paid = 1;
     let ev = ev.lock().unwrap();
     // (stepping the miner by hand: the connection events belong to `run`)
     assert!(matches!(ev[0], MinerEvent::Started { .. }), "{ev:?}");
@@ -736,14 +799,14 @@ fn a_found_block_has_the_nonce_the_backend_found_and_meets_the_target() {
     let node = f.node();
     assert!(drive(&mut rm, &node, 20, |m| m.stats.blocks_found >= 1));
     let seen = f.seen.lock().unwrap();
-    let Some(Request::SubmitBlock(b)) = seen.iter().find(|r| is_submit(r)) else {
+    // a found block goes back as its header alone: the template's, with the nonce found
+    let Some(Request::SubmitHeader(h)) = seen.iter().find(|r| is_submit(r)) else {
         panic!("no block was submitted")
     };
-    let id = tenero_core::v2::ids::block_id(&b.header, PowKind::Sha256);
+    let id = tenero_core::v3::ids::block_id(h, PowKind::Sha256);
     assert!(U256::from_be_bytes(&id) < U256::from_be_bytes(&EASY));
-    assert_eq!(b.coinbase.height, 6);
-    assert_eq!(b.header.prev_id, [5; 32]);
-    assert_eq!(b.header.mix, [0; 64], "the test chain's mix is zero");
+    assert_eq!(h.prev_id, [5; 32]);
+    assert_eq!(h.mix, [0; 64], "the test chain's mix is zero");
 }
 
 // ---- when to start, stop and replace a job -----------------------------------------------------------------------
@@ -910,7 +973,7 @@ fn a_miner_waits_between_blocks_when_told_to() {
                     view_pubkey,
                     ..
                 } => template(&(*spend_pubkey, *view_pubkey), 6, 5, EASY),
-                Request::SubmitBlock(_) => Response::BlockSubmitted {
+                Request::SubmitHeader(_) => Response::BlockSubmitted {
                     id: [1; 32],
                     in_chain: true,
                 },
@@ -1119,7 +1182,7 @@ fn a_miner_whose_node_goes_away_reconnects_and_carries_on() {
                 view_pubkey,
                 ..
             } => template(&(*spend_pubkey, *view_pubkey), 6, 5, EASY),
-            Request::SubmitBlock(_) => Response::BlockSubmitted {
+            Request::SubmitHeader(_) => Response::BlockSubmitted {
                 id: [1; 32],
                 in_chain: true,
             },
@@ -1188,7 +1251,7 @@ fn a_miner_started_before_its_node_waits_for_it() {
                 view_pubkey,
                 ..
             } => template(&(*spend_pubkey, *view_pubkey), 6, 5, EASY),
-            Request::SubmitBlock(_) => Response::BlockSubmitted {
+            Request::SubmitHeader(_) => Response::BlockSubmitted {
                 id: [1; 32],
                 in_chain: true,
             },
@@ -1288,7 +1351,7 @@ fn the_nonce_and_the_mix_the_backend_found_are_what_is_submitted() {
                 view_pubkey,
                 ..
             } => template(&(*spend_pubkey, *view_pubkey), 6, 5, EASY),
-            Request::SubmitBlock(_) => Response::BlockSubmitted {
+            Request::SubmitHeader(_) => Response::BlockSubmitted {
                 id: [1; 32],
                 in_chain: true,
             },
@@ -1304,10 +1367,10 @@ fn the_nonce_and_the_mix_the_backend_found_are_what_is_submitted() {
     let node = f.node();
     assert!(drive(&mut rm, &node, 10, |m| m.stats.blocks_found >= 1));
     let seen = f.seen.lock().unwrap();
-    let Some(Request::SubmitBlock(b)) = seen.iter().find(|r| is_submit(r)) else {
+    let Some(Request::SubmitHeader(h)) = seen.iter().find(|r| is_submit(r)) else {
         panic!("no block was submitted")
     };
-    assert_eq!((b.header.nonce, b.header.mix), (12345, [7; 64]));
+    assert_eq!((h.nonce, h.mix), (12345, [7; 64]));
 }
 
 #[test]
@@ -1326,7 +1389,7 @@ fn a_template_whose_coinbase_is_for_another_height_is_not_mined_either() {
                 else {
                     unreachable!()
                 };
-                t.block.coinbase.height = 7;
+                t.coinbase.height = 7;
                 Response::Template(t)
             }
             _ => return None,
@@ -1454,21 +1517,19 @@ fn an_honest_template_passes_the_check() {
 fn a_template_that_pays_someone_else_is_refused_even_when_everything_else_is_in_order() {
     // the node puts its own address in the coinbase and recomputes the transaction root: only the payout check sees it
     let mut t = honest(&keys(), 6, 5);
-    t.block.coinbase.outputs[0].onetime_address = [0xee; 32];
-    t.block.header.tx_root =
-        tenero_core::v3::ids::block_tx_root(&t.block.coinbase, &t.block.transactions).unwrap();
+    t.coinbase.outputs[0].onetime_address = [0xee; 32];
+    t.header.tx_root = t.tx_root().unwrap();
     let e = check_template(&t, 6, &[5; 32], &address(), now()).unwrap_err();
     assert!(e.contains("does not pay"), "{e}");
     // each of the other fields of the payout
     for i in 0..3 {
         let mut t = honest(&keys(), 6, 5);
         match i {
-            0 => t.block.coinbase.outputs[0].view_tag = [9; 3],
-            1 => t.block.coinbase.outputs[0].ephemeral_pubkey = [9; 32],
-            _ => t.block.coinbase.outputs[0].anchor_enc = [9; 16],
+            0 => t.coinbase.outputs[0].view_tag = [9; 3],
+            1 => t.coinbase.outputs[0].ephemeral_pubkey = [9; 32],
+            _ => t.coinbase.outputs[0].anchor_enc = [9; 16],
         }
-        t.block.header.tx_root =
-            tenero_core::v3::ids::block_tx_root(&t.block.coinbase, &t.block.transactions).unwrap();
+        t.header.tx_root = t.tx_root().unwrap();
         assert!(check_template(&t, 6, &[5; 32], &address(), now()).is_err());
     }
 }
@@ -1483,9 +1544,8 @@ fn a_template_whose_anchor_or_amount_does_not_make_its_output_is_refused() {
         .contains("does not pay"));
     // a Carrot coinbase output is bound to its amount: the same output with another amount is someone else's
     let mut t = honest(&keys(), 6, 5);
-    t.block.coinbase.outputs[0].amount = 2;
-    t.block.header.tx_root =
-        tenero_core::v3::ids::block_tx_root(&t.block.coinbase, &t.block.transactions).unwrap();
+    t.coinbase.outputs[0].amount = 2;
+    t.header.tx_root = t.tx_root().unwrap();
     assert!(check_template(&t, 6, &[5; 32], &address(), now()).is_err());
     // and an output made for another address with the same anchor
     let other = Wallet::from_seed(&[2; 32], Network::Test, 0).address();
@@ -1507,18 +1567,16 @@ fn a_miner_asks_for_a_template_for_a_main_address_only() {
 #[test]
 fn a_coinbase_that_also_pays_a_second_output_or_carries_extra_data_is_refused() {
     let mut t = honest(&keys(), 6, 5);
-    let o = t.block.coinbase.outputs[0].clone();
-    t.block.coinbase.outputs.push(CoinbaseOutput {
+    let o = t.coinbase.outputs[0].clone();
+    t.coinbase.outputs.push(CoinbaseOutput {
         onetime_address: [0xee; 32],
         ..o
     });
-    t.block.header.tx_root =
-        tenero_core::v3::ids::block_tx_root(&t.block.coinbase, &t.block.transactions).unwrap();
+    t.header.tx_root = t.tx_root().unwrap();
     assert!(check_template(&t, 6, &[5; 32], &address(), now()).is_err());
     let mut t = honest(&keys(), 6, 5);
-    t.block.coinbase.extra = vec![1, 2, 3];
-    t.block.header.tx_root =
-        tenero_core::v3::ids::block_tx_root(&t.block.coinbase, &t.block.transactions).unwrap();
+    t.coinbase.extra = vec![1, 2, 3];
+    t.header.tx_root = t.tx_root().unwrap();
     let e = check_template(&t, 6, &[5; 32], &address(), now()).unwrap_err();
     assert!(e.contains("extra"), "{e}");
 }
@@ -1526,7 +1584,7 @@ fn a_coinbase_that_also_pays_a_second_output_or_carries_extra_data_is_refused() 
 #[test]
 fn a_body_that_does_not_match_the_header_is_refused() {
     let mut t = honest(&keys(), 6, 5);
-    t.block.header.tx_root = [0x99; 32];
+    t.header.tx_root = [0x99; 32];
     let e = check_template(&t, 6, &[5; 32], &address(), now()).unwrap_err();
     assert!(e.contains("transaction root"), "{e}");
 }
@@ -1539,10 +1597,10 @@ fn a_template_for_another_height_tip_or_clock_or_with_work_already_in_it_is_refu
     // a clock a day away
     assert!(check_template(&t, 6, &[5; 32], &address(), now() + 86_400).is_err());
     let mut t = honest(&keys(), 6, 5);
-    t.block.header.nonce = 1;
+    t.header.nonce = 1;
     assert!(check_template(&t, 6, &[5; 32], &address(), now()).is_err());
     let mut t = honest(&keys(), 6, 5);
-    t.block.header.mix = [1; 64];
+    t.header.mix = [1; 64];
     assert!(check_template(&t, 6, &[5; 32], &address(), now()).is_err());
 }
 
@@ -1562,10 +1620,8 @@ fn a_hostile_node_gets_no_hashing_from_the_miner_and_is_never_handed_a_block() {
                 else {
                     unreachable!()
                 };
-                t.block.coinbase.outputs[0].onetime_address = [0xee; 32];
-                t.block.header.tx_root =
-                    tenero_core::v3::ids::block_tx_root(&t.block.coinbase, &t.block.transactions)
-                        .unwrap();
+                t.coinbase.outputs[0].onetime_address = [0xee; 32];
+                t.header.tx_root = t.tx_root().unwrap();
                 Response::Template(t)
             }
             _ => return None,
@@ -1603,7 +1659,7 @@ fn a_node_that_says_slow_down_keeps_the_connection_and_the_job_and_mining_resume
                 view_pubkey,
                 ..
             } => template(&(*spend_pubkey, *view_pubkey), 6, 5, EASY),
-            Request::SubmitBlock(_) => Response::BlockSubmitted {
+            Request::SubmitHeader(_) => Response::BlockSubmitted {
                 id: [1; 32],
                 in_chain: true,
             },
@@ -1662,10 +1718,10 @@ fn a_block_the_node_would_not_take_for_being_asked_too_often_is_handed_in_again_
                 view_pubkey,
                 ..
             } => template(&(*spend_pubkey, *view_pubkey), 6, 5, EASY),
-            Request::SubmitBlock(_) if n2.fetch_add(1, Ordering::SeqCst) < 2 => {
+            Request::SubmitHeader(_) if n2.fetch_add(1, Ordering::SeqCst) < 2 => {
                 Response::Error("too many requests: slow down".into())
             }
-            Request::SubmitBlock(_) => Response::BlockSubmitted {
+            Request::SubmitHeader(_) => Response::BlockSubmitted {
                 id: [1; 32],
                 in_chain: true,
             },
