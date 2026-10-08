@@ -7,12 +7,25 @@ license.workspace = true
 publish.workspace = true
 
 # monero-oxide is not on crates.io (only placeholder 0.0.1 releases), so it is a git dependency
-# pinned to an exact commit: the `0.1.0` tag, 2026-07-31, MIT. Approved by the owner 2026-09-30.
-# The Cypher Stack audit (May 2025) reviewed an earlier state of this code (Serai's networks/monero).
+# pinned to an exact commit: 31c26d96 on the `fcmp++` branch (2026-08-18, MIT), the commit Monero's own
+# FCMP++ stressnet release v0.19.0.0-beta.3.0 pins. It is the `0.1.0` tag (approved by the owner
+# 2026-09-30) plus the FCMP++ work; the two commits only on the tag change CI and Security.md.
+# The Cypher Stack audit (May 2025) reviewed an earlier state of the CLSAG and Bulletproofs+ code.
+# The FCMP++ crates (owner-approved exception to rule 3, 2026-10-08, docs/FCMP_CARROT_PLAN.md) are
+# only PARTLY audited: Veridise (the curve cycle, the membership circuit), zkSecurity (generalized
+# Bulletproofs), Cypher Stack (the composition); see `audits/` at the pinned commit.
 [dependencies]
-monero-bulletproofs = { git = "https://github.com/monero-oxide/monero-oxide", rev = "9e11f5c0f2b18ab821192efa427c863086b51379" }
-monero-ed25519 = { git = "https://github.com/monero-oxide/monero-oxide", rev = "9e11f5c0f2b18ab821192efa427c863086b51379" }
-monero-clsag = { git = "https://github.com/monero-oxide/monero-oxide", rev = "9e11f5c0f2b18ab821192efa427c863086b51379" }
+monero-bulletproofs = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+monero-ed25519 = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+monero-clsag = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+monero-fcmp-plus-plus = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+full-chain-membership-proofs = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+generalized-bulletproofs = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+helioselene = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+# crates.io crates of the same authors that the FCMP++ API takes in its signatures (MIT)
+multiexp = { version = "0.5", default-features = false, features = ["batch"] }
+ciphersuite = { version = "0.4.2", features = ["ed25519"] }
+dalek-ff-group = "0.5"
 
 # Already in the tree through monero-oxide; named here because we use their types and rely on them
 # directly: curve25519-dalek (BSD-3-Clause), zeroize and rand_core (MIT OR Apache-2.0).
@@ -26,9 +39,13 @@ tenero-chain = { path = "../tenero-chain" }
 [dev-dependencies]
 # Test-only: Monero's own transaction parser and signature hash, to check the real CLSAG vector. Same repo,
 # same pin, MIT; adds only hex-literal (MIT OR Apache-2.0) to the tree. Approved by the owner 2026-09-30.
-monero-oxide = { git = "https://github.com/monero-oxide/monero-oxide", rev = "9e11f5c0f2b18ab821192efa427c863086b51379" }
+monero-oxide = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
 # a seeded generator, so the proof tests are reproducible (MIT OR Apache-2.0, in the tree already)
 rand_chacha = "0.3"
+# Test-only, for the FCMP++ proving timings (tests/fcmp_pp_prove_timing.rs): the FCMP++ generators and the scalar
+# decomposition the blinds need. Same repo, same pin, MIT; both are already in the tree through monero-fcmp-plus-plus.
+monero-fcmp-plus-plus-generators = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+ec-divisors = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93", features = ["ed25519"] }
 
 [lints]
 workspace = true

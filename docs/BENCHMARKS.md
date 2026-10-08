@@ -293,6 +293,46 @@ x86-64 build (no `target-cpu=native`)**, so the per-block figure is the "default
 - **What it does not include:** the network, the transaction proofs (their own cost, measured in M7), disk beyond
   the store, and any block with transactions in it.
 
+## FCMP++ and CLSAG: making and checking a spend proof (measured on the owner's machine, 2026-10-08)
+
+**Measured**, release build, ONE thread, AMD Ryzen 9 5900X, Windows 11, monero-oxide at `31c26d96` (the commit Monero's own FCMP++
+stressnet pins; `docs/FCMP_CARROT_PLAN.md`, G1). Checking: Monero's own test proofs, `cargo test --release -p tenero-crypto --test
+upstream_fcmp_pp -- --ignored --nocapture`. Making: `--test fcmp_pp_prove_timing` (a random tree of Monero's widths; every proof made is
+verified afterwards). CLSAG: the real Monero mainnet signatures, `--test upstream_clsag -- --ignored`.
+
+**Checking** (what every node pays for every transaction):
+
+| proof | bytes | time | per input |
+|---|---|---|---|
+| CLSAG, ring of 16 (`beta` today) | | | **1.92 ms** |
+| FCMP++, 1 input, 7 layers | 6,688 | 25 ms | 25 ms |
+| FCMP++, 2 inputs | 8,064 | 41 ms | 21 ms |
+| FCMP++, 4 inputs | 10,688 | 72 ms | 18 ms |
+| FCMP++, 8 inputs | 15,808 | 130 ms | 16 ms |
+| FCMP++, 128 inputs | 166,080 | 2.57 s | 20 ms |
+| FCMP++, 16 one-input proofs as ONE batch (a block) | | | **9.4 ms** |
+
+The first check in a process also builds the generators: about 1.6 s, once. So FCMP++ costs about **10 to 13 times** CLSAG per input
+to check, about 5 times when a block's proofs are batched.
+
+**Making** (what a wallet pays to spend; 1 to 7 layers, a 7-layer tree holds up to 12 billion outputs; the membership proof is
+almost all of it, the spend-authorisation proof under 1 ms an input):
+
+| layers (outputs at most) | 1 input | 2 inputs | 4 inputs |
+|---|---|---|---|
+| 1 (38) | 0.54 s | 0.79 s | 2.05 s |
+| 2 (684) | 0.59 s | 0.91 s | 2.36 s |
+| 3 (25,992) | 0.65 s | 1.59 s | 3.02 s |
+| 4 (467,856) | 0.71 s | 1.74 s | 3.39 s |
+| 5 (17.8 million) | 0.80 s | 1.94 s | 3.76 s |
+| 6 (320 million) | 0.86 s | 2.17 s | 4.78 s |
+| 7 (12.2 billion) | 0.91 s | 2.37 s | 5.15 s |
+
+The upstream crate proves on one thread; nothing here was parallelised. **Proof sizes** are exact, not measured
+(`FcmpPlusPlus::proof_size`; `--test upstream_fcmp_pp -- --ignored print_proof_sizes`): the most inputs whose FCMP++ proof alone fits
+today's `MAX_PROOF` of 64 KiB is 126 at 1 layer, 69 at 4, 48 at 7 and 31 at 12, before the pseudo-outputs and the range proof
+also take their room. The version 3 limits are set from this in G4.
+
 ## Caveats
 
 - Multi-thread attempt timings are noisy: each thread does only 3 attempts, and one run gave 2 threads at
