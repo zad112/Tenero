@@ -12,16 +12,19 @@ use tenero_app::pool_core::{share_target, work_of, Accounts};
 use tenero_app::pool_server::*;
 use tenero_chain::Sha256Pow;
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{self, PowKind};
-use tenero_core::v2::{Block, BlockHeader, Coinbase, CoinbaseOutput, VERSION};
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids;
+use tenero_core::v3::{Block, BlockHeader, Coinbase, CoinbaseOutput, VERSION};
 use tenero_net::noise::NodeKey;
-use tenero_node::Payout;
-use tenero_wallet::{Address, Wallet};
+use tenero_wallet::{coinbase_payout_to_keys, Address, Network, Wallet};
 
 const T0: u64 = 1_700_000_000;
 
+/// The Janus anchor the made-up node makes its outputs with.
+const ANCHOR: [u8; 16] = [0x5a; 16];
+
 fn address(n: u8) -> Address {
-    Wallet::from_seed(&[n; 32], 0).address()
+    Wallet::from_seed(&[n; 32], Network::Test, 0).address()
 }
 
 /// A node that is made up: the tip and the chain are whatever the test says, and a block handed in is kept.
@@ -64,29 +67,29 @@ impl PoolNode for FakeNode {
         Ok((s.height, s.tip, s.syncing))
     }
 
-    fn template(&self, payout: Payout, _max: u32) -> Result<Template, String> {
+    fn template(&self, to: &Address, _max: u64) -> Result<Template, String> {
         let mut s = self.state.lock().unwrap();
         s.templates_made += 1;
         let height = s.height + 1;
-        let payout = if s.evil {
-            Payout {
-                onetime_address: [0xEE; 32],
-                view_tag: [1, 2, 3],
-                ephemeral_pubkey: [0xEF; 32],
-                anchor_enc: [4; 16],
-            }
-        } else {
-            payout
-        };
+        // an evil node pays an address of its own
+        let to = if s.evil { address(0xEE) } else { *to };
+        let p = coinbase_payout_to_keys(
+            &to.spend_pubkey,
+            &to.view_pubkey,
+            height,
+            2_000_000_000,
+            &ANCHOR,
+        )
+        .expect("valid keys");
         let coinbase = Coinbase {
             version: VERSION,
             height,
             outputs: vec![CoinbaseOutput {
-                onetime_address: payout.onetime_address,
+                onetime_address: p.onetime_address,
                 amount: 2_000_000_000,
-                view_tag: payout.view_tag,
-                ephemeral_pubkey: payout.ephemeral_pubkey,
-                anchor_enc: payout.anchor_enc,
+                view_tag: p.view_tag,
+                ephemeral_pubkey: p.ephemeral_pubkey,
+                anchor_enc: p.anchor_enc,
             }],
             extra: vec![],
         };
@@ -107,6 +110,7 @@ impl PoolNode for FakeNode {
             },
             height,
             target: s.target.to_be_bytes(),
+            anchor: ANCHOR,
         })
     }
 

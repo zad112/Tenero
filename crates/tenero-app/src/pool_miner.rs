@@ -17,8 +17,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{self, PowKind};
-use tenero_core::v2::{BlockHeader, VERSION};
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids;
+use tenero_core::v3::{BlockHeader, VERSION};
 use tenero_miner::{meets_target, Counters, EventSink, Job as MineJob, Miner, MinerEvent, Msg};
 
 use crate::pool::{Hello, HelloOk, Job, MinerMessage, PoolMessage};
@@ -480,18 +481,12 @@ pub fn default_pool(network: crate::config::Network) -> Option<(&'static str, [u
         .map(|(_, addr, key)| (*addr, *key))
 }
 
-/// `(network, address, public key)`: **one**, the author's test pool on the beta network (a rented server, 2026-10-07; `docs/RUNNING_A_POOL.md`). It is one computer run by one person, the
-/// pool keeps the block rewards and pays by its own rules, and nothing on the network has any value. The key is the one the pool printed at its first start (`tenero-pool key`); a miner that
-/// uses this entry pins it, so a person who sits between the miner and the pool is refused. **A change of this list needs a new release**, as the seeds' does.
-pub const DEFAULT_POOLS: &[(&str, &str, [u8; 32])] = &[(
-    "beta",
-    "195.26.244.245:38335",
-    [
-        0x02, 0x7d, 0x64, 0x2d, 0xea, 0x40, 0x30, 0x70, 0x45, 0x0c, 0x70, 0xb0, 0xbd, 0x4b, 0x59,
-        0xf0, 0x1b, 0x66, 0xb6, 0x78, 0x2b, 0x99, 0x36, 0x6e, 0x27, 0x69, 0xa1, 0x9c, 0xff, 0x35,
-        0xb2, 0x59,
-    ],
-)];
+/// `(network, address, public key)`: the pools built into the program. **None in 0.3.0 yet**: the author's test pool served `beta`
+/// (`195.26.244.245:38335`, with the 0.2.0 programs), and a `gamma` pool gets its entry once it has run and printed its key
+/// (`tenero-pool key`), which a miner that uses the entry pins, so that a person who sits between the miner and the pool is
+/// refused. A pool keeps the block rewards and pays by its own rules, and nothing on the network has any value. **A change of
+/// this list needs a new release**, as the seeds' does.
+pub const DEFAULT_POOLS: &[(&str, &str, [u8; 32])] = &[];
 
 /// Dials a pool: its address and, if the miner was given one, its public key (pinned).
 pub fn connect(

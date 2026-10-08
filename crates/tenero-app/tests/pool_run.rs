@@ -17,15 +17,18 @@ use tenero_app::pool_net::{self, read_message, write_message, ReadHalf, WriteHal
 use tenero_app::pool_server::*;
 use tenero_chain::Sha256Pow;
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{self, PowKind};
-use tenero_core::v2::{Block, BlockHeader, Coinbase, CoinbaseOutput, VERSION};
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids;
+use tenero_core::v3::{Block, BlockHeader, Coinbase, CoinbaseOutput, VERSION};
 use tenero_miner::{Miner, Sha256Backend};
 use tenero_net::noise::NodeKey;
-use tenero_node::Payout;
-use tenero_wallet::{Address, Wallet};
+use tenero_wallet::{coinbase_payout_to_keys, Address, Network, Wallet};
+
+/// The Janus anchor the made-up node makes its outputs with.
+const ANCHOR: [u8; 16] = [0x5a; 16];
 
 fn address(n: u8) -> Address {
-    Wallet::from_seed(&[n; 32], 0).address()
+    Wallet::from_seed(&[n; 32], Network::Test, 0).address()
 }
 
 struct FakeNode {
@@ -43,17 +46,25 @@ impl PoolNode for FakeNode {
     fn tip(&self) -> Result<(u64, [u8; 32], bool), String> {
         Ok((self.height.load(Ordering::SeqCst), self.tip_id(), false))
     }
-    fn template(&self, payout: Payout, _max: u32) -> Result<Template, String> {
+    fn template(&self, to: &Address, _max: u64) -> Result<Template, String> {
         let height = self.height.load(Ordering::SeqCst) + 1;
+        let p = coinbase_payout_to_keys(
+            &to.spend_pubkey,
+            &to.view_pubkey,
+            height,
+            2_000_000_000,
+            &ANCHOR,
+        )
+        .expect("valid keys");
         let coinbase = Coinbase {
             version: VERSION,
             height,
             outputs: vec![CoinbaseOutput {
-                onetime_address: payout.onetime_address,
+                onetime_address: p.onetime_address,
                 amount: 2_000_000_000,
-                view_tag: payout.view_tag,
-                ephemeral_pubkey: payout.ephemeral_pubkey,
-                anchor_enc: payout.anchor_enc,
+                view_tag: p.view_tag,
+                ephemeral_pubkey: p.ephemeral_pubkey,
+                anchor_enc: p.anchor_enc,
             }],
             extra: vec![],
         };
@@ -77,6 +88,7 @@ impl PoolNode for FakeNode {
             },
             height,
             target: U256::pow2(250).unwrap().to_be_bytes(),
+            anchor: ANCHOR,
         })
     }
     fn submit_block(&self, block: Block) -> Result<BlockVerdict, String> {
@@ -183,7 +195,9 @@ fn ended(r: &mut ReadHalf) -> bool {
 
 #[test]
 fn a_miner_works_for_a_pool_over_a_real_socket_and_shares_and_a_block_are_counted() {
-    let rig = start(|_| {});
+    // a SHA-256 miner on an easy share target can send more than the 600 shares a minute the pool takes before its
+    // difficulty catches up (seen once in 25 runs: 602 sent, one refused for the rate); the rate limit is tested elsewhere
+    let rig = start(|c| c.shares_per_minute = 1_000_000);
     let shutdown = Arc::new(AtomicBool::new(false));
     let mut cfg = PoolMinerConfig::new("test", &address(7).to_text(), "rig7");
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -713,17 +727,11 @@ fn the_tool_fails_cleanly_when_there_is_no_pool_or_the_key_is_wrong() {
 // ---- the pool built into the program ---------------------------------------------------------------------------------------
 
 #[test]
-fn the_built_in_pool_is_the_authors_beta_pool_with_its_key_and_no_other_network_has_one() {
+fn no_network_has_a_built_in_pool_until_gamma_s_pool_has_a_key() {
     use tenero_app::config::Network;
     use tenero_app::pool_miner::{default_pool, DEFAULT_POOLS};
-    let (addr, key) = default_pool(Network::Beta).expect("beta has one");
-    assert_eq!(addr, "195.26.244.245:38335");
-    let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
-    assert_eq!(
-        hex, "027d642dea403070450c70b0bd4b59f01b66b6782b99366e2769a19cff35b259",
-        "the key the pool printed"
-    );
-    for n in [Network::Test, Network::Dev, Network::Alpha] {
+    // beta's pool belongs to the 0.2.0 programs; gamma's is added with the key its pool prints at its first start
+    for n in Network::ALL {
         assert!(
             default_pool(n).is_none(),
             "{} has no built-in pool",

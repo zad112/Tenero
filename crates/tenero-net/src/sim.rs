@@ -22,7 +22,8 @@ use tenero_store::Store;
 use crate::engine::{Action, Engine, EngineConfig, Event, PeerId};
 use crate::message::Message;
 
-pub const LABEL: &str = "tenero simulated network";
+/// The test network's genesis label (the `test` network of the programs, and every simulation).
+pub const LABEL: &str = tenero_core::v3::ids::TEST_LABEL;
 
 /// The public-looking address of simulated node `i` when `per_group` consecutive nodes share a network group
 /// (an IPv4 /16): unique per node.

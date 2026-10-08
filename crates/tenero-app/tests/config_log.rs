@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use tenero_app::config::{
-    check_seed_list, effective_seeds, Config, ConfigError, MineMode, Network, Raw, ALPHA_SEEDS,
+    check_seed_list, effective_seeds, Config, ConfigError, MineMode, Network, Raw,
+    DEFAULT_PRUNE_KEEP, GAMMA_SEEDS,
 };
 use tenero_app::log::{utc_timestamp, Level, Logger};
 
@@ -20,7 +21,12 @@ fn err(file: &str) -> String {
     parse(file, &[]).unwrap_err().0
 }
 
-const ADDRESS_OF_SEED_1: &str = "tni1ca69dc577e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577aebea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d250441930376cce398";
+/// The main address of the seed of ones on a network.
+fn address_of_seed_1(n: Network) -> String {
+    tenero_wallet::Wallet::from_seed(&[1; 32], n.wallet_network(), 0)
+        .address()
+        .to_text()
+}
 
 // ---- defaults and the file format -------------------------------------------------------------------------------
 
@@ -38,7 +44,11 @@ fn the_defaults_are_what_the_documentation_says() {
         "the test network may run on one machine"
     );
     assert_eq!(c.control, "127.0.0.1:18332".parse().unwrap());
-    assert_eq!(c.prune_keep, 0, "an archive node unless told otherwise");
+    assert_eq!(
+        c.prune_keep, DEFAULT_PRUNE_KEEP,
+        "a pruned node unless told otherwise (0.3.0)"
+    );
+    assert_eq!(DEFAULT_PRUNE_KEEP, 5_500);
     assert_eq!(c.assume_valid, None, "assume-valid is off unless asked for");
     assert_eq!(c.mine, MineMode::Off);
     assert_eq!(c.mine_pace, 5);
@@ -131,7 +141,12 @@ fn the_command_line_overrides_the_file() {
 fn the_network_and_the_data_directory_are_required() {
     assert!(err("network=dev").contains("`data`"));
     assert!(err("data=d").contains("`network`"));
-    assert!(err("data=d\nnetwork=main").contains("not `test`, `dev`, `beta` or `alpha`"));
+    assert!(err("data=d\nnetwork=main").contains("not `gamma`, `test` or `dev`"));
+    // the 0.2.0 networks are not this program's
+    for old in ["beta", "alpha"] {
+        let e = err(&format!("data=d\nnetwork={old}"));
+        assert!(e.contains("0.2.0"), "{e}");
+    }
 }
 
 #[test]
@@ -241,30 +256,59 @@ fn mining_needs_the_right_proof_of_work_and_a_valid_address() {
     // an address to pay is required, and must be a real one
     assert!(err("data=d\nnetwork=test\nmine=sha256").contains("`mine_to`"));
     assert!(err("data=d\nnetwork=test\nmine=sha256\nmine_to=nobody").contains("mine_to"));
-    let mut wrong_checksum = ADDRESS_OF_SEED_1.to_string();
-    wrong_checksum.replace_range(10..11, "0");
-    assert!(err(&format!(
+    let test_address = address_of_seed_1(Network::Test);
+    assert!(test_address.starts_with("TENt"));
+    // one character changed: the checksum says so (the last block's characters are the checksum's)
+    let mut wrong_checksum = test_address.clone();
+    let last = wrong_checksum.pop().unwrap();
+    wrong_checksum.push(if last == '1' { '2' } else { '1' });
+    let e = err(&format!(
         "data=d\nnetwork=test\nmine=sha256\nmine_to={wrong_checksum}"
-    ))
-    .contains("checksum"));
+    ));
+    assert!(
+        e.contains("mine_to") && e.contains("invalid address"),
+        "{e}"
+    );
     let c = ok(&format!(
-        "data=d\nnetwork=test\nmine=sha256\nmine_to={ADDRESS_OF_SEED_1}"
+        "data=d\nnetwork=test\nmine=sha256\nmine_to={test_address}"
     ));
     assert_eq!(c.mine, MineMode::Sha256);
-    assert_eq!(c.mine_to.as_deref(), Some(ADDRESS_OF_SEED_1));
+    assert_eq!(c.mine_to.as_deref(), Some(test_address.as_str()));
+    let dev_address = address_of_seed_1(Network::Dev);
     assert_eq!(
         ok(&format!(
-            "data=d\nnetwork=dev\nmine=gpu\nmine_to={ADDRESS_OF_SEED_1}"
+            "data=d\nnetwork=dev\nmine=gpu\nmine_to={dev_address}"
         ))
         .mine,
         MineMode::Gpu
     );
     assert_eq!(
         ok(&format!(
-            "data=d\nnetwork=dev\nmine=cpu\nmine_to={ADDRESS_OF_SEED_1}"
+            "data=d\nnetwork=dev\nmine=cpu\nmine_to={dev_address}"
         ))
         .mine,
         MineMode::Cpu
+    );
+    // another network's address, a beta (tni1) address and a subaddress are refused: none could ever receive the rewards
+    let e = err(&format!(
+        "data=d\nnetwork=gamma\nmine=gpu\nmine_to={dev_address}"
+    ));
+    assert!(e.contains("another network"), "{e}");
+    let e = err("data=d\nnetwork=gamma\nmine=gpu\nmine_to=tni1ca69dc577e885b06854cfb655a2bdb5e7a4612b5bd0d874c11b13ad4d86577aebea3b307da85900a9500ab83f39fe2d40ce59dc6ce4f2c5957892d250441930376cce398");
+    assert!(e.contains("beta"), "{e}");
+    let sub = tenero_wallet::Wallet::from_seed(&[1; 32], tenero_wallet::Network::Gamma, 0)
+        .subaddress(1)
+        .unwrap()
+        .to_text();
+    let e = err(&format!("data=d\nnetwork=gamma\nmine=gpu\nmine_to={sub}"));
+    assert!(e.contains("main address"), "{e}");
+    assert_eq!(
+        ok(&format!(
+            "data=d\nnetwork=gamma\nmine=gpu\nmine_to={}",
+            address_of_seed_1(Network::Gamma)
+        ))
+        .mine,
+        MineMode::Gpu
     );
     // not mining: no address needed
     assert_eq!(ok("data=d\nnetwork=dev\nmine=off").mine, MineMode::Off);
@@ -505,7 +549,7 @@ fn a_seed_list_with_a_mistake_in_it_is_refused() {
 
 #[test]
 fn the_built_in_lists_of_every_network_pass_their_own_check() {
-    assert!(check_seed_list(ALPHA_SEEDS).is_ok(), "ALPHA_SEEDS");
+    assert!(check_seed_list(GAMMA_SEEDS).is_ok(), "GAMMA_SEEDS");
     for n in Network::ALL {
         assert!(check_seed_list(n.builtin_seeds()).is_ok(), "{n:?}");
     }
@@ -515,22 +559,30 @@ fn the_built_in_lists_of_every_network_pass_their_own_check() {
 }
 
 #[test]
-fn alpha_ships_with_the_authors_seed_and_a_node_starts_from_it_by_default() {
-    // the author's server (docs/RUNNING_A_SEED.md); a change of address is a new release
-    assert_eq!(ALPHA_SEEDS, ["194.238.27.60:38333"]);
+fn gamma_ships_with_the_authors_two_seeds_and_a_node_starts_from_them_by_default() {
+    // the author's two servers (decided 2026-10-08), on the port next to gamma's control port; a change is a new release
+    assert_eq!(GAMMA_SEEDS, ["195.26.244.245:38353", "194.238.27.60:38353"]);
     assert_eq!(
-        ok("data=d\nnetwork=alpha").seeds,
-        ["194.238.27.60:38333"],
-        "a new alpha node starts from it with no setting at all"
-    );
-    // one's own seed is added to it, not put in its place, and the same address twice is one
-    assert_eq!(
-        ok("data=d\nnetwork=alpha\nseed=203.0.113.9:1").seeds,
-        ["194.238.27.60:38333", "203.0.113.9:1"]
+        ok("data=d\nnetwork=gamma").seeds,
+        GAMMA_SEEDS.to_vec(),
+        "a new gamma node starts from them with no setting at all"
     );
     assert_eq!(
-        ok("data=d\nnetwork=alpha\nseed=194.238.27.60:38333").seeds,
-        ["194.238.27.60:38333"]
+        ok("data=d\nnetwork=gamma").control,
+        "127.0.0.1:38352".parse().unwrap()
+    );
+    // one's own seed is added to them, not put in their place, and the same address twice is one
+    assert_eq!(
+        ok("data=d\nnetwork=gamma\nseed=203.0.113.9:1").seeds,
+        [
+            "195.26.244.245:38353",
+            "194.238.27.60:38353",
+            "203.0.113.9:1"
+        ]
+    );
+    assert_eq!(
+        ok("data=d\nnetwork=gamma\nseed=194.238.27.60:38353").seeds,
+        GAMMA_SEEDS.to_vec()
     );
     // the private networks start from nothing
     assert!(ok("data=d\nnetwork=test").seeds.is_empty());
@@ -539,12 +591,12 @@ fn alpha_ships_with_the_authors_seed_and_a_node_starts_from_it_by_default() {
 
 #[test]
 fn a_node_reads_the_built_in_seed_option_strictly() {
-    assert_eq!(ok("data=d\nnetwork=alpha").seeds, ALPHA_SEEDS.to_vec());
-    let c = ok("data=d\nnetwork=alpha\nseed=203.0.113.9:1\nno_builtin_seeds=yes");
+    assert_eq!(ok("data=d\nnetwork=gamma").seeds, GAMMA_SEEDS.to_vec());
+    let c = ok("data=d\nnetwork=gamma\nseed=203.0.113.9:1\nno_builtin_seeds=yes");
     assert_eq!(c.seeds, ["203.0.113.9:1"]);
-    assert!(err("data=d\nnetwork=alpha\nno_builtin_seeds=maybe").contains("no_builtin_seeds"));
+    assert!(err("data=d\nnetwork=gamma\nno_builtin_seeds=maybe").contains("no_builtin_seeds"));
     assert!(
-        err("data=d\nnetwork=alpha\nno_builtin_seeds=yes\nno_builtin_seeds=no")
+        err("data=d\nnetwork=gamma\nno_builtin_seeds=yes\nno_builtin_seeds=no")
             .contains("no_builtin_seeds")
     );
 }

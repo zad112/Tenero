@@ -6,14 +6,15 @@ use serde_json::Value;
 use tenero_app::control::{
     frame, frame_len, BlockSummary, ChainStats, ControlError, NodeInfo, NodeKind, Request,
     Response, Template, MAX_BLOCKS_PER_REQUEST, MAX_FRAME, MAX_KEY_IMAGES, MAX_MEMPOOL_LIST,
-    MAX_NAME, MAX_OUTPUTS_PER_REQUEST, MAX_TEXT,
+    MAX_NAME, MAX_PATH_LAYERS, MAX_SPEND_PATHS, MAX_TEXT,
 };
-use tenero_core::v2::{
+use tenero_core::v3::{
     Block, BlockHeader, Coinbase, CoinbaseOutput, Input, Output, Prunable, Transaction, TxPrefix,
 };
-use tenero_node::{Payout, PoolEntry};
-use tenero_store::StoredOutput;
-use tenero_wallet::{Rules, ScanBlock};
+use tenero_node::PoolEntry;
+use tenero_store::TreeState;
+use tenero_tree::PathBytes;
+use tenero_wallet::{Rules, ScanBlock, SpendPaths};
 
 fn vectors() -> Value {
     let path = concat!(
@@ -43,7 +44,6 @@ fn output(v: &Value) -> Output {
         amount_commitment: arr(&v["amount_commitment"]),
         amount_enc: arr(&v["amount_enc"]),
         view_tag: arr(&v["view_tag"]),
-        ephemeral_pubkey: arr(&v["ephemeral_pubkey"]),
         anchor_enc: arr(&v["anchor_enc"]),
     }
 }
@@ -65,8 +65,14 @@ fn prefix(v: &Value) -> TxPrefix {
             .iter()
             .map(output)
             .collect(),
+        ephemeral_pubkeys: v["ephemeral_pubkeys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(arr)
+            .collect(),
         fee: u(&v["fee"]),
-        extra: unhex(v["extra"].as_str().unwrap()),
+        encrypted_payment_id: arr(&v["encrypted_payment_id"]),
     }
 }
 
@@ -74,12 +80,7 @@ fn tx(v: &Value) -> Transaction {
     Transaction {
         prefix: prefix(v),
         prunable: Prunable {
-            rings: v["rings"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|r| r.as_array().unwrap().iter().map(u).collect())
-                .collect(),
+            reference_height: u(&v["reference_height"]),
             proof_data: unhex(v["proof_data"].as_str().unwrap()),
         },
     }
@@ -148,6 +149,24 @@ fn block(v: &Value) -> Block {
     }
 }
 
+fn path(v: &Value) -> PathBytes {
+    PathBytes {
+        position: u(&v["position"]),
+        leaves: v["leaves"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| (arr(&l[0]), arr(&l[1])))
+            .collect(),
+        layers: v["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c.as_array().unwrap().iter().map(arr).collect())
+            .collect(),
+    }
+}
+
 fn request(m: &Value) -> Request {
     match m["type"].as_str().unwrap() {
         "auth" => Request::Auth {
@@ -157,13 +176,9 @@ fn request(m: &Value) -> Request {
         "block" => Request::Block {
             height: u(&m["height"]),
         },
-        "output" => Request::Output {
-            index: u(&m["index"]),
-        },
-        "outputs" => Request::Outputs {
+        "spend_paths" => Request::SpendPaths {
             indexes: m["indexes"].as_array().unwrap().iter().map(u).collect(),
         },
-        "output_count" => Request::OutputCount,
         "check_pow" => Request::CheckPow {
             height: u(&m["height"]),
             header: BlockHeader {
@@ -195,13 +210,9 @@ fn request(m: &Value) -> Request {
             count: u(&m["count"]) as u16,
         },
         "block_template" => Request::BlockTemplate {
-            payout: Payout {
-                onetime_address: arr(&m["payout"]["onetime_address"]),
-                view_tag: arr(&m["payout"]["view_tag"]),
-                ephemeral_pubkey: arr(&m["payout"]["ephemeral_pubkey"]),
-                anchor_enc: arr(&m["payout"]["anchor_enc"]),
-            },
-            max_body_bytes: u(&m["max_body_bytes"]) as u32,
+            spend_pubkey: arr(&m["spend_pubkey"]),
+            view_pubkey: arr(&m["view_pubkey"]),
+            max_weight: u(&m["max_weight"]),
         },
         "submit_block" => Request::SubmitBlock(block(&m["block"])),
         "headers" => Request::Headers {
@@ -226,39 +237,20 @@ fn response(m: &Value) -> Response {
         } else {
             Some(scan_block(&m["block"]))
         }),
-        "output" => Response::Output(if m["output"].is_null() {
-            None
-        } else {
-            let o = &m["output"];
-            Some(StoredOutput {
-                onetime_address: arr(&o["onetime_address"]),
-                amount_commitment: arr(&o["amount_commitment"]),
-                public_amount: u(&o["public_amount"]),
-                height: u(&o["height"]),
-                coinbase: o["coinbase"].as_bool().unwrap(),
-            })
-        }),
-        "outputs_many" => Response::OutputsMany(
-            m["outputs"]
+        "spend_paths" => Response::SpendPaths(SpendPaths {
+            reference_height: u(&m["reference_height"]),
+            tree: TreeState {
+                n_leaves: u(&m["tree"]["n_leaves"]),
+                n_layers: u(&m["tree"]["n_layers"]) as u8,
+                root: arr(&m["tree"]["root"]),
+            },
+            paths: m["paths"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|o| {
-                    if o.is_null() {
-                        None
-                    } else {
-                        Some(StoredOutput {
-                            onetime_address: arr(&o["onetime_address"]),
-                            amount_commitment: arr(&o["amount_commitment"]),
-                            public_amount: u(&o["public_amount"]),
-                            height: u(&o["height"]),
-                            coinbase: o["coinbase"].as_bool().unwrap(),
-                        })
-                    }
-                })
+                .map(|p| if p.is_null() { None } else { Some(path(p)) })
                 .collect(),
-        ),
-        "output_count" => Response::OutputCount(u(&m["count"])),
+        }),
         "pow_checked" => Response::PowChecked(m["ok"].as_bool().unwrap()),
         "spent" => Response::Spent(m["spent"].as_bool().unwrap()),
         "spent_many" => Response::SpentMany(
@@ -271,16 +263,10 @@ fn response(m: &Value) -> Response {
         ),
         "rules" => Response::Rules(Rules {
             chain_id: arr(&m["chain_id"]),
-            ring_size: u(&m["ring_size"]) as usize,
-            coinbase_maturity: u(&m["coinbase_maturity"]),
-            spend_maturity: u(&m["spend_maturity"]),
             next_height: u(&m["next_height"]),
             reward: u(&m["reward"]),
             median: u(&m["median"]),
-            max_inputs: match u(&m["max_inputs"]) {
-                0 => None,
-                n => Some(n as usize),
-            },
+            tree_layers: u(&m["tree_layers"]) as usize,
         }),
         "tx_accepted" => Response::TxAccepted { id: arr(&m["id"]) },
         "info" => Response::Info(NodeInfo {
@@ -311,6 +297,7 @@ fn response(m: &Value) -> Response {
             block: block(&m["block"]),
             height: u(&m["height"]),
             target: arr(&m["target"]),
+            anchor: arr(&m["anchor"]),
         }),
         "block_submitted" => Response::BlockSubmitted {
             id: arr(&m["id"]),
@@ -327,7 +314,7 @@ fn response(m: &Value) -> Response {
                     timestamp: u(&b["timestamp"]),
                     target: arr(&b["target"]),
                     cumulative_work: arr(&b["cumulative_work"]),
-                    size: u(&b["size"]),
+                    weight: u(&b["weight"]),
                     tx_count: u(&b["tx_count"]) as u32,
                     coinbase_total: u(&b["coinbase_total"]),
                 })
@@ -344,6 +331,7 @@ fn response(m: &Value) -> Response {
                     received: u(&t["received"]),
                     fee: u(&t["fee"]),
                     size: u(&t["size"]),
+                    weight: u(&t["weight"]),
                 })
                 .collect(),
         },
@@ -374,9 +362,12 @@ fn the_limits_are_the_references() {
         MAX_BLOCKS_PER_REQUEST
     );
     assert_eq!(u(&l["max_key_images"]) as usize, MAX_KEY_IMAGES);
+    assert_eq!(u(&l["max_spend_paths"]) as usize, MAX_SPEND_PATHS);
+    assert_eq!(u(&l["max_path_layers"]) as usize, MAX_PATH_LAYERS);
+    assert_eq!(u(&l["leaf_chunk"]) as usize, tenero_tree::LEAF_CHUNK);
     assert_eq!(
-        u(&l["max_outputs_per_request"]) as usize,
-        MAX_OUTPUTS_PER_REQUEST
+        u(&l["max_chunk"]) as usize,
+        tenero_tree::SELENE_WIDTH.max(tenero_tree::HELIOS_WIDTH)
     );
     assert_eq!(u(&l["max_mempool_list"]) as usize, MAX_MEMPOOL_LIST);
 }
@@ -400,6 +391,19 @@ fn every_valid_message_encodes_to_the_references_bytes_and_decodes_back() {
             assert_eq!(Response::from_body(&body).unwrap(), m, "response: {note}");
         }
         assert_eq!(frame(&body).unwrap(), framed, "{note}");
+    }
+}
+
+#[test]
+fn the_retired_kinds_are_unknown() {
+    let v = vectors();
+    let retired: Vec<u64> = v["retired"].as_array().unwrap().iter().map(u).collect();
+    assert_eq!(retired, [4, 5, 15]);
+    for k in retired {
+        assert_eq!(
+            Request::from_body(&[k as u8, 0, 0, 0, 0, 0, 0, 0, 1]),
+            Err(ControlError::UnknownKind(k as u8))
+        );
     }
 }
 

@@ -20,9 +20,9 @@ use tenero_miner::{Miner, Sha256Backend, WalletPayout};
 use tenero_net::sim::{test_chain_params, LABEL};
 use tenero_net::transport::Hooks;
 use tenero_net::{Engine, EngineConfig};
-use tenero_node::{Node, NodeConfig, Payout};
+use tenero_node::{Node, NodeConfig};
 use tenero_store::Store;
-use tenero_wallet::{Address, Wallet};
+use tenero_wallet::{Address, Network, Wallet};
 
 const T0: u64 = 1_700_000_000;
 const COOKIE: [u8; 32] = [0x42; 32];
@@ -31,7 +31,7 @@ const KEY: [u8; 32] = [0x77; 32];
 const NOW: u64 = T0 + 60 * 500;
 
 fn address() -> Address {
-    Wallet::from_seed(&[1; 32], 0).address()
+    Wallet::from_seed(&[1; 32], Network::Test, 0).address()
 }
 
 struct Rig {
@@ -46,14 +46,10 @@ impl Rig {
             std::env::temp_dir().join(format!("tenero-ms-{}-{tag}.redb", std::process::id()));
         remove(&path);
         let store = Store::open(&path, LABEL, PowKind::Sha256).unwrap();
-        let mut params = test_chain_params();
-        params.ring_size = 2;
-        params.coinbase_maturity = 1;
-        params.spend_maturity = 1;
         Rig {
             path,
             store,
-            params,
+            params: test_chain_params(),
         }
     }
     fn engine(&self) -> Engine<'_> {
@@ -80,15 +76,6 @@ fn meta() -> Meta {
         kind: NodeKind::Archive,
         network: "test".into(),
         version: "0.0.0".into(),
-    }
-}
-
-fn payout() -> Payout {
-    Payout {
-        onetime_address: [0x0a; 32],
-        view_tag: [0x0b; 3],
-        ephemeral_pubkey: [0x0c; 32],
-        anchor_enc: [0x0d; 16],
     }
 }
 
@@ -167,7 +154,7 @@ fn a_miner_with_the_key_gets_info_trimmed_and_a_template() {
         let n = RemoteNode::connect_miner_service(addr, Some(&KEY)).unwrap();
         (
             n.info().unwrap(),
-            n.block_template(payout(), 1_000_000).unwrap(),
+            n.block_template(&address(), 1_000_000).unwrap(),
         )
     });
     assert_eq!(info.network, "test");
@@ -182,9 +169,16 @@ fn a_miner_with_the_key_gets_info_trimmed_and_a_template() {
         (0, 0, 0, 0)
     );
     assert_eq!(template.height, info.height + 1);
+    // the reward is the miner's: the output the template's anchor makes for its address
     assert_eq!(
-        template.block.coinbase.outputs[0].onetime_address,
-        [0x0a; 32]
+        tenero_app::remote_miner::check_template(
+            &template,
+            info.height + 1,
+            &info.tip_id,
+            &address(),
+            NOW
+        ),
+        Ok(())
     );
 }
 
@@ -200,15 +194,14 @@ fn every_other_request_closes_the_connection_with_no_answer_and_the_node_goes_on
         Request::Tip,
         Request::Block { height: 0 },
         Request::Blocks { from: 0, count: 1 },
-        Request::Output { index: 0 },
-        Request::OutputCount,
+        Request::SpendPaths { indexes: vec![0] },
         Request::KeyImageSpent { key_image: [0; 32] },
         Request::Rules,
         // the full proof-of-work check is the pool's own node's business, never a stranger's (it costs the node an attempt each time)
         Request::CheckPow {
             height: 1,
-            header: tenero_core::v2::BlockHeader {
-                version: 2,
+            header: tenero_core::v3::BlockHeader {
+                version: 3,
                 prev_id: [0; 32],
                 timestamp: 0,
                 tx_root: [0; 32],
@@ -274,14 +267,15 @@ fn what_a_miner_is_told_about_the_node_leaves_out_peers_the_pruning_point_and_th
 fn the_allowlist_is_exactly_info_template_and_submit() {
     assert!(miner_service::allowed(&Request::Info));
     assert!(miner_service::allowed(&Request::BlockTemplate {
-        payout: payout(),
-        max_body_bytes: 1
+        spend_pubkey: [1; 32],
+        view_pubkey: [2; 32],
+        max_weight: 1
     }));
     for r in [
         Request::Tip,
         Request::Stop,
         Request::Rules,
-        Request::OutputCount,
+        Request::SpendPaths { indexes: vec![0] },
         Request::Auth { cookie: [0; 32] },
     ] {
         assert!(!miner_service::allowed(&r), "{r:?} is allowed");
@@ -507,7 +501,7 @@ fn a_miner_on_the_service_mines_blocks_the_node_accepts_and_the_wallet_can_see()
     assert!(stats.blocks_accepted >= 7, "{stats:?}");
     assert_eq!(stats.blocks_refused, 0, "{stats:?}");
     assert_eq!(stats.refused_templates, 0, "{stats:?}");
-    let mut wallet = Wallet::from_seed(&[1; 32], 0);
+    let mut wallet = Wallet::from_seed(&[1; 32], Network::Test, 0);
     wallet.sync(engine.node()).unwrap();
     assert_eq!(
         wallet.owned().len() as u64,
@@ -533,7 +527,7 @@ fn handing_in_a_block_is_limited_apart_from_info_so_a_slowed_down_miner_can_stil
     let (second_info, first_submit, last_submit) =
         with_client(&mut engine, &mut up.hook, move || {
             let n = RemoteNode::connect_miner_service(addr, Some(&KEY)).unwrap();
-            let t = n.block_template(payout(), 1_000_000).unwrap();
+            let t = n.block_template(&address(), 1_000_000).unwrap();
             // (the one request a minute is spent: the next is told to slow down)
             let second = n.info().map(|_| ());
             // a block that is not valid (its timestamp is zero): what matters is that it is not turned away for being asked too often

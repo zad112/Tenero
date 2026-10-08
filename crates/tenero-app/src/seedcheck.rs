@@ -646,15 +646,15 @@ pub fn uptime(history: &str, seed: &str, last: usize) -> (usize, usize) {
 pub const USAGE: &str = "\
 tenero-seedcheck: checks the seeds of a Tenero network the way a new node would use them (EXPERIMENTAL, UNAUDITED; no launched network exists)
 
-  tenero-seedcheck --network test|dev --seed HOST:PORT [--seed HOST:PORT ...] [options]
-  tenero-seedcheck --network dev --seeds-file seeds.txt
+  tenero-seedcheck --network gamma|test|dev --seed HOST:PORT [--seed HOST:PORT ...] [options]
+  tenero-seedcheck --network gamma --seeds-file seeds.txt
 
-  --network N        test or dev: the chain the seeds must be on
+  --network N        gamma, test or dev: the chain the seeds must be on
   --seed ADDR        a seed to check (repeat for each)       --seeds-file F   one seed per line, blank lines and # comments ignored
   --timeout S        seconds each step may take (default 8)  --addr-wait S    seconds to collect the address answer (default 3)
   --max-lag N        blocks a seed may be behind the others before it FAILS (default 3)
   --min-addrs N      fewer addresses than this is a warning (default 5)      --min-seeds N   fewer seeds than this is a warning (default 3)
-  --private yes|no   a private network (addresses need not be routable, groups are not compared): default yes for test, no for dev
+  --private yes|no   a private network (addresses need not be routable, groups are not compared): default yes for test, no for gamma and dev
   --history FILE     append one line per seed to FILE and show how often each was up in its last 50 checks
 
 Exit code: 0 all well, 1 warnings, 2 a failure. It cannot tell whether a seed is HONEST: only whether it answers like a good one.";
@@ -740,8 +740,8 @@ pub fn parse_args(
             other => return Err(format!("unknown option `--{other}`")),
         }
     }
-    if !matches!(o.network.as_str(), "test" | "dev" | "beta" | "alpha") {
-        return Err("--network must be test, dev, beta or alpha".into());
+    if !matches!(o.network.as_str(), "gamma" | "test" | "dev") {
+        return Err("--network must be gamma, dev or test".into());
     }
     if o.seeds.is_empty() {
         return Err("no seeds: give --seed or --seeds-file".into());

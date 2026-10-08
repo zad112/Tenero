@@ -174,9 +174,27 @@ fn cli(args: &[&str], passphrases: &[&str]) -> (Result<(), String>, Vec<String>)
     let mut a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     if !a.is_empty() {
         a.insert(1, "--weak-kdf-for-tests".into());
+        // the wallets here are the test network's (a new wallet is gamma's unless told)
+        if !args.contains(&"--network") {
+            a.insert(2, "--network".into());
+            a.insert(3, "test".into());
+        }
     }
     let r = wallet_cli::run(&a, &mut io);
     (r, io.said)
+}
+
+/// A chain of at least `height` blocks in `dir`, mined to `to` as fast as the test network allows, by a node that is then
+/// stopped: a block reward may be spent 60 blocks after its block (`READY` is 64), and at one block a second (the pace the
+/// tests' nodes otherwise mine at) that would be a minute a test. The blocks' timestamps run ahead of the clock (each must be
+/// a second after its parent's), within the two minutes a node allows.
+fn premine(dir: &Dir, to: &str, height: u64) {
+    let node = Running::start(config(
+        &dir.0,
+        &format!("mine = sha256\nmine_to = {to}\nmine_pace = 0\n"),
+    ));
+    node.wait_height(height, 60);
+    node.stop();
 }
 
 fn find(lines: &[String], prefix: &str) -> String {
@@ -199,9 +217,10 @@ fn a_node_starts_answers_on_the_control_interface_and_stops_cleanly() {
     assert!(node.ready.control.ip().is_loopback());
     assert!(node.ready.p2p.is_some());
     let info = node.client().info().unwrap();
+    // pruned unless told otherwise (0.3.0)
     assert_eq!(
         (info.network.as_str(), info.height, info.kind),
-        ("test", 0, NodeKind::Archive)
+        ("test", 0, NodeKind::Pruned)
     );
     assert!(!info.version.is_empty());
     let summary = node.stop();
@@ -262,7 +281,7 @@ fn only_one_node_may_use_a_data_directory() {
 #[test]
 fn a_node_that_mines_keeps_its_chain_across_a_restart() {
     let dir = Dir::new("restart");
-    let alice = tenero_wallet::Wallet::from_seed(&[1; 32], 0)
+    let alice = tenero_wallet::Wallet::from_seed(&[1; 32], tenero_wallet::Network::Test, 0)
         .address()
         .to_text();
     let node = Running::start(config(
@@ -330,9 +349,10 @@ fn two_nodes_sync_and_a_wallet_pays_through_the_control_interface() {
     r.unwrap();
     let alice_addr = find(&said, "address:");
     assert!(
-        said.iter().any(|l| l.contains("INTERIM")),
-        "the banner says the scheme is interim"
+        said.iter().any(|l| l.contains("UNAUDITED")),
+        "the banner says the cryptography is unaudited"
     );
+    assert!(alice_addr.starts_with("TENt"), "{alice_addr}");
     let seed = said
         .iter()
         .find(|l| l.trim().len() == 64 && l.trim().bytes().all(|b| b.is_ascii_hexdigit()))
@@ -368,16 +388,17 @@ fn two_nodes_sync_and_a_wallet_pays_through_the_control_interface() {
     r.unwrap();
     assert_eq!(find(&said, "address:"), alice_addr);
 
-    // node A mines to Alice, one block a second; node B follows A
+    // node A mines to Alice, one block a second (after the first 66, quickly); node B follows A
     let da = Dir::new("node-a");
     let db = Dir::new("node-b");
+    premine(&da, &alice_addr, 66);
     let a = Running::start(config(
         &da.0,
         &format!("mine = sha256\nmine_to = {alice_addr}\nmine_pace = 1\n"),
     ));
     let a_p2p = a.ready.p2p.unwrap();
     let b = Running::start(config(&db.0, &format!("seed = {a_p2p}\n")));
-    a.wait_height(8, 60);
+    a.wait_height(66, 60);
     let args = |c: &'static str, extra: &[&str]| -> Vec<String> {
         let mut v = vec![c.to_string()];
         v.extend(extra.iter().map(|s| s.to_string()));
@@ -444,13 +465,24 @@ fn two_nodes_sync_and_a_wallet_pays_through_the_control_interface() {
         ],
         &[],
     );
-    // (This failed once on a slow hosted Windows runner, 2026-10-04, and could not be reproduced: the message carries what the next failure needs.)
-    assert_ne!(
-        find(&said2, "reserved"),
-        "0",
-        "the coins sent are promised.\nbefore the payment: {before_the_payment:#?}\nthe payment said: {said:#?}\nafter it: {said2:#?}\nnode log:\n{}",
-        a.log()
-    );
+    // while the payment waits in the node's pool its coins are promised; once a block has taken it in (node A mines a block
+    // a second, so that can happen between the two commands) they are spent, and nothing is reserved any more
+    let tx_id = find(&said, "transaction");
+    let in_pool = a
+        .client()
+        .mempool()
+        .unwrap()
+        .1
+        .iter()
+        .any(|t| t.id.iter().map(|b| format!("{b:02x}")).collect::<String>() == tx_id);
+    if in_pool {
+        assert_ne!(
+            find(&said2, "reserved"),
+            "0",
+            "the coins sent are promised.\nbefore the payment: {before_the_payment:#?}\nthe payment said: {said:#?}\nafter it: {said2:#?}\nnode log:\n{}",
+            a.log()
+        );
+    }
 
     // a block takes it in, and Bob sees it
     let h = a.height();
@@ -493,7 +525,7 @@ fn two_nodes_sync_and_a_wallet_pays_through_the_control_interface() {
     let (r, said) = cli(&["info", "--data", &data_a, "--control", &control], &[]);
     r.unwrap();
     assert!(said.iter().any(|l| l.starts_with("network test")));
-    assert!(said.iter().any(|l| l.contains("archive node")));
+    assert!(said.iter().any(|l| l.contains("pruned node")));
 }
 
 // ---- the wallet program on its own ---------------------------------------------------------------------------------
@@ -524,7 +556,7 @@ fn the_wallet_program_creates_shows_and_protects_a_wallet() {
     );
     r.unwrap();
     let addr = find(&said, "address:");
-    assert!(addr.starts_with("tni1"));
+    assert!(addr.starts_with("TENt"), "{addr}");
     assert!(said.iter().any(|l| l.contains("start at height 5")));
     // it will not overwrite
     let (r, _) = cli(
@@ -681,7 +713,7 @@ fn the_wallet_program_refuses_bad_requests_before_it_touches_a_node() {
 fn the_assume_valid_setting_reaches_the_engine() {
     // A mines; B trusts a WRONG block id at height 3 (the engine refuses to sync from a peer whose chain does not
     // hash to the checkpoint), C trusts the right one. Only C ends up with the chain.
-    let alice = tenero_wallet::Wallet::from_seed(&[1; 32], 0)
+    let alice = tenero_wallet::Wallet::from_seed(&[1; 32], tenero_wallet::Network::Test, 0)
         .address()
         .to_text();
     let da = Dir::new("av-a");
@@ -742,7 +774,7 @@ fn miner_cmd(node: &Running, data: &std::path::Path, extra: &[&str]) -> std::pro
 fn the_miner_program_mines_for_a_node_in_another_process() {
     let dir = Dir::new("miner-proc");
     let node = Running::start(config(&dir.0, ""));
-    let mut alice = tenero_wallet::Wallet::from_seed(&[1; 32], 0);
+    let mut alice = tenero_wallet::Wallet::from_seed(&[1; 32], tenero_wallet::Network::Test, 0);
     let addr = alice.address().to_text();
     let mut child = Child(
         miner_cmd(
@@ -779,7 +811,7 @@ fn the_miner_program_mines_for_a_node_in_another_process() {
 fn the_miner_program_refuses_a_backend_that_does_not_fit_the_network_and_bad_settings() {
     let dir = Dir::new("miner-bad");
     let node = Running::start(config(&dir.0, ""));
-    let addr = tenero_wallet::Wallet::from_seed(&[1; 32], 0)
+    let addr = tenero_wallet::Wallet::from_seed(&[1; 32], tenero_wallet::Network::Test, 0)
         .address()
         .to_text();
     let run = |extra: &[&str]| {
@@ -882,7 +914,7 @@ fn the_miner_program_refuses_a_backend_that_does_not_fit_the_network_and_bad_set
 #[test]
 fn a_miner_started_before_its_node_waits_and_does_not_give_up() {
     let dir = Dir::new("miner-first");
-    let addr = tenero_wallet::Wallet::from_seed(&[1; 32], 0)
+    let addr = tenero_wallet::Wallet::from_seed(&[1; 32], tenero_wallet::Network::Test, 0)
         .address()
         .to_text();
     // the node's data directory exists but no node runs: the miner has no cookie to read yet
@@ -909,7 +941,7 @@ fn the_miner_program_refuses_sha256_on_the_dev_network() {
     );
     let cfg = Raw::from_file_text(&text).unwrap().into_config().unwrap();
     let node = Running::start(cfg);
-    let addr = tenero_wallet::Wallet::from_seed(&[1; 32], 0)
+    let addr = tenero_wallet::Wallet::from_seed(&[1; 32], tenero_wallet::Network::Dev, 0)
         .address()
         .to_text();
     let out = miner_cmd(&node, &dir.0, &["--address", &addr, "--backend", "sha256"])
@@ -925,13 +957,14 @@ fn the_miner_program_refuses_sha256_on_the_dev_network() {
 #[test]
 fn a_real_node_refuses_every_tampered_copy_of_a_good_transaction_and_takes_the_good_one() {
     use rand_core::OsRng;
-    use tenero_core::v2::Transaction;
+    use tenero_core::v3::Transaction;
     use tenero_wallet::{Submitter, Wallet};
 
-    let alice = Wallet::from_seed(&[7; 32], 0);
-    let mut alice_w = Wallet::from_seed(&[7; 32], 0);
-    let bob = Wallet::from_seed(&[8; 32], 0).address();
+    let alice = Wallet::from_seed(&[7; 32], tenero_wallet::Network::Test, 0);
+    let mut alice_w = Wallet::from_seed(&[7; 32], tenero_wallet::Network::Test, 0);
+    let bob = Wallet::from_seed(&[8; 32], tenero_wallet::Network::Test, 0).address();
     let dir = Dir::new("tamper");
+    premine(&dir, &alice.address().to_text(), 66);
     let node = Running::start(config(
         &dir.0,
         &format!(
@@ -939,7 +972,7 @@ fn a_real_node_refuses_every_tampered_copy_of_a_good_transaction_and_takes_the_g
             alice.address().to_text()
         ),
     ));
-    node.wait_height(10, 60);
+    node.wait_height(66, 60);
     // the node's own mining goes on in the background, so build the payment, then try its copies, quickly
     let mut remote = node.client();
     alice_w.sync(&remote).unwrap();
@@ -972,7 +1005,26 @@ fn a_real_node_refuses_every_tampered_copy_of_a_good_transaction_and_takes_the_g
             "an output's amount commitment",
             Box::new(|t| t.prefix.outputs[0].amount_commitment[0] ^= 1),
         ),
-        ("the extra field", Box::new(|t| t.prefix.extra.push(0))),
+        (
+            "the encrypted payment ID",
+            Box::new(|t| t.prefix.encrypted_payment_id[0] ^= 1),
+        ),
+        (
+            "the ephemeral key",
+            Box::new(|t| t.prefix.ephemeral_pubkeys[0][0] ^= 1),
+        ),
+        (
+            "an output's encrypted amount",
+            Box::new(|t| t.prefix.outputs[0].amount_enc[0] ^= 1),
+        ),
+        (
+            "the reference block, one lower",
+            Box::new(|t| t.prunable.reference_height -= 1),
+        ),
+        (
+            "a key image",
+            Box::new(|t| t.prefix.inputs[0].key_image[0] ^= 1),
+        ),
     ];
     let mut accepted = vec![];
     for (what, f) in &tampers {
@@ -1214,6 +1266,7 @@ fn no_secret_reaches_the_log_at_the_most_verbose_level() {
     };
     let ((alice_addr, alice_seed), (bob_addr, bob_seed)) = (make(&alice_file), make(&bob_file));
 
+    premine(&da, &alice_addr, 66);
     let a = Running::start_at(
         config(
             &da.0,
@@ -1239,7 +1292,7 @@ log_level = debug
         ),
         Level::Debug,
     );
-    a.wait_height(8, 60);
+    a.wait_height(66, 60);
     let (control, data_a) = (
         a.ready.control.to_string(),
         da.0.to_str().unwrap().to_string(),
@@ -1366,7 +1419,7 @@ Host: x
 #[test]
 fn rewind_takes_the_newest_blocks_off_a_stopped_node_and_the_chain_goes_on_from_there() {
     let dir = Dir::new("rewind");
-    let alice = tenero_wallet::Wallet::from_seed(&[1; 32], 0)
+    let alice = tenero_wallet::Wallet::from_seed(&[1; 32], tenero_wallet::Network::Test, 0)
         .address()
         .to_text();
     let node = Running::start(config(
@@ -1454,11 +1507,12 @@ fn the_wallet_program_pays_many_sweeps_and_combines_through_a_real_node() {
         find(&said, "address:")
     };
     let (alice_addr, bob_addr) = (make(&alice_file), make(&bob_file));
+    premine(&dn, &alice_addr, 75);
     let node = Running::start(config(
         &dn.0,
         &format!("mine = sha256\nmine_to = {alice_addr}\nmine_pace = 1\n"),
     ));
-    node.wait_height(14, 60);
+    node.wait_height(75, 60);
     let (control, data) = (
         node.ready.control.to_string(),
         dn.0.to_str().unwrap().to_string(),
@@ -1594,7 +1648,7 @@ fn the_pool_program_pays_a_miner_program_through_a_real_node() {
     let (dn, dp) = (Dir::new("pool-node"), Dir::new("pool-data"));
     let node = Running::start(config(&dn.0, ""));
     // the pool's wallet, and the miner's address
-    let pool_wallet = tenero_wallet::Wallet::from_seed(&[3; 32], 0);
+    let pool_wallet = tenero_wallet::Wallet::from_seed(&[3; 32], tenero_wallet::Network::Test, 0);
     let wallet_file = dp.path("pool.wallet");
     let pass_file = dp.path("pass.txt");
     std::fs::write(&pass_file, "correct horse battery\n").unwrap();
@@ -1606,7 +1660,8 @@ fn the_pool_program_pays_a_miner_program_through_a_real_node() {
             &mut rand_core::OsRng,
         )
         .unwrap();
-    let mut miner_wallet = tenero_wallet::Wallet::from_seed(&[2; 32], 0);
+    let mut miner_wallet =
+        tenero_wallet::Wallet::from_seed(&[2; 32], tenero_wallet::Network::Test, 0);
     let miner_address = miner_wallet.address().to_text();
     // the pool's key, made once and then used by the pool
     let pool_bin = env!("CARGO_BIN_EXE_tenero-pool");
@@ -1713,7 +1768,7 @@ fn the_pool_program_pays_a_miner_program_through_a_real_node() {
     // the pool was paid by the blocks, the miner was not
     {
         let c = node.client();
-        let mut p = tenero_wallet::Wallet::from_seed(&[3; 32], 0);
+        let mut p = tenero_wallet::Wallet::from_seed(&[3; 32], tenero_wallet::Network::Test, 0);
         p.sync(&c).unwrap();
         assert!(
             p.owned().len() >= 8,
@@ -1761,8 +1816,8 @@ fn a_real_node_checks_the_mix_of_a_header_for_a_client() {
     let dir = Dir::new("checkpow");
     let node = Running::start(config(&dir.0, ""));
     let c = node.client();
-    let header = tenero_core::v2::BlockHeader {
-        version: tenero_core::v2::VERSION,
+    let header = tenero_core::v3::BlockHeader {
+        version: tenero_core::v3::VERSION,
         prev_id: [1; 32],
         timestamp: 1_700_000_000,
         tx_root: [2; 32],

@@ -480,6 +480,11 @@ impl WalletPayout {
         tenero_wallet::coinbase_payout_random(&address, 1, 1)?;
         Some(WalletPayout { address })
     }
+
+    /// The main address the rewards go to.
+    pub fn address(&self) -> &tenero_wallet::Address {
+        &self.address
+    }
 }
 
 impl PayoutSource for WalletPayout {
