@@ -1,9 +1,10 @@
 //! The node program's body: opens the chain, builds the engine, starts the network, the control interface and
 //! (if asked) the miner, keeps house (status line, saving the pool, pruning), and shuts down cleanly when told.
 //!
-//! **There is no launched Tenero network.** `test` is a CPU-mined test chain; `dev` runs the real matmulhash proof
-//! of work with a placeholder starting difficulty and a genesis made from a label. Neither has value, and the
-//! launch gates in `docs/M8_PLAN.md` section 7 are not met. **Experimental and unaudited.**
+//! **There is no launched Tenero network.** `gamma` is the test network of 0.3.0-gamma (FCMP++ and Carrot); `test` is a
+//! CPU-mined test chain; `dev` runs the real matmulhash proof of work with a placeholder starting difficulty and a
+//! genesis made from a label. None has value, and the launch gates in `docs/M8_PLAN.md` section 7 are not met.
+//! **Experimental and unaudited.**
 
 use std::collections::{BTreeSet, VecDeque};
 use std::net::SocketAddr;
@@ -62,15 +63,14 @@ const PRUNE_EVERY: Duration = Duration::from_secs(600);
 pub const DEV_EPOCH_BLOCKS: u64 = crate::config::REAL_POW_EPOCH_BLOCKS;
 /// The development network starts easy (one attempt in eight meets the target): a placeholder, not a decision.
 const DEV_START_TARGET_POW2: u32 = 253;
-/// The release network ("alpha", M11.2) starts at a real difficulty: a target of 2^237 is about 524,000 attempts a block. At the measured
+/// The test release networks start at a real difficulty: a target of 2^237 is about 524,000 attempts a block. At the measured
 /// 34,000 attempts a second of one RTX 5070 Ti that is a block every 15 s at first, never under a second; a GPU a quarter as fast gets a
 /// block a minute; a 6-thread CPU (about 164 a second) alone about one an hour. The difficulty then adjusts by up to 4x a block, so the
-/// start matters for roughly the first hour. The owner's choice (2026-10-04), from those measured speeds.
-pub const ALPHA_START_TARGET_POW2: u32 = 237;
-/// The release network's genesis label (hashed into the chain id). A restart of the network (for Carrot) gets "alpha network 2".
-pub const ALPHA_LABEL: &str = "tenero alpha network 1";
-/// The beta network's genesis label (Beta.1: the fresh network after the hard fork). It starts at the same difficulty as alpha did.
-pub const BETA_LABEL: &str = "tenero beta network 1";
+/// start matters for roughly the first hour. The owner's choice for `alpha` (2026-10-04), from those measured speeds, kept by `beta` and
+/// `gamma` (decision P3, 2026-10-08: the version 2 emission and difficulty unchanged).
+pub const GAMMA_START_TARGET_POW2: u32 = 237;
+/// The gamma network's genesis label (hashed into the chain id; decision P3, 2026-10-08), and the development network's.
+pub use tenero_core::v3::ids::{DEV_LABEL, GAMMA_LABEL};
 
 /// The rules and proof of work of a network.
 struct Chain {
@@ -86,42 +86,22 @@ fn chain_of(network: Network) -> Result<Chain, String> {
         Network::Test => Ok(Chain {
             label: tenero_net::sim::LABEL.to_string(),
             kind: PowKind::Sha256,
-            params: tenero_net::sim::test_chain_params(),
+            params: test_network_params(),
             matmul: None,
         }),
-        Network::Dev => {
-            let label = "tenero development network".to_string();
-            Ok(Chain {
-                params: ChainParams::version_2(
-                    &label,
-                    PowKind::Matmul,
-                    U256::pow2(DEV_START_TARGET_POW2).ok_or("bad start target")?,
-                ),
-                label,
-                kind: PowKind::Matmul,
-                matmul: Some(Arc::new(
-                    MatmulPow::low_memory(Params::DEFAULT, DEV_EPOCH_BLOCKS, 6)?
-                        .gathered_from(network.gather_from()),
-                )),
-            })
-        }
-        Network::Alpha | Network::Beta => {
-            let label = if network == Network::Alpha {
-                ALPHA_LABEL
+        Network::Dev | Network::Gamma => {
+            let (label, start) = if network == Network::Gamma {
+                (GAMMA_LABEL, GAMMA_START_TARGET_POW2)
             } else {
-                BETA_LABEL
-            }
-            .to_string();
-            let mut params = ChainParams::version_2(
-                &label,
-                PowKind::Matmul,
-                U256::pow2(ALPHA_START_TARGET_POW2).ok_or("bad start target")?,
-            );
-            // alpha keeps the limits of alpha.4 so that this version and the older nodes still on that network agree on what is valid
-            params.legacy_tx_limits = network == Network::Alpha;
+                (DEV_LABEL, DEV_START_TARGET_POW2)
+            };
             Ok(Chain {
-                params,
-                label,
+                params: ChainParams::version_3(
+                    label,
+                    PowKind::Matmul,
+                    U256::pow2(start).ok_or("bad start target")?,
+                ),
+                label: label.to_string(),
                 kind: PowKind::Matmul,
                 matmul: Some(Arc::new(
                     MatmulPow::low_memory(Params::DEFAULT, network.epoch_blocks(), 6)?
@@ -130,6 +110,16 @@ fn chain_of(network: Network) -> Result<Chain, String> {
             })
         }
     }
+}
+
+/// The rules of the `test` network: the simulator's SHA-256 test chain with the difficulty FIXED at its easy start (a hash
+/// in four meets it). A test chain is mined by a CPU on the clock, at the pace `mine_pace` sets (5 seconds unless told), so
+/// that a reward, which may be spent only 60 blocks after its block, is spendable within minutes; an adjusting difficulty
+/// would slow it to a block a minute. **Not a real chain**: it has no proof of work worth the name.
+pub fn test_network_params() -> ChainParams {
+    let mut p = tenero_net::sim::test_chain_params();
+    p.difficulty.window = 0;
+    p
 }
 
 /// How many proof-of-work datasets (4 GiB each at the real parameters) a node on this network holds at once: `None` for the SHA-256 test network,
@@ -735,8 +725,11 @@ fn miner_hook(
         .mine_to
         .as_deref()
         .ok_or("mine_to is required when mining")?;
-    let address = tenero_wallet::Address::from_text(to).map_err(|e| e.to_string())?;
-    let payout = WalletPayout::new(address).ok_or("the mining address holds an invalid key")?;
+    let address = tenero_wallet::Address::parse(to, cfg.network.wallet_network())
+        .map_err(|e| format!("mine_to: {e}"))?;
+    let payout = WalletPayout::new(address).ok_or(
+        "mine_to: a block reward is paid to a main address only (not a subaddress or an integrated address)",
+    )?;
     let l = Arc::clone(log);
     let mcfg = MinerConfig {
         log: Arc::new(move |line| l.info(&format!("miner: {line}"))),
@@ -760,9 +753,10 @@ fn miner_hook(
             mcfg,
         )),
         MineMode::Cpu => {
-            let pow = Arc::clone(chain.matmul.as_ref().ok_or(
-                "cpu mining needs a network with the real proof of work (dev, beta or alpha)",
-            )?);
+            let pow =
+                Arc::clone(chain.matmul.as_ref().ok_or(
+                    "cpu mining needs a network with the real proof of work (gamma or dev)",
+                )?);
             let cores = cfg.mine_cores;
             seen(MinerHook::new(
                 Miner::spawn(move || Ok(CpuMatmulBackend::new(pow, epoch, cores, 10))),
@@ -845,12 +839,8 @@ pub fn run(
             network_note: match cfg.network {
                 Network::Test => "SHA-256 test chain, no real proof of work".to_string(),
                 Network::Dev => "development chain, real matmulhash proof of work".to_string(),
-                Network::Alpha => {
-                    "alpha network (first test release): real matmulhash proof of work, no premine; still no value"
-                        .to_string()
-                }
-                Network::Beta => {
-                    "beta network (second test release): real matmulhash proof of work, no premine; still no value"
+                Network::Gamma => {
+                    "gamma network (0.3.0 test release): FCMP++ and Carrot, real matmulhash proof of work, no premine; still no value"
                         .to_string()
                 }
             },

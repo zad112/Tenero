@@ -25,19 +25,22 @@ use tenero_miner::{CpuMatmulBackend, Miner, Sha256Backend, WalletPayout, MAX_COR
 const USAGE: &str = "\
 tenero-miner: mines for a Tenero node in another process (EXPERIMENTAL, UNAUDITED; no launched network exists)
 
-  tenero-miner --data DIR --address tni1... --backend sha256|cpu|gpu [options]
+  tenero-miner --data DIR --address TENg... --backend sha256|cpu|gpu [options]
 
   --data DIR         the node's data directory (the miner reads the node's cookie from it)
-  --control IP:PORT  the node's control interface (default 127.0.0.1:18332, the test network's)
+  --control IP:PORT  the node's control interface (default: the address's network's port on this machine, 127.0.0.1:38352
+                     for gamma)
   --node HOST:PORT   instead of --data and --control: the miner service of a node on ANOTHER computer (default port 38334),
   --key HEX          and the key its operator gave you (64 hexadecimal digits). The node builds the blocks and checks yours; this
                      miner refuses a block that does not pay --address, but cannot tell a stale or wrong chain from the real one
-  --address ADDR     the wallet address block rewards are paid to (with --pool: where the pool is to pay you)
+  --address ADDR     the wallet's MAIN address block rewards are paid to (with --pool: where the pool is to pay you). Its
+                     first letters say its network (TENg gamma, TENd dev, TENt test): a node or pool of another network is refused
   --pool HOST:PORT   instead of a node: work for a MINING POOL (or `default`: the pool built into this program, if any). The pool keeps the
   --pool-key HEX     block rewards and pays you by its own rules; nothing makes it pay. The pool's public key (64 hexadecimal digits, from its
                      operator) is PINNED: the miner refuses a pool that proves another. `--pool-unpinned` goes without (a person between
                      you and the pool would not be noticed)
-  --network NET      with --pool: the network the pool serves (test, dev, beta or alpha), so that a pool of another network is refused
+  --network NET      with --pool: the network the pool serves (gamma, dev or test; default: the address's), so that a pool of
+                     another network is refused
   --worker NAME      with --pool: a name for this machine, shown to the pool (default: the computer's name, at most 32 characters)
   --backend B        sha256 (the test network), cpu or gpu (the dev network's matmulhash)
   --cores N          CPU threads for the cpu backend, 1 to 6 (default 6)
@@ -55,6 +58,8 @@ completely. It pauses while the node is syncing and carries on if the node resta
 struct Args {
     data: PathBuf,
     control: std::net::SocketAddr,
+    /// Whether `--control` was given (otherwise the address's network's default is used).
+    control_given: bool,
     node: Option<std::net::SocketAddr>,
     key: Option<[u8; 32]>,
     pool: Option<String>,
@@ -80,7 +85,8 @@ struct Args {
 fn parse() -> Result<Args, String> {
     let mut a = Args {
         data: PathBuf::new(),
-        control: "127.0.0.1:18332".parse().expect("valid"),
+        control: "127.0.0.1:38352".parse().expect("valid"),
+        control_given: false,
         node: None,
         key: None,
         pool: None,
@@ -142,6 +148,7 @@ fn parse() -> Result<Args, String> {
         match key {
             "data" => a.data = PathBuf::from(&v),
             "control" => {
+                a.control_given = true;
                 a.control = v
                     .parse()
                     .map_err(|_| format!("--control: `{v}` is not ip:port"))?
@@ -213,9 +220,6 @@ fn parse() -> Result<Args, String> {
         if a.pool.as_deref() != Some("default") && a.pool_key.is_none() && !a.pool_unpinned {
             return Err("--pool needs --pool-key (the pool's operator gives it to you), or --pool-unpinned to go without".into());
         }
-        if a.pool.as_deref() != Some("default") && a.network.is_none() {
-            return Err("--pool needs --network (the network the pool serves)".into());
-        }
         if a.worker.is_empty() {
             a.worker = std::env::var("COMPUTERNAME")
                 .or_else(|_| std::env::var("HOSTNAME"))
@@ -266,14 +270,14 @@ struct PoolTarget {
 }
 
 /// The pool the arguments name: an address (a name is looked up) and the key to pin, or the pool built into the program.
-fn resolve_pool(spec: &str, args: &Args) -> Result<PoolTarget, String> {
+fn resolve_pool(spec: &str, args: &Args, address_network: Network) -> Result<PoolTarget, String> {
     use std::net::ToSocketAddrs;
+    let network = match &args.network {
+        Some(n) => Network::parse(n)
+            .ok_or_else(|| format!("--network: `{n}` is not gamma, dev or test"))?,
+        None => address_network,
+    };
     if spec == "default" {
-        let network = match &args.network {
-            Some(n) => Network::parse(n)
-                .ok_or_else(|| format!("--network: `{n}` is not test, dev, beta or alpha"))?,
-            None => Network::Beta,
-        };
         let Some((addr, key)) = tenero_app::pool_miner::default_pool(network) else {
             return Err(format!(
                 "no pool is built into this program for the {} network yet: give --pool HOST:PORT and --pool-key",
@@ -289,8 +293,6 @@ fn resolve_pool(spec: &str, args: &Args) -> Result<PoolTarget, String> {
             network,
         });
     }
-    let network = Network::parse(args.network.as_deref().unwrap_or(""))
-        .ok_or("--network must be test, dev, beta or alpha")?;
     let addr = spec
         .to_socket_addrs()
         .map_err(|e| format!("--pool: cannot look up `{spec}`: {e} (it must be HOST:PORT)"))?
@@ -334,15 +336,32 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let address = match tenero_wallet::Address::from_text(&args.address) {
+    let address = match tenero_wallet::Address::parse_any(&args.address) {
         Ok(a) => a,
         Err(e) => {
             log.error(&format!("--address: {e}"));
             std::process::exit(2);
         }
     };
+    let address_network = match Network::ALL
+        .into_iter()
+        .find(|n| n.wallet_network() == address.network)
+    {
+        Some(n) => n,
+        None => {
+            log.error("--address: a network this program does not run");
+            std::process::exit(2);
+        }
+    };
+    let mut args = args;
+    if !args.control_given {
+        args.control =
+            std::net::SocketAddr::from(([127, 0, 0, 1], address_network.default_control_port()));
+    }
     let Some(payout) = WalletPayout::new(address) else {
-        log.error("--address holds an invalid key");
+        log.error(
+            "--address: a block reward is paid to a MAIN address only (not a subaddress or an integrated address)",
+        );
         std::process::exit(2);
     };
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -359,7 +378,7 @@ fn main() {
         "tenero-miner: EXPERIMENTAL and UNAUDITED. Nothing on the test or dev networks has value.",
     );
     // the banner names the network the backend belongs to (the node is asked below, and a mismatch is an error)
-    // (cpu and gpu mine the real proof of work on dev and on alpha; the node's answer below says which)
+    // (cpu and gpu mine the real proof of work on dev and on gamma; the node's answer below says which)
     let implied = if args.backend == "sha256" {
         Network::Test
     } else {
@@ -368,12 +387,12 @@ fn main() {
     screen.banner(&Banner {
         role: "miner".to_string(),
         version: format!("v{}", tenero_app::daemon::VERSION),
-        // before it has asked the node, the miner only knows the backend: cpu and gpu mine the real proof of work on dev AND on alpha, so it
-        // must not say "dev" (it did, while mining alpha)
+        // before it has asked the node, the miner only knows the backend: cpu and gpu mine the real proof of work on dev AND on gamma, so it
+        // must not say "dev" (it did, while mining alpha with an earlier version)
         network: if implied == Network::Test {
             implied.name().to_string()
         } else {
-            "real proof of work (dev, beta or alpha: the node says which)".to_string()
+            "real proof of work (gamma or dev: the node says which)".to_string()
         },
         network_note: if implied == Network::Test {
             "SHA-256 test chain, no real proof of work".to_string()
@@ -407,7 +426,7 @@ fn main() {
     // a pool miner never talks to a node: it needs only the network's name (to refuse a pool of another network)
     let pool_target: Option<PoolTarget> = match &args.pool {
         None => None,
-        Some(spec) => match resolve_pool(spec, &args) {
+        Some(spec) => match resolve_pool(spec, &args, address_network) {
             Ok(t) => Some(t),
             Err(e) => {
                 log.error(&e);
@@ -448,6 +467,15 @@ fn main() {
         ));
         network
     };
+    if network != address_network {
+        log.error(&format!(
+            "--address is a {} address, and the {} is on the {} network: rewards there could never reach it",
+            address_network.name(),
+            if pool_target.is_some() { "pool" } else { "node" },
+            network.name()
+        ));
+        std::process::exit(2);
+    }
     let pow = match (network, args.backend.as_str()) {
         (Network::Test, "sha256") => PowKind::Sha256,
         (n, "cpu" | "gpu") if n.real_pow() => PowKind::Matmul,

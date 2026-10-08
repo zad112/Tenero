@@ -11,8 +11,9 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{self, PowKind};
-use tenero_core::v2::{BlockHeader, VERSION};
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids;
+use tenero_core::v3::{BlockHeader, VERSION};
 
 use crate::pool::{Hello, HelloOk, Job, MinerMessage, PoolMessage};
 use crate::pool_net::{self, read_message, write_message, ReadHalf, WriteHalf};

@@ -16,16 +16,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{self, PowKind};
-use tenero_core::v2::Block;
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids;
+use tenero_core::v3::Block;
 use tenero_miner::{
-    block_reward, meets_target, Counters, EventSink, Job, Miner, MinerEvent, Msg, PayoutSource,
-    Solution, WalletPayout,
+    block_reward, meets_target, Counters, EventSink, Job, Miner, MinerEvent, Msg, Solution,
+    WalletPayout,
 };
+use tenero_wallet::Address;
 
 use crate::client::{BlockVerdict, RemoteNode};
 use crate::control::Template;
-use tenero_node::Payout;
 
 /// How far a template's timestamp may be from this computer's clock before the miner refuses it.
 pub const TEMPLATE_CLOCK_SLACK_SECS: u64 = 3600;
@@ -35,8 +36,10 @@ pub const TEMPLATE_CLOCK_SLACK_SECS: u64 = 3600;
 ///
 /// * it is for the height and the previous block the miner asked about (a template for another is stale, not hostile:
 ///   the caller decides that first);
-/// * its coinbase is for that height, has no extra data and pays exactly **one output, to `payout`** (the amount is the
-///   chain's rule and cannot be checked without the chain: a wrong amount makes the block invalid and costs only work);
+/// * its coinbase is for that height, has no extra data and pays exactly **one output, to the main address `to`**: the
+///   output the template's anchor makes for `to` at that height and amount (Carrot: the node makes the output, since its
+///   key depends on the amount; the anchor it hands back lets the miner make the same output itself). The amount is the
+///   chain's rule and cannot be checked without the chain: a wrong amount makes the block invalid and costs only work;
 /// * the header's `tx_root` matches the coinbase and the transactions in the body, so the body cannot be swapped after
 ///   the work is done;
 /// * the nonce and mix are empty and the timestamp is within [`TEMPLATE_CLOCK_SLACK_SECS`] of `now_secs`.
@@ -46,7 +49,7 @@ pub fn check_template(
     t: &Template,
     height: u64,
     prev_id: &[u8; 32],
-    payout: &Payout,
+    to: &Address,
     now_secs: u64,
 ) -> Result<(), String> {
     let b = &t.block;
@@ -62,11 +65,23 @@ pub fn check_template(
     if !b.coinbase.extra.is_empty() {
         return Err("the coinbase carries extra data".into());
     }
+    let pays_us = |o: &tenero_core::v3::CoinbaseOutput| {
+        tenero_wallet::coinbase_payout_to_keys(
+            &to.spend_pubkey,
+            &to.view_pubkey,
+            height,
+            o.amount,
+            &t.anchor,
+        )
+        .is_some_and(|p| {
+            o.onetime_address == p.onetime_address
+                && o.view_tag == p.view_tag
+                && o.ephemeral_pubkey == p.ephemeral_pubkey
+                && o.anchor_enc == p.anchor_enc
+        })
+    };
     match b.coinbase.outputs.as_slice() {
-        [o] if o.onetime_address == payout.onetime_address
-            && o.view_tag == payout.view_tag
-            && o.ephemeral_pubkey == payout.ephemeral_pubkey
-            && o.anchor_enc == payout.anchor_enc => {}
+        [o] if to.kind == tenero_wallet::Kind::Main && pays_us(o) => {}
         _ => return Err("the coinbase does not pay the address this miner asked for".into()),
     }
     match ids::block_tx_root(&b.coinbase, &b.transactions) {
@@ -86,8 +101,8 @@ pub type Logger = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct RemoteMinerConfig {
-    /// The most transaction bytes to ask for in a block.
-    pub max_body_bytes: u32,
+    /// The most transaction weight to ask for in a block (the node gives at most `server::MAX_TEMPLATE_WEIGHT`).
+    pub max_weight: u64,
     /// A template this old is replaced even if the tip has not moved (new transactions, a later timestamp).
     pub refresh_every: Duration,
     /// The least time between a block found and the next job (0: as fast as possible).
@@ -117,7 +132,7 @@ fn system_now() -> u64 {
 impl Default for RemoteMinerConfig {
     fn default() -> RemoteMinerConfig {
         RemoteMinerConfig {
-            max_body_bytes: 1_000_000,
+            max_weight: u64::MAX,
             refresh_every: Duration::from_secs(60),
             min_block_interval: Duration::ZERO,
             log: Arc::new(|_| {}),
@@ -378,8 +393,8 @@ impl RemoteMiner {
         }
         self.miner.cancel();
         let height = info.height + 1;
-        let payout_for_height = self.payout.payout(height);
-        let t = node.block_template(payout_for_height.clone(), self.cfg.max_body_bytes)?;
+        let to = *self.payout.address();
+        let t = node.block_template(&to, self.cfg.max_weight)?;
         self.stats.templates += 1;
         if t.height != height
             || t.block.coinbase.height != height
@@ -393,7 +408,7 @@ impl RemoteMiner {
         }
         // the node may be on another computer: trust nothing it built
         let now = (self.cfg.now_secs)();
-        if let Err(why) = check_template(&t, height, &info.tip_id, &payout_for_height, now) {
+        if let Err(why) = check_template(&t, height, &info.tip_id, &to, now) {
             self.stats.refused_templates += 1;
             self.current = None;
             // said at most once in 30 seconds: a node that keeps this up must not fill the log

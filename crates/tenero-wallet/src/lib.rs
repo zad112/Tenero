@@ -19,10 +19,12 @@ pub mod file;
 pub mod mnemonic;
 pub mod purse;
 pub mod request;
+pub mod testing;
 pub mod wallet;
 
 use rand_core::{CryptoRng, RngCore};
-use tenero_carrot::output::{coinbase_enote, PaymentProposal};
+use tenero_carrot::output::{coinbase_enote, random_anchor, PaymentProposal};
+use tenero_carrot::JanusAnchor;
 use tenero_node::Payout;
 
 pub use address::{carrot_master, Address, AddressError, Kind, Network};
@@ -58,7 +60,37 @@ pub fn coinbase_payout(
     if to.kind != Kind::Main {
         return None;
     }
-    let e = coinbase_enote(&PaymentProposal::new(to.destination(), amount, rng), height).ok()?;
+    coinbase_payout_to_keys(
+        &to.spend_pubkey,
+        &to.view_pubkey,
+        height,
+        amount,
+        &random_anchor(rng),
+    )
+}
+
+/// The coinbase output paying `amount` at `height` to the main address with these keys, made with the Janus anchor
+/// `anchor` (its randomness): the same inputs always make the same output. A node makes a template's output this way for a
+/// miner that asked by its address's keys, and hands back the anchor, so that the miner can make the output again and see
+/// that the template pays it. `None` if the keys make no output (one is not a point) or the anchor is zero.
+pub fn coinbase_payout_to_keys(
+    spend_pubkey: &[u8; 32],
+    view_pubkey: &[u8; 32],
+    height: u64,
+    amount: u64,
+    anchor: &JanusAnchor,
+) -> Option<Payout> {
+    let p = PaymentProposal {
+        destination: tenero_carrot::account::Destination {
+            spend_pubkey: *spend_pubkey,
+            view_pubkey: *view_pubkey,
+            is_subaddress: false,
+            payment_id: tenero_carrot::NULL_PAYMENT_ID,
+        },
+        amount,
+        randomness: *anchor,
+    };
+    let e = coinbase_enote(&p, height).ok()?;
     Some(Payout {
         onetime_address: e.onetime_address,
         view_tag: e.view_tag,

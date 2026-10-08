@@ -252,6 +252,15 @@ impl Address {
         b58encode(&body)
     }
 
+    /// The address `text`, of whichever network its tag names (a program that learns its network from the address, as
+    /// a miner pointed at a pool does). Otherwise as strict as [`Address::parse`].
+    pub fn parse_any(text: &str) -> Result<Address, AddressError> {
+        Network::ALL
+            .iter()
+            .find_map(|n| Address::parse(text, *n).ok())
+            .ok_or_else(|| Address::parse(text, Network::Gamma).expect_err("no network took it"))
+    }
+
     /// The address `text` on `network`. Surrounding spaces are ignored; nothing else is forgiven.
     pub fn parse(text: &str, network: Network) -> Result<Address, AddressError> {
         let text = text.trim();

@@ -3,10 +3,10 @@
 
 use tenero_app::pool_core::*;
 use tenero_core::u256::U256;
-use tenero_wallet::{Address, Wallet};
+use tenero_wallet::{Address, Network, Wallet};
 
 fn address(n: u8) -> Address {
-    Wallet::from_seed(&[n; 32], 0).address()
+    Wallet::from_seed(&[n; 32], Network::Test, 0).address()
 }
 
 // ---- share targets ------------------------------------------------------------------------------------------------------
@@ -357,32 +357,57 @@ fn busy() -> Accounts {
 fn the_books_survive_the_file() {
     let a = busy();
     let bytes = a.to_bytes().unwrap();
-    let b = Accounts::from_bytes(&bytes).unwrap();
+    let b = Accounts::from_bytes(&bytes, Network::Test).unwrap();
     assert_eq!(a, b);
     assert_eq!(b.to_bytes().unwrap(), bytes, "one state, one file");
     // an empty book too
     let e = Accounts::new();
-    assert_eq!(Accounts::from_bytes(&e.to_bytes().unwrap()).unwrap(), e);
+    assert_eq!(
+        Accounts::from_bytes(&e.to_bytes().unwrap(), Network::Test).unwrap(),
+        e
+    );
 }
 
 #[test]
 fn a_damaged_or_foreign_file_is_refused_and_every_byte_is_protected() {
     let bytes = busy().to_bytes().unwrap();
     for cut in [0usize, 1, 10, bytes.len() / 2, bytes.len() - 1] {
-        assert!(Accounts::from_bytes(&bytes[..cut]).is_err(), "cut at {cut}");
+        assert!(
+            Accounts::from_bytes(&bytes[..cut], Network::Test).is_err(),
+            "cut at {cut}"
+        );
     }
     for i in (0..bytes.len()).step_by(7) {
         let mut b = bytes.clone();
         b[i] ^= 0x40;
-        assert!(Accounts::from_bytes(&b).is_err(), "flipped byte {i}");
+        assert!(
+            Accounts::from_bytes(&b, Network::Test).is_err(),
+            "flipped byte {i}"
+        );
     }
     let mut trailing = bytes.clone();
     trailing.push(0);
-    assert!(Accounts::from_bytes(&trailing).is_err());
-    assert!(
-        Accounts::from_bytes(b"not a pool file at all, but long enough to have a checksum")
-            .is_err()
-    );
+    assert!(Accounts::from_bytes(&trailing, Network::Test).is_err());
+    assert!(Accounts::from_bytes(
+        b"not a pool file at all, but long enough to have a checksum",
+        Network::Test
+    )
+    .is_err());
+}
+
+#[test]
+fn books_of_another_network_or_of_the_0_2_0_programs_are_refused_with_the_reason() {
+    // a test network's books read by a gamma pool: its addresses are another network's
+    let bytes = busy().to_bytes().unwrap();
+    let e = Accounts::from_bytes(&bytes, Network::Gamma).unwrap_err();
+    assert!(e.to_string().contains("another network"), "{e}");
+    // a file of the 0.2.0 programs (beta addresses), whole and with its checksum
+    let mut old = b"tenero pool state v1\n".to_vec();
+    old.extend_from_slice(&[0; 40]);
+    let sum = tenero_core::hash::sha256(&[&old]);
+    old.extend_from_slice(&sum);
+    let e = Accounts::from_bytes(&old, Network::Gamma).unwrap_err();
+    assert!(e.to_string().contains("0.2.0"), "{e}");
 }
 
 // ---- the pool's fee in parts per million -----------------------------------------------------------------------------------

@@ -38,6 +38,8 @@ tenero-node = { path = "../tenero-node" }
 tenero-net = { path = "../tenero-net" }
 tenero-miner = { path = "../tenero-miner" }
 tenero-wallet = { path = "../tenero-wallet" }
+tenero-tree = { path = "../tenero-tree" }
+tenero-carrot = { path = "../tenero-carrot" }
 rand_core = { version = "0.6", features = ["getrandom"] }
 zeroize = "1"
 

@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use tenero_core::hash::sha256;
 use tenero_core::u256::{U256, U320};
-use tenero_core::v2::codec::{DecodeError, EncodeError, Reader, Writer};
+use tenero_core::v3::{DecodeError, EncodeError, Reader, Writer};
 use tenero_wallet::Address;
 
 /// The most miners (addresses) the pool keeps accounts for.
@@ -460,7 +460,7 @@ impl Accounts {
 
     // ---- the file ----
 
-    const MAGIC: &'static [u8] = b"tenero pool state v1\n";
+    const MAGIC: &'static [u8] = b"tenero pool state v2\n";
 
     /// The state as bytes: a header, the books, and a SHA-256 of all of it so that a damaged file is noticed.
     pub fn to_bytes(&self) -> Result<Vec<u8>, EncodeError> {
@@ -498,7 +498,10 @@ impl Accounts {
         Ok(bytes)
     }
 
-    pub fn from_bytes(data: &[u8]) -> Result<Accounts, AccountError> {
+    pub fn from_bytes(
+        data: &[u8],
+        network: tenero_wallet::Network,
+    ) -> Result<Accounts, AccountError> {
         let bad = |e: DecodeError| AccountError::Format(e.as_str().to_string());
         if data.len() < 32 + Self::MAGIC.len() {
             return Err(AccountError::Format("too short".into()));
@@ -508,6 +511,11 @@ impl Accounts {
             return Err(AccountError::Format("the checksum does not match".into()));
         }
         let mut r = Reader::new(body);
+        if body.starts_with(b"tenero pool state v1\n") {
+            return Err(AccountError::Format(
+                "a pool state of the 0.2.0 programs (beta addresses): a gamma pool starts with empty books".into(),
+            ));
+        }
         if r.take(Self::MAGIC.len()).map_err(bad)? != Self::MAGIC {
             return Err(AccountError::Format("not a pool state file".into()));
         }
@@ -516,7 +524,7 @@ impl Accounts {
         for _ in 0..n {
             let text = String::from_utf8(r.var(256).map_err(bad)?)
                 .map_err(|_| AccountError::Format("an address that is not text".into()))?;
-            let address = Address::from_text(&text)
+            let address = Address::parse(&text, network)
                 .map_err(|e| AccountError::Format(format!("an address: {e}")))?;
             let (balance, paid) = (r.u64().map_err(bad)?, r.u64().map_err(bad)?);
             let id = a.id_of(&address)?;

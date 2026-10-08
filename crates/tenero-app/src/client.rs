@@ -9,9 +9,8 @@ use std::time::Duration;
 
 use rand_core::{CryptoRng, RngCore};
 use tenero_core::hash::hex_lower;
-use tenero_core::v2::Transaction;
-use tenero_store::StoredOutput;
-use tenero_wallet::{ChainView, Rules, ScanBlock, Submitter};
+use tenero_core::v3::Transaction;
+use tenero_wallet::{ChainView, Rules, ScanBlock, SpendPaths, Submitter};
 
 use crate::control::{read_frame, write_frame, NodeInfo, Request, Response};
 
@@ -123,7 +122,7 @@ impl RemoteNode {
     pub fn check_pow(
         &self,
         height: u64,
-        header: &tenero_core::v2::BlockHeader,
+        header: &tenero_core::v3::BlockHeader,
     ) -> Result<bool, String> {
         match self.request(&Request::CheckPow {
             height,
@@ -141,15 +140,20 @@ impl RemoteNode {
         }
     }
 
-    /// A block to mine, paying `payout`.
+    /// A block to mine, its reward paying the main address `to` (the node makes the output: see
+    /// `Request::BlockTemplate`), with at most `max_weight` of transactions.
     pub fn block_template(
         &self,
-        payout: tenero_node::Payout,
-        max_body_bytes: u32,
+        to: &tenero_wallet::Address,
+        max_weight: u64,
     ) -> Result<crate::control::Template, String> {
+        if to.kind != tenero_wallet::Kind::Main {
+            return Err("a block reward is paid to a main address only (not a subaddress or an integrated address)".into());
+        }
         match self.request(&Request::BlockTemplate {
-            payout,
-            max_body_bytes,
+            spend_pubkey: to.spend_pubkey,
+            view_pubkey: to.view_pubkey,
+            max_weight,
         })? {
             Response::Template(t) => Ok(t),
             other => Err(format!("unexpected answer: {other:?}")),
@@ -158,7 +162,7 @@ impl RemoteNode {
 
     /// Hands the node a mined block. `Err` means the connection failed; what the node made of the block is the
     /// [`BlockVerdict`].
-    pub fn submit_block(&self, block: tenero_core::v2::Block) -> Result<BlockVerdict, String> {
+    pub fn submit_block(&self, block: tenero_core::v3::Block) -> Result<BlockVerdict, String> {
         match self.request_raw(&Request::SubmitBlock(block))? {
             Response::BlockSubmitted { id, in_chain: true } => Ok(BlockVerdict::InChain(id)),
             Response::BlockSubmitted {
@@ -234,32 +238,34 @@ impl ChainView for RemoteNode {
         }
     }
 
-    fn output(&self, global_index: u64) -> Result<Option<StoredOutput>, String> {
-        match self.request(&Request::Output {
-            index: global_index,
-        })? {
-            Response::Output(o) => Ok(o),
-            r => unexpected(r),
+    /// In pieces of [`MAX_SPEND_PATHS`](crate::control::MAX_SPEND_PATHS); every piece must come from the tree of one
+    /// reference block, so when a block arrives between two pieces the whole request is made again (a few times at most).
+    fn spend_paths(&self, global_indexes: &[u64]) -> Result<SpendPaths, String> {
+        if global_indexes.is_empty() {
+            return Err("no outputs to find paths for".into());
         }
-    }
-
-    fn outputs(&self, indexes: &[u64]) -> Result<Vec<Option<StoredOutput>>, String> {
-        let mut out = Vec::with_capacity(indexes.len());
-        for chunk in indexes.chunks(crate::control::MAX_OUTPUTS_PER_REQUEST) {
-            match self.request(&Request::Outputs {
-                indexes: chunk.to_vec(),
-            })? {
-                Response::OutputsMany(v) if v.len() == chunk.len() => out.extend(v),
-                r => return unexpected(r),
+        'again: for _ in 0..5 {
+            let mut all: Option<SpendPaths> = None;
+            for chunk in global_indexes.chunks(crate::control::MAX_SPEND_PATHS) {
+                let piece = match self.request(&Request::SpendPaths {
+                    indexes: chunk.to_vec(),
+                })? {
+                    Response::SpendPaths(p) if p.paths.len() == chunk.len() => p,
+                    r => return unexpected(r),
+                };
+                match &mut all {
+                    None => all = Some(piece),
+                    Some(a)
+                        if a.reference_height == piece.reference_height && a.tree == piece.tree =>
+                    {
+                        a.paths.extend(piece.paths)
+                    }
+                    Some(_) => continue 'again,
+                }
             }
+            return all.ok_or_else(|| "no answer".to_string());
         }
-        Ok(out)
-    }
-    fn output_count(&self) -> Result<u64, String> {
-        match self.request(&Request::OutputCount)? {
-            Response::OutputCount(n) => Ok(n),
-            r => unexpected(r),
-        }
+        Err("the node's tip kept moving while the paths were asked for: try again".into())
     }
 
     fn key_image_spent(&self, key_image: &[u8; 32]) -> Result<bool, String> {

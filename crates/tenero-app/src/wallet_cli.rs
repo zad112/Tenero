@@ -1,8 +1,10 @@
 //! The wallet program's commands. The logic is here, behind a small [`Io`] trait, so that tests can drive it with a
 //! scripted terminal; `src/bin/tenero_wallet.rs` supplies the real one (a hidden passphrase prompt).
 //!
-//! **Interim output scheme, unaudited, and nothing here has value.** The seed is printed once, by `create`, and by
-//! `seed` after the passphrase; there is no word-list backup yet.
+//! **Carrot and FCMP++, unaudited, and nothing here has value.** A wallet belongs to one network (`gamma`, `dev` or
+//! `test`), chosen when it is made: it takes only that network's addresses and talks only to that network's nodes. The
+//! seed is printed once, by `create`, and by `seed` after the passphrase; there is no word-list backup in this program
+//! (the wallet app has one).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -10,13 +12,14 @@ use std::path::{Path, PathBuf};
 use rand_core::OsRng;
 use tenero_core::hash::hex_lower;
 use tenero_wallet::amount::{format_coins, parse_coins};
-use tenero_wallet::{Address, Built, ChainView, FeeLevel, KdfParams, Wallet, WalletError, BANNER};
+use tenero_wallet::{
+    Address, Built, ChainView, FeeLevel, KdfParams, Network, Wallet, WalletError, BANNER,
+};
 use zeroize::Zeroizing;
 
 use crate::client::{read_cookie, RemoteNode, COOKIE_FILE};
 
 pub const MIN_PASSPHRASE: usize = 8;
-pub const DEFAULT_CONTROL: &str = "127.0.0.1:18332";
 
 /// What the commands need from a terminal.
 pub trait Io {
@@ -28,7 +31,10 @@ pub trait Io {
 struct Opts {
     wallet: Option<PathBuf>,
     data: Option<PathBuf>,
-    control: SocketAddr,
+    /// The node's control address; the default is the wallet's network's port on this machine.
+    control: Option<SocketAddr>,
+    /// The network a new wallet is for (`create` and `restore`; `gamma` unless given).
+    network: Option<Network>,
     birth: Option<u64>,
     to: Option<String>,
     amount: Option<String>,
@@ -46,7 +52,8 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
     let mut o = Opts {
         wallet: None,
         data: None,
-        control: DEFAULT_CONTROL.parse().expect("valid"),
+        control: None,
+        network: None,
         birth: None,
         to: None,
         amount: None,
@@ -79,9 +86,18 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "wallet" => o.wallet = Some(PathBuf::from(value)),
             "data" => o.data = Some(PathBuf::from(value)),
             "control" => {
-                o.control = value
-                    .parse()
-                    .map_err(|_| format!("--control: `{value}` is not ip:port"))?
+                o.control = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("--control: `{value}` is not ip:port"))?,
+                )
+            }
+            "network" => {
+                o.network = Some(
+                    crate::config::Network::parse(value)
+                        .ok_or_else(|| format!("--network: `{value}` is not gamma, dev or test"))?
+                        .wallet_network(),
+                )
             }
             "birth" => {
                 o.birth = Some(
@@ -109,10 +125,10 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
 }
 
 pub const USAGE: &str = "\
-tenero-wallet: a wallet for the Tenero experimental coin (INTERIM output scheme, unaudited, no value)
+tenero-wallet: a wallet for the Tenero experimental coin (Carrot and FCMP++, unaudited, no value)
 
-  tenero-wallet create  --wallet FILE [--data DIR] [--birth HEIGHT]
-  tenero-wallet restore --wallet FILE [--birth HEIGHT]        (asks for the seed, hidden)
+  tenero-wallet create  --wallet FILE [--network gamma|dev|test] [--data DIR] [--birth HEIGHT]
+  tenero-wallet restore --wallet FILE [--network gamma|dev|test] [--birth HEIGHT]   (asks for the seed, hidden)
   tenero-wallet address --wallet FILE
   tenero-wallet balance --wallet FILE --data DIR [--control IP:PORT]
   tenero-wallet pay     --wallet FILE --data DIR --to ADDRESS --amount COINS [--control IP:PORT]
@@ -120,15 +136,19 @@ tenero-wallet: a wallet for the Tenero experimental coin (INTERIM output scheme,
   tenero-wallet sweep   --wallet FILE --data DIR [--to ADDRESS] [--yes] [--control IP:PORT]
   tenero-wallet combine --wallet FILE --data DIR --pieces N [--yes] [--control IP:PORT]
   tenero-wallet seed    --wallet FILE
-  tenero-wallet info    --data DIR [--control IP:PORT]
+  tenero-wallet info    --data DIR [--network gamma|dev|test] [--control IP:PORT]
 
 A payment that needs more pieces than one transaction can carry (your balance is made of separate pieces, one for each payment you
 received), or more than 15 recipients, is split into several transactions that spend different pieces; `pay-many` reads one `ADDRESS AMOUNT` a line. `sweep` combines your pieces (to your own address, or to --to) and `combine`
 makes N of the smallest into one: both only show a preview until --yes. Pieces that come back as change can be spent after 10 blocks.
 
+A wallet belongs to the network it was made for (gamma unless --network says otherwise): it takes only that network's
+addresses (TENg..., TENd..., TENt...) and refuses a node of another network.
+
 --data is the node's data directory (the wallet reads the node's cookie file from it). The control address defaults
-to 127.0.0.1:18332 (the test network; the dev network's default is 127.0.0.1:28332). The wallet asks for its
-passphrase at a hidden prompt; --passphrase-file FILE reads it from a file instead, which is weaker.";
+to the wallet's network's port on this machine: 127.0.0.1:38352 (gamma), 127.0.0.1:28332 (dev), 127.0.0.1:18332 (test).
+The wallet asks for its passphrase at a hidden prompt; --passphrase-file FILE reads it from a file instead, which is
+weaker.";
 
 fn need<'a, T>(v: &'a Option<T>, what: &str) -> Result<&'a T, String> {
     v.as_ref().ok_or_else(|| format!("{what} is required"))
@@ -165,10 +185,33 @@ fn kdf(o: &Opts) -> KdfParams {
     }
 }
 
-fn connect(o: &Opts) -> Result<RemoteNode, String> {
+/// The program's name for a wallet network (the same names as the node's).
+fn node_network(n: Network) -> crate::config::Network {
+    match n {
+        Network::Gamma => crate::config::Network::Gamma,
+        Network::Dev => crate::config::Network::Dev,
+        Network::Test => crate::config::Network::Test,
+    }
+}
+
+/// Connects to the node of `network` (its default control port unless `--control` says otherwise) and refuses one of
+/// another network: a wallet must never scan, or send to, another network's chain.
+fn connect(o: &Opts, network: Network) -> Result<RemoteNode, String> {
     let data = need(&o.data, "--data (the node's data directory)")?;
     let cookie = read_cookie(&data.join(COOKIE_FILE))?;
-    RemoteNode::connect(o.control, &cookie)
+    let net = node_network(network);
+    let addr = o
+        .control
+        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], net.default_control_port())));
+    let node = RemoteNode::connect(addr, &cookie)?;
+    let theirs = node.info()?.network;
+    if theirs != net.name() {
+        return Err(format!(
+            "the node at {addr} runs the {theirs} network, and this wallet is for {}",
+            net.name()
+        ));
+    }
+    Ok(node)
 }
 
 fn load(o: &Opts, io: &mut dyn Io) -> Result<(Wallet, Zeroizing<String>), String> {
@@ -196,7 +239,7 @@ pub const MAX_PAY_MANY: usize = 20_000;
 
 /// Reads a `pay-many` file: one payment a line, `ADDRESS AMOUNT`; blank lines and lines starting with `#` are skipped. Strict: a bad line is an error
 /// naming it, and nothing is paid.
-pub fn read_payments(text: &str) -> Result<Vec<(Address, u64)>, String> {
+pub fn read_payments(text: &str, network: Network) -> Result<Vec<(Address, u64)>, String> {
     let mut out = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let line = line.trim();
@@ -207,7 +250,8 @@ pub fn read_payments(text: &str) -> Result<Vec<(Address, u64)>, String> {
         let (Some(a), Some(v), None) = (words.next(), words.next(), words.next()) else {
             return Err(format!("line {}: expected `ADDRESS AMOUNT`", n + 1));
         };
-        let to = Address::from_text(a).map_err(|e| format!("line {}: the address: {e}", n + 1))?;
+        let to =
+            Address::parse(a, network).map_err(|e| format!("line {}: the address: {e}", n + 1))?;
         let units = parse_coins(v).ok_or_else(|| {
             format!(
                 "line {}: `{v}` is not an amount (digits with up to 8 decimals)",
@@ -364,6 +408,8 @@ pub fn run(args: &[String], io: &mut dyn Io) -> Result<(), String> {
     }
     let o = parse_opts(rest)?;
     io.say(BANNER);
+    // the network of a new wallet (and of `info`): gamma unless told
+    let new_network = o.network.unwrap_or(Network::Gamma);
     match cmd.as_str() {
         "create" => {
             let path = need(&o.wallet, "--wallet")?;
@@ -376,7 +422,12 @@ pub fn run(args: &[String], io: &mut dyn Io) -> Result<(), String> {
             // a new wallet starts scanning at the node's tip, so it never reads blocks that cannot hold its coins
             let birth = match (o.birth, &o.data) {
                 (Some(b), _) => b,
-                (None, Some(_)) => connect(&o)?.tip().map_err(|e| e.to_string())?.0,
+                (None, Some(_)) => {
+                    connect(&o, new_network)?
+                        .tip()
+                        .map_err(|e| e.to_string())?
+                        .0
+                }
                 (None, None) => return Err(
                     "give --birth HEIGHT, or --data DIR so the wallet can ask the node for the tip"
                         .into(),
@@ -393,9 +444,13 @@ pub fn run(args: &[String], io: &mut dyn Io) -> Result<(), String> {
                     "the passphrase must be at least {MIN_PASSPHRASE} characters"
                 ));
             }
-            let w = Wallet::create(&mut OsRng, birth);
+            let w = Wallet::create(&mut OsRng, new_network, birth);
             save(&w, path, &pass, &o)?;
-            io.say(&format!("wallet written to {}", path.display()));
+            io.say(&format!(
+                "wallet for the {} network written to {}",
+                new_network.name(),
+                path.display()
+            ));
             io.say(&format!("address: {}", w.address().to_text()));
             io.say(&format!("scanning will start at height {birth}"));
             show_seed(io, &w);
@@ -422,9 +477,13 @@ pub fn run(args: &[String], io: &mut dyn Io) -> Result<(), String> {
                     "the passphrase must be at least {MIN_PASSPHRASE} characters"
                 ));
             }
-            let w = Wallet::from_seed(&seed, o.birth.unwrap_or(0));
+            let w = Wallet::from_seed(&seed, new_network, o.birth.unwrap_or(0));
             save(&w, path, &pass, &o)?;
-            io.say(&format!("wallet restored to {}", path.display()));
+            io.say(&format!(
+                "wallet for the {} network restored to {}",
+                new_network.name(),
+                path.display()
+            ));
             io.say(&format!("address: {}", w.address().to_text()));
             io.say(&format!(
                 "scanning will start at height {}",
@@ -444,7 +503,7 @@ pub fn run(args: &[String], io: &mut dyn Io) -> Result<(), String> {
         }
         "balance" => {
             let (mut w, pass) = load(&o, io)?;
-            let node = connect(&o)?;
+            let node = connect(&o, w.network())?;
             let report = w.sync(&node).map_err(|e| e.to_string())?;
             save(&w, need(&o.wallet, "--wallet")?, &pass, &o)?;
             let b = w.balance(&node).map_err(|e| e.to_string())?;
@@ -462,12 +521,12 @@ pub fn run(args: &[String], io: &mut dyn Io) -> Result<(), String> {
         "pay" => {
             let (mut w, pass) = load(&o, io)?;
             let to = need(&o.to, "--to")?;
-            let to = Address::from_text(to).map_err(|e| format!("--to: {e}"))?;
+            let to = Address::parse(to, w.network()).map_err(|e| format!("--to: {e}"))?;
             let amount = need(&o.amount, "--amount")?;
             let units = parse_coins(amount).ok_or_else(|| {
                 format!("--amount: `{amount}` is not an amount (digits with up to 8 decimals)")
             })?;
-            let mut node = connect(&o)?;
+            let mut node = connect(&o, w.network())?;
             w.sync(&node).map_err(|e| e.to_string())?;
             pay_all(&mut w, &mut node, io, &o, &pass, &[(to, units)])
         }
@@ -475,19 +534,19 @@ pub fn run(args: &[String], io: &mut dyn Io) -> Result<(), String> {
             let path = need(&o.file, "--file")?;
             let text = std::fs::read_to_string(path)
                 .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-            let dests = read_payments(&text).map_err(|e| format!("--file: {e}"))?;
             let (mut w, pass) = load(&o, io)?;
-            let mut node = connect(&o)?;
+            let dests = read_payments(&text, w.network()).map_err(|e| format!("--file: {e}"))?;
+            let mut node = connect(&o, w.network())?;
             w.sync(&node).map_err(|e| e.to_string())?;
             pay_all(&mut w, &mut node, io, &o, &pass, &dests)
         }
         "sweep" => {
+            let (mut w, pass) = load(&o, io)?;
             let to = match &o.to {
-                Some(t) => Some(Address::from_text(t).map_err(|e| format!("--to: {e}"))?),
+                Some(t) => Some(Address::parse(t, w.network()).map_err(|e| format!("--to: {e}"))?),
                 None => None,
             };
-            let (mut w, pass) = load(&o, io)?;
-            let mut node = connect(&o)?;
+            let mut node = connect(&o, w.network())?;
             w.sync(&node).map_err(|e| e.to_string())?;
             let txs = w
                 .build_sweep(&node, &mut OsRng, to.as_ref(), FeeLevel::Low)
@@ -497,7 +556,7 @@ pub fn run(args: &[String], io: &mut dyn Io) -> Result<(), String> {
         "combine" => {
             let count = *need(&o.coins, "--pieces")?;
             let (mut w, pass) = load(&o, io)?;
-            let mut node = connect(&o)?;
+            let mut node = connect(&o, w.network())?;
             w.sync(&node).map_err(|e| e.to_string())?;
             let built = w
                 .build_combine(&node, &mut OsRng, count, FeeLevel::Low)
@@ -505,7 +564,7 @@ pub fn run(args: &[String], io: &mut dyn Io) -> Result<(), String> {
             move_own_coins(&mut w, &mut node, io, &o, &pass, vec![built], "combine")
         }
         "info" => {
-            let node = connect(&o)?;
+            let node = connect(&o, new_network)?;
             let i = node.info()?;
             io.say(&format!(
                 "network {} (node version {})",

@@ -2,8 +2,8 @@
 
 An independent implementation, in Python and the standard library only, of how a miner and a pool turn their messages
 into bytes: the frame, the five messages a miner sends, the eight a pool sends, and the order in which a decoder checks a
-message. The coinbase, transaction and header encodings inside come from the version 2 data-model reference
-(`reference/tools/make_vectors_v2.py`).
+message. The coinbase, transaction and header encodings inside come from the version 3 (`gamma`) data-model reference
+(`reference/tools/make_vectors_v3.py`; 0.3.0 moved the protocol from version 2's objects to version 3's).
 
     python reference/tools/make_vectors_pool.py --check     do the committed vectors match the reference?
     python reference/tools/make_vectors_pool.py --write     regenerate them (a PROTOCOL CHANGE: explain it in the commit
@@ -18,7 +18,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import make_vectors_v2 as v2  # noqa: E402
+import make_vectors_v3 as v3  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VECTOR_DIR = os.path.join(ROOT, "tests", "vectors")
@@ -108,11 +108,11 @@ def need(cond):
 def enc_header_empty(h):
     """A header the pool hands out: the nonce and the mix are for the miner to fill, so they must be empty."""
     assert h["nonce"] == 0 and h["mix"] == "00" * 64
-    return v2.enc_header(h)
+    return v3.enc_header(h)
 
 
 def dec_header_empty(r):
-    h = v2.dec_header(r)
+    h = v3.dec_header(r)
     need(h["nonce"] == 0 and h["mix"] == "00" * 64)
     return h
 
@@ -137,17 +137,17 @@ def enc_miner(m):
     elif t == "declare_job":
         assert len(m["tx_ids"]) <= MAX_TX_IDS
         body += (u64(m["decl_id"]) + u64(m["height"]) + fixed(m["prev_id"], 32) + u64(m["timestamp"])
-                 + v2.enc_coinbase(m["coinbase"]) + u32(len(m["tx_ids"])) + b"".join(fixed(i, 32) for i in m["tx_ids"]))
+                 + v3.enc_coinbase(m["coinbase"]) + u32(len(m["tx_ids"])) + b"".join(fixed(i, 32) for i in m["tx_ids"]))
     elif t == "provide_txs":
         assert 1 <= len(m["txs"]) <= MAX_PROVIDED_TXS
-        body += u64(m["decl_id"]) + v2.w_list(m["txs"], v2.enc_tx)
+        body += u64(m["decl_id"]) + v3.w_list(m["txs"], v3.enc_tx)
     return body
 
 
 def dec_miner(body):
     if len(body) == 0:
         raise PoolError("length")
-    r = v2.Reader(body)
+    r = v3.Reader(body)
     kind = r.u8()
     names = {v: k for k, v in MINER.items()}
     if kind not in names:
@@ -168,16 +168,16 @@ def dec_miner(body):
             m["token"] = r.u64()
         elif t == "declare_job":
             m["decl_id"], m["height"], m["prev_id"], m["timestamp"] = r.u64(), r.u64(), r.fixed(32), r.u64()
-            m["coinbase"] = v2.dec_coinbase(r)
+            m["coinbase"] = v3.dec_coinbase(r)
             m["tx_ids"] = [r.fixed(32) for _ in range(r.count(0, MAX_TX_IDS))]
         elif t == "provide_txs":
             m["decl_id"] = r.u64()
-            m["txs"] = [v2.dec_tx(r) for _ in range(r.count(1, MAX_PROVIDED_TXS))]
-    except v2.DecodeError:
+            m["txs"] = [v3.dec_tx(r) for _ in range(r.count(1, MAX_PROVIDED_TXS))]
+    except v3.DecodeError:
         raise PoolError("malformed")
     try:
         r.finish()
-    except v2.DecodeError:
+    except v3.DecodeError:
         raise PoolError("trailing")
     return m
 
@@ -218,15 +218,14 @@ def enc_pool(m):
         assert target_ok(m["share_target"])
         body += fixed(m["share_target"], 32)
     elif t == "set_payout":
-        body += (u64(m["height"]) + fixed(m["onetime_address"], 32) + fixed(m["view_tag"], 3)
-                 + fixed(m["ephemeral_pubkey"], 32) + fixed(m["anchor_enc"], 16))
+        body += u64(m["height"]) + fixed(m["spend_pubkey"], 32) + fixed(m["view_pubkey"], 32) + fixed(m["anchor"], 16)
     return body
 
 
 def dec_pool(body):
     if len(body) == 0:
         raise PoolError("length")
-    r = v2.Reader(body)
+    r = v3.Reader(body)
     kind = r.u8()
     names = {v: k for k, v in POOL.items()}
     try:
@@ -278,15 +277,15 @@ def dec_pool(body):
                 m["share_target"] = r.fixed(32)
                 need(target_ok(m["share_target"]))
             elif t == "set_payout":
-                m.update({"height": r.u64(), "onetime_address": r.fixed(32), "view_tag": r.fixed(3),
-                          "ephemeral_pubkey": r.fixed(32), "anchor_enc": r.fixed(16)})
+                m.update({"height": r.u64(), "spend_pubkey": r.fixed(32), "view_pubkey": r.fixed(32),
+                          "anchor": r.fixed(16)})
         else:
             raise PoolError("kind")
-    except v2.DecodeError:
+    except v3.DecodeError:
         raise PoolError("malformed")
     try:
         r.finish()
-    except v2.DecodeError:
+    except v3.DecodeError:
         raise PoolError("trailing")
     return m
 
@@ -305,29 +304,22 @@ def h(c, n=32):
 
 
 def sample_coinbase(height=7):
-    return {"version": 2, "height": height,
+    return {"version": 3, "height": height,
             "outputs": [{"onetime_address": h("01"), "amount": 5, "view_tag": h("02", 3), "ephemeral_pubkey": h("03"),
                          "anchor_enc": h("04", 16)}], "extra": ""}
 
 
-def sample_output(seed):
-    return {"onetime_address": h(seed), "amount_commitment": h("03"), "amount_enc": h("04", 8),
-            "view_tag": h("05", 3), "ephemeral_pubkey": h("06"), "anchor_enc": h("07", 16)}
-
-
 def sample_tx(n_in=1):
-    return {"version": 2, "inputs": [{"key_image": "%02x" % (i + 1) * 32} for i in range(n_in)],
-            "outputs": [sample_output("02"), sample_output("08")], "fee": 12345, "extra": "0909",
-            "rings": [[1, 2] for _ in range(n_in)], "proof_data": "08" * 10}
+    return v3.sample_tx(f"pool {n_in}", n_in=n_in, proof=10)
 
 
 def sample_header(nonce=0, mix="00" * 64):
-    return {"version": 2, "prev_id": h("11"), "timestamp": 1700000000, "tx_root": h("22"), "nonce": nonce, "mix": mix}
+    return {"version": 3, "prev_id": h("11"), "timestamp": 1700000000, "tx_root": h("22"), "nonce": nonce, "mix": mix}
 
 
 def hello(**kw):
-    m = {"type": "hello", "min_version": 1, "max_version": 1, "capabilities": 0, "network": "alpha",
-         "address": "tni1examplepayoutaddress", "worker": "rig1", "agent": "tenero-miner/0.1"}
+    m = {"type": "hello", "min_version": 1, "max_version": 1, "capabilities": 0, "network": "gamma",
+         "address": "TENgexamplepayoutaddress", "worker": "rig1", "agent": "tenero-miner/0.1"}
     m.update(kw)
     return m
 
@@ -400,9 +392,8 @@ def valid_pool():
         ("a job that makes every earlier one dead", job(clean=True, job_id=6)),
         ("a job that does not", job(clean=False, job_id=7, ttl=3600)),
         ("the share target changes", {"type": "set_share_target", "share_target": "0001" + "ff" * 30}),
-        ("the pool's payout for a height", {"type": "set_payout", "height": 8, "onetime_address": h("0a"),
-                                            "view_tag": h("0b", 3), "ephemeral_pubkey": h("0c"),
-                                            "anchor_enc": h("0d", 16)}),
+        ("the pool's payout for a height", {"type": "set_payout", "height": 8, "spend_pubkey": h("0a"),
+                                            "view_pubkey": h("0b"), "anchor": h("0d", 16)}),
         ("an error", {"type": "error", "message": "no"}),
         ("the longest error", {"type": "error", "message": "x" * MAX_TEXT}),
     ]

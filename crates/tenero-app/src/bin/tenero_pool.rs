@@ -24,7 +24,7 @@ tenero-pool: a mining pool (EXPERIMENTAL, UNAUDITED; nothing on any network it s
   tenero-pool key --data DIR            print the pool's public key (miners pin it with --pool-key), making the key file if there is none
 
   --data DIR            where the pool keeps its key (pool.key), its books (pool-state.dat) and its payment record (payments.log)
-  --network NET         test, dev, beta or alpha: the network of the node
+  --network NET         gamma, dev or test: the network of the node
   --node-data DIR       the data directory of the pool's own node (the pool reads its cookie)
   --control IP:PORT     that node's control interface (default: the network's usual port)
   --wallet FILE         the pool's wallet (made with tenero-wallet create). Every block pays it; the miners are paid from it.
@@ -131,7 +131,7 @@ fn parse() -> Result<Args, String> {
             "config" => {}
             "data" => a.data = PathBuf::from(&v),
             "network" => {
-                a.network = Some(Network::parse(&v).ok_or_else(|| format!("network: `{v}` is not test, dev, beta or alpha"))?)
+                a.network = Some(Network::parse(&v).ok_or_else(|| format!("network: `{v}` is not gamma, dev or test"))?)
             }
             "node-data" | "node_data" => a.node_data = Some(PathBuf::from(&v)),
             "control" => a.control = Some(v.parse().map_err(|_| format!("control: `{v}` is not ip:port"))?),
@@ -252,12 +252,19 @@ fn main() {
             wallet_path.display()
         ))
     });
+    if wallet.network() != network.wallet_network() {
+        fail(format!(
+            "the wallet {} is for the {} network, and this pool serves {}",
+            wallet_path.display(),
+            wallet.network().name(),
+            network.name()
+        ));
+    }
     let key = NodeKey::load_or_create(&args.data.join("pool.key")).unwrap_or_else(|e| fail(e));
-    let params = tenero_app::daemon::params_of(network).unwrap_or_else(|e| fail(e));
     // the books: what was kept, or empty; a file that cannot be read is never overwritten
     let state_path = args.data.join("pool-state.dat");
     let accounts = match std::fs::read(&state_path) {
-        Ok(bytes) => Accounts::from_bytes(&bytes).unwrap_or_else(|e| {
+        Ok(bytes) => Accounts::from_bytes(&bytes, network.wallet_network()).unwrap_or_else(|e| {
             fail(format!(
                 "{}: {e}. The pool will not start over it: move the file away to start with empty books",
                 state_path.display()
@@ -288,7 +295,11 @@ fn main() {
     };
     let pow: Arc<dyn PowCheck> = Arc::new(NodePow::new(node.clone(), kind));
     let pool_address = wallet.address();
-    let mut cfg = PoolConfig::new(network.name(), pool_address, params.coinbase_maturity);
+    let mut cfg = PoolConfig::new(
+        network.name(),
+        pool_address,
+        tenero_core::v3::rules::COINBASE_MATURITY,
+    );
     cfg.name = args.name.clone();
     cfg.fee_ppm = args.fee;
     cfg.min_payout = args.min_payout;
