@@ -3025,7 +3025,10 @@ impl<'a> Engine<'a> {
                 }
                 p.known_txs.insert(id);
             }
-            if !self.node.pool().contains(&id)
+            // while syncing, a new transaction is judged against a chain far behind the sender's, so it would look
+            // invalid and its honest sender would be blamed: none is fetched until the sync ends
+            if self.syncing.is_none()
+                && !self.node.pool().contains(&id)
                 && !self.rejected_txs.contains(&id)
                 && !self.req_txs.contains_key(&id)
             {
@@ -3054,6 +3057,10 @@ impl<'a> Engine<'a> {
                 }
                 continue;
             }
+            // asked for before a sync began: dropped, not judged (see `on_new_tx`)
+            if self.syncing.is_some() {
+                continue;
+            }
             match self.node.submit_tx_at(t, self.now / 1000) {
                 Ok(AddOutcome::Added { id, .. }) => self.announce_tx(id, out),
                 Err(PoolError::Invalid(_)) | Err(PoolError::TooLarge { .. }) => {
@@ -3066,7 +3073,8 @@ impl<'a> Engine<'a> {
                         return;
                     }
                 }
-                // already known, in conflict, or no room: not the peer's fault
+                // already known, in conflict, no room, or built on a block this node does not have yet: not the peer's
+                // fault (a transaction that is not judged is not marked rejected, so it can be fetched again later)
                 Err(_) => {}
             }
         }

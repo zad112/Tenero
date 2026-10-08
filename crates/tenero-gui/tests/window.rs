@@ -1302,3 +1302,29 @@ fn the_confirmation_and_the_history_say_what_a_payment_was_for() {
     let (t, _) = rig.frame();
     assert!(t.contains("for Rent"), "{t}");
 }
+
+#[test]
+fn a_node_with_no_peers_is_not_called_up_to_date() {
+    let mut rig = Rig::new();
+    rig.app.goto("Node");
+    for peers in [0, 3] {
+        let s = snap(
+            &rig,
+            wallet(true, true),
+            NodeView::Running {
+                info: info(false, peers),
+                ours: true,
+            },
+            MinerView::Off,
+            None,
+        );
+        rig.app.set_snapshot(s);
+        let (t, _) = rig.frame();
+        // the Node tab's State row ("Wallet: up to date" in the top bar is about the wallet, not the node)
+        assert_eq!(
+            t.contains("no peers: cannot tell if it is up to date"),
+            peers == 0,
+            "{peers} peers:\n{t}"
+        );
+    }
+}

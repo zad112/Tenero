@@ -370,13 +370,17 @@ fn a_transaction_breaking_a_rule_is_refused_with_that_rule() {
             ..
         }))
     ));
-    // a reference block the chain does not have yet
+    // a reference block the chain does not have yet: not judged (a node behind the sender sees every new transaction
+    // so), and not called invalid
     let mut ahead = net.std_tx(3, 0);
     ahead.prunable.reference_height += 1;
-    assert!(matches!(
+    let r = ahead.prunable.reference_height;
+    assert_eq!(
         node.submit_tx(ahead),
-        Err(PoolError::Invalid(BlockError::BadReference { .. }))
-    ));
+        Err(PoolError::ReferenceAhead {
+            reference_height: r
+        })
+    );
     // a key image the chain has already spent
     let spent = net.std_tx(4, 0);
     let b = net.extend(vec![spent]);
