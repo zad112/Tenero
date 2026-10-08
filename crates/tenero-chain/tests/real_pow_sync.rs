@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 use tenero_chain::{Chain, ChainParams, MatmulPow, ProofsNotChecked, Submitted, Validator};
 use tenero_core::matmulhash::{self, Params};
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{self, PowKind};
-use tenero_core::v2::*;
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::*;
 use tenero_store::Store;
 
 const LABEL: &str = "tenero real pow sync measurement";
@@ -109,7 +109,7 @@ fn setup() -> Setup {
 
 fn chain_params() -> ChainParams {
     // a target about one attempt in eight meets, so each block costs a few attempts to mine
-    ChainParams::version_2(LABEL, PowKind::Matmul, U256::pow2(253).unwrap())
+    ChainParams::version_3(LABEL, PowKind::Matmul, U256::pow2(253).unwrap())
 }
 
 fn secs(d: Duration) -> f64 {
@@ -139,14 +139,10 @@ fn mine_chain(s: &Setup) -> (Vec<Block>, u64, Duration, [u8; 32]) {
             version: VERSION,
             height: h,
             outputs: vec![CoinbaseOutput {
-                onetime_address: ids::header_hash(&BlockHeader {
-                    version: VERSION,
-                    prev_id: [0; 32],
-                    timestamp: h,
-                    tx_root: [0; 32],
-                    nonce: 0,
-                    mix: [0; 64],
-                }),
+                onetime_address: tenero_tree::hash_to_point(tenero_core::hash::sha256(&[
+                    b"coinbase",
+                    &h.to_le_bytes(),
+                ])),
                 amount: next.reward,
                 view_tag: [0; 3],
                 ephemeral_pubkey: [7; 32],

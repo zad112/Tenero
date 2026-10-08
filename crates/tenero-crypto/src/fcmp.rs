@@ -10,7 +10,9 @@
 //! FCMP++ spend-authorisation proofs sign `tenero_core::v3::ids::proof_message`. The FCMP++ crates are **only partly
 //! audited**; the layout, the message and the checks around them are ours and **unaudited**.
 
+use std::collections::{HashSet, VecDeque};
 use std::io::Cursor;
+use std::sync::Mutex;
 
 use ciphersuite::group::ff::{Field, PrimeField};
 use ciphersuite::group::{Group, GroupEncoding};
@@ -253,6 +255,47 @@ fn root_of(tree: &TreeState) -> Result<(TreeRoot<Selene, Helios>, usize), String
 /// the tree of its reference block. A block's transactions are verified as batches, one per thread.
 pub struct FcmpProofs {
     threads: usize,
+    /// The transactions whose proofs verified, each against one tree: a transaction checked when it reached the mempool
+    /// is not checked again in its block (`docs/FCMP_CARROT_PLAN.md` F14).
+    verified: Mutex<Verified>,
+}
+
+/// How many verdicts are remembered: about ten blocks at the ceiling (32 bytes each).
+pub const VERIFIED_CAPACITY: usize = 65_536;
+
+/// Remembered good verdicts, oldest dropped first. Only a success is remembered, and its key binds everything checked:
+/// the whole transaction (its id commits to the prefix and the proofs), the chain and the tree it was checked against.
+#[derive(Default)]
+struct Verified {
+    set: HashSet<[u8; 32]>,
+    order: VecDeque<[u8; 32]>,
+}
+
+impl Verified {
+    fn insert(&mut self, key: [u8; 32]) {
+        if self.set.insert(key) {
+            self.order.push_back(key);
+            while self.order.len() > VERIFIED_CAPACITY {
+                if let Some(old) = self.order.pop_front() {
+                    self.set.remove(&old);
+                }
+            }
+        }
+    }
+}
+
+/// The key a verdict is remembered by: the transaction, the chain and the tree (root and layers). `None` if the
+/// transaction does not encode (it is then checked, and fails, the usual way).
+fn verdict_key(ctx: &TxContext<'_>) -> Option<[u8; 32]> {
+    let id = tenero_core::v3::ids::tx_id(ctx.tx).ok()?;
+    Some(tenero_core::hash::sha256(&[
+        b"tenero verified proofs v3",
+        &id,
+        &ctx.chain_id,
+        &ctx.tree.root,
+        &[ctx.tree.n_layers],
+        &ctx.tree.n_leaves.to_le_bytes(),
+    ]))
 }
 
 impl Default for FcmpProofs {
@@ -261,10 +304,13 @@ impl Default for FcmpProofs {
     }
 }
 
+/// The node's proof check (one per process, so its memory of verdicts is shared).
+pub static FCMP: std::sync::LazyLock<FcmpProofs> = std::sync::LazyLock::new(FcmpProofs::new);
+
 impl FcmpProofs {
     /// Up to 4 threads (fewer if the machine has fewer cores). A block at the ceiling (about 6,300 typical transactions)
     /// takes about 2 minutes of one 5900X core, so about 30 s on 4 (`docs/FCMP_CARROT_PLAN.md` F14); a quiet block, a few
-    /// hundred milliseconds.
+    /// hundred milliseconds; a block whose transactions all came through the mempool, almost nothing.
     pub fn new() -> FcmpProofs {
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
         FcmpProofs::with_threads(cores.min(4))
@@ -273,58 +319,100 @@ impl FcmpProofs {
     pub fn with_threads(threads: usize) -> FcmpProofs {
         FcmpProofs {
             threads: threads.max(1),
+            verified: Mutex::new(Verified::default()),
         }
     }
 
-    /// One batch over `txs` (whose first is the block's transaction `offset`), and if it fails, which transaction.
-    fn check_chunk(txs: &[TxContext<'_>], offset: usize) -> Result<(), (usize, String)> {
+    /// How many verdicts are remembered.
+    pub fn remembered(&self) -> usize {
+        self.lock().set.len()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Verified> {
+        // a panic while holding it leaves only a set of good verdicts: still valid
+        self.verified.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn known(&self, ctx: &TxContext<'_>) -> bool {
+        verdict_key(ctx).is_some_and(|k| self.lock().set.contains(&k))
+    }
+
+    fn remember(&self, ctxs: &[&TxContext<'_>]) {
+        let keys: Vec<[u8; 32]> = ctxs.iter().filter_map(|c| verdict_key(c)).collect();
+        let mut v = self.lock();
+        for k in keys {
+            v.insert(k);
+        }
+    }
+
+    /// One batch over `txs` (each with its index in the block), and if it fails, which transaction.
+    fn check_chunk(txs: &[(usize, &TxContext<'_>)]) -> Result<(), (usize, String)> {
         let mut batch = Batch::new();
-        for (i, ctx) in txs.iter().enumerate() {
-            let (root, layers) = root_of(&ctx.tree).map_err(|e| (offset + i, e))?;
+        for (i, ctx) in txs {
+            let (root, layers) = root_of(&ctx.tree).map_err(|e| (*i, e))?;
             batch
                 .add(&ctx.chain_id, ctx.tx, root, layers)
-                .map_err(|e| (offset + i, e.to_string()))?;
+                .map_err(|e| (*i, e.to_string()))?;
         }
         if batch.finish() {
             return Ok(());
         }
         // a batch says only that something failed: find what, one by one (only an invalid block pays this)
-        for (i, ctx) in txs.iter().enumerate() {
-            let (root, layers) = root_of(&ctx.tree).map_err(|e| (offset + i, e))?;
-            verify_tx(&ctx.chain_id, ctx.tx, root, layers)
-                .map_err(|e| (offset + i, e.to_string()))?;
+        for (i, ctx) in txs {
+            let (root, layers) = root_of(&ctx.tree).map_err(|e| (*i, e))?;
+            verify_tx(&ctx.chain_id, ctx.tx, root, layers).map_err(|e| (*i, e.to_string()))?;
         }
-        Err((offset, "the batch does not verify".into()))
+        Err((
+            txs.first().map_or(0, |t| t.0),
+            "the batch does not verify".into(),
+        ))
     }
 }
 
 impl ProofCheck for FcmpProofs {
     fn check_tx(&self, ctx: &TxContext<'_>) -> Result<(), String> {
+        if self.known(ctx) {
+            return Ok(());
+        }
         let (root, layers) = root_of(&ctx.tree)?;
-        verify_tx(&ctx.chain_id, ctx.tx, root, layers).map_err(|e| e.to_string())
+        verify_tx(&ctx.chain_id, ctx.tx, root, layers).map_err(|e| e.to_string())?;
+        self.remember(&[ctx]);
+        Ok(())
     }
 
     fn check_block(&self, txs: &[TxContext<'_>]) -> Result<(), (usize, String)> {
-        if txs.len() <= 1 || self.threads == 1 {
-            return FcmpProofs::check_chunk(txs, 0);
+        let todo: Vec<(usize, &TxContext<'_>)> = txs
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !self.known(c))
+            .collect();
+        if todo.is_empty() {
+            return Ok(());
         }
-        let per = txs.len().div_ceil(self.threads.min(txs.len()));
-        let results: Vec<Result<(), (usize, String)>> = std::thread::scope(|s| {
-            let handles: Vec<_> = txs
-                .chunks(per)
-                .enumerate()
-                .map(|(k, chunk)| s.spawn(move || FcmpProofs::check_chunk(chunk, k * per)))
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| {
-                    h.join()
-                        .unwrap_or_else(|_| Err((0, "a proof check panicked".into())))
-                })
-                .collect()
-        });
-        // the first failing transaction in block order
-        results.into_iter().collect()
+        let result = if todo.len() == 1 || self.threads == 1 {
+            FcmpProofs::check_chunk(&todo)
+        } else {
+            let per = todo.len().div_ceil(self.threads.min(todo.len()));
+            let results: Vec<Result<(), (usize, String)>> = std::thread::scope(|s| {
+                let handles: Vec<_> = todo
+                    .chunks(per)
+                    .map(|chunk| s.spawn(move || FcmpProofs::check_chunk(chunk)))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        h.join()
+                            .unwrap_or_else(|_| Err((0, "a proof check panicked".into())))
+                    })
+                    .collect()
+            });
+            // the first failing transaction in block order (the chunks are in block order)
+            results.into_iter().collect()
+        };
+        result?;
+        let done: Vec<&TxContext<'_>> = todo.iter().map(|(_, c)| *c).collect();
+        self.remember(&done);
+        Ok(())
     }
 
     fn checks_proofs(&self) -> bool {

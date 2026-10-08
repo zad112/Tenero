@@ -2,7 +2,6 @@
 
 use tenero_core::difficulty::DifficultyParams;
 use tenero_core::emission::Emission;
-use tenero_core::fees::V2_MIN_BLOCK_MEDIAN;
 use tenero_core::u256::U256;
 use tenero_core::v2::ids::PowKind;
 
@@ -21,8 +20,6 @@ pub struct ChainParams {
     pub pow_kind: PowKind,
     pub emission: Emission,
     pub difficulty: DifficultyParams,
-    /// The block-weight median never goes below this (150,000, as version 2's size median).
-    pub min_block_median: u64,
     pub future_limit_seconds: u64,
 }
 
@@ -45,7 +42,6 @@ impl ChainParams {
                 window: 30,
                 start_target,
             },
-            min_block_median: V2_MIN_BLOCK_MEDIAN,
             future_limit_seconds: FUTURE_LIMIT_SECONDS,
         }
     }

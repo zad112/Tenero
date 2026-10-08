@@ -12,13 +12,15 @@ use tenero_core::fees;
 use tenero_core::hash::sha256;
 use tenero_core::matmulhash::{self, Params};
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{self, PowKind};
-use tenero_core::v2::*;
-
-/// The proof length these tests give a "big" transaction (about 33 kB, so five of them are over the 150 kB median and under twice it). It shadows
-/// the rules' `MAX_PROOF` (64 KiB since Beta.1) on purpose: the tests are about block sizes, not about the longest proof.
-const MAX_PROOF: usize = 32 * 1024;
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::rules::{self, ShapeError};
+use tenero_core::v3::*;
 use tenero_store::Store;
+use tenero_tree::hash_to_point;
+
+/// The proof length of a "big" transaction: it weighs about 15,300 (a quarter of its proof), so ten of them are over the
+/// 150,000 median and under twice it.
+const BIG_PROOF: usize = 60_000;
 
 const LABEL: &str = "tenero chain test network";
 /// The clock: far enough ahead of every test block that none is "not yet" unless a test says so.
@@ -68,11 +70,15 @@ impl Rng {
         }
         b
     }
+    /// A valid point (prime order, canonical): what every one-time address, commitment and key image must be.
+    fn point(&mut self) -> [u8; 32] {
+        hash_to_point(self.bytes())
+    }
 }
 
 fn test_params() -> ChainParams {
     // a target that about one hash in four meets, so blocks mine instantly
-    ChainParams::version_2(LABEL, PowKind::Sha256, U256::pow2(254).unwrap())
+    ChainParams::version_3(LABEL, PowKind::Sha256, U256::pow2(254).unwrap())
 }
 
 /// A network under test: a store, the rules, and a way to build valid blocks on its tip.
@@ -126,44 +132,25 @@ impl Net {
 
     fn key_image(&mut self) -> [u8; 32] {
         self.next_key += 1;
-        sha256(&[b"key image", &self.next_key.to_le_bytes()])
+        hash_to_point(sha256(&[b"key image", &self.next_key.to_le_bytes()]))
     }
 
-    /// The first `ring_size` outputs that are mature in a block at `height`.
-    fn ring(&self, height: u64) -> Vec<u64> {
-        let mut ring = Vec::new();
-        for i in 0..self.store.output_count().unwrap() {
-            let o = self.store.output(i).unwrap().unwrap();
-            let wait = if o.coinbase {
-                self.params.coinbase_maturity
-            } else {
-                self.params.spend_maturity
-            };
-            if height >= o.height + wait {
-                ring.push(i);
-                if ring.len() == self.params.ring_size {
-                    break;
-                }
-            }
-        }
-        ring
-    }
-
-    /// A transaction with `rings.len()` inputs, paying exactly the dynamic minimum fee plus `fee_delta`.
-    fn tx(&mut self, rings: Vec<Vec<u64>>, proof_len: usize, fee_delta: i64) -> Transaction {
+    /// A transaction with `n_inputs` inputs and two outputs (all valid points, in order), its reference block the tip,
+    /// a proof of `proof_len` bytes that only `ProofsNotChecked` accepts, paying exactly the minimum fee plus `fee_delta`.
+    fn tx(&mut self, n_inputs: usize, proof_len: usize, fee_delta: i64) -> Transaction {
         let next = self.validator().next_block().unwrap();
-        let mut keys: Vec<[u8; 32]> = rings.iter().map(|_| self.key_image()).collect();
+        let mut keys: Vec<[u8; 32]> = (0..n_inputs).map(|_| self.key_image()).collect();
         keys.sort();
-        let outputs = (0..2)
+        let mut outputs: Vec<Output> = (0..2)
             .map(|_| Output {
-                onetime_address: self.rng.bytes(),
-                amount_commitment: self.rng.bytes(),
+                onetime_address: self.rng.point(),
+                amount_commitment: self.rng.point(),
                 amount_enc: self.rng.bytes(),
                 view_tag: self.rng.bytes(),
-                ephemeral_pubkey: self.rng.bytes(),
                 anchor_enc: self.rng.bytes(),
             })
             .collect();
+        outputs.sort_by_key(|o| o.onetime_address);
         let mut t = Transaction {
             prefix: TxPrefix {
                 version: VERSION,
@@ -172,29 +159,24 @@ impl Net {
                     .map(|key_image| Input { key_image })
                     .collect(),
                 outputs,
+                ephemeral_pubkeys: vec![self.rng.point()],
                 fee: 0,
-                extra: vec![],
+                encrypted_payment_id: self.rng.bytes(),
             },
             prunable: Prunable {
-                rings,
+                reference_height: self.height(),
                 proof_data: vec![7; proof_len],
             },
         };
         let size = t.to_bytes().unwrap().len() as u64;
-        let min = fees::dynamic_min_fee(size, next.reward, next.median).unwrap();
+        let min = rules::min_fee(size, next.reward, next.median).unwrap();
         t.prefix.fee = u64::try_from(i64::try_from(min).unwrap() + fee_delta).unwrap();
         t
     }
 
-    /// A spend with two inputs (each with a ring of mature outputs) and a small proof.
+    /// A spend with two inputs and a small proof (the tree must hold outputs: from block 61 on).
     fn spend(&mut self) -> Transaction {
-        let ring = self.ring(self.height() + 1);
-        assert_eq!(
-            ring.len(),
-            self.params.ring_size,
-            "not enough mature outputs yet"
-        );
-        self.tx(vec![ring.clone(), ring], 200, 0)
+        self.tx(2, 200, 0)
     }
 
     fn mine_to(&self, b: &mut Block, target: &U256) {
@@ -224,11 +206,11 @@ impl Net {
 
     fn block_at(&mut self, txs: Vec<Transaction>, timestamp: Option<u64>) -> Block {
         let next = self.validator().next_block().unwrap();
-        let body: u64 = txs.iter().map(|t| t.to_bytes().unwrap().len() as u64).sum();
+        let weight: u64 = txs.iter().map(|t| rules::tx_weight(t).unwrap()).sum();
         let fees_total: u64 = txs.iter().map(|t| t.prefix.fee).sum();
         let amount = self
             .validator()
-            .coinbase_amount(&next, body, fees_total)
+            .coinbase_amount(&next, weight, fees_total)
             .unwrap();
         let ts = timestamp.unwrap_or_else(|| {
             let after_tip = if self.height() == 0 {
@@ -242,10 +224,10 @@ impl Net {
             version: VERSION,
             height: next.height,
             outputs: vec![CoinbaseOutput {
-                onetime_address: self.rng.bytes(),
+                onetime_address: self.rng.point(),
                 amount,
                 view_tag: self.rng.bytes(),
-                ephemeral_pubkey: self.rng.bytes(),
+                ephemeral_pubkey: self.rng.point(),
                 anchor_enc: self.rng.bytes(),
             }],
             extra: vec![],
@@ -302,7 +284,7 @@ impl Net {
     }
 }
 
-/// The height from which a spend can use the first 16 coinbase outputs: block 16 matures 60 blocks later.
+/// A height at which the curve tree holds outputs (block 1's coinbase enters it with block 60): the tests spend from here.
 const FIRST_SPEND_HEIGHT: u64 = 76;
 
 // ------------------------------------------------------------------ a valid chain
@@ -317,7 +299,7 @@ fn a_chain_of_valid_blocks_is_mined_accepted_and_recorded() {
         let txs = vec![net.spend(), net.spend()];
         sizes.push(
             txs.iter()
-                .map(|t| t.to_bytes().unwrap().len() as u64)
+                .map(|t| rules::tx_weight(t).unwrap())
                 .sum::<u64>(),
         );
         let b = net.block(txs);
@@ -332,7 +314,7 @@ fn a_chain_of_valid_blocks_is_mined_accepted_and_recorded() {
         assert_eq!(net.accept(&b).height, v.height);
     }
     assert_eq!(net.height(), 80);
-    // what the store recorded is what the validator worked out: the target, the size, the work
+    // what the store recorded is what the validator worked out: the target, the weight, the work
     let mut total = U256::ZERO;
     for h in 1..=80u64 {
         let idx = net.store.block_index(h).unwrap().unwrap();
@@ -345,10 +327,15 @@ fn a_chain_of_valid_blocks_is_mined_accepted_and_recorded() {
             "cumulative work at {h}"
         );
         if h > 75 {
-            assert_eq!(idx.body_size, sizes[h as usize - 76]);
+            assert_eq!(idx.body_weight, sizes[h as usize - 76]);
+            assert_eq!(
+                idx.long_term_weight,
+                sizes[h as usize - 76],
+                "under 1.4 times the floor"
+            );
             assert_eq!(idx.tx_count, 2);
         } else {
-            assert_eq!(idx.body_size, 0);
+            assert_eq!(idx.body_weight, 0);
         }
     }
     // the outputs the spends created are there, and the key images are spent
@@ -409,9 +396,9 @@ fn version_parent_and_time() {
     ));
 
     let mut b = good.clone();
-    b.header.version = 3;
+    b.header.version = 2;
     net.mine(&mut b);
-    assert_eq!(net.rejects(&b), BlockError::BadVersion(3));
+    assert_eq!(net.rejects(&b), BlockError::BadVersion(2));
 
     let mut b = good.clone();
     b.header.prev_id = [9; 32];
@@ -498,38 +485,33 @@ fn on_a_young_chain_block_1_must_be_later_than_the_genesis_time_of_0() {
     ));
 }
 
-/// The block-size median is the upper median of the last ten block sizes, never below the 150 kB floor: one
-/// large block does not move it, five of the last ten do, and it falls back as they slide out of the window.
+/// The block-weight median is the upper median of the last ten block weights, never below the 150,000 floor: one heavy
+/// block does not move it, five of the last ten do, and it falls back as they slide out of the window.
 #[test]
-fn the_median_follows_the_last_ten_block_sizes() {
+fn the_median_follows_the_last_ten_block_weights() {
     let mut net = Net::prepared("median", FIRST_SPEND_HEIGHT as usize - 1);
     let big_block = |net: &mut Net| {
-        let txs: Vec<Transaction> = (0..5)
-            .map(|_| {
-                let ring = net.ring(net.height() + 1);
-                net.tx(vec![ring.clone(), ring], MAX_PROOF, 0)
-            })
-            .collect();
+        let txs: Vec<Transaction> = (0..10).map(|_| net.tx(2, BIG_PROOF, 0)).collect();
         net.block(txs)
     };
     let median = |net: &Net| net.validator().next_block().unwrap().median;
     assert_eq!(median(&net), 150_000);
-    let mut size = 0;
+    let mut weight = 0;
     for i in 1..=4 {
         let b = big_block(&mut net);
-        size = net.accept(&b).meta.body_size;
-        assert!(size > 150_000);
+        weight = net.accept(&b).meta.body_weight;
+        assert!(weight > 150_000);
         assert_eq!(
             median(&net),
             150_000,
-            "{i} big block(s) of the last ten: still the floor"
+            "{i} heavy block(s) of the last ten: still the floor"
         );
     }
-    // the fifth big block makes half of the window big: the upper median (index 5 of 10) is now their size
+    // the fifth heavy block makes half of the window heavy: the upper median (index 5 of 10) is now their weight
     let b = big_block(&mut net);
     net.accept(&b);
-    assert_eq!(median(&net), size);
-    // a block of exactly that size now carries no penalty, so the coinbase pays reward + fees exactly
+    assert_eq!(median(&net), weight);
+    // a block of exactly that weight now carries no penalty, so the coinbase pays reward + fees exactly
     let b = big_block(&mut net);
     let fees_total: u64 = b.transactions.iter().map(|t| t.prefix.fee).sum();
     assert_eq!(
@@ -538,9 +520,31 @@ fn the_median_follows_the_last_ten_block_sizes() {
         "no penalty at the median"
     );
     net.accept(&b);
-    // ten small blocks later the big ones have left the window and the median is the floor again
+    // ten light blocks later the heavy ones have left the window and the median is the floor again
     net.coinbase_blocks(10);
     assert_eq!(median(&net), 150_000);
+}
+
+/// The long-term median (15.4): a block's long-term weight is its weight, at most 1.4 times the long-term median, and the
+/// median a block is judged by is at most ten times the long-term median. On a chain far shorter than the window, the
+/// long-term median stays at the floor however heavy the blocks are.
+#[test]
+fn heavy_blocks_record_a_long_term_weight_of_at_most_one_point_four_times_the_floor() {
+    let mut net = Net::prepared("long-term", FIRST_SPEND_HEIGHT as usize - 1);
+    for _ in 0..3 {
+        // fifteen heavy transactions: about 230,000, over 1.4 times the floor (and under twice it)
+        let txs: Vec<Transaction> = (0..15).map(|_| net.tx(2, BIG_PROOF, 0)).collect();
+        let b = net.block(txs);
+        let v = net.accept(&b);
+        assert!(v.meta.body_weight > 210_000, "{}", v.meta.body_weight);
+        assert_eq!(v.meta.long_term_weight, 210_000);
+        let idx = net.store.block_index(v.height).unwrap().unwrap();
+        assert_eq!(idx.long_term_weight, v.meta.long_term_weight);
+    }
+    assert_eq!(
+        net.validator().next_block().unwrap().long_term_median,
+        150_000
+    );
 }
 
 #[test]
@@ -613,10 +617,10 @@ fn a_target_whose_work_cannot_be_represented_is_refused() {
         transactions: vec![],
     };
     b.coinbase.outputs.push(CoinbaseOutput {
-        onetime_address: [1; 32],
+        onetime_address: hash_to_point([1; 32]),
         amount: 2_000_000_000,
         view_tag: [0; 3],
-        ephemeral_pubkey: [0; 32],
+        ephemeral_pubkey: [2; 32],
         anchor_enc: [0; 16],
     });
     b.header.tx_root = ids::block_tx_root(&b.coinbase, &b.transactions).unwrap();
@@ -671,7 +675,7 @@ fn a_forged_mix_that_meets_the_target_is_caught_by_the_full_matmulhash_check() {
         num_blocks: 8,
     };
     let pow = MatmulPow::new(small, 3, 1).unwrap();
-    let mut params = ChainParams::version_2(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
+    let mut params = ChainParams::version_3(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
     params.pow_kind = PowKind::Matmul;
     let db = TempDb::new("matmul");
     let store = Store::open(&db.0, LABEL, PowKind::Matmul).unwrap();
@@ -687,10 +691,10 @@ fn a_forged_mix_that_meets_the_target_is_caught_by_the_full_matmulhash_check() {
             version: VERSION,
             height: h,
             outputs: vec![CoinbaseOutput {
-                onetime_address: rng.bytes(),
+                onetime_address: rng.point(),
                 amount: next.reward,
                 view_tag: [0; 3],
-                ephemeral_pubkey: rng.bytes(),
+                ephemeral_pubkey: rng.point(),
                 anchor_enc: [0; 16],
             }],
             extra: vec![],
@@ -733,7 +737,7 @@ fn a_forged_mix_that_meets_the_target_is_caught_by_the_full_matmulhash_check() {
         version: VERSION,
         height: 7,
         outputs: vec![CoinbaseOutput {
-            onetime_address: [5; 32],
+            onetime_address: hash_to_point([5; 32]),
             amount: next.reward,
             view_tag: [0; 3],
             ephemeral_pubkey: [6; 32],
@@ -800,7 +804,7 @@ fn across_the_gather_fork_each_side_accepts_only_its_own_design() {
     const FORK: u64 = 4;
     let pow = MatmulPow::new(small, 3, 1).unwrap().gathered_from(FORK);
     assert_eq!(pow.gather_from(), FORK);
-    let params = ChainParams::version_2(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
+    let params = ChainParams::version_3(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
     let db = TempDb::new("gatherfork");
     let store = Store::open(&db.0, LABEL, PowKind::Matmul).unwrap();
     let proofs = ProofsNotChecked;
@@ -814,10 +818,10 @@ fn across_the_gather_fork_each_side_accepts_only_its_own_design() {
             version: VERSION,
             height: next.height,
             outputs: vec![CoinbaseOutput {
-                onetime_address: rng.bytes(),
+                onetime_address: rng.point(),
                 amount: next.reward,
                 view_tag: [0; 3],
-                ephemeral_pubkey: rng.bytes(),
+                ephemeral_pubkey: rng.point(),
                 anchor_enc: [0; 16],
             }],
             extra: vec![],
@@ -893,15 +897,11 @@ fn the_merkle_root_must_match_the_block() {
 }
 
 #[test]
-fn the_size_penalty_and_the_hard_limit() {
+fn the_weight_penalty_and_the_hard_limit() {
     let mut net = Net::prepared("size", FIRST_SPEND_HEIGHT as usize - 1);
-    let big = |net: &mut Net| {
-        let ring = net.ring(net.height() + 1);
-        net.tx(vec![ring.clone(), ring], MAX_PROOF, 0)
-    };
-    // five transactions of about 33 kB: over the 150 kB median, under twice it
-    let txs: Vec<Transaction> = (0..5).map(|_| big(&mut net)).collect();
-    let body: u64 = txs.iter().map(|t| t.to_bytes().unwrap().len() as u64).sum();
+    // twelve transactions of about 15,300 weight: over the 150,000 median, under twice it
+    let txs: Vec<Transaction> = (0..12).map(|_| net.tx(2, BIG_PROOF, 0)).collect();
+    let body: u64 = txs.iter().map(|t| rules::tx_weight(t).unwrap()).sum();
     let fees_total: u64 = txs.iter().map(|t| t.prefix.fee).sum();
     assert!(body > 150_000 && body < 300_000, "{body}");
     let next = net.validator().next_block().unwrap();
@@ -933,14 +933,15 @@ fn the_size_penalty_and_the_hard_limit() {
     }
     net.accept(&good);
 
-    // ten of them are over twice the median: invalid whatever the coinbase pays
-    let txs: Vec<Transaction> = (0..10).map(|_| big(&mut net)).collect();
-    let body: u64 = txs.iter().map(|t| t.to_bytes().unwrap().len() as u64).sum();
+    // twenty-five of them weigh over twice the median: invalid whatever the coinbase pays
+    let txs: Vec<Transaction> = (0..25).map(|_| net.tx(2, BIG_PROOF, 0)).collect();
+    let body: u64 = txs.iter().map(|t| rules::tx_weight(t).unwrap()).sum();
+    let size: u64 = txs.iter().map(|t| t.to_bytes().unwrap().len() as u64).sum();
     assert!(body > 300_000);
     let next = net.validator().next_block().unwrap();
     assert_eq!(
         next.median, 150_000,
-        "one big block among empty ones does not move the median"
+        "one heavy block among empty ones does not move the median"
     );
     let fees_total: u64 = txs.iter().map(|t| t.prefix.fee).sum();
     let mut b = net.block(vec![]);
@@ -950,71 +951,33 @@ fn the_size_penalty_and_the_hard_limit() {
     assert_eq!(
         net.rejects(&b),
         BlockError::BlockTooLarge {
-            size: body,
-            limit: 300_000
+            weight: body,
+            size,
+            weight_limit: 300_000
         }
     );
 }
 
-/// The ceiling of `CONSENSUS_V2.md` 8.4: a block may carry at most `min(2 * median, 4 MiB)` transaction bytes. With a median
-/// of 3 MiB twice it is 6 MiB, and the ceiling is what holds.
+/// The ceilings (12 MiB of weight, 48 MiB of real bytes) need a median the long-term median takes months to reach, so the
+/// validator's use of them is checked here through the rule it calls, and the rule itself by the vectors (`v3_weight.json`).
 #[test]
-fn no_block_may_carry_more_than_the_ceiling_even_when_twice_the_median_is_more() {
-    let ceiling = fees::V2_MAX_BLOCK_BODY;
-    assert_eq!(ceiling, 4 * 1024 * 1024);
-    let mut params = test_params();
-    params.min_block_median = 3 * 1024 * 1024;
-    let mut net = Net::with_params("ceiling", params);
-    net.coinbase_blocks(FIRST_SPEND_HEIGHT as usize - 1);
-    let next = net.validator().next_block().unwrap();
-    assert_eq!(next.median, 3 * 1024 * 1024);
-    assert_eq!(fees::v2_block_limit(next.median), ceiling);
-    let ring = net.ring(net.height() + 1);
-    let size = |t: &Transaction| t.to_bytes().unwrap().len() as u64;
-    // transactions that add up to exactly the ceiling: as many full ones as fit and one trimmed to land on it
-    let full = net.tx(vec![ring.clone(), ring.clone()], MAX_PROOF, 0);
-    let k = (ceiling / size(&full)) as usize;
-    let mut txs: Vec<Transaction> = (0..k)
-        .map(|_| net.tx(vec![ring.clone(), ring.clone()], MAX_PROOF, 0))
-        .collect();
-    let used: u64 = txs.iter().map(size).sum();
-    let base = size(&full) - MAX_PROOF as u64;
-    let last_proof = (ceiling - used - base) as usize;
-    assert!(last_proof <= MAX_PROOF);
-    txs.push(net.tx(vec![ring.clone(), ring.clone()], last_proof, 0));
-    assert_eq!(txs.iter().map(size).sum::<u64>(), ceiling);
-
-    let build = |net: &mut Net, txs: &[Transaction]| {
-        let mut b = net.block(vec![]);
-        b.transactions = txs.to_vec();
-        net.finish(&mut b);
-        b
-    };
-    // exactly the ceiling is not too large (it may fail some other rule: these transactions are only as big as they must be)
-    let b = build(&mut net, &txs);
-    let r = net.validator().accept_block(&b, NOW);
-    assert!(
-        !matches!(r, Err(BlockError::BlockTooLarge { .. })),
-        "a block of exactly the ceiling: {r:?}"
-    );
-    // one byte more is, although twice the median allows 2 MiB more
-    let mut bigger = txs.clone();
-    bigger.last_mut().unwrap().prunable.proof_data.push(7);
-    let b = build(&mut net, &bigger);
-    assert_eq!(
-        net.rejects(&b),
-        BlockError::BlockTooLarge {
-            size: ceiling + 1,
-            limit: ceiling
-        }
-    );
-    // and a whole extra transaction is, too
-    let mut more = txs.clone();
-    more.push(net.tx(vec![ring.clone(), ring], MAX_PROOF, 0));
-    let b = build(&mut net, &more);
-    assert!(matches!(
-        net.rejects(&b),
-        BlockError::BlockTooLarge { limit, .. } if limit == ceiling
+fn the_limit_is_twice_the_median_up_to_the_ceilings() {
+    assert_eq!(rules::block_limit(150_000), 300_000);
+    assert_eq!(rules::block_limit(7 * 1024 * 1024), rules::MAX_BLOCK_WEIGHT);
+    assert!(!rules::block_too_large(
+        rules::MAX_BLOCK_WEIGHT,
+        rules::MAX_BLOCK_BYTES,
+        u64::MAX / 4
+    ));
+    assert!(rules::block_too_large(
+        rules::MAX_BLOCK_WEIGHT + 1,
+        0,
+        u64::MAX / 4
+    ));
+    assert!(rules::block_too_large(
+        0,
+        rules::MAX_BLOCK_BYTES + 1,
+        u64::MAX / 4
     ));
 }
 
@@ -1029,9 +992,9 @@ fn the_coinbase_version_height_and_amount() {
     assert_eq!(good.coinbase.outputs[0].amount, reward);
 
     let mut b = good.clone();
-    b.coinbase.version = 3;
+    b.coinbase.version = 2;
     net.finish(&mut b);
-    assert_eq!(net.rejects(&b), BlockError::CoinbaseVersion(3));
+    assert_eq!(net.rejects(&b), BlockError::CoinbaseVersion(2));
 
     let mut b = good.clone();
     b.coinbase.height = 12;
@@ -1056,14 +1019,17 @@ fn the_coinbase_version_height_and_amount() {
             }
         );
     }
-    // the rule is on the SUM: two outputs adding up to exactly the reward are fine
+    // the rule is on the SUM: two outputs adding up to exactly the reward are fine (in order, with their own keys)
     let mut b = good.clone();
     let second = CoinbaseOutput {
         amount: 1,
+        onetime_address: net.rng.point(),
+        ephemeral_pubkey: net.rng.point(),
         ..b.coinbase.outputs[0].clone()
     };
     b.coinbase.outputs[0].amount = reward - 1;
     b.coinbase.outputs.push(second);
+    b.coinbase.outputs.sort_by_key(|o| o.onetime_address);
     net.finish(&mut b);
     assert!(matches!(
         net.validator().validate_block(&b, NOW),
@@ -1074,10 +1040,59 @@ fn the_coinbase_version_height_and_amount() {
     b.coinbase.outputs[0].amount = u64::MAX;
     b.coinbase.outputs.push(CoinbaseOutput {
         amount: reward + 1,
+        onetime_address: net.rng.point(),
+        ephemeral_pubkey: net.rng.point(),
         ..b.coinbase.outputs[0].clone()
     });
+    b.coinbase.outputs.sort_by_key(|o| o.onetime_address);
     net.finish(&mut b);
     assert!(matches!(net.rejects(&b), BlockError::Malformed(_)));
+}
+
+#[test]
+fn the_coinbase_shape_and_points() {
+    let mut net = Net::prepared("coinbase-shape", 10);
+    let good = net.block(vec![]);
+    let two = |net: &mut Net, edit: &dyn Fn(&mut Vec<CoinbaseOutput>)| {
+        let mut b = good.clone();
+        let mut second = b.coinbase.outputs[0].clone();
+        second.onetime_address = net.rng.point();
+        second.ephemeral_pubkey = net.rng.point();
+        second.amount = 0;
+        b.coinbase.outputs.push(second);
+        b.coinbase.outputs.sort_by_key(|o| o.onetime_address);
+        edit(&mut b.coinbase.outputs);
+        net.finish(&mut b);
+        b
+    };
+    let b = two(&mut net, &|o| o.reverse());
+    assert_eq!(
+        net.rejects(&b),
+        BlockError::CoinbaseShape(ShapeError::OutputsNotAscending)
+    );
+    let b = two(&mut net, &|o| o[1].ephemeral_pubkey = o[0].ephemeral_pubkey);
+    assert_eq!(
+        net.rejects(&b),
+        BlockError::CoinbaseShape(ShapeError::EphemeralKeysRepeat)
+    );
+    let mut b = good.clone();
+    b.coinbase.outputs[0].ephemeral_pubkey = [0; 32];
+    net.finish(&mut b);
+    assert_eq!(
+        net.rejects(&b),
+        BlockError::CoinbaseShape(ShapeError::ZeroEphemeralKey)
+    );
+    // a one-time address that is not a valid point: the identity, a point of small order, bytes that decode to no point
+    let mut identity = [0u8; 32];
+    identity[0] = 1;
+    let mut not_a_point = [0xff; 32];
+    not_a_point[31] = 0x7f;
+    for bad in [identity, [0; 32], not_a_point] {
+        let mut b = good.clone();
+        b.coinbase.outputs[0].onetime_address = bad;
+        net.finish(&mut b);
+        assert_eq!(net.rejects(&b), BlockError::CoinbaseBadPoint { output: 0 });
+    }
 }
 
 // ------------------------------------------------------------------ the transactions
@@ -1100,12 +1115,11 @@ fn the_version_the_fee_and_the_shape_of_a_transaction() {
         Ok(Outcome::Valid(_))
     ));
 
-    let b = one_tx_block(&mut net, |t| t.prefix.version = 3);
-    assert_eq!(net.rejects(&b), BlockError::TxVersion { tx: 0, version: 3 });
+    let b = one_tx_block(&mut net, |t| t.prefix.version = 2);
+    assert_eq!(net.rejects(&b), BlockError::TxVersion { tx: 0, version: 2 });
 
-    // the fee: exactly the dynamic minimum passes (above), one unit less does not
-    let ring = net.ring(76);
-    let low = net.tx(vec![ring.clone(), ring.clone()], 200, -1);
+    // the fee: exactly the minimum of its real size passes (above), one unit less does not
+    let low = net.tx(2, 200, -1);
     let min = low.prefix.fee + 1;
     let b = net.block(vec![low.clone()]);
     assert_eq!(
@@ -1116,7 +1130,7 @@ fn the_version_the_fee_and_the_shape_of_a_transaction() {
             min
         }
     );
-    let at_min = net.tx(vec![ring.clone(), ring], 200, 0);
+    let at_min = net.tx(2, 200, 0);
     assert_eq!(at_min.prefix.fee, min);
     let at_min_block = net.block(vec![at_min]);
     assert!(matches!(
@@ -1124,14 +1138,44 @@ fn the_version_the_fee_and_the_shape_of_a_transaction() {
         Ok(Outcome::Valid(_))
     ));
 
-    // key images in strictly ascending order: swapped, or the same twice
+    // key images, and outputs, in strictly ascending order: swapped, or the same twice
+    let shape = |error| BlockError::TxShape { tx: 0, error };
     let b = one_tx_block(&mut net, |t| t.prefix.inputs.reverse());
-    assert_eq!(net.rejects(&b), BlockError::InputsNotAscending { tx: 0 });
+    assert_eq!(net.rejects(&b), shape(ShapeError::KeyImagesNotAscending));
     let b = one_tx_block(&mut net, |t| {
         let k = t.prefix.inputs[0].key_image;
         t.prefix.inputs[1].key_image = k;
     });
-    assert_eq!(net.rejects(&b), BlockError::InputsNotAscending { tx: 0 });
+    assert_eq!(net.rejects(&b), shape(ShapeError::KeyImagesNotAscending));
+    let b = one_tx_block(&mut net, |t| t.prefix.outputs.reverse());
+    assert_eq!(net.rejects(&b), shape(ShapeError::OutputsNotAscending));
+    let b = one_tx_block(&mut net, |t| {
+        t.prefix.outputs[1].onetime_address = t.prefix.outputs[0].onetime_address
+    });
+    assert_eq!(net.rejects(&b), shape(ShapeError::OutputsNotAscending));
+    let b = one_tx_block(&mut net, |t| t.prefix.ephemeral_pubkeys[0] = [0; 32]);
+    assert_eq!(net.rejects(&b), shape(ShapeError::ZeroEphemeralKey));
+
+    // every one-time address, commitment and key image a valid point
+    let mut identity = [0u8; 32];
+    identity[0] = 1;
+    let b = one_tx_block(&mut net, |t| {
+        t.prefix.outputs[1].amount_commitment = identity
+    });
+    assert_eq!(
+        net.rejects(&b),
+        BlockError::BadOutputPoint { tx: 0, output: 1 }
+    );
+    let b = one_tx_block(&mut net, |t| {
+        // the largest one-time address, so the outputs stay in order
+        t.prefix.outputs[1].onetime_address = [0xff; 32]
+    });
+    assert_eq!(
+        net.rejects(&b),
+        BlockError::BadOutputPoint { tx: 0, output: 1 }
+    );
+    let b = one_tx_block(&mut net, |t| t.prefix.inputs[0].key_image = [0; 32]);
+    assert_eq!(net.rejects(&b), BlockError::BadKeyImage { tx: 0, input: 0 });
 
     // a transaction outside the limits of the wire format cannot even be encoded
     let b = one_tx_block(&mut net, |_| {});
@@ -1141,67 +1185,52 @@ fn the_version_the_fee_and_the_shape_of_a_transaction() {
 }
 
 #[test]
-fn ring_size_order_and_membership() {
-    let mut net = Net::prepared("rings", FIRST_SPEND_HEIGHT as usize - 1);
+fn the_reference_block_must_be_below_the_block_and_its_tree_hold_outputs() {
+    let mut net = Net::prepared("reference", FIRST_SPEND_HEIGHT as usize - 1);
+    let bad = |r: u64| BlockError::BadReference {
+        tx: 0,
+        reference_height: r,
+    };
+    // the block itself, and later: refused
+    for r in [76, 77, u64::MAX] {
+        let b = one_tx_block(&mut net, |t| t.prunable.reference_height = r);
+        assert_eq!(net.rejects(&b), bad(r), "reference {r}");
+    }
+    // a block whose tree is empty (block 1's coinbase enters with block 60)
+    for r in [0, 1, 59] {
+        let b = one_tx_block(&mut net, |t| t.prunable.reference_height = r);
+        assert_eq!(net.rejects(&b), bad(r), "reference {r}");
+    }
+    // the first block whose tree has an output, and the parent: fine
+    for r in [60, 75] {
+        let b = one_tx_block(&mut net, |t| t.prunable.reference_height = r);
+        assert!(
+            matches!(
+                net.validator().validate_block(&b, NOW),
+                Ok(Outcome::Valid(_))
+            ),
+            "reference {r}"
+        );
+    }
+}
 
-    let b = one_tx_block(&mut net, |t| {
-        t.prunable.rings[1].pop();
-    });
+/// A reference block at most 1,440 blocks below: older is refused. (A long chain: about 1,500 blocks.)
+#[test]
+fn a_reference_block_more_than_1440_blocks_back_is_refused() {
+    let mut net = Net::prepared("reference-age", 1500);
+    let next = net.height() + 1;
+    let oldest = next - rules::MAX_REFERENCE_AGE;
+    let b = one_tx_block(&mut net, |t| t.prunable.reference_height = oldest);
+    assert!(matches!(
+        net.validator().validate_block(&b, NOW),
+        Ok(Outcome::Valid(_))
+    ));
+    let b = one_tx_block(&mut net, |t| t.prunable.reference_height = oldest - 1);
     assert_eq!(
         net.rejects(&b),
-        BlockError::RingWrongSize {
+        BlockError::BadReference {
             tx: 0,
-            input: 1,
-            size: 15
-        }
-    );
-    let b = one_tx_block(&mut net, |t| t.prunable.rings[0].clear());
-    assert_eq!(
-        net.rejects(&b),
-        BlockError::RingWrongSize {
-            tx: 0,
-            input: 0,
-            size: 0
-        }
-    );
-    // 17 members cannot be encoded at all
-    let good = one_tx_block(&mut net, |_| {});
-    let mut b = good.clone();
-    b.transactions[0].prunable.rings[0].push(9_999);
-    assert!(matches!(net.rejects(&b), BlockError::Malformed(_)));
-
-    // distinct and ascending: a repeated member, and members out of order
-    let b = one_tx_block(&mut net, |t| {
-        t.prunable.rings[0][3] = t.prunable.rings[0][2]
-    });
-    assert_eq!(
-        net.rejects(&b),
-        BlockError::RingNotAscending { tx: 0, input: 0 }
-    );
-    let b = one_tx_block(&mut net, |t| t.prunable.rings[1].swap(4, 5));
-    assert_eq!(
-        net.rejects(&b),
-        BlockError::RingNotAscending { tx: 0, input: 1 }
-    );
-
-    // a member that does not exist (past the last output), and one that exists but is too young
-    let count = net.store.output_count().unwrap();
-    let b = one_tx_block(&mut net, |t| t.prunable.rings[1][15] = count);
-    assert_eq!(
-        net.rejects(&b),
-        BlockError::RingMemberMissing {
-            tx: 0,
-            input: 1,
-            member: count
-        }
-    );
-    let b = one_tx_block(&mut net, |t| t.prunable.rings[0][15] = count - 1);
-    assert_eq!(
-        net.rejects(&b),
-        BlockError::RingMemberImmature {
-            tx: 0,
-            input: 0,
-            member: count - 1
+            reference_height: oldest - 1
         }
     );
 }
@@ -1228,7 +1257,7 @@ fn key_images_are_spent_once_in_the_chain_and_once_in_a_block() {
     );
 
     // twice inside one block, in two transactions
-    let (mut a, mut c) = (net.spend(), net.spend());
+    let (a, mut c) = (net.spend(), net.spend());
     let shared = a.prefix.inputs[1].key_image;
     c.prefix.inputs[0].key_image = shared;
     c.prefix.inputs.sort_by_key(|x| x.key_image);
@@ -1241,7 +1270,7 @@ fn key_images_are_spent_once_in_the_chain_and_once_in_a_block() {
         }
     );
     // whereas two transactions with different key images are fine
-    a = net.spend();
+    let a = net.spend();
     let c = net.spend();
     let two = net.block(vec![a, c]);
     assert!(matches!(
@@ -1250,56 +1279,33 @@ fn key_images_are_spent_once_in_the_chain_and_once_in_a_block() {
     ));
 }
 
+/// An output can be spent once it is in the curve tree: a coinbase output enters 60 blocks after its block, any other 10
+/// (the store's schedule, `v3_tree_schedule.json`). Here: the tree of each block holds exactly what the schedule says.
 #[test]
-fn maturity_a_coinbase_output_waits_60_blocks_and_any_other_10() {
-    // the coinbase of block 16 (output 15) may be used in a block at height 76, not at 75
-    let mut net = Net::prepared("maturity", 74);
-    let ring: Vec<u64> = (0..16).collect();
-    let t = net.tx(vec![ring.clone()], 200, 0);
+fn outputs_enter_the_tree_60_blocks_after_a_coinbase_and_10_after_a_transaction() {
+    let mut net = Net::prepared("maturity", 75);
+    let leaves = |net: &Net, h: u64| net.store.tree_state(h).unwrap().unwrap().n_leaves;
+    assert_eq!(leaves(&net, 59), 0);
+    assert_eq!(leaves(&net, 60), 1, "block 1's coinbase");
+    assert_eq!(leaves(&net, 75), 16);
+    // a block with a transaction: its two outputs enter with block 76 + 9 = 85
+    let t = net.spend();
     let b = net.block(vec![t]);
+    net.accept(&b); // 76
+    net.coinbase_blocks(8); // 77..=84
+    assert_eq!(leaves(&net, 84), 16 + 9, "coinbases of 17..=25");
+    net.coinbase_blocks(1); // 85
     assert_eq!(
-        net.rejects(&b),
-        BlockError::RingMemberImmature {
-            tx: 0,
-            input: 0,
-            member: 15
-        }
+        leaves(&net, 85),
+        16 + 10 + 2,
+        "and the transaction's two outputs"
     );
-    net.coinbase_blocks(1);
-    let t = net.tx(vec![ring.clone()], 200, 0);
-    let b = net.block(vec![t]);
-    net.accept(&b); // height 76
-    assert_eq!(net.height(), 76);
-
-    // an ordinary output created in block 76 may be used in a block at height 86, not at 85
-    let idx = net.store.block_index(76).unwrap().unwrap();
-    let young = idx.first_output_index + 1; // the coinbase's output is first, then the transaction's
-    assert!(!net.store.output(young).unwrap().unwrap().coinbase);
-    let mut ring2: Vec<u64> = (0..15).collect();
-    ring2.push(young);
-    net.coinbase_blocks(8); // heights 77..=84
-    let t = net.tx(vec![ring2.clone()], 200, 0);
-    let b = net.block(vec![t]);
-    assert_eq!(net.height(), 84);
-    assert_eq!(
-        net.rejects(&b),
-        BlockError::RingMemberImmature {
-            tx: 0,
-            input: 0,
-            member: young
-        }
-    );
-    net.coinbase_blocks(1); // height 85
-    let t = net.tx(vec![ring2], 200, 0);
-    let b = net.block(vec![t]);
-    net.accept(&b); // height 86
-    assert_eq!(net.height(), 86);
 }
 
 // ------------------------------------------------------------------ the proof hook
 
-/// What the recorder saw of one transaction: the height, the chain id and the heights of each ring's members.
-type Seen = (u64, [u8; 32], Vec<Vec<u64>>);
+/// What the recorder saw of one transaction: the height, the chain id and the leaves of the reference block's tree.
+type Seen = (u64, [u8; 32], u64);
 
 struct Recorder {
     real: bool,
@@ -1311,15 +1317,9 @@ impl ProofCheck for Recorder {
     fn check_tx(&self, ctx: &TxContext<'_>) -> Result<(), String> {
         let mut seen = self.seen.lock().unwrap();
         let call = seen.len();
-        // the ring members handed over are the outputs the store has, in the ring's order
-        let heights: Vec<Vec<u64>> = ctx
-            .ring_members
-            .iter()
-            .map(|r| r.iter().map(|o| o.height).collect())
-            .collect();
-        seen.push((ctx.height, ctx.chain_id, heights));
+        seen.push((ctx.height, ctx.chain_id, ctx.tree.n_leaves));
         if self.fail_on_call == Some(call) {
-            return Err("the signature does not verify".into());
+            return Err("the proof does not verify".into());
         }
         Ok(())
     }
@@ -1330,7 +1330,7 @@ impl ProofCheck for Recorder {
 }
 
 #[test]
-fn the_proof_hook_sees_every_transaction_with_its_ring_members_and_can_reject() {
+fn the_proof_hook_sees_every_transaction_with_its_reference_tree_and_can_reject() {
     let mut net = Net::prepared("hook", FIRST_SPEND_HEIGHT as usize - 1);
     let txs = vec![net.spend(), net.spend()];
     let b = net.block(txs.clone());
@@ -1350,18 +1350,15 @@ fn the_proof_hook_sees_every_transaction_with_its_ring_members_and_can_reject() 
     );
     let seen = recorder.seen.lock().unwrap();
     assert_eq!(seen.len(), 2);
-    for (height, chain_id, heights) in seen.iter() {
+    for (height, chain_id, leaves) in seen.iter() {
         assert_eq!(*height, 76);
         assert_eq!(
             *chain_id,
             net.store.chain_id(),
             "the proofs are bound to the chain id"
         );
-        assert_eq!(heights.len(), 2);
-        for ring in heights {
-            // the first 16 coinbase outputs came from blocks 1..=16
-            assert_eq!(ring, &(1..=16).collect::<Vec<u64>>());
-        }
+        // the reference block is 75, whose tree holds the coinbases of blocks 1..=16
+        assert_eq!(*leaves, 16);
     }
     drop(seen);
 
@@ -1376,7 +1373,7 @@ fn the_proof_hook_sees_every_transaction_with_its_ring_members_and_can_reject() 
         v.accept_block(&b, NOW).unwrap_err(),
         BlockError::ProofRejected {
             tx: 1,
-            reason: "the signature does not verify".into()
+            reason: "the proof does not verify".into()
         }
     );
     assert_eq!(
@@ -1507,14 +1504,22 @@ fn an_assumed_block_is_held_to_every_other_rule() {
         Err(BlockError::CoinbaseAmount { .. })
     ));
 
-    // a ring that is not in ascending order (a state rule that is not the proof)
+    // outputs out of order, and a reference block in the future (rules that are not the proof)
     let mut b = good.clone();
-    b.transactions[0].prunable.rings[0].swap(0, 1);
+    b.transactions[0].prefix.outputs.reverse();
     net.finish(&mut b);
     let v = net.validator().with_assumed(assumed(&[id_of(&b)]));
     assert!(matches!(
         v.validate_block(&b, NOW),
-        Err(BlockError::RingNotAscending { .. })
+        Err(BlockError::TxShape { .. })
+    ));
+    let mut b = good.clone();
+    b.transactions[0].prunable.reference_height = 1_000;
+    net.finish(&mut b);
+    let v = net.validator().with_assumed(assumed(&[id_of(&b)]));
+    assert!(matches!(
+        v.validate_block(&b, NOW),
+        Err(BlockError::BadReference { .. })
     ));
 
     // a key image that is already spent
@@ -1565,7 +1570,7 @@ fn a_block_that_fails_the_cheap_check_costs_no_dataset_and_a_lie_about_the_heigh
         num_blocks: 8,
     };
     let pow = MatmulPow::new(small, 3, 1).unwrap();
-    let params = ChainParams::version_2(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
+    let params = ChainParams::version_3(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
     let db = TempDb::new("matmul-b5");
     let store = Store::open(&db.0, LABEL, PowKind::Matmul).unwrap();
     let proofs = ProofsNotChecked;
@@ -1578,7 +1583,7 @@ fn a_block_that_fails_the_cheap_check_costs_no_dataset_and_a_lie_about_the_heigh
             version: VERSION,
             height,
             outputs: vec![CoinbaseOutput {
-                onetime_address: [5; 32],
+                onetime_address: hash_to_point([5; 32]),
                 amount: next.reward,
                 view_tag: [0; 3],
                 ephemeral_pubkey: [6; 32],
@@ -1671,20 +1676,25 @@ fn a_transaction_that_breaks_a_structural_rule_is_refused_before_any_proof_is_ch
     cases.push(("a fee under the minimum", t));
     let mut t = good.clone();
     t.prefix.inputs.reverse();
-    t.prunable.rings.reverse();
     cases.push(("key images not in ascending order", t));
     let mut t = good.clone();
-    t.prunable.rings.pop();
-    cases.push(("not one ring per input", t));
+    t.prefix.outputs.reverse();
+    cases.push(("outputs not in ascending order", t));
     let mut t = good.clone();
-    t.prunable.rings[0].pop();
-    cases.push(("a ring of the wrong size", t));
+    t.prefix.ephemeral_pubkeys[0] = [0; 32];
+    cases.push(("a zero ephemeral key", t));
     let mut t = good.clone();
-    t.prunable.rings[0].reverse();
-    cases.push(("a ring not in ascending order", t));
+    t.prefix.outputs[0].amount_commitment = [0; 32];
+    cases.push(("a commitment that is not a valid point", t));
     let mut t = good.clone();
-    t.prunable.rings[0][15] = 9_999_999;
-    cases.push(("a ring member that does not exist", t));
+    t.prefix.inputs[1].key_image = [0xff; 32];
+    cases.push(("a key image that is not a valid point", t));
+    let mut t = good.clone();
+    t.prunable.reference_height = 10_000;
+    cases.push(("a reference block in the future", t));
+    let mut t = good.clone();
+    t.prunable.reference_height = 3;
+    cases.push(("a reference block whose tree is empty", t));
     for (what, t) in &cases {
         assert!(v.check_pool_tx(t).is_err(), "{what} was accepted");
         assert_eq!(

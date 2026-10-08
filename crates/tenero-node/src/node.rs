@@ -5,9 +5,10 @@
 //! a node that could be paid with money that does not exist.
 
 use tenero_chain::{BlockError, Chain, ChainParams, PowCheck, ProofCheck, Submitted, Validator};
-use tenero_core::v2::ids::block_tx_root;
-use tenero_core::v2::{Block, BlockHeader, Coinbase, CoinbaseOutput, Transaction, VERSION};
-use tenero_crypto::ringct::RINGCT;
+use tenero_core::v3::ids::block_tx_root;
+use tenero_core::v3::rules;
+use tenero_core::v3::{Block, BlockHeader, Coinbase, CoinbaseOutput, Transaction, VERSION};
+use tenero_crypto::fcmp::FCMP;
 use tenero_store::Store;
 
 use crate::mempool::{AddOutcome, Mempool, MempoolConfig, PoolError};
@@ -23,7 +24,7 @@ impl std::fmt::Display for NodeError {
         match self {
             NodeError::ProofsNotChecked => write!(
                 f,
-                "refusing to run: signatures and range proofs would not be checked"
+                "refusing to run: the FCMP++ and range proofs would not be checked"
             ),
         }
     }
@@ -39,7 +40,8 @@ pub struct NodeConfig {
     pub allow_unchecked_proofs_for_tests: bool,
 }
 
-/// Where a block's reward goes: the fields of the coinbase output other than its amount.
+/// Where a block's reward goes: the fields of the coinbase output other than its amount. A Carrot coinbase output's
+/// one-time address depends on its amount, so a block template asks for the payout once it knows the amount.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Payout {
     pub onetime_address: [u8; 32],
@@ -73,14 +75,15 @@ pub struct Node<'a> {
 }
 
 impl<'a> Node<'a> {
-    /// A node with the real proof check ([`RINGCT`]).
+    /// A node with the real proof check ([`FCMP`], which remembers the verdicts of the transactions it took into the
+    /// mempool, so a block of them is checked almost at once).
     pub fn new(
         store: &'a Store,
         params: &'a ChainParams,
         pow: &'a dyn PowCheck,
         cfg: NodeConfig,
     ) -> Result<Node<'a>, NodeError> {
-        Node::with_proof_check(store, params, pow, &RINGCT, cfg)
+        Node::with_proof_check(store, params, pow, &*FCMP, cfg)
     }
 
     /// A node with a chosen proof check. Refused if it does not check proofs, unless the configuration
@@ -113,18 +116,14 @@ impl<'a> Node<'a> {
         &self.chain
     }
 
-    /// The rules this node runs (a wallet needs the ring size and the maturities).
+    /// The rules this node runs.
     pub fn params(&self) -> &'a ChainParams {
         self.params
     }
 
     /// The full proof-of-work check of a header at a height (`PowCheck::check_full`): is the mix the one the proof of work gives for the header's nonce? Needs the
     /// epoch's dataset, which the node already holds for checking blocks. `Err` is "could not check" (no memory for the dataset).
-    pub fn check_proof_of_work(
-        &self,
-        header: &tenero_core::v2::BlockHeader,
-        height: u64,
-    ) -> Result<bool, String> {
+    pub fn check_proof_of_work(&self, header: &BlockHeader, height: u64) -> Result<bool, String> {
         self.pow.check_full(header, height)
     }
 
@@ -228,7 +227,7 @@ impl<'a> Node<'a> {
     /// Whether a loose transaction would be taken now, and if not why not (nothing changes). A wallet's node link
     /// uses it to say no with a reason before the transaction is handed over.
     pub fn check_tx(&self, tx: &Transaction) -> Result<(), String> {
-        let id = tenero_core::v2::ids::tx_id(tx).map_err(|e| e.to_string())?;
+        let id = tenero_core::v3::ids::tx_id(tx).map_err(|e| e.to_string())?;
         if self.pool.contains(&id) {
             return Err("the node already has this transaction".into());
         }
@@ -238,50 +237,49 @@ impl<'a> Node<'a> {
             .map_err(|e| e.to_string())
     }
 
-    /// The transactions a miner should put in the next block: best fee rate first, within `max_body_bytes`.
-    pub fn block_template_txs(&self, max_body_bytes: u64) -> Vec<Transaction> {
+    /// The transactions a miner should put in the next block: best fee rate first, weighing at most `max_weight`.
+    pub fn block_template_txs(&self, max_weight: u64) -> Vec<Transaction> {
         // never more than a block may carry, whatever the caller asks for (none if the rules cannot be read)
         let limit = self
             .validator()
             .next_block()
-            .map(|n| tenero_core::fees::v2_block_limit(n.median))
+            .map(|n| rules::block_limit(n.median))
             .unwrap_or(0);
-        self.pool.select(max_body_bytes.min(limit))
+        self.pool.select(max_weight.min(limit))
     }
 
-    /// An unmined block on the tip: transactions from the pool (best fee rate first, within `max_body_bytes`),
-    /// a coinbase paying exactly `reward - penalty + fees` to `payout`, the Merkle root, and a timestamp no
+    /// An unmined block on the tip: transactions from the pool (best fee rate first, weighing at most `max_weight`), a
+    /// coinbase paying exactly `reward - penalty + fees` to `payout(amount)`, the Merkle root, and a timestamp no
     /// earlier than the rules allow. The miner searches the nonce (and mix) and submits it.
     pub fn block_template(
         &self,
         timestamp: u64,
-        max_body_bytes: u64,
-        payout: Payout,
+        max_weight: u64,
+        payout: &dyn Fn(u64) -> Payout,
     ) -> Result<Block, BlockError> {
         let v = self.validator();
         let next = v.next_block()?;
         // never more than a block may carry, whatever the caller asks for (a block over the limit is invalid)
         let txs = self
             .pool
-            .select(max_body_bytes.min(tenero_core::fees::v2_block_limit(next.median)));
-        let mut body = 0u64;
+            .select(max_weight.min(rules::block_limit(next.median)));
+        let mut weight = 0u64;
         let mut fees_total = 0u64;
         for t in &txs {
-            body += tenero_core::v2::Wire::to_bytes(t)
-                .map_err(|e| BlockError::Malformed(e.to_string()))?
-                .len() as u64;
+            weight += rules::tx_weight(t).map_err(|e| BlockError::Malformed(e.to_string()))?;
             fees_total += t.prefix.fee;
         }
-        let amount = v.coinbase_amount(&next, body, fees_total)?;
+        let amount = v.coinbase_amount(&next, weight, fees_total)?;
+        let to = payout(amount);
         let coinbase = Coinbase {
             version: VERSION,
             height: next.height,
             outputs: vec![CoinbaseOutput {
-                onetime_address: payout.onetime_address,
+                onetime_address: to.onetime_address,
                 amount,
-                view_tag: payout.view_tag,
-                ephemeral_pubkey: payout.ephemeral_pubkey,
-                anchor_enc: payout.anchor_enc,
+                view_tag: to.view_tag,
+                ephemeral_pubkey: to.ephemeral_pubkey,
+                anchor_enc: to.anchor_enc,
             }],
             extra: vec![],
         };
