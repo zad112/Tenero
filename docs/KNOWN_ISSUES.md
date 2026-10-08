@@ -17,7 +17,7 @@ vector generators call it for the emission, difficulty and fee arithmetic; nothi
 `reference/tests/test_known_issues.py` and still fail as expected, and nothing here is called "fixed". The Rust program was designed not to carry them (an output model with
 key images, a canonical binary serialization, a checked genesis and chain id: `CONSENSUS_V2.md`), which is a design claim tested by its own tests, not by these. **Item 15 is
 retired because it no longer describes anything shipped** (the Rust program has fork choice by cumulative work, networking, relay rules and reorganisation handling; it
-described the Python prototype). Items 11, 12 and 13 apply to the Rust program too. No item is retired merely because its code was deleted: the code that remains
+described the Python prototype). Items 11, 12 and 13 apply to the Rust program too, and item 16 is about the Rust program only. No item is retired merely because its code was deleted: the code that remains
 carries its items with it.
 
 ## Correctness and security
@@ -99,3 +99,17 @@ database, incremental validation, and a UTXO or output set.
 
 **15.** There is no fork-choice rule (the chain with the most cumulative work: the sum of `2^256 // target`
 over its blocks), no networking, no transaction relay rules, and no chain reorganisation handling.
+
+## The Rust node (`gamma`)
+
+**16. After a reorganisation 10 or more blocks deep, an honest peer can be penalised for a transaction (from the code;
+not reproduced on a network).** A transaction's membership proof is checked against the curve tree after its reference
+block. That tree holds only outputs at least 10 blocks old (60 for a block reward), so two nodes that differ only in their
+last 9 blocks have the same tree and agree on every proof (`crates/tenero-node/tests/mempool.rs`, "shallower than 10
+blocks"). After a reorganisation of 10 or more blocks they can have different trees at the same height: a transaction
+made on the other branch then fails its proof here, and the engine counts that as an invalid transaction from whoever
+relayed it (20 points; a ban at 100). Such a reorganisation is itself rare and alarming, so this was left as it is
+(owner, 2026-10-08). The nearer cases are handled: a transaction this node cannot judge yet (its reference block is above
+the tip), one already confirmed here, and one whose key image is already spent here are not held against the sender
+(`crates/tenero-net/tests/sync_txs.rs`, `relay_mined.rs`). *Fix, if it is ever needed:* do not penalise a failed proof
+whose reference block is above the most recent reorganisation's fork point.

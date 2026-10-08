@@ -439,6 +439,10 @@ fn a_block_removes_what_it_confirms_and_what_conflicts_with_it() {
     );
     assert!(node.pool().contains(&id_of(&kept)));
     assert_eq!(node.pool().len(), 1);
+    // what the block confirmed is remembered as mined (a peer a little behind still relays it); the rest is not
+    assert!(node.pool().recently_mined(&id_of(&confirmed)));
+    assert!(!node.pool().recently_mined(&id_of(&loser)));
+    assert!(!node.pool().recently_mined(&id_of(&kept)));
     assert_sound(&rig, &node);
 }
 
@@ -664,6 +668,7 @@ fn a_transaction_of_an_undone_block_goes_back_to_the_pool() {
     node.submit_block(&a1, NOW).unwrap();
     node.submit_block(&a2, NOW).unwrap();
     assert!(node.pool().is_empty(), "x is confirmed on the chain");
+    assert!(node.pool().recently_mined(&id_of(&x)));
     // the other branch, longer, does not have x
     let bs: Vec<Block> = (0..3).map(|_| f.b.extend(vec![])).collect();
     for blk in &bs[..2] {
@@ -677,6 +682,10 @@ fn a_transaction_of_an_undone_block_goes_back_to_the_pool() {
         Submitted::Reorganised { .. }
     ));
     assert!(node.pool().contains(&id_of(&x)), "x must be back");
+    assert!(
+        !node.pool().recently_mined(&id_of(&x)),
+        "its block is undone: not mined any more"
+    );
     assert_sound(&rig, &node);
 }
 

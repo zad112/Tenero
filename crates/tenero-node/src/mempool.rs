@@ -11,7 +11,7 @@
 //! there are no chains of unconfirmed spends: an output cannot be spent before it is mature, so no pooled
 //! transaction can depend on another.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use tenero_chain::{BlockError, ReorgReport, Validator};
 use tenero_core::v3::ids::tx_id;
@@ -19,6 +19,9 @@ use tenero_core::v3::rules;
 use tenero_core::v3::{Block, Transaction};
 
 pub type TxId = [u8; 32];
+
+/// How many ids of recently confirmed transactions the pool remembers (about two and a half blocks at the ceiling).
+pub const RECENTLY_MINED: usize = 16_384;
 
 #[derive(Clone, Debug)]
 pub struct MempoolConfig {
@@ -117,6 +120,10 @@ pub struct Mempool {
     by_image: HashMap<[u8; 32], TxId>,
     bytes: u64,
     next_seq: u64,
+    /// The ids of the transactions of the latest blocks: a peer a little behind still relays them, and they are known
+    /// here, not new (and not invalid: their key images are spent because they were confirmed).
+    mined: HashSet<TxId>,
+    mined_order: VecDeque<TxId>,
 }
 
 impl Mempool {
@@ -127,6 +134,42 @@ impl Mempool {
             by_image: HashMap::new(),
             bytes: 0,
             next_seq: 0,
+            mined: HashSet::new(),
+            mined_order: VecDeque::new(),
+        }
+    }
+
+    /// Whether `id` was confirmed in one of the latest blocks of the chain (at most [`RECENTLY_MINED`] are kept).
+    pub fn recently_mined(&self, id: &TxId) -> bool {
+        self.mined.contains(id)
+    }
+
+    fn remember_mined(&mut self, block: &Block) {
+        for t in &block.transactions {
+            let Ok(id) = tx_id(t) else { continue };
+            if self.mined.insert(id) {
+                self.mined_order.push_back(id);
+            }
+        }
+        while self.mined_order.len() > RECENTLY_MINED {
+            if let Some(old) = self.mined_order.pop_front() {
+                self.mined.remove(&old);
+            }
+        }
+    }
+
+    /// A block taken off the chain by a reorganisation: its transactions are no longer confirmed (rare, so the order is
+    /// rebuilt rather than kept with gaps).
+    fn forget_mined(&mut self, block: &Block) {
+        let mut gone = false;
+        for t in &block.transactions {
+            if let Ok(id) = tx_id(t) {
+                gone |= self.mined.remove(&id);
+            }
+        }
+        if gone {
+            let mined = &self.mined;
+            self.mined_order.retain(|id| mined.contains(id));
         }
     }
 
@@ -283,6 +326,7 @@ impl Mempool {
     /// transaction sharing a key image with one of its transactions), then drop what no longer pays the
     /// minimum fee at the next height. Returns the ids removed.
     pub fn on_block_connected(&mut self, validator: &Validator<'_>, block: &Block) -> Vec<TxId> {
+        self.remember_mined(block);
         let mut removed = self.remove_spent_by(block);
         removed.extend(self.drop_below_min_fee(validator));
         removed
@@ -346,6 +390,12 @@ impl Mempool {
     /// still valid (coinbases are not transactions and are not put back).
     pub fn on_reorganised(&mut self, validator: &Validator<'_>, report: &ReorgReport) -> Vec<TxId> {
         // the full check also drops whatever the new blocks confirmed or spent (their key images are spent)
+        for b in &report.disconnected {
+            self.forget_mined(b);
+        }
+        for b in &report.connected {
+            self.remember_mined(b);
+        }
         let mut removed = self.revalidate(validator);
         for b in &report.disconnected {
             for t in &b.transactions {
