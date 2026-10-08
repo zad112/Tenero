@@ -227,6 +227,15 @@ impl Batch {
     }
 }
 
+/// The exact length of `proof_data` for `n_inputs` inputs, `n_outputs` outputs and a tree of `layers` layers: the
+/// pseudo-outputs, a Bulletproofs+ proof of the outputs (padded to a power of two: six 32-byte values, then L and R, each a
+/// one-byte count and `log2(64 * padded)` points), and the FCMP++ proof. A wallet knows its fee before it proves.
+pub fn proof_data_size(n_inputs: usize, n_outputs: usize, layers: usize) -> usize {
+    let rounds = (64 * n_outputs.next_power_of_two()).ilog2() as usize;
+    let range_proof = 32 * 6 + 2 * (1 + 32 * rounds);
+    32 * n_inputs + range_proof + FcmpPlusPlus::proof_size(n_inputs, layers)
+}
+
 /// Checks one transaction's proofs on their own (the mempool's case).
 pub fn verify_tx(
     chain_id: &[u8; 32],

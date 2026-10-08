@@ -21,10 +21,11 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use rand_core::{CryptoRng, RngCore};
-use tenero_core::v2::{DecodeError, EncodeError, Reader, Writer};
+use tenero_carrot::account::AddressIndex;
+use tenero_core::v3::{DecodeError, EncodeError, Reader, Writer};
 use zeroize::Zeroizing;
 
-use crate::interim::Keys;
+use crate::address::Network;
 use crate::wallet::{Owned, Reserved, Wallet, RECENT_BLOCKS};
 
 /// One wallet (one account), the first format.
@@ -32,7 +33,10 @@ const MAGIC: &[u8; 4] = b"TWL1";
 /// A purse: several accounts of one master seed (`purse.rs`).
 pub(crate) const MAGIC_PURSE: &[u8; 4] = b"TWL2";
 const HEADER: usize = 4 + 12 + 16;
-const STATE_VERSION: u16 = 1;
+/// Version 2: the `gamma` network (Carrot outputs, the network, the subaddresses watched). Version 1 was the interim
+/// scheme of `beta`, which a 0.3.0 wallet does not read.
+const STATE_VERSION: u16 = 2;
+const BETA_STATE_VERSION: u16 = 1;
 const MAX_OWNED: usize = 1_000_000;
 const MAX_RESERVED: usize = 4_096;
 
@@ -130,6 +134,8 @@ impl Wallet {
     pub(crate) fn write_state(&self, w: &mut Writer) -> Result<(), FileError> {
         w.u16(STATE_VERSION);
         w.raw(self.seed());
+        w.raw(&[network_byte(self.network())]);
+        w.u32(self.watched_subaddresses());
         w.u64(self.birth_height);
         match self.scanned {
             Some(h) => {
@@ -151,12 +157,17 @@ impl Wallet {
         for o in &self.owned {
             w.u64(o.global_index);
             w.u64(o.height);
-            w.raw(&[u8::from(o.coinbase)]);
+            w.raw(&[u8::from(o.coinbase) | (u8::from(o.internal) << 1)]);
             w.raw(&o.onetime_address);
+            w.raw(&o.commitment);
             w.u64(o.amount);
-            w.raw(&o.mask);
-            w.raw(&o.offset);
+            w.raw(&o.blinding);
+            w.u32(o.address.major);
+            w.u32(o.address.minor);
+            w.raw(&o.extension_g);
+            w.raw(&o.extension_t);
             w.raw(&o.key_image);
+            w.raw(&o.payment_id);
         }
         w.count(self.reserved.len(), 0, MAX_RESERVED)
             .map_err(enc_err)?;
@@ -175,10 +186,23 @@ impl Wallet {
     }
 
     pub(crate) fn read_state(r: &mut Reader) -> Result<Wallet, FileError> {
-        if r.u16().map_err(dec_err)? != STATE_VERSION {
-            return Err(FileError::Corrupt("unknown state version".into()));
+        match r.u16().map_err(dec_err)? {
+            STATE_VERSION => {}
+            BETA_STATE_VERSION => {
+                return Err(FileError::Corrupt(
+                    "a beta wallet: open it with the 0.2 programs (its 24 words also restore a gamma wallet)".into(),
+                ))
+            }
+            _ => return Err(FileError::Corrupt("unknown state version".into())),
         }
         let seed: [u8; 32] = r.array().map_err(dec_err)?;
+        let network = match r.take(1).map_err(dec_err)?[0] {
+            0 => Network::Gamma,
+            1 => Network::Dev,
+            2 => Network::Test,
+            _ => return Err(FileError::Corrupt("unknown network".into())),
+        };
+        let watched = r.u32().map_err(dec_err)?;
         let birth = r.u64().map_err(dec_err)?;
         let flag = r.take(1).map_err(dec_err)?[0];
         let scanned_h = r.u64().map_err(dec_err)?;
@@ -194,20 +218,27 @@ impl Wallet {
             .list(0, MAX_OWNED, |r| {
                 let global_index = r.u64()?;
                 let height = r.u64()?;
-                let coinbase = match r.take(1)?[0] {
-                    0 => false,
-                    1 => true,
-                    _ => return Err(DecodeError::CountOutOfRange),
-                };
+                let flags = r.take(1)?[0];
+                if flags > 3 {
+                    return Err(DecodeError::CountOutOfRange);
+                }
                 Ok(Owned {
                     global_index,
                     height,
-                    coinbase,
+                    coinbase: flags & 1 == 1,
+                    internal: flags & 2 == 2,
                     onetime_address: r.array()?,
+                    commitment: r.array()?,
                     amount: r.u64()?,
-                    mask: r.array()?,
-                    offset: r.array()?,
+                    blinding: r.array()?,
+                    address: AddressIndex {
+                        major: r.u32()?,
+                        minor: r.u32()?,
+                    },
+                    extension_g: r.array()?,
+                    extension_t: r.array()?,
                     key_image: r.array()?,
+                    payment_id: r.array()?,
                 })
             })
             .map_err(dec_err)?;
@@ -219,15 +250,11 @@ impl Wallet {
                 })
             })
             .map_err(dec_err)?;
+        let mut w = Wallet::from_seed(&seed, network, birth);
+        w.watch_subaddresses(watched);
         // the records must belong to this seed (a corrupted or swapped state is refused, not trusted)
-        let keys = Keys::from_seed(&seed);
         for o in &owned {
-            let secret = keys
-                .onetime_secret(&o.offset)
-                .ok_or_else(|| FileError::Corrupt("a bad offset".into()))?;
-            if tenero_crypto::ringct::public_key(&secret) != Some(o.onetime_address)
-                || tenero_crypto::ringct::key_image(&secret) != Some(o.key_image)
-            {
+            if !w.opens(o) {
                 return Err(FileError::Corrupt(
                     "an output does not belong to this seed".into(),
                 ));
@@ -239,7 +266,6 @@ impl Wallet {
                 "the scanned blocks are not in order".into(),
             ));
         }
-        let mut w = Wallet::from_seed(&seed, birth);
         w.scanned = scanned;
         w.recent = recent;
         w.owned = owned;
@@ -271,6 +297,14 @@ impl Wallet {
 }
 
 /// Encrypts `state` under `magic` and writes it to `path`, atomically.
+fn network_byte(n: Network) -> u8 {
+    match n {
+        Network::Gamma => 0,
+        Network::Dev => 1,
+        Network::Test => 2,
+    }
+}
+
 pub(crate) fn seal(
     path: &Path,
     magic: &[u8; 4],
@@ -356,27 +390,38 @@ pub(crate) fn open(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use curve25519_dalek::edwards::EdwardsPoint;
+    use curve25519_dalek::scalar::Scalar;
 
-    fn belonging(keys: &Keys, n: u8, global_index: u64) -> Owned {
-        let mut offset = [0u8; 32];
-        offset[0] = n;
-        let secret = keys.onetime_secret(&offset).unwrap();
+    /// An output of `w`'s main address with the sender extensions `n`, `n + 1` (as scanning would have recorded it).
+    fn belonging(w: &Wallet, n: u8, global_index: u64) -> Owned {
+        let a = w.account();
+        let (g, t) = (Scalar::from(u64::from(n)), Scalar::from(u64::from(n) + 1));
+        let x = a.k_generate_image + g;
+        let y = a.k_prove_spend + t;
+        let ko = (EdwardsPoint::mul_base(&x) + *tenero_carrot::points::T * y)
+            .compress()
+            .to_bytes();
         Owned {
             global_index,
             height: 3,
             coinbase: false,
-            onetime_address: tenero_crypto::ringct::public_key(&secret).unwrap(),
+            onetime_address: ko,
+            commitment: [5; 32],
             amount: 77,
-            mask: [4; 32],
-            offset,
-            key_image: tenero_crypto::ringct::key_image(&secret).unwrap(),
+            blinding: [4; 32],
+            address: AddressIndex::MAIN,
+            extension_g: g.to_bytes(),
+            extension_t: t.to_bytes(),
+            key_image: tenero_carrot::scan::key_image(&x, &ko),
+            payment_id: [0; 8],
+            internal: n.is_multiple_of(2),
         }
     }
 
     fn sample() -> Wallet {
-        let keys = Keys::from_seed(&[1; 32]);
-        let mut w = Wallet::from_seed(&[1; 32], 2);
-        w.owned = vec![belonging(&keys, 5, 10), belonging(&keys, 6, 11)];
+        let mut w = Wallet::from_seed(&[1; 32], Network::Test, 2);
+        w.owned = vec![belonging(&w, 5, 10), belonging(&w, 6, 11)];
         w.recent = vec![(2, [9; 32]), (3, [8; 32])];
         w.scanned = Some(3);
         w.reserved = vec![Reserved {
@@ -388,13 +433,16 @@ mod tests {
 
     #[test]
     fn the_state_round_trips() {
-        let w = sample();
+        let mut w = sample();
+        w.subaddress(120).unwrap();
         let back = Wallet::from_state_bytes(&w.state_bytes().unwrap()).unwrap();
         assert_eq!(back.owned, w.owned);
         assert_eq!(back.recent, w.recent);
         assert_eq!(back.reserved, w.reserved);
         assert_eq!((back.scanned, back.birth_height), (Some(3), 2));
         assert_eq!(back.address(), w.address());
+        assert_eq!(back.network(), Network::Test);
+        assert_eq!(back.watched_subaddresses(), w.watched_subaddresses());
     }
 
     #[test]
@@ -408,9 +456,19 @@ mod tests {
     }
 
     #[test]
+    fn a_beta_wallet_state_is_refused_with_a_reason() {
+        let mut bytes = sample().state_bytes().unwrap().to_vec();
+        bytes[..2].copy_from_slice(&1u16.to_le_bytes());
+        match Wallet::from_state_bytes(&bytes) {
+            Err(FileError::Corrupt(why)) => assert!(why.contains("beta"), "{why}"),
+            other => panic!("{:?}", other.err()),
+        }
+    }
+
+    #[test]
     fn an_output_that_is_not_this_seeds_is_refused() {
         let mut w = sample();
-        let other = Keys::from_seed(&[2; 32]);
+        let other = Wallet::from_seed(&[2; 32], Network::Test, 0);
         w.owned.push(belonging(&other, 7, 12));
         assert!(matches!(
             Wallet::from_state_bytes(&w.state_bytes().unwrap()),

@@ -1,6 +1,6 @@
 [package]
 name = "tenero-wallet"
-description = "Tenero's wallet: keys, scanning, transaction building (experimental; the output scheme is an INTERIM stand-in for Carrot)."
+description = "Tenero's wallet for the gamma network: Carrot addresses, scanning, FCMP++ spends (experimental, unaudited)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,8 @@ tenero-store = { path = "../tenero-store" }
 tenero-node = { path = "../tenero-node" }
 tenero-chain = { path = "../tenero-chain" }
 tenero-crypto = { path = "../tenero-crypto" }
+tenero-carrot = { path = "../tenero-carrot" }
+tenero-tree = { path = "../tenero-tree" }
 
 # already in the tree through tenero-crypto
 curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }

@@ -53,15 +53,11 @@ pub struct Leaf {
 }
 
 impl Leaf {
-    /// The leaf of a `gamma` output: `O` and `C` as stored (both must decode to points, which consensus already
-    /// requires, prime order and canonical), and `I = Hp²(O)`. `None` if a point is invalid or the identity.
+    /// The leaf of a `gamma` output: `O` and `C` as stored, and `I = Hp²(O)`. `None` unless both are canonical points of
+    /// prime order other than the identity ([`strict_point`]: what consensus requires of every output).
     pub fn from_output(onetime_address: &[u8; 32], commitment: &[u8; 32]) -> Option<Leaf> {
-        let o = monero_ed25519::CompressedPoint::from(*onetime_address)
-            .decompress()?
-            .into();
-        let c = monero_ed25519::CompressedPoint::from(*commitment)
-            .decompress()?
-            .into();
+        let o = strict_point(onetime_address)?;
+        let c = strict_point(commitment)?;
         let i = monero_ed25519::Point::hash(*onetime_address).into();
         let output = Output::new(EdwardsPoint(o), EdwardsPoint(i), EdwardsPoint(c)).ok()?;
         Some(Leaf { output })
@@ -393,6 +389,45 @@ impl CurveTree {
         })
     }
 
+    /// The path of leaf `index` as bytes ([`PathBytes`]): what a node hands a wallet so it can prove a spend (over a socket
+    /// too). `leaf(i)` gives leaf `i`'s one-time address and commitment.
+    pub fn path_bytes(
+        &self,
+        index: u64,
+        leaf: impl Fn(u64) -> ([u8; 32], [u8; 32]),
+    ) -> Option<PathBytes> {
+        if index >= self.n_leaves {
+            return None;
+        }
+        let n = self.n_leaves as usize;
+        let i = index as usize;
+        let chunk_start = i / LEAF_CHUNK * LEAF_CHUNK;
+        let chunk_end = (chunk_start + LEAF_CHUNK).min(n);
+        let leaves = (chunk_start..chunk_end).map(|j| leaf(j as u64)).collect();
+        let mut layers = vec![];
+        let mut pos = i / LEAF_CHUNK;
+        for layer in 1..self.n_layers() {
+            let (len, width) = if layer % 2 == 1 {
+                (self.selene[layer / 2].len(), HELIOS_WIDTH)
+            } else {
+                (self.helios[layer / 2 - 1].len(), SELENE_WIDTH)
+            };
+            let start = pos / width * width;
+            let end = (start + width).min(len);
+            layers.push(
+                (start..end)
+                    .map(|k| self.element_bytes(layer - 1, k).expect("in range"))
+                    .collect(),
+            );
+            pos /= width;
+        }
+        Some(PathBytes {
+            position: index,
+            leaves,
+            layers,
+        })
+    }
+
     /// The number of elements in each layer above the leaves, from the bottom (Selene, Helios, Selene, ...).
     pub fn layer_lens(&self) -> Vec<usize> {
         (0..self.n_layers())
@@ -513,6 +548,70 @@ pub fn strict_point(bytes: &[u8; 32]) -> Option<curve25519_dalek::EdwardsPoint> 
 /// tests (valid outputs, key images and keys without secrets) and as `I = Hp(O)`.
 pub fn hash_to_point(bytes: [u8; 32]) -> [u8; 32] {
     monero_ed25519::Point::hash(bytes).compress().to_bytes()
+}
+
+/// A leaf's path in bytes: its position, the one-time address and commitment of every leaf in its chunk, and the chunk
+/// of each layer above that holds its branch (as point bytes, not padded), up to the root's children. Nothing in it is
+/// trusted: [`path_from_bytes`] refuses what does not decode, and a path that is not the tree's makes a proof that fails.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PathBytes {
+    pub position: u64,
+    pub leaves: Vec<([u8; 32], [u8; 32])>,
+    pub layers: Vec<Vec<[u8; 32]>>,
+}
+
+/// The prover's path from [`PathBytes`]. `None` if a point does not decode, a chunk is empty or wider than its layer
+/// allows, or the position is not in the leaf chunk.
+pub fn path_from_bytes(p: &PathBytes) -> Option<Path<Curves>> {
+    use ciphersuite::group::{Group, GroupEncoding};
+    if p.leaves.is_empty() || p.leaves.len() > LEAF_CHUNK {
+        return None;
+    }
+    let in_chunk = (p.position % LEAF_CHUNK as u64) as usize;
+    let leaves: Vec<Output> = p
+        .leaves
+        .iter()
+        .map(|(o, c)| Leaf::from_output(o, c).map(|l| l.output))
+        .collect::<Option<_>>()?;
+    let output = *leaves.get(in_chunk)?;
+    let mut curve_2_layers = vec![];
+    let mut curve_1_layers = vec![];
+    for (k, chunk) in p.layers.iter().enumerate() {
+        let layer = k + 1;
+        if layer % 2 == 1 {
+            if chunk.is_empty() || chunk.len() > HELIOS_WIDTH {
+                return None;
+            }
+            let mut xs = chunk
+                .iter()
+                .map(|b| {
+                    let g: SeleneG = Option::from(SeleneG::from_bytes(b))?;
+                    (!bool::from(g.is_identity())).then(|| selene_x(&g))
+                })
+                .collect::<Option<Vec<HeliosF>>>()?;
+            xs.resize(HELIOS_WIDTH, HeliosF::ZERO);
+            curve_2_layers.push(xs);
+        } else {
+            if chunk.is_empty() || chunk.len() > SELENE_WIDTH {
+                return None;
+            }
+            let mut xs = chunk
+                .iter()
+                .map(|b| {
+                    let g: HeliosG = Option::from(HeliosG::from_bytes(b))?;
+                    (!bool::from(g.is_identity())).then(|| helios_x(&g))
+                })
+                .collect::<Option<Vec<SeleneF>>>()?;
+            xs.resize(SELENE_WIDTH, SeleneF::ZERO);
+            curve_1_layers.push(xs);
+        }
+    }
+    Some(Path {
+        output,
+        leaves,
+        curve_2_layers,
+        curve_1_layers,
+    })
 }
 
 /// The commitment of a coinbase output, whose amount is public: `1*G + amount*H` (Carrot 4.1, `docs/CONSENSUS_V2.md` 15.6).

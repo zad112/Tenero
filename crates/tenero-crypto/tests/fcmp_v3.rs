@@ -8,7 +8,9 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
 use tenero_core::v3::{Input, Output, Prunable, Transaction, TxPrefix, VERSION};
 use tenero_crypto::curve_tree::{CurveTree, Leaf};
-use tenero_crypto::fcmp::{key_image, prove, verify_tx, Batch, OutputSecret, ProofError, Spend};
+use tenero_crypto::fcmp::{
+    key_image, proof_data_size, prove, verify_tx, Batch, OutputSecret, ProofError, Spend,
+};
 
 fn t() -> EdwardsPoint {
     CompressedPoint::T.decompress().unwrap().into()
@@ -163,6 +165,10 @@ fn a_transaction_proven_against_the_tree_verifies() {
     assert_eq!(check(&w, &one), Ok(()));
     let two = spend(&mut rng, &w, &[&a, &b], &[7, 90], 2_345);
     assert_eq!(check(&w, &two), Ok(()));
+    // the size a wallet computes before proving is the size of the proof
+    let layers = w.tree.n_layers();
+    assert_eq!(one.prunable.proof_data.len(), proof_data_size(1, 2, layers));
+    assert_eq!(two.prunable.proof_data.len(), proof_data_size(2, 2, layers));
     // both in one batch, as a block
     let mut batch = Batch::new();
     batch

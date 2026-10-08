@@ -807,3 +807,29 @@ in the block, is refused (as in version 2). The block's FCMP++ proofs are verifi
 The Carrot derivations themselves (a node cannot check how an output was made for its receiver: that is wallet code,
 `crates/tenero-carrot`), pruning (nodes are pruned by default from 0.3.0: proofs of recent blocks only; seeds and the
 explorer keep everything), and how a wallet chooses its reference height.
+
+
+### 15.9 Wallet keys and addresses (not consensus; every wallet must agree)
+
+Vectors: `tests/vectors/v3_address.json` from the independent reference `reference/tools/make_vectors_address.py`
+(`python reference/tools/make_vectors_address.py --check`); the Rust is `crates/tenero-wallet/src/address.rs`.
+
+* **Keys.** The 24 words spell a 32-byte master seed; account 0's seed is the master seed, account `i > 0`'s is
+  `SHA-256("tenero account v1" || master || i as u32 LE)` (as on `beta`). An account's **Carrot master secret** is
+  `s_m = SHA-256("tenero carrot master v1" || account seed)`, and every other key follows from `s_m` by Carrot 5.2. The same
+  words therefore give a `beta` wallet and a `gamma` wallet that share no key.
+* **Addresses.** `varint(tag) || spend key 32 || view key 32 || [payment ID 8, integrated only] || checksum 4`, the checksum the
+  first 4 bytes of `SHA-256("tenero address v3" || everything before it)` (Monero uses Keccak-256 here; SHA-256 keeps the wallet
+  to one hash it already has), written in Monero's block base58 (8-byte blocks as 11 characters; a last block of n bytes as
+  `[0, 2, 3, 5, 6, 7, 9, 10, 11][n]` characters). A main address or subaddress is 99 characters, an integrated one 110.
+* **Tags** (4-byte varints, chosen so that every address of a network starts with its four letters whatever its keys):
+
+  | network | prefix | main | subaddress | integrated |
+  |---|---|---|---|---|
+  | `gamma` | `TENg` | 2,255,132 | 2,271,516 | 4,352,284 |
+  | `dev` | `TENd` | 2,156,828 | 2,173,212 | 4,253,980 |
+  | `test` | `TENt` | 2,648,348 | 2,664,732 | 4,745,500 |
+
+  `TENm`, `TENs`, `TENi` are kept for a main net. No tag equals another CryptoNote coin's (the reference checks a list).
+* A wallet refuses an address of another network, and a `tni1` (interim, `beta`) address with a reason. A block reward pays
+  a main address only (Carrot); a transaction carries at most one integrated address (one payment ID).

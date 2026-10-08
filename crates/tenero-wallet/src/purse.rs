@@ -15,19 +15,20 @@
 //!   empty ones would be missed, and the app can add it by hand.
 //! * Account names are kept in the file only (the words do not carry them).
 //!
-//! The output scheme is still the INTERIM one: this is not Carrot, and the accounts here are not Carrot subaddresses.
+//! Each account is a Carrot account of its own (`crate::address::carrot_master` of its seed), with its own subaddresses. The
+//! purse file of `beta` (versions 1 to 4, the interim scheme) is not read: the same 24 words restore a `gamma` purse.
 
 use std::path::Path;
 
 use rand_core::{CryptoRng, RngCore};
+use tenero_carrot::JanusAnchor;
 use tenero_core::hash::sha256;
-use tenero_core::v2::{Reader, Writer};
+use tenero_core::v3::{Reader, Writer};
 use zeroize::Zeroizing;
 
+use crate::address::{Address, Kind, Network};
 use crate::chain::{ChainView, Submitter};
 use crate::file::{open, seal, FileError, KdfParams, MAGIC_PURSE};
-use crate::interim::{Address, TxSecret};
-use crate::proofs::{self, MessageSignature, PaymentProof, ProofError, ProofKind};
 use crate::request::{check_text, PaymentRequest, MAX_LABEL as MAX_REQUEST_LABEL, MAX_MESSAGE};
 use crate::wallet::{Balance, BatchSent, Built, FeeLevel, Plan, SyncReport, Wallet, WalletError};
 
@@ -38,11 +39,8 @@ pub const MAX_LABEL: usize = 48;
 /// How many unused accounts in a row end the search on a restore.
 pub const GAP: usize = 3;
 
-/// Version 2 added the record of sent payments after the accounts; version 3 added to each record the secret of the payment
-/// output (what proves it) and its one-time address. Version 4 added a note to each sent payment (the label of the request it
-/// answered) and the list of payment requests the wallet has made. Older files still open (with no secrets: those payments cannot
-/// be proved; with no notes and no requests).
-const PURSE_VERSION: u16 = 4;
+/// Version 5: the `gamma` network (Carrot accounts; a sent payment keeps its Janus anchor). Versions 1 to 4 were `beta`'s.
+const PURSE_VERSION: u16 = 5;
 /// The most sent-payment records a purse keeps (the oldest are dropped past this).
 pub const MAX_SENT_RECORDS: usize = 20_000;
 /// The most saved payment requests a purse keeps.
@@ -59,7 +57,6 @@ pub enum PurseError {
     /// A name that is empty, longer than [`MAX_LABEL`] bytes, or holds a control character.
     BadLabel,
     Wallet(WalletError),
-    Proof(ProofError),
     /// A payment request that cannot be made or found (why).
     Request(String),
 }
@@ -76,19 +73,12 @@ impl std::fmt::Display for PurseError {
                 "an account name must be 1 to {MAX_LABEL} bytes with no control characters"
             ),
             PurseError::Wallet(e) => write!(f, "{e}"),
-            PurseError::Proof(e) => write!(f, "{e}"),
             PurseError::Request(e) => write!(f, "{e}"),
         }
     }
 }
 
 impl std::error::Error for PurseError {}
-
-impl From<ProofError> for PurseError {
-    fn from(e: ProofError) -> Self {
-        PurseError::Proof(e)
-    }
-}
 
 impl From<WalletError> for PurseError {
     fn from(e: WalletError) -> Self {
@@ -115,9 +105,8 @@ fn check_label(label: &str) -> Result<(), PurseError> {
     Ok(())
 }
 
-/// A payment this wallet sent. Nothing on the chain says to whom a payment went (the interim scheme has no outgoing
-/// view key), so the wallet writes it down when it sends; **a wallet restored from the words has no such records**,
-/// and its history shows what it received but not whom it paid.
+/// A payment this wallet sent, written down when it is sent (the address it went to is on no chain; **a wallet restored
+/// from the words has no such records**, and its history shows what it received and its own change, not whom it paid).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SentRecord {
     pub account: u32,
@@ -133,16 +122,16 @@ pub struct SentRecord {
     pub height: u64,
     pub spends: Vec<[u8; 32]>,
     pub change_onetime: [u8; 32],
-    /// The secret of the payment output and its one-time address, kept so the payment can be proved. `None` for a payment sent
-    /// before the wallet kept them: **that payment can never be proved by its sender.** Show the secret only on a click.
-    pub tx_secret: Option<TxSecret>,
+    /// The Janus anchor chosen for the payment output (`anchor_norm`) and its one-time address: with the transaction's
+    /// first key image (`spends[0]`), what lets the sender prove the payment later. `None` once forgotten.
+    pub anchor: Option<JanusAnchor>,
     pub payment_onetime: Option<[u8; 32]>,
     /// What the payment was for: the label of the payment request it answered, if it answered one.
     pub note: Option<String>,
 }
 
 /// A payment request this wallet made, kept so it can be shown again (as a link and a QR code). **It is not marked paid when a
-/// payment arrives**: the interim scheme cannot tell which payment answered which request.
+/// payment arrives.**
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavedRequest {
     pub account: u32,
@@ -189,7 +178,7 @@ pub struct Entry {
     pub id: Option<[u8; 32]>,
     /// For something received or mined: the output's global index (what a proof of receipt names).
     pub global_index: Option<u64>,
-    /// For a sent payment: the wallet still holds its secret, so the payment can be proved.
+    /// For a sent payment: the wallet still holds its anchor, so the payment can be proved.
     pub has_secret: bool,
     /// For a sent payment: what it was for, if it answered a request.
     pub note: Option<String>,
@@ -221,6 +210,7 @@ impl Account {
 
 pub struct Purse {
     master: Zeroizing<[u8; 32]>,
+    network: Network,
     birth_height: u64,
     accounts: Vec<Account>,
     sent: Vec<SentRecord>,
@@ -229,21 +219,26 @@ pub struct Purse {
 
 impl Purse {
     /// A new purse with a fresh random master seed and one account, "Main".
-    pub fn create(rng: &mut (impl RngCore + CryptoRng), birth_height: u64) -> Purse {
+    pub fn create(
+        rng: &mut (impl RngCore + CryptoRng),
+        network: Network,
+        birth_height: u64,
+    ) -> Purse {
         let mut seed = Zeroizing::new([0u8; 32]);
         rng.fill_bytes(&mut *seed);
-        Purse::from_seed(&seed, birth_height)
+        Purse::from_seed(&seed, network, birth_height)
     }
 
     /// The purse of a master seed, with account 0 only (see [`Purse::discover`] to find the others). To restore,
     /// use a birth height at or before the first coin, or 0.
-    pub fn from_seed(master: &[u8; 32], birth_height: u64) -> Purse {
+    pub fn from_seed(master: &[u8; 32], network: Network, birth_height: u64) -> Purse {
         Purse {
             master: Zeroizing::new(*master),
+            network,
             birth_height,
             accounts: vec![Account {
                 label: "Main".to_string(),
-                wallet: Wallet::from_seed(master, birth_height),
+                wallet: Wallet::from_seed(master, network, birth_height),
             }],
             sent: Vec::new(),
             requests: Vec::new(),
@@ -254,6 +249,7 @@ impl Purse {
     fn from_wallet(wallet: Wallet) -> Purse {
         Purse {
             master: Zeroizing::new(*wallet.seed()),
+            network: wallet.network(),
             birth_height: wallet.birth_height(),
             accounts: vec![Account {
                 label: "Main".to_string(),
@@ -278,6 +274,10 @@ impl Purse {
         self.birth_height
     }
 
+    pub fn network(&self) -> Network {
+        self.network
+    }
+
     pub fn accounts(&self) -> &[Account] {
         &self.accounts
     }
@@ -299,7 +299,7 @@ impl Purse {
         let seed = account_seed(&self.master, index as u32);
         self.accounts.push(Account {
             label: label.trim().to_string(),
-            wallet: Wallet::from_seed(&seed, birth_height),
+            wallet: Wallet::from_seed(&seed, self.network, birth_height),
         });
         Ok(index)
     }
@@ -419,8 +419,8 @@ impl Purse {
             height,
             spends: built.spends.clone(),
             change_onetime: built.change_onetime,
-            tx_secret: Some(built.payment_secret.clone()),
-            payment_onetime: Some(built.payment_onetime),
+            anchor: built.parts.first().map(|p| p.anchor),
+            payment_onetime: built.parts.first().map(|p| p.onetime),
             note: None,
         });
         if self.sent.len() > MAX_SENT_RECORDS {
@@ -496,7 +496,7 @@ impl Purse {
                     height,
                     spends: built.spends.clone(),
                     change_onetime: built.change_onetime,
-                    tx_secret: Some(part.secret.clone()),
+                    anchor: Some(part.anchor),
                     payment_onetime: Some(part.onetime),
                     note: None,
                 });
@@ -580,7 +580,7 @@ impl Purse {
                 height,
                 spends: built.spends.clone(),
                 change_onetime,
-                tx_secret: Some(part.secret.clone()),
+                anchor: Some(part.anchor),
                 payment_onetime: Some(part.onetime),
                 note: Some(note.to_string()),
             });
@@ -666,95 +666,21 @@ impl Purse {
             .sent
             .iter_mut()
             .find(|r| &r.id == id)
-            .ok_or(PurseError::Proof(ProofError::NoSuchOutput))?;
+            .ok_or_else(|| PurseError::Request("there is no such sent payment".into()))?;
         rec.note = (!note.is_empty()).then(|| note.to_string());
         Ok(())
     }
 
-    /// Signs a message with an account's spend key.
-    pub fn sign_message(
-        &self,
-        index: usize,
-        rng: &mut (impl RngCore + CryptoRng),
-        message: &[u8],
-    ) -> Result<MessageSignature, PurseError> {
-        let a = self.account(index)?;
-        Ok(proofs::sign_message(a.wallet.keys(), rng, message))
-    }
-
-    /// A proof that an account received an output (named by its global index), made with the view key.
-    pub fn prove_received(
-        &self,
-        index: usize,
-        global_index: u64,
-        chain: &impl ChainView,
-        rng: &mut (impl RngCore + CryptoRng),
-    ) -> Result<PaymentProof, PurseError> {
-        let a = self.account(index)?;
-        let owned = a
-            .wallet
-            .owned()
-            .iter()
-            .find(|o| o.global_index == global_index)
-            .ok_or(ProofError::NoSuchOutput)?;
-        let out = proofs::output_at(chain, owned.height, global_index)?;
-        Ok(proofs::prove_received(
-            a.wallet.view_keys(),
-            rng,
-            owned.height,
-            global_index,
-            &out,
-        )?)
-    }
-
-    fn sent_record(&self, id: &[u8; 32]) -> Result<&SentRecord, PurseError> {
-        self.sent
-            .iter()
+    /// Deletes the stored anchor of one sent payment (for the person who does not want it kept). That payment can then never
+    /// be proved by this wallet, and nothing can bring the anchor back.
+    pub fn forget_payment_secret(&mut self, id: &[u8; 32]) -> Result<(), PurseError> {
+        let rec = self
+            .sent
+            .iter_mut()
             .find(|r| &r.id == id)
-            .ok_or(PurseError::Proof(ProofError::NoSuchOutput))
-    }
-
-    /// The secret of a sent payment, if the wallet kept it (show it only when the person asks).
-    pub fn tx_secret(&self, id: &[u8; 32]) -> Result<TxSecret, PurseError> {
-        self.sent_record(id)?
-            .tx_secret
-            .clone()
-            .ok_or(PurseError::Proof(ProofError::NoTxSecret))
-    }
-
-    /// Deletes the stored secret of one sent payment (for the person who does not want it kept). That payment can then never
-    /// be proved by this wallet, and nothing can bring the secret back.
-    pub fn forget_tx_secret(&mut self, id: &[u8; 32]) -> Result<(), PurseError> {
-        self.sent_record(id)?;
-        if let Some(r) = self.sent.iter_mut().find(|r| &r.id == id) {
-            r.tx_secret = None;
-        }
+            .ok_or_else(|| PurseError::Request("there is no such sent payment".into()))?;
+        rec.anchor = None;
         Ok(())
-    }
-
-    /// A proof of a payment this wallet sent: `ProofKind::Sent` (a proof that does not give the secret away) or
-    /// `ProofKind::Key` (the secret itself).
-    pub fn prove_sent(
-        &self,
-        id: &[u8; 32],
-        kind: ProofKind,
-        chain: &impl ChainView,
-        rng: &mut (impl RngCore + CryptoRng),
-    ) -> Result<PaymentProof, PurseError> {
-        let rec = self.sent_record(id)?;
-        let (Some(secret), Some(onetime)) = (&rec.tx_secret, &rec.payment_onetime) else {
-            return Err(ProofError::NoTxSecret.into());
-        };
-        let (height, gi) = proofs::find_output(chain, rec.height.saturating_sub(1), onetime)?
-            .ok_or(ProofError::NotInChain)?;
-        let out = proofs::output_at(chain, height, gi)?;
-        Ok(match kind {
-            ProofKind::Sent => proofs::prove_sent(secret, &rec.to, rng, height, gi, &out)?,
-            ProofKind::Key => proofs::key_proof(secret, &rec.to, height, gi, &out)?,
-            ProofKind::Received => {
-                return Err(ProofError::Format("a sent payment has no receipt proof").into())
-            }
-        })
     }
 
     pub fn sent_records(&self) -> &[SentRecord] {
@@ -768,10 +694,12 @@ impl Purse {
         let mut out = Vec::new();
         for (i, a) in self.accounts.iter().enumerate() {
             for o in a.wallet.owned() {
-                let is_change = self
-                    .sent
-                    .iter()
-                    .any(|r| r.account as usize == i && r.change_onetime == o.onetime_address);
+                // change is an internal self-send: the wallet knows it even without its record of what it sent
+                let is_change = o.internal
+                    || self
+                        .sent
+                        .iter()
+                        .any(|r| r.account as usize == i && r.change_onetime == o.onetime_address);
                 if is_change {
                     continue;
                 }
@@ -822,7 +750,7 @@ impl Purse {
                 height: r.height,
                 id: Some(r.id),
                 global_index: None,
-                has_secret: r.tx_secret.is_some(),
+                has_secret: r.anchor.is_some(),
                 note: r.note.clone(),
             });
         }
@@ -838,10 +766,8 @@ impl Purse {
         self.state_bytes_as(PURSE_VERSION)
     }
 
-    /// The plaintext as an older version wrote it (version 1 has no records, 2 has no secrets): so the readers of the old
-    /// formats can be tested; everything else writes the current version.
     fn state_bytes_as(&self, version: u16) -> Result<Zeroizing<Vec<u8>>, FileError> {
-        let bad = |e: tenero_core::v2::EncodeError| FileError::Corrupt(e.to_string());
+        let bad = |e: tenero_core::v3::EncodeError| FileError::Corrupt(e.to_string());
         let mut w = Writer::new();
         w.u16(version);
         w.raw(&*self.master);
@@ -854,15 +780,18 @@ impl Purse {
             let inner = Zeroizing::new(inner.into_bytes());
             w.var(&inner, MAX_WALLET_STATE).map_err(bad)?;
         }
-        if version < 2 {
-            return Ok(Zeroizing::new(w.into_bytes()));
-        }
         w.count(self.sent.len(), 0, MAX_SENT_RECORDS).map_err(bad)?;
         for r in &self.sent {
             w.u32(r.account);
             w.raw(&r.id);
-            w.raw(&r.to.spend);
-            w.raw(&r.to.view);
+            w.raw(&[match r.to.kind {
+                Kind::Main => 0,
+                Kind::Subaddress => 1,
+                Kind::Integrated => 2,
+            }]);
+            w.raw(&r.to.spend_pubkey);
+            w.raw(&r.to.view_pubkey);
+            w.raw(&r.to.payment_id);
             w.u64(r.amount);
             w.u64(r.fee);
             w.raw(&[match r.level {
@@ -877,25 +806,21 @@ impl Purse {
                 w.raw(ki);
             }
             w.raw(&r.change_onetime);
-            if version >= 3 {
-                match (&r.tx_secret, &r.payment_onetime) {
-                    (Some(secret), Some(onetime)) => {
-                        w.raw(&[1]);
-                        w.raw(secret.expose());
-                        w.raw(onetime);
-                    }
-                    _ => w.raw(&[0]),
+            match (&r.anchor, &r.payment_onetime) {
+                (Some(anchor), Some(onetime)) => {
+                    w.raw(&[1]);
+                    w.raw(anchor);
+                    w.raw(onetime);
                 }
+                _ => w.raw(&[0]),
             }
-            if version >= 4 {
-                w.var(
-                    r.note.as_deref().unwrap_or("").as_bytes(),
-                    MAX_REQUEST_LABEL,
-                )
-                .map_err(bad)?;
-            }
+            w.var(
+                r.note.as_deref().unwrap_or("").as_bytes(),
+                MAX_REQUEST_LABEL,
+            )
+            .map_err(bad)?;
         }
-        if version >= 4 {
+        {
             w.count(self.requests.len(), 0, MAX_REQUESTS).map_err(bad)?;
             for q in &self.requests {
                 w.u32(q.account);
@@ -923,10 +848,15 @@ impl Purse {
     }
 
     fn from_state_bytes(data: &[u8]) -> Result<Purse, FileError> {
-        let bad = |e: tenero_core::v2::DecodeError| FileError::Corrupt(e.as_str().to_string());
+        let bad = |e: tenero_core::v3::DecodeError| FileError::Corrupt(e.as_str().to_string());
         let mut r = Reader::new(data);
         let version = r.u16().map_err(bad)?;
-        if !(1..=PURSE_VERSION).contains(&version) {
+        if (1..PURSE_VERSION).contains(&version) {
+            return Err(FileError::Corrupt(
+                "a beta wallet: open it with the 0.2 programs (its 24 words also restore a gamma wallet)".into(),
+            ));
+        }
+        if version != PURSE_VERSION {
             return Err(FileError::Corrupt("unknown purse version".into()));
         }
         let master: [u8; 32] = r.array().map_err(bad)?;
@@ -951,8 +881,14 @@ impl Purse {
             }
             accounts.push(Account { label, wallet });
         }
+        let network = accounts[0].wallet.network();
+        if accounts.iter().any(|a| a.wallet.network() != network) {
+            return Err(FileError::Corrupt(
+                "the accounts are of different networks".into(),
+            ));
+        }
         let mut sent = Vec::new();
-        if version >= 2 {
+        {
             let m = r.count(0, MAX_SENT_RECORDS).map_err(bad)?;
             for _ in 0..m {
                 let account = r.u32().map_err(bad)?;
@@ -962,9 +898,18 @@ impl Purse {
                     ));
                 }
                 let id: [u8; 32] = r.array().map_err(bad)?;
+                let kind = match r.take(1).map_err(bad)?[0] {
+                    0 => Kind::Main,
+                    1 => Kind::Subaddress,
+                    2 => Kind::Integrated,
+                    _ => return Err(FileError::Corrupt("a bad address kind".into())),
+                };
                 let to = Address {
-                    spend: r.array().map_err(bad)?,
-                    view: r.array().map_err(bad)?,
+                    network,
+                    kind,
+                    spend_pubkey: r.array().map_err(bad)?,
+                    view_pubkey: r.array().map_err(bad)?,
+                    payment_id: r.array().map_err(bad)?,
                 };
                 let amount = r.u64().map_err(bad)?;
                 let fee = r.u64().map_err(bad)?;
@@ -982,27 +927,21 @@ impl Purse {
                     spends.push(r.array().map_err(bad)?);
                 }
                 let change_onetime: [u8; 32] = r.array().map_err(bad)?;
-                let (tx_secret, payment_onetime) = if version >= 3 {
-                    match r.take(1).map_err(bad)?[0] {
-                        0 => (None, None),
-                        1 => {
-                            let secret: [u8; 32] = r.array().map_err(bad)?;
-                            let onetime: [u8; 32] = r.array().map_err(bad)?;
-                            (Some(TxSecret::new(secret)), Some(onetime))
-                        }
-                        _ => return Err(FileError::Corrupt("a bad secret marker".into())),
+                let (anchor, payment_onetime) = match r.take(1).map_err(bad)?[0] {
+                    0 => (None, None),
+                    1 => {
+                        let anchor: JanusAnchor = r.array().map_err(bad)?;
+                        let onetime: [u8; 32] = r.array().map_err(bad)?;
+                        (Some(anchor), Some(onetime))
                     }
-                } else {
-                    (None, None)
+                    _ => return Err(FileError::Corrupt("a bad anchor marker".into())),
                 };
-                let note = if version >= 4 {
+                let note = {
                     let raw = String::from_utf8(r.var(MAX_REQUEST_LABEL).map_err(bad)?)
                         .map_err(|_| FileError::Corrupt("a note is not text".into()))?;
                     check_text(&raw, MAX_REQUEST_LABEL, "label")
                         .map_err(|_| FileError::Corrupt("a note is not allowed".into()))?;
                     (!raw.is_empty()).then_some(raw)
-                } else {
-                    None
                 };
                 sent.push(SentRecord {
                     account,
@@ -1015,14 +954,14 @@ impl Purse {
                     height,
                     spends,
                     change_onetime,
-                    tx_secret,
+                    anchor,
                     payment_onetime,
                     note,
                 });
             }
         }
         let mut requests = Vec::new();
-        if version >= 4 {
+        {
             let m = r.count(0, MAX_REQUESTS).map_err(bad)?;
             for _ in 0..m {
                 let account = r.u32().map_err(bad)?;
@@ -1063,6 +1002,7 @@ impl Purse {
         r.finish().map_err(bad)?;
         Ok(Purse {
             master,
+            network,
             birth_height,
             accounts,
             sent,
@@ -1108,7 +1048,7 @@ mod tests {
         SentRecord {
             account: 0,
             id: [1; 32],
-            to: Wallet::from_seed(&[2; 32], 0).address(),
+            to: Wallet::from_seed(&[2; 32], Network::Test, 0).address(),
             amount: 5,
             fee: 6,
             level: FeeLevel::Normal,
@@ -1116,52 +1056,48 @@ mod tests {
             height: 8,
             spends: vec![[9; 32]],
             change_onetime: [10; 32],
-            tx_secret: secret.then(|| TxSecret::new([11; 32])),
+            anchor: secret.then_some([11; 16]),
             payment_onetime: secret.then_some([12; 32]),
             note: secret.then(|| "Rent".to_string()),
         }
     }
 
     #[test]
-    fn the_older_file_formats_are_read_and_their_payments_have_no_secret() {
-        let mut p = Purse::from_seed(&[3; 32], 4);
+    fn a_purse_round_trips_and_a_beta_purse_is_refused_with_a_reason() {
+        let mut p = Purse::from_seed(&[3; 32], Network::Test, 4);
         p.sent.push(record(true));
-        // version 3 keeps the secret
-        let v3 = Purse::from_state_bytes(&p.state_bytes_as(3).unwrap()).unwrap();
-        let mut without_note = p.sent.clone();
-        without_note[0].note = None;
-        assert_eq!(v3.sent, without_note, "version 3 had no notes");
-        assert!(v3.requests.is_empty());
-        // version 2 had the record but no secret: it reads, and the payment can never be proved by its sender
-        let v2 = Purse::from_state_bytes(&p.state_bytes_as(2).unwrap()).unwrap();
-        assert_eq!(v2.sent.len(), 1);
-        assert_eq!(
-            (v2.sent[0].tx_secret.clone(), v2.sent[0].payment_onetime),
-            (None, None)
-        );
-        assert_eq!(v2.sent[0].change_onetime, [10; 32]);
-        // version 1 had no records at all
-        let v1 = Purse::from_state_bytes(&p.state_bytes_as(1).unwrap()).unwrap();
-        assert!(v1.sent.is_empty());
-        // a version from the future, and a secret marker that is not 0 or 1, are refused
-        let mut future = p.state_bytes_as(3).unwrap().to_vec();
+        p.sent.push(record(false));
+        let mut integrated = record(true);
+        integrated.to = integrated.to.with_payment_id([7; 8]).unwrap();
+        p.sent.push(integrated);
+        let back = Purse::from_state_bytes(&p.state_bytes().unwrap()).unwrap();
+        assert_eq!(back.sent, p.sent);
+        assert_eq!(back.network(), Network::Test);
+        for old in 1..=4u16 {
+            let mut bytes = p.state_bytes().unwrap().to_vec();
+            bytes[..2].copy_from_slice(&old.to_le_bytes());
+            match Purse::from_state_bytes(&bytes) {
+                Err(FileError::Corrupt(why)) => assert!(why.contains("beta"), "{why}"),
+                other => panic!("version {old}: {:?}", other.err()),
+            }
+        }
+        let mut future = p.state_bytes().unwrap().to_vec();
         future[0] = 9;
         assert!(Purse::from_state_bytes(&future).is_err());
-        let mut p0 = Purse::from_seed(&[3; 32], 4);
+        // an anchor marker that is not 0 or 1 is refused
+        let mut p0 = Purse::from_seed(&[3; 32], Network::Test, 4);
         p0.sent.push(record(false));
-        let mut bytes = p0.state_bytes_as(3).unwrap().to_vec();
-        let last = bytes.len() - 1;
-        assert_eq!(
-            bytes[last], 0,
-            "the marker is the last byte of a record with no secret"
-        );
-        bytes[last] = 2;
+        let mut bytes = p0.state_bytes().unwrap().to_vec();
+        // the record ends with its marker (0) and an empty note (a 4-byte length), then the request count (4 bytes)
+        let at = bytes.len() - 9;
+        assert_eq!(bytes[at], 0);
+        bytes[at] = 2;
         assert!(Purse::from_state_bytes(&bytes).is_err());
     }
 
     #[test]
     fn requests_and_notes_are_kept_in_the_file_and_a_bad_one_is_refused() {
-        let mut p = Purse::from_seed(&[3; 32], 4);
+        let mut p = Purse::from_seed(&[3; 32], Network::Test, 4);
         p.add_account("Savings", 0).unwrap();
         p.sent.push(record(true));
         p.add_request(
@@ -1228,7 +1164,7 @@ b"
         p.annotate_sent(&[1; 32], "").unwrap();
         assert_eq!(p.sent[0].note, None);
         // a file whose request names an account that is not there is refused
-        let mut q = Purse::from_seed(&[3; 32], 4);
+        let mut q = Purse::from_seed(&[3; 32], Network::Test, 4);
         q.requests.push(SavedRequest {
             account: 5,
             amount: None,
@@ -1238,7 +1174,7 @@ b"
         });
         assert!(Purse::from_state_bytes(&q.state_bytes().unwrap()).is_err());
         // and so is one with an amount marker that disagrees with its number
-        let mut q = Purse::from_seed(&[3; 32], 4);
+        let mut q = Purse::from_seed(&[3; 32], Network::Test, 4);
         q.requests.push(SavedRequest {
             account: 0,
             amount: Some(5),

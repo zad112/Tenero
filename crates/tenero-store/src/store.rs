@@ -679,6 +679,60 @@ impl Store {
             .clone()
     }
 
+    /// What a wallet needs to spend the outputs with these global indexes: the height of the block their paths are from
+    /// (the tip: a transaction's reference block), that block's tree, and each output's path in it as bytes (`None` for
+    /// an output not in the tree yet, or not at all). Every path comes from ONE copy of the tree, checked against the
+    /// tree recorded for that height, so the paths agree with each other and with the reference block.
+    pub fn spend_paths(
+        &self,
+        global_indexes: &[u64],
+    ) -> Result<(u64, TreeState, Vec<Option<tenero_tree::PathBytes>>)> {
+        for _ in 0..4 {
+            let (height, _) = self.tip()?;
+            let tree = self.tree();
+            let state = self
+                .tree_state(height)?
+                .ok_or_else(|| StoreError::Corrupt(format!("no tree for block {height}")))?;
+            if tree_state_of(&tree) != state {
+                continue; // a block went in between: try again on the new tip
+            }
+            let mut paths = Vec::with_capacity(global_indexes.len());
+            for g in global_indexes {
+                let Some(position) = self.leaf_of_output(*g)? else {
+                    paths.push(None);
+                    continue;
+                };
+                if position >= tree.n_leaves() {
+                    paths.push(None);
+                    continue;
+                }
+                let width = tenero_tree::LEAF_CHUNK as u64;
+                let start = position / width * width;
+                let end = (start + width).min(tree.n_leaves());
+                let mut chunk = Vec::with_capacity((end - start) as usize);
+                for p in start..end {
+                    let index = self
+                        .output_at_leaf(p)?
+                        .ok_or_else(|| StoreError::Corrupt(format!("leaf {p} names no output")))?;
+                    let o = self.output(index)?.ok_or_else(|| {
+                        StoreError::Corrupt(format!("leaf {p} names a missing output"))
+                    })?;
+                    let c = if o.coinbase {
+                        tenero_tree::coinbase_commitment(o.public_amount)
+                    } else {
+                        o.amount_commitment
+                    };
+                    chunk.push((o.onetime_address, c));
+                }
+                paths.push(tree.path_bytes(position, |p| chunk[(p - start) as usize]));
+            }
+            return Ok((height, state, paths));
+        }
+        Err(StoreError::Corrupt(
+            "the tree kept changing while paths were read".into(),
+        ))
+    }
+
     /// The path of the leaf at `position` in the tree at the tip, for a proof. `None` if there is no such leaf.
     pub fn tree_path(
         &self,

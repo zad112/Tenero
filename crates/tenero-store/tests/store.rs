@@ -1384,4 +1384,23 @@ fn a_path_from_the_store_is_the_from_scratch_tree_s_path() {
         assert_eq!(c.store.leaf_of_output(g).unwrap(), Some(p));
     }
     assert!(c.store.tree_path(model.n_leaves()).unwrap().is_none());
+
+    // the same paths as bytes, for a wallet: one snapshot, the tip's tree, and None for an output not in the tree
+    let wanted: Vec<u64> = [0u64, 1, 37, 38, model.n_leaves() - 1]
+        .iter()
+        .map(|p| c.store.output_at_leaf(*p).unwrap().unwrap())
+        .chain([c.store.output_count().unwrap() - 1, u64::MAX])
+        .collect();
+    let (height, state, paths) = c.store.spend_paths(&wanted).unwrap();
+    assert_eq!(height, 65);
+    assert_eq!(Some(state), c.store.tree_state(65).unwrap());
+    for (k, p) in [0u64, 1, 37, 38, model.n_leaves() - 1].iter().enumerate() {
+        let rebuilt = tenero_tree::path_from_bytes(paths[k].as_ref().unwrap()).unwrap();
+        let want = model.path(*p, |i| leaves[i as usize]).unwrap();
+        assert_eq!(rebuilt.leaves, want.leaves, "leaf {p}");
+        assert_eq!(rebuilt.curve_1_layers, want.curve_1_layers, "leaf {p}");
+        assert_eq!(rebuilt.curve_2_layers, want.curve_2_layers, "leaf {p}");
+    }
+    assert_eq!(paths[5], None, "the newest output has not entered the tree");
+    assert_eq!(paths[6], None, "no such output");
 }
