@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "name": "curve_tree_monero",
+  "description": "Roots of the FCMP++ curve tree as MONERO'S OWN code computes them (stressnet v0.19.0.0-beta.3.0): the production get_tree_extension grows the tree block by block, Monero's test audit re-hashes every layer after each block. Output i has key o_i G and commitment c_i G, o_i = Keccak256('tenero curve tree vector O' || i, 8 bytes LE) mod l, c_i likewise with 'C'; Carrot outputs (unbiased key-image generator). Made by reference/tools/carrot_harness/tree_vectors.cpp.",
+  "source": {"repo": "https://github.com/seraphis-migration/monero", "tag": "v0.19.0.0-beta.3.0", "licence": "BSD-3-Clause"},
+  "leaves": [
+    {"index": 0, "scalars": ["6515efbb4e8b1fe7b3da0d48e5b5cc14c61590f2526babf631d6290b48e1174f", "bed795fd1c8a7dd1f1f475cef1cbd58e0aff94770a9f9868ca9667233eaf491d", "c8fce44d7bb463a4c5e561af4264326a0a348218a72ad511f962142c63659321", "c4a1b6564b65c333f452afd2a2db8bdc0917d7909f4bd026fe97211cfa0cb303", "d1b90d72e57a59afa093e770cedd923516dbc946bfe9998ce62bdab5de125316", "9e93e6aad0b1237f08dc0f1211d2c45da417d622649ca4ce9bb25294df43ce09"]},
+    {"index": 1, "scalars": ["82e170e9db1d41f7247ea86ba34461c17e4ef1325fa0b45a99ea8bc8c9496238", "1355a64eb975394240efb6e808153dd70eb311a35523f69b9651051fd7b8432c", "5096c0ece5b070f2e927000ba9fdbe0c714fe5708f54b62733b76f9970723a6b", "19636bc1bc9a164570fc86adb46b48ad0a8cf7f668aad98e42f9695b77af1c32", "784636046512692c8b97fa1ad3be8018ce61e8d1fc7b9a9b532541ee16370f11", "de63ae93fa3c24dc60ac33c7741b99caba7303a12e2729b3c11d0a0b618b7337"]},
+    {"index": 2, "scalars": ["17a863d11153e436046ff70e82cd28ceee68b07aceb6dace4756ae21f997230d", "d32f46999df29cd9d2865d2af48b80fa14635c3b92a0b325f3d6db4a54d6256f", "c3ed4c14c0f072e84754b1c948d735df27aa7a3ee490012a3abe7a12043d7207", "a8c9d45fac3e4d2ed2f01533037fbb06e016cc6982976706088e98dcd650d34a", "cadfd65fc16143f553aeedcdee47bf67d35f007d82e16bb65ad9cb620275f22e", "071dd5cc994b86e347fd6765795250b1c0cb0a49c4644523faea9722c74a1304"]},
+    {"index": 3, "scalars": ["d3a8a55727700de5d6d7ce6e8d874e7ffbeefc4263d6ca71063242eecd7e5933", "940a87fc27081714ca6e1f5fb7ed1fa93c3fcad5573a23b7f88969dab4f6f463", "b59555fa29be4324bf87397cfab8420345debbdd697974060576d94512e37d69", "3127ca755a687ace823d05cef2544f2e409cd7477187f243a4cc3987149ca12b", "0271a6297ea706e3205c6db1f2e35ac5401b370542482deb845ab99b70853f18", "aeb9d9b17a42164489f170979dad7a361428c52322fe94f341e36cb5671afc4f"]}],
+  "blocks": [
+    {"added": 1, "outputs": 1, "layers": 1, "root": "9e3f5c23c65fd02fc9bcc20cf6af9ae9283e74b2f803b316e614ccb7914d9240"},
+    {"added": 1, "outputs": 2, "layers": 1, "root": "639e0776d07354691799eecabd392aee7e0cb226ce7aa4d2db6c9dec0fbd8aab"},
+    {"added": 36, "outputs": 38, "layers": 1, "root": "124351b0d70bcb2794391e1325e4bf4c3ef12a94e57825bde7f4ae2a27412966"},
+    {"added": 1, "outputs": 39, "layers": 2, "root": "1651095d641492d077b77cbf990e422d2d7405995635f7531bce12d80239eadf"},
+    {"added": 1, "outputs": 40, "layers": 2, "root": "f7da5f666a70fd0605f8e74cd0d8331bb822eccaa9fdb75a6490a6d9be33ed41"},
+    {"added": 100, "outputs": 140, "layers": 2, "root": "b59570f6c6e5ff8975915c4cf629b14a1ab361b2a1f39da502b0ff442f011d8a"},
+    {"added": 543, "outputs": 683, "layers": 2, "root": "ea698f367c5ab60f6b2cd48d70a438e977e1eb942ab4f111fba04b4b43e176a9"},
+    {"added": 1, "outputs": 684, "layers": 2, "root": "3b752ceaca68256be28b47efa8b7377ec9e5547e5b5d1a7c2cc0cc00d301207f"},
+    {"added": 1, "outputs": 685, "layers": 3, "root": "1d2526af797a914c019162e4189aaf0203eca30146e17dfb75dc4e22600d3999"},
+    {"added": 1, "outputs": 686, "layers": 3, "root": "c0d998a3e521384cf1ce48d761528f97bcc9b3a854880f7151c05b32b1b39c6a"},
+    {"added": 38, "outputs": 724, "layers": 3, "root": "2e32165f695dda67928afd9de6c7df71db6d17a20cd951b3beb4f5fad8f3b5f5"},
+    {"added": 2000, "outputs": 2724, "layers": 3, "root": "60511e9b6b36b5d4935b28c03a2711638b64741f728f60b9c3106ef4a7a5f214"},
+    {"added": 22000, "outputs": 24724, "layers": 3, "root": "2d6bb01d5a36cf788467148e83c29acfc962c01c222304db3c0d437331391319"},
+    {"added": 1267, "outputs": 25991, "layers": 3, "root": "546d6334bf4878df8660db0d3d35bad8cbd0763461758b896558acf46caa6884"},
+    {"added": 1, "outputs": 25992, "layers": 3, "root": "5f6431f6b490d550cf214221826a08174e672930dc4cb5a4e0712b72d5c7a123"},
+    {"added": 1, "outputs": 25993, "layers": 4, "root": "59cc1bfcda6433fcc5af7c3c3a842e2d942038ac5572f60274339de14d21372b"},
+    {"added": 1, "outputs": 25994, "layers": 4, "root": "d0049428156ff9558a472061114e5f84b84261a101a81ad14a1c757e36a7b448"},
+    {"added": 4, "outputs": 25998, "layers": 4, "root": "e4f5828413bd4555c0a4a27c4cb0bc367fabce1942a7b3f9a9afca273e280e5f"},
+    {"added": 500, "outputs": 26498, "layers": 4, "root": "8a84283b0d53c2eff5a0e0d801537bb6e48aba95bd46b85c0d5e5c79ecdb6b45"}]
+}

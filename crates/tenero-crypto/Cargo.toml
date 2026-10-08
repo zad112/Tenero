@@ -26,6 +26,10 @@ helioselene = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c
 multiexp = { version = "0.5", default-features = false, features = ["batch"] }
 ciphersuite = { version = "0.4.2", features = ["ed25519"] }
 dalek-ff-group = "0.5"
+# the curve tree (src/curve_tree.rs): the hash-init generators and the points' Weierstrass coordinates. Same repo,
+# same pin, MIT; both were already in the tree through monero-fcmp-plus-plus.
+monero-fcmp-plus-plus-generators = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+ec-divisors = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93", features = ["ed25519"] }
 
 # Already in the tree through monero-oxide; named here because we use their types and rely on them
 # directly: curve25519-dalek (BSD-3-Clause), zeroize and rand_core (MIT OR Apache-2.0).
@@ -42,10 +46,9 @@ tenero-chain = { path = "../tenero-chain" }
 monero-oxide = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
 # a seeded generator, so the proof tests are reproducible (MIT OR Apache-2.0, in the tree already)
 rand_chacha = "0.3"
-# Test-only, for the FCMP++ proving timings (tests/fcmp_pp_prove_timing.rs): the FCMP++ generators and the scalar
-# decomposition the blinds need. Same repo, same pin, MIT; both are already in the tree through monero-fcmp-plus-plus.
-monero-fcmp-plus-plus-generators = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
-ec-divisors = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93", features = ["ed25519"] }
+proptest = { version = "1", default-features = false, features = ["std"] }
+# the curve-tree vectors derive their outputs with Keccak-256 (same repo and pin, MIT, already in the tree)
+monero-primitives = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
 
 [lints]
 workspace = true
