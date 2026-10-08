@@ -45,7 +45,7 @@
    ]
   }
  ],
- "description": "Version 3 weight: prefix bytes + ceil(prunable bytes / 4); a block's weight is the sum of its transactions'. Block limits, the median and the oversize penalty are version 2's functions of weight; the minimum fee is version 2's formula with FEE_REFERENCE_WEIGHT 1000 (version 2: 3000), of the REAL size and the (weight) median.",
+ "description": "Version 3 weight: prefix bytes + ceil(prunable bytes / 4); a block's weight is the sum of its transactions'. Block limits, the median and the oversize penalty are version 2's functions of weight, and a block's real transaction bytes are at most MAX_BLOCK_BYTES; the minimum fee is version 2's formula with FEE_REFERENCE_WEIGHT 1000 (version 2: 3000), of the REAL size and the (weight) median.",
  "fee_reference_weight": 1000,
  "fees": [
   {
@@ -169,6 +169,45 @@
    "size": 316
   }
  ],
+ "limits": [
+  {
+   "median": 150000,
+   "size": 1000000,
+   "too_large": false,
+   "weight": 300000
+  },
+  {
+   "median": 150000,
+   "size": 1000000,
+   "too_large": true,
+   "weight": 300001
+  },
+  {
+   "median": 4194304,
+   "size": 12582912,
+   "too_large": false,
+   "weight": 4194304
+  },
+  {
+   "median": 4194304,
+   "size": 12582912,
+   "too_large": true,
+   "weight": 4194305
+  },
+  {
+   "median": 4194304,
+   "size": 12582913,
+   "too_large": true,
+   "weight": 4194304
+  },
+  {
+   "median": 41943040,
+   "size": 12582913,
+   "too_large": true,
+   "weight": 3000000
+  }
+ ],
+ "max_block_bytes": 12582912,
  "name": "v3_weight",
  "proof_weight_divisor": 4,
  "schema": 1,

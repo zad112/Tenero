@@ -11,8 +11,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use tenero_core::matmulhash::{self, Dataset, Params};
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{self, PowKind};
-use tenero_core::v2::BlockHeader;
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids;
+use tenero_core::v3::BlockHeader;
 
 /// A proof of work, as the validator uses it.
 pub trait PowCheck: Send + Sync {

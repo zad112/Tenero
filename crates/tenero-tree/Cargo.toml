@@ -18,12 +18,13 @@ ec-divisors = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c
 monero-ed25519 = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
 ciphersuite = { version = "0.4.2", features = ["ed25519"] }
 dalek-ff-group = "0.5"
+# strict point checks (`strict_point`): already in the tree through monero-oxide (BSD-3-Clause)
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }
 
 [dev-dependencies]
 tenero-core = { path = "../tenero-core" }
 monero-primitives = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
 multiexp = { version = "0.5", default-features = false, features = ["batch"] }
-curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 rand_chacha = "0.3"
 proptest = { version = "1", default-features = false, features = ["std"] }

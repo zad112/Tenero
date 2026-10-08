@@ -6,23 +6,14 @@ use tenero_core::fees::V2_MIN_BLOCK_MEDIAN;
 use tenero_core::u256::U256;
 use tenero_core::v2::ids::PowKind;
 
-/// Every ring has exactly this many members (`CONSENSUS_V2.md` 6.3).
-pub const RING_SIZE: usize = 16;
-/// The limits of the first test release (alpha.4), which the `alpha` network keeps so that a node of this version judges its transactions exactly as
-/// the older nodes still on that network do: at most this many inputs and a `proof_data` of at most this many bytes. Every other network has only the
-/// size limit (`MAX_TX_SIZE`).
-pub const LEGACY_MAX_INPUTS: usize = 32;
-pub const LEGACY_MAX_PROOF: usize = 32 * 1024;
-/// A coinbase output can be spent or used in a ring this many blocks after its block.
-pub const COINBASE_MATURITY: u64 = 60;
-/// Any other output can be used this many blocks after its block.
-pub const SPEND_MATURITY: u64 = 10;
+/// When an output enters the curve tree and so can be spent: a coinbase output 60 blocks after its block, any other 10
+/// (`docs/CONSENSUS_V2.md` 15.6). Fixed by consensus (the store grows the tree by them), not per network.
+pub use tenero_core::v3::rules::{COINBASE_MATURITY, SPEND_MATURITY};
 /// A block more than this many seconds ahead of the clock is not yet acceptable (never permanently invalid).
 pub const FUTURE_LIMIT_SECONDS: u64 = 120;
 
-/// The consensus constants of a network. The defaults are the version 2 rules; the fields exist so that a
-/// test network can use a cheaper proof of work or a shorter chain, and so that a later rules version
-/// (`CONSENSUS_V2.md` section 10) has somewhere to change them.
+/// The consensus constants of a network. The defaults are the version 3 rules; the fields exist so that a test network
+/// can use a cheaper proof of work or a shorter chain.
 #[derive(Clone, Debug)]
 pub struct ChainParams {
     /// The network label, which fixes the genesis block and so the chain id.
@@ -30,21 +21,16 @@ pub struct ChainParams {
     pub pow_kind: PowKind,
     pub emission: Emission,
     pub difficulty: DifficultyParams,
-    /// The block-size median never goes below this (150,000 bytes in version 2).
+    /// The block-weight median never goes below this (150,000, as version 2's size median).
     pub min_block_median: u64,
-    pub ring_size: usize,
-    pub coinbase_maturity: u64,
-    pub spend_maturity: u64,
     pub future_limit_seconds: u64,
-    /// Judge transactions by the limits of alpha.4 (`LEGACY_MAX_INPUTS`, `LEGACY_MAX_PROOF`) as well as by `MAX_TX_SIZE`: only the `alpha` network.
-    pub legacy_tx_limits: bool,
 }
 
 impl ChainParams {
-    /// The version 2 rules for a network called `label`, with the given proof of work and starting target.
-    /// Emission is the 8-decimal schedule (20 coins halving every 525,600 blocks, a 20,000,000-coin cap, a
-    /// 0.5-coin tail), and difficulty aims at 60-second blocks over a window of 30.
-    pub fn version_2(label: &str, pow_kind: PowKind, start_target: U256) -> ChainParams {
+    /// The version 3 rules for a network called `label`, with the given proof of work and starting target. Emission is
+    /// the 8-decimal schedule (20 coins halving every 525,600 blocks, a 20,000,000-coin cap, a 0.5-coin tail), and
+    /// difficulty aims at 60-second blocks over a window of 30: both as version 2.
+    pub fn version_3(label: &str, pow_kind: PowKind, start_target: U256) -> ChainParams {
         ChainParams {
             label: label.to_string(),
             pow_kind,
@@ -60,11 +46,7 @@ impl ChainParams {
                 start_target,
             },
             min_block_median: V2_MIN_BLOCK_MEDIAN,
-            ring_size: RING_SIZE,
-            coinbase_maturity: COINBASE_MATURITY,
-            spend_maturity: SPEND_MATURITY,
             future_limit_seconds: FUTURE_LIMIT_SECONDS,
-            legacy_tx_limits: false,
         }
     }
 }

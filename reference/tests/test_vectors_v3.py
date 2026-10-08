@@ -65,6 +65,15 @@ def test_weight_rounds_up_and_a_typical_v3_transaction_weighs_less_than_a_v2_one
     assert typical["size"] > 6_000 and typical["weight"] < 2_400
 
 
+def test_a_block_is_limited_by_weight_and_by_real_bytes():
+    f = load("v3_weight")
+    assert f["max_block_bytes"] == 12 * 1024 * 1024
+    for c in f["limits"]:
+        assert c["too_large"] == (c["weight"] > min(2 * c["median"], 4 * 1024 * 1024) or c["size"] > f["max_block_bytes"])
+    # the real-byte ceiling binds before the network frame (16 MiB) and leaves room for a block's header and coinbase
+    assert f["max_block_bytes"] < 16 * 1024 * 1024 - 1024 * 1024
+
+
 def test_every_output_enters_the_tree_once_and_exactly_when_it_becomes_spendable():
     f = load("v3_tree_schedule")
     blocks = [(b["coinbase_outputs"], b["other_outputs"]) for b in f["blocks"]]
