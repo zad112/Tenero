@@ -45,125 +45,126 @@
    ]
   }
  ],
- "description": "Version 3 weight: prefix bytes + ceil(prunable bytes / 4); a block's weight is the sum of its transactions'. Block limits, the median and the oversize penalty are version 2's functions of weight; the minimum fee is version 2's function of the REAL size and the (weight) median.",
+ "description": "Version 3 weight: prefix bytes + ceil(prunable bytes / 4); a block's weight is the sum of its transactions'. Block limits, the median and the oversize penalty are version 2's functions of weight; the minimum fee is version 2's formula with FEE_REFERENCE_WEIGHT 1000 (version 2: 3000), of the REAL size and the (weight) median.",
+ "fee_reference_weight": 1000,
  "fees": [
   {
    "base_reward": 2000000000,
-   "fee": 1865600,
+   "fee": 621867,
    "median": 150000,
    "size": 6996
   },
   {
    "base_reward": 2000000000,
-   "fee": 41976,
+   "fee": 13992,
    "median": 1000000,
    "size": 6996
   },
   {
    "base_reward": 50000000,
-   "fee": 46640,
+   "fee": 15547,
    "median": 150000,
    "size": 6996
   },
   {
    "base_reward": 50000000,
-   "fee": 1050,
+   "fee": 350,
    "median": 1000000,
    "size": 6996
   },
   {
    "base_reward": 2000000000,
-   "fee": 1489067,
+   "fee": 496356,
    "median": 150000,
    "size": 5584
   },
   {
    "base_reward": 2000000000,
-   "fee": 33504,
+   "fee": 11168,
    "median": 1000000,
    "size": 5584
   },
   {
    "base_reward": 50000000,
-   "fee": 37227,
+   "fee": 12409,
    "median": 150000,
    "size": 5584
   },
   {
    "base_reward": 50000000,
-   "fee": 838,
+   "fee": 280,
    "median": 1000000,
    "size": 5584
   },
   {
    "base_reward": 2000000000,
-   "fee": 3769067,
+   "fee": 1256356,
    "median": 150000,
    "size": 14134
   },
   {
    "base_reward": 2000000000,
-   "fee": 84804,
+   "fee": 28268,
    "median": 1000000,
    "size": 14134
   },
   {
    "base_reward": 50000000,
-   "fee": 94227,
+   "fee": 31409,
    "median": 150000,
    "size": 14134
   },
   {
    "base_reward": 50000000,
-   "fee": 2121,
+   "fee": 707,
    "median": 1000000,
    "size": 14134
   },
   {
    "base_reward": 2000000000,
-   "fee": 188000,
+   "fee": 62667,
    "median": 150000,
    "size": 705
   },
   {
    "base_reward": 2000000000,
-   "fee": 4230,
+   "fee": 1410,
    "median": 1000000,
    "size": 705
   },
   {
    "base_reward": 50000000,
-   "fee": 4700,
+   "fee": 1567,
    "median": 150000,
    "size": 705
   },
   {
    "base_reward": 50000000,
-   "fee": 106,
+   "fee": 36,
    "median": 1000000,
    "size": 705
   },
   {
    "base_reward": 2000000000,
-   "fee": 84267,
+   "fee": 28089,
    "median": 150000,
    "size": 316
   },
   {
    "base_reward": 2000000000,
-   "fee": 1896,
+   "fee": 632,
    "median": 1000000,
    "size": 316
   },
   {
    "base_reward": 50000000,
-   "fee": 2107,
+   "fee": 703,
    "median": 150000,
    "size": 316
   },
   {
    "base_reward": 50000000,
-   "fee": 48,
+   "fee": 16,
    "median": 1000000,
    "size": 316
   }

@@ -11,4 +11,5 @@
 //! signatures cover, the checks around the libraries, and the prover used by tests and the wallet.
 
 pub mod curve_tree;
+pub mod fcmp;
 pub mod ringct;

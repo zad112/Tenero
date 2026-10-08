@@ -740,9 +740,12 @@ Labels: `"tenero gamma network 1"`, `"tenero development network v3"`, `"tenero 
 A transaction's **weight** is its prefix bytes plus a quarter of its prunable bytes, rounded up. A block's weight is the
 sum of its transactions' weights (the coinbase, as in version 2, is not counted). The block-size median, the block limit
 (twice the median, at most 4 MiB) and the oversize penalty are version 2's rules **applied to weight**. The **minimum fee**
-is version 2's formula applied to the transaction's **real size** and the (weight) median. So a typical transaction weighs
-less than in version 2 (about 2,000 against 2,400) and transactions per block do not fall, while fees pay for the real
-bytes. A node stores each block's weight with it, so pruning never changes a consensus number.
+is version 2's formula with **`FEE_REFERENCE_WEIGHT = 1000`** (version 2: 3000; owner, 2026-10-08) applied to the
+transaction's **real size** and the (weight) median: a typical transaction, about three times as big as in version 2, costs
+what a version 2 one did (about 0.0062 coins at the start, 0.00016 at the tail emission, at the 150,000 floor), and the fee
+still falls with every halving and with the square of the median. So a typical transaction weighs less than in version 2
+(about 2,000 against 2,400), transactions per block do not fall, and fees pay for the real bytes. Lower fees make spam
+cheaper: filling a quiet block of about 75 typical transactions costs about 0.47 coins at the start. A node stores each block's weight with it, so pruning never changes a consensus number.
 
 ### 15.5 Shape (consensus)
 
