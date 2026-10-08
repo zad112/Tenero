@@ -3,8 +3,9 @@
 //! send the headers a hostile or mistaken peer might.
 
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{block_id, PowKind};
-use tenero_core::v2::{BlockHeader, VERSION};
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids::block_id;
+use tenero_core::v3::{BlockHeader, VERSION};
 use tenero_net::sim::{Sim, SimConfig, SimRig};
 use tenero_net::{AssumeValid, EngineConfig, Hello, Limits, Message, PROTOCOL_VERSION};
 

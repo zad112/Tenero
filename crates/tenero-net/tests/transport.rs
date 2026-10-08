@@ -1590,18 +1590,18 @@ impl Hooks for Stall {
     }
 }
 
-/// A transaction that decodes (a whole proof, the longest the format allows; no one would accept it).
-fn big_tx() -> tenero_core::v2::Transaction {
-    use tenero_core::v2::Wire;
-    let v = tenero_core::vectors::load("v2_serialization").unwrap();
+/// A transaction that decodes (exactly MAX_TX_SIZE bytes, the longest the format allows; no one would accept it).
+fn big_tx() -> tenero_core::v3::Transaction {
+    use tenero_core::v3::Wire;
+    let v = tenero_core::vectors::load("v3_serialization").unwrap();
     let case = v["valid"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|c| c["note"].as_str().unwrap().contains("maximum proof length"))
+        .find(|c| c["note"].as_str().unwrap().contains("exactly MAX_TX_SIZE"))
         .unwrap();
     let bytes = tenero_core::vectors::hex(case["hex"].as_str().unwrap()).unwrap();
-    tenero_core::v2::Transaction::from_bytes(&bytes).unwrap()
+    tenero_core::v3::Transaction::from_bytes(&bytes).unwrap()
 }
 
 #[test]

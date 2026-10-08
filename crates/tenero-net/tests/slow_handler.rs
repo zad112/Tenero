@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 use tenero_chain::{ProofsNotChecked, Sha256Pow};
 use tenero_core::u256::U256;
-use tenero_core::v2::Block;
+use tenero_core::v3::Block;
 use tenero_net::sim::{Sim, SimConfig, SimRig};
 use tenero_net::{Action, Engine, EngineConfig, Event, Hello, Message, PROTOCOL_VERSION};
 use tenero_node::{Node, NodeConfig};

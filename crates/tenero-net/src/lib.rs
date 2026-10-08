@@ -18,7 +18,8 @@ pub mod transport;
 pub mod wire;
 
 pub use engine::{Action, AssumeValid, Engine, EngineConfig, Event, PeerId, Stats};
-pub use message::{Hello, Limits, Message, PROTOCOL_VERSION};
+pub use message::{CompactBlock, Hello, Limits, Message, PROTOCOL_VERSION};
 pub use wire::{
-    decode_frame, encode, split_blocks, FrameDecoder, WireError, BLOCKS_REPLY_BYTES, MAX_FRAME,
+    decode_frame, encode, split_blocks, split_txs, FrameDecoder, WireError, BLOCKS_REPLY_BYTES,
+    MAX_FRAME,
 };

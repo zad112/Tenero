@@ -1,9 +1,10 @@
 //! The messages two nodes exchange, and the limits that keep a hostile peer from making us do unbounded
 //! work. Typed here; the wire encoding is M8.2.
 
-use tenero_core::v2::{Block, BlockHeader, Transaction};
+use tenero_core::v3::{Block, BlockHeader, Coinbase, Transaction};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Version 2: the `gamma` network (version 3 blocks, and compact blocks).
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The ceilings the wire format enforces (`docs/WIRE_PROTOCOL.md` section 2). The engine's own [`Limits`] may be
 /// lower, never higher.
@@ -16,6 +17,8 @@ pub const MAX_TXS: usize = 64;
 pub const MAX_NOT_FOUND: usize = 64;
 /// Addresses in one `Addrs` message.
 pub const MAX_ADDRS: usize = 100;
+/// Ids in a `Compact` block, indexes in a `GetBlockTxs` request, transactions in a `BlockTxs` reply: a block's most.
+pub const MAX_BLOCK_TXS: usize = tenero_core::v3::MAX_BLOCK_TXS;
 
 /// Hard limits on what one message may contain. A message over a limit is a protocol violation.
 #[derive(Clone, Debug)]
@@ -71,6 +74,14 @@ pub struct Hello {
     pub nonce: u64,
 }
 
+/// A block's compact form (`Message::Compact`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompactBlock {
+    pub header: BlockHeader,
+    pub coinbase: Coinbase,
+    pub tx_ids: Vec<[u8; 32]>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Message {
     Hello(Hello),
@@ -121,6 +132,23 @@ pub enum Message {
     Txs {
         txs: Vec<Transaction>,
     },
+    /// "Send me this block in compact form": how a new block is fetched (`docs/WIRE_PROTOCOL.md` 3).
+    GetCompact {
+        id: [u8; 32],
+    },
+    /// A block as its header, its coinbase and its transactions' ids, in order. The answer to `GetCompact`, and to
+    /// `GetBlocks` for a block too big for a frame.
+    Compact(Box<CompactBlock>),
+    /// Some of a block's transactions, by their index in it.
+    GetBlockTxs {
+        block_id: [u8; 32],
+        indexes: Vec<u32>,
+    },
+    /// Some of a block's transactions (as many replies as it takes, each within a frame).
+    BlockTxs {
+        block_id: [u8; 32],
+        txs: Vec<Transaction>,
+    },
     /// "Which peers do you know?" Answered once per connection.
     GetAddrs,
     /// Peers the sender knows (an answer to `GetAddrs`), or, once, the sender's own address.
@@ -147,6 +175,10 @@ impl Message {
             Message::NewTx { .. } => "new_tx",
             Message::GetTxs { .. } => "get_txs",
             Message::Txs { .. } => "txs",
+            Message::GetCompact { .. } => "get_compact",
+            Message::Compact(_) => "compact",
+            Message::GetBlockTxs { .. } => "get_block_txs",
+            Message::BlockTxs { .. } => "block_txs",
             Message::GetAddrs => "get_addrs",
             Message::Addrs { .. } => "addrs",
         }
