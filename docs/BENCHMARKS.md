@@ -20,6 +20,34 @@ is one data point (KNOWN_ISSUES 13). Rerun it before relying on any figure.
 | cheap precheck (no dataset) | 0.2 us | not measured |
 | attempts/s, 6 threads | 31.7 | 164 |
 
+## GPU: the driver alone, no CUDA Toolkit (measured on the owner's machine, 2026-10-07)
+
+The kernels are compiled ahead of time (`crates/tenero-gpu/kernels/build_kernels.py`: NVRTC, `ptxas` and `fatbinary` from CUDA
+13.4; machine code for sm_80, 86, 89, 90, 100, 103 and 120 and PTX for compute_80) and embedded in the program, and the int8
+multiply of BOTH designs is our own kernel (`gather.cu`; cuBLASLt is gone). RTX 5070 Ti, driver 617.14, card otherwise idle,
+single runs, **with every CUDA Toolkit folder removed from PATH and `CUDA_PATH` cleared** (NVRTC and cuBLASLt could not be found):
+
+* **All 16 GPU tests passed** (`gpu_selftest` 12, `gather_selftest` 4: the golden vectors, every one of the 256 slices, both designs
+  at the real parameters, bit for bit with the CPU), and `gpu_mining` mined 20 blocks, all accepted by the node's CPU check, and 20
+  more across a fork at height 10.
+* **The only CUDA libraries in the running benchmark's process** were the driver's `nvcuda.dll` and `nvcuda64.dll` (read from the
+  process's module list): no `nvrtc`, `cublas` or `cudart`.
+
+| | attempts/s |
+|---|---|
+| the gathered attempt (`beta` and `dev` from block 500), batch 128 to 512 | 43,080 to 43,523 (unchanged: it never used cuBLASLt) |
+| the first design, grouped 16 to a slice and pipelined, batch 256 / 512 (`gpu_bench`) | 79,080 / 78,879 |
+| the same, the miner backend (`gpu_mining`), batch 32 / 64 / 128 / 256 | 71,550 / 76,660 / 79,516 / 80,956 |
+| the first design, not grouped, batch 256 / 512 | 61,867 / 73,190 (47,000 with cuBLASLt) |
+| **for comparison, the first design grouped on cuBLASLt (the section below)** | about 125,000 |
+
+* **What it costs:** the first design (`alpha`, and `dev` below block 500) is about 37 % slower when grouped, because our multiply's
+  compute ceiling (about 76,000 to 80,000 attempts/s when every attempt reads the same columns, `gather_bench`) is about half of
+  cuBLASLt's. The gathered attempt is limited by memory, not by the multiply, so it loses nothing.
+* **What was tried and dropped:** launching the attempts side by side on one column tile (so that attempts sharing a slice read it
+  together) made the gathered attempt slower, about 32,000 against 43,000, because each attempt's X was then read once per tile.
+* **Not tested:** any GPU but the owner's RTX 5070 Ti. The machine code for the other generations was built, not run.
+
 ## GPU: attempts grouped by slice (measured on the owner's machine, 2026-10-07)
 
 **About 120,000 to 130,000 attempts/s on the RTX 5070 Ti, against 33,000 to 36,000 before: about 3.5 times.** Measured with

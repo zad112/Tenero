@@ -47,9 +47,18 @@ __device__ __forceinline__ void g_mma(int c[4], const unsigned a[4], const unsig
 
 extern "C" {
 
-// grid = (nb / 128, attempts), 256 threads, G_SMEM bytes of dynamic shared memory. idx_stride is nb (each attempt its
-// own columns) or 0 (every attempt uses attempt 0's columns: an impossible best case for a miner, used only to measure
-// how much reading the columns costs).
+// grid = (nb / 128, attempts), 256 threads, G_SMEM bytes of dynamic shared memory. The column tile is blockIdx.x, so the
+// blocks that run side by side are mostly the tiles of the SAME attempt and share its X through the L2 cache (with the
+// attempt as blockIdx.x instead, each X was read from memory once per tile: the gathered attempt fell from about 45,000
+// to about 32,000 attempts/s on the owner's card). Attempts that read the same slice (the first design, grouped by the
+// miner) follow one another, and the 16 MiB slice stays in the L2 cache between them.
+//
+// Which columns attempt a reads:
+//   slice_mode == 0 (the gathered attempt): dataset column idx[a * idx_stride + n] % columns. idx_stride is nb (each
+//     attempt its own columns) or 0 (every attempt uses attempt 0's columns: an impossible best case for a miner, used
+//     only to measure how much reading the columns costs).
+//   slice_mode == 1 (the first design, matmulhash v2 before the gather fork): column n of slice slices[a], which is
+//     dataset column slices[a] * nb + n. idx is not read.
 __global__ void __launch_bounds__(256) gather_gemm(const unsigned long long x_ptr,
                                                    const unsigned long long data_ptr,
                                                    const unsigned long long idx_ptr,
@@ -57,7 +66,9 @@ __global__ void __launch_bounds__(256) gather_gemm(const unsigned long long x_pt
                                                    const unsigned k,
                                                    const unsigned nb,
                                                    const unsigned columns,
-                                                   const unsigned idx_stride)
+                                                   const unsigned idx_stride,
+                                                   const unsigned long long slices_ptr,
+                                                   const unsigned slice_mode)
 {
     extern __shared__ __align__(16) unsigned char smem[];
     unsigned char* sx = smem;                       // G_STAGES x 64 rows of X
@@ -68,6 +79,8 @@ __global__ void __launch_bounds__(256) gather_gemm(const unsigned long long x_pt
     const unsigned char* X = (const unsigned char*)x_ptr + (unsigned long long)a * 64ull * k;
     const unsigned char* D = (const unsigned char*)data_ptr;
     const unsigned* idx = (const unsigned*)idx_ptr + (unsigned long long)a * idx_stride;
+    const unsigned long long slice_first =
+        slice_mode ? (unsigned long long)((const unsigned*)slices_ptr)[a] * nb : 0ull;
     int* C = (int*)c_ptr + (unsigned long long)a * 64ull * nb;
 
     const unsigned tid = threadIdx.x;
@@ -86,7 +99,9 @@ __global__ void __launch_bounds__(256) gather_gemm(const unsigned long long x_pt
     #pragma unroll
     for (int i = 0; i < 4; ++i) {
         const unsigned col = (tid >> 3) + i * 32;
-        wsrc[i] = D + (unsigned long long)(idx[n0 + col] % columns) * k + pc;
+        const unsigned long long column =
+            slice_mode ? slice_first + n0 + col : (unsigned long long)(idx[n0 + col] % columns);
+        wsrc[i] = D + column * k + pc;
         wdst[i] = col * G_STRIDE + pc;
     }
     const unsigned ktiles = k / G_BK;

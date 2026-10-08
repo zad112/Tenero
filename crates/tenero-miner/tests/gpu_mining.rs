@@ -1,5 +1,5 @@
-//! The GPU miner, end to end, at the REAL parameters. `#[ignore]`d: it needs an NVIDIA GPU, the CUDA toolkit's DLLs on
-//! PATH (see `CLAUDE.md`), about 4.3 GiB of video memory (one dataset: the GPU backend builds the next epoch's when its
+//! The GPU miner, end to end, at the REAL parameters. `#[ignore]`d: it needs an NVIDIA GPU and its driver (not the CUDA
+//! Toolkit), about 4.3 GiB of video memory (one dataset: the GPU backend builds the next epoch's when its
 //! first job arrives) and about 4.3 GiB of RAM for the node's own CPU check (8.6 with this test's two-dataset pow). Run it on the owner's machine:
 //!
 //! ```text
@@ -64,7 +64,7 @@ impl Drop for TempDb {
 }
 
 #[test]
-#[ignore = "needs an NVIDIA GPU, the CUDA DLLs and about 9 GiB of RAM and video memory: run it by hand (see the header)"]
+#[ignore = "needs an NVIDIA GPU and about 9 GiB of RAM and video memory: run it by hand (see the header)"]
 fn the_gpu_mines_blocks_a_cpu_node_verifies_in_full() {
     let blocks = env_u64("TENERO_POW_BLOCKS", 20);
     let epoch = env_u64("TENERO_POW_EPOCH", 100);
@@ -152,7 +152,7 @@ fn the_gpu_mines_blocks_a_cpu_node_verifies_in_full() {
     let elapsed = started.elapsed();
     assert!(
         !hook.failed(),
-        "the GPU backend failed (no GPU, no CUDA DLLs, or out of memory): see the log above"
+        "the GPU backend failed (no GPU, an old driver, or out of memory): see the log above"
     );
 
     let attempts = counters.attempts.load(Ordering::Relaxed);
@@ -205,7 +205,7 @@ fn the_gpu_mines_blocks_a_cpu_node_verifies_in_full() {
 }
 
 #[test]
-#[ignore = "needs an NVIDIA GPU, the CUDA DLLs and about 4.5 GiB of video memory: run it by hand (see the header)"]
+#[ignore = "needs an NVIDIA GPU and about 4.5 GiB of video memory: run it by hand (see the header)"]
 fn how_many_attempts_per_second_the_gpu_backend_does_at_each_batch_size() {
     let seconds = env_u64("TENERO_MINER_SECONDS", 15);
     let params = Params::DEFAULT;

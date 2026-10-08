@@ -25,9 +25,11 @@ use tenero_gpu::{DeviceDataset, Gpu};
 
 use crate::{Backend, Counters, Job, Solution};
 
-/// Attempts per slice group: the GPU multiplies this many attempts against one read of a slice. **Measured on the owner's
-/// RTX 5070 Ti (2026-10-07, `gpu_bench`): about 110,000 attempts/s at 8, 127,000 at 16 and 130,000 at 32** (against about
-/// 35,000 with no grouping); 32 is within the run-to-run noise of 16 and keeps twice as many nonces waiting, so 16.
+/// Attempts per slice group (the first design): this many attempts read a slice one after another, so it is read from
+/// memory once for all of them and then found in the L2 cache. **Measured on the owner's RTX 5070 Ti (2026-10-07,
+/// `gather_bench`, our own multiply): about 76,000 attempts/s at 8, 77,000 to 78,000 at 16 and at 32, against about
+/// 44,000 with no grouping** (with cuBLASLt, before it was dropped: 110,000, 127,000 and 130,000); 32 is no faster than
+/// 16 and keeps twice as many nonces waiting, so 16.
 pub const GROUP: usize = 16;
 
 pub struct GpuBackend {

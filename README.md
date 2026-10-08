@@ -68,7 +68,8 @@ for, and a special-purpose chip would need the same memory to compete. **That is
   not memory. From height 500 an attempt instead gathers 2,048 columns of 8 KiB from the whole dataset, and memory is the limit again
   ([`docs/CONSENSUS.md`](docs/CONSENSUS.md) 8.3). `alpha` keeps the first design.
 * **Measured** (one RTX 5070 Ti, [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)): about **45,000 attempts a second** with the gathered attempt, at the card's memory
-  bandwidth; with the first design about 120,000 to 130,000 with the grouping (33,000 to 36,000 without it). The CPU rate of a
+  bandwidth; with the first design about 79,000 with the grouping on the miner's own multiply (120,000 to 130,000 when it still used
+  NVIDIA's cuBLASLt, which needed the CUDA Toolkit; 33,000 to 36,000 without the grouping). The CPU rate of a
   6-thread Ryzen 9 5900X is 164 attempts a second with a build tuned for that machine and 31.7 with the default build ([`docs/BENCHMARKS.md`](docs/BENCHMARKS.md); one machine, so
   treat them as examples).
 * **Simulated, not proven:** the dataset's dependency structure was measured on a small version, and the slowdown from keeping only part of the dataset is an estimate
@@ -109,7 +110,7 @@ cargo test --workspace            # no GPU needed
 | To do this | You need |
 |---|---|
 | Run a node or the wallet | Windows 11 (the only Windows tried) or Linux (built for Ubuntu 22.04 or newer; **run by hand as a node, the pool and the command-line wallet**: in WSL2 and on one rented server); on `alpha`, `beta` or `dev`, about **4.3 GiB of free RAM** for the node (it holds one 4 GiB dataset at a time, and pauses about 3 seconds for the first block of each 100-block epoch while it builds the next); **mining adds its own memory** |
-| Mine on a GPU | an NVIDIA GPU with a current driver **and the CUDA Toolkit 13.x** (the miner uses NVIDIA's NVRTC and cuBLASLt, which come with the Toolkit, not the driver; nothing from NVIDIA is shipped here). One 4 GiB dataset is kept in video memory (the miner process commits about 5 GiB on Windows, of which under 0.5 GiB is RAM in use): **only a 16 GB card has been tried**; whether an 8 GB card works is untested |
+| Mine on a GPU | an NVIDIA GPU of the RTX 30 series or newer (compute capability 8.0+; A100, H100 and the like too) with a **driver for CUDA 13 (R580 or newer)**. **The CUDA Toolkit is not needed** (the kernels are compiled into the miner and the driver loads them; releases up to v0.2.0-beta.3 needed the Toolkit); nothing from NVIDIA is shipped here. One 4 GiB dataset is kept in video memory (the miner process commits about 5 GiB on Windows, of which under 0.5 GiB is RAM in use): **only a 16 GB card has been tried**; whether an 8 GB card works is untested |
 | Mine on a CPU | nothing extra, but see the next section: on `alpha` it is **impractical** |
 
 **An AMD (or other non-NVIDIA) GPU miner:** today the GPU miner is **NVIDIA only** (it is written for CUDA). If someone wants to build one for AMD cards, the author is 100% fine with that and would be glad to see it; the author

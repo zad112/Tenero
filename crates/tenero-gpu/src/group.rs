@@ -2,8 +2,8 @@
 //!
 //! An attempt's slice is `attempt_slice(attempt_seed(header, nonce))`: two SHA-256 hashes, known before any matrix
 //! work. A miner may try its nonces in any order, so it can collect nonces by slice and run `group` attempts against
-//! each slice together: the GPU then reads a 16 MiB slice once for `group` attempts (`Int8Gemm::run_rows`) instead of
-//! once for each. **Nothing about the proof of work changes**: every attempt is the same attempt, with the same
+//! each slice together: the GPU then reads a 16 MiB slice from memory once for `group` attempts (they run one after
+//! another and find it in the L2 cache; `AttemptEngine::submit`) instead of once for each. **Nothing about the proof of work changes**: every attempt is the same attempt, with the same
 //! chance of meeting the target; only the order of trying them does.
 //!
 //! The scan goes up from the first nonce (wrapping at 2^64) and every nonce it looks at is kept until its slice has

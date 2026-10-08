@@ -11,30 +11,32 @@
 //! (`BENCHMARKS.md`): about 45,000 attempts/s, at the card's memory bandwidth.
 
 use crate::{key_words_i64, DeviceDataset, Gpu, GpuError, THREADS};
-use cudarc::driver::sys::CUfunction_attribute;
-use cudarc::driver::{CudaFunction, CudaSlice, LaunchConfig, PushKernelArg};
-use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
+use cudarc::driver::{CudaSlice, LaunchConfig, PushKernelArg};
 use tenero_core::matmulhash::{self as mh, Attempt};
 
-pub const GATHER_KERNEL_SOURCE: &str = include_str!("../kernels/gather.cu");
-
-/// `G_SMEM` in `gather.cu`: 3 stages of (64 + 128) rows of 144 bytes.
-const GATHER_SMEM: u32 = 3 * (64 + 128) * 144;
-
-/// Batches of gathered attempts on the GPU (one at a time; no pipeline: this is for measuring).
+/// Batches of attempts on the GPU with our own multiply (`gather.cu`), one batch at a time: the gathered attempt
+/// (`attempts`) or the first design (`slice_attempts`).
 pub struct GatherEngine<'a> {
     gpu: &'a Gpu,
     data: &'a DeviceDataset,
-    gemm_fn: CudaFunction,
-    read_fn: CudaFunction,
     read_out: CudaSlice<u32>,
     batch: usize,
     keys: CudaSlice<i64>,
     pick_keys: CudaSlice<i64>,
     x: CudaSlice<u8>,
     idx: CudaSlice<u8>,
+    /// The slice of each attempt, for the first design (`slice_attempts`).
+    slices: CudaSlice<u32>,
     c: CudaSlice<i32>,
     sums: CudaSlice<u64>,
+}
+
+/// Which columns the attempts of a batch read.
+enum Columns<'s> {
+    /// The gathered attempt; `same`: every attempt reads attempt 0's columns (the benchmark's impossible best case).
+    Gathered { same: bool },
+    /// The first design: each attempt reads the whole of its slice.
+    Slices(&'s [usize]),
 }
 
 impl<'a> GatherEngine<'a> {
@@ -46,49 +48,26 @@ impl<'a> GatherEngine<'a> {
         let p = data.params;
         if p.m != 64 || !p.k.is_multiple_of(128) || !p.nb.is_multiple_of(128) {
             return Err(GpuError::new(
-                "the gather prototype needs m = 64, k a multiple of 128 and nb a multiple of 128",
+                "the GPU engine needs m = 64, k a multiple of 128 and nb a multiple of 128",
             ));
         }
         if data.slices != p.num_blocks {
-            return Err(GpuError::new(
-                "the gather prototype needs the whole dataset",
-            ));
+            return Err(GpuError::new("the GPU engine needs the whole dataset"));
         }
         if batch == 0 || batch > 65_535 {
             return Err(GpuError::new("the batch must be 1..=65535"));
         }
-        let (major, minor) = gpu.compute_capability;
-        let arch: &'static str = Box::leak(format!("compute_{major}{minor}").into_boxed_str());
-        let ptx = compile_ptx_with_opts(
-            GATHER_KERNEL_SOURCE,
-            CompileOptions {
-                arch: Some(arch),
-                ..Default::default()
-            },
-        )?;
-        let module = gpu.stream.context().load_module(ptx)?;
-        let gemm_fn = module.load_function("gather_gemm")?;
-        // more than the default 48 KiB of shared memory (G_SMEM in gather.cu), and as much of the cache as shared memory
-        gemm_fn.set_attribute(
-            CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-            GATHER_SMEM as i32,
-        )?;
-        gemm_fn.set_attribute(
-            CUfunction_attribute::CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT,
-            100,
-        )?;
         let s = &gpu.stream;
         Ok(GatherEngine {
             gpu,
             data,
-            gemm_fn,
-            read_fn: module.load_function("gather_read")?,
             read_out: s.alloc_zeros::<u32>(batch * (p.nb / 128) * 256)?,
             batch,
             keys: s.alloc_zeros::<i64>(batch * 8)?,
             pick_keys: s.alloc_zeros::<i64>(batch * 8)?,
             x: s.alloc_zeros::<u8>(batch * p.m * p.k)?,
             idx: s.alloc_zeros::<u8>(batch * p.nb * 4)?,
+            slices: s.alloc_zeros::<u32>(batch)?,
             c: s.alloc_zeros::<i32>(batch * p.m * p.nb)?,
             sums: s.alloc_zeros::<u64>(batch * 8)?,
         })
@@ -123,7 +102,7 @@ impl<'a> GatherEngine<'a> {
         };
         let (k, nb, piece) = (p.k as u32, p.nb as u32, piece as u32);
         let columns = (p.num_blocks * p.nb) as u32;
-        let mut b = stream.launch_builder(&self.read_fn);
+        let mut b = stream.launch_builder(&gpu.read_fn);
         b.arg(&self.data.buf)
             .arg(&self.idx)
             .arg(&self.read_out)
@@ -151,6 +130,28 @@ impl<'a> GatherEngine<'a> {
         seeds: &[[u8; 32]],
         same_columns: bool,
     ) -> Result<Vec<Attempt>, GpuError> {
+        self.run(seeds, Columns::Gathered { same: same_columns })
+    }
+
+    /// Attempts of the FIRST design (matmulhash v2 before the gather fork: each attempt reads the whole of its slice),
+    /// with our own multiply instead of cuBLASLt. `slices[i]` must be `attempt_slice` of `seeds[i]` (trusted, as in
+    /// `AttemptEngine::attempts_of_seeds`). Attempts that share a slice should be next to each other in the batch (as
+    /// `group::SliceGrouper` makes them): they then share the slice's reads through the L2 cache.
+    pub fn slice_attempts(
+        &mut self,
+        seeds: &[[u8; 32]],
+        slices: &[usize],
+    ) -> Result<Vec<Attempt>, GpuError> {
+        if slices.len() != seeds.len() {
+            return Err(GpuError::new("one slice for each seed"));
+        }
+        if slices.iter().any(|&b| b >= self.data.params.num_blocks) {
+            return Err(GpuError::new("a slice is outside the dataset"));
+        }
+        self.run(seeds, Columns::Slices(slices))
+    }
+
+    fn run(&mut self, seeds: &[[u8; 32]], cols: Columns<'_>) -> Result<Vec<Attempt>, GpuError> {
         let p = self.data.params;
         let n = seeds.len();
         if n == 0 || n > self.batch {
@@ -159,45 +160,55 @@ impl<'a> GatherEngine<'a> {
         let gpu = self.gpu;
         let stream = &gpu.stream;
         let keys: Vec<i64> = seeds.iter().flat_map(key_words_i64).collect();
-        let pick: Vec<i64> = seeds
-            .iter()
-            .flat_map(|s| key_words_i64(&mh::pick_key(s)))
-            .collect();
         stream.memcpy_htod(&keys, &mut self.keys.slice_mut(0..n * 8))?;
-        stream.memcpy_htod(&pick, &mut self.pick_keys.slice_mut(0..n * 8))?;
-        // X, and the column numbers (nb words per attempt, from the pick key's keystream)
+        // X
         let bpk = (p.m * p.k / 64) as u64;
         gpu.launch_keystream(&self.keys, &self.x, bpk, 0, n as u64 * bpk)?;
-        let ipk = (p.nb / 16) as u64;
-        gpu.launch_keystream(&self.pick_keys, &self.idx, ipk, 0, n as u64 * ipk)?;
-
-        let cfg = LaunchConfig {
-            grid_dim: ((p.nb / 128) as u32, n as u32, 1),
-            block_dim: (THREADS, 1, 1),
-            shared_mem_bytes: GATHER_SMEM,
-        };
-        let (k, nb) = (p.k as u32, p.nb as u32);
+        let nb = p.nb as u32;
         let columns = (p.num_blocks * p.nb) as u32;
-        let idx_stride: u32 = if same_columns { 0 } else { nb };
-        let mut b = stream.launch_builder(&self.gemm_fn);
-        b.arg(&self.x)
-            .arg(&self.data.buf)
-            .arg(&self.idx)
-            .arg(&self.c)
-            .arg(&k)
-            .arg(&nb)
-            .arg(&columns)
-            .arg(&idx_stride);
-        // SAFETY: the kernel is `gather_gemm(u64 x, u64 data, u64 idx, u64 c, u32 k, u32 nb, u32 columns, u32 stride)`
-        // and the arguments have those types. Block (bx, a) reads X rows of attempt a < n (`x` holds batch * 64 * k
-        // bytes), idx words a * stride + [0, nb) (`idx` holds batch * nb words), and dataset columns `idx % columns`, each
-        // k bytes inside the whole dataset (`data.slices == num_blocks`, checked in `new`); it writes 64 rows x 128
-        // columns of attempt a's C (`c` holds batch * 64 * nb). m == 64, k % 128 == 0 and nb % 128 == 0 were checked,
-        // and the function was allowed the GATHER_SMEM bytes of shared memory the launch asks for.
-        #[allow(unsafe_code)]
-        unsafe {
-            b.launch(cfg)?;
-        }
+        let idx_stride: u32 = match cols {
+            Columns::Gathered { same } => {
+                // the column numbers: nb words per attempt, from the pick key's keystream
+                let pick: Vec<i64> = seeds
+                    .iter()
+                    .flat_map(|s| key_words_i64(&mh::pick_key(s)))
+                    .collect();
+                stream.memcpy_htod(&pick, &mut self.pick_keys.slice_mut(0..n * 8))?;
+                let ipk = (p.nb / 16) as u64;
+                gpu.launch_keystream(&self.pick_keys, &self.idx, ipk, 0, n as u64 * ipk)?;
+                if same {
+                    0
+                } else {
+                    nb
+                }
+            }
+            Columns::Slices(slices) => {
+                let s32: Vec<u32> = slices.iter().map(|&b| b as u32).collect();
+                stream.memcpy_htod(&s32, &mut self.slices.slice_mut(0..n))?;
+                0
+            }
+        };
+        let slice_index_of = |i: usize| match cols {
+            Columns::Slices(slices) => slices[i],
+            Columns::Gathered { .. } => 0,
+        };
+
+        // SAFETY of the launch (`Gpu::launch_multiply`): m == 64, k % 128 == 0 and nb % 128 == 0 and the whole dataset
+        // were checked in `new`; x, c, idx and slices hold `batch >= n` attempts' worth; slices were checked to be inside
+        // the dataset in `slice_attempts`, and gathered columns are taken modulo `columns`, all inside the dataset.
+        gpu.launch_multiply(
+            &self.x,
+            &self.data.buf,
+            &self.idx,
+            match cols {
+                Columns::Slices(_) => Some(&self.slices),
+                Columns::Gathered { .. } => None,
+            },
+            &self.c,
+            (p.k, p.nb, columns as usize),
+            idx_stride,
+            n,
+        )?;
 
         stream.memset_zeros(&mut self.sums)?;
         gpu.launch_fold(&self.c, &self.sums, (p.m * p.nb / 16) as u64, n as u32)?;
@@ -205,12 +216,13 @@ impl<'a> GatherEngine<'a> {
         Ok(seeds
             .iter()
             .zip(sums.chunks(8))
-            .map(|(seed, s)| {
+            .enumerate()
+            .map(|(i, (seed, s))| {
                 let sums: [u64; 8] = s.try_into().expect("8 sums");
                 let mix = mh::mix_bytes(&sums);
                 Attempt {
                     seed: *seed,
-                    slice_index: 0,
+                    slice_index: slice_index_of(i),
                     sums,
                     mix,
                     digest: mh::digest_of(seed, &mix),

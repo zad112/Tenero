@@ -11,7 +11,8 @@ cargo test --workspace                       # the Rust code against the golden 
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 $env:TENERO_SLOW_VECTORS = "1"; cargo test --test pow_vectors      # the deep and full (4.3 GiB) vectors
-cargo test --release -p tenero-gpu -- --ignored --test-threads=1  # the REAL GPU checks: only on the owner's machine, CUDA 13.4 bin\x64 on PATH
+cargo test --release -p tenero-gpu -- --ignored --test-threads=1  # the REAL GPU checks: only on the owner's machine (the driver is enough)
+python crates/tenero-gpu/kernels/build_kernels.py   # after ANY .cu change: rebuild the embedded fat binaries (needs the CUDA 13 Toolkit; --check needs nothing)
 cargo test --release -p tenero-chain --test real_pow_sync -- --ignored --nocapture   # real-PoW sync cost (owner's machine, ~4.3 GiB RAM)
 cargo test --release -p tenero-miner --test gpu_mining -- --ignored --nocapture --test-threads=1   # GPU end-to-end check and speed test
 cargo run --release -p tenero-app --bin tenerod -- --data $HOME\scratch --network test   # a node on the SHA-256 test chain (see docs/RUNNING.md)
@@ -64,7 +65,7 @@ The old Python miner, wallet and command line (`miner.py`, `cli.py`, `gpu_test.b
 3. **No home-made cryptography.** Use audited libraries. Ask before adding a dependency, and note its licence.
 4. **Bit for bit, or it is wrong.** Any implementation of ChaCha20, the dataset fill, the fold or the attempt
    must reproduce `tests/vectors/` exactly. CUDA changes must pass `reference/tests/test_fused_kernels.py` (which
-   includes mutation tests), keep `crates/tenero-gpu/kernels/matmulhash.cu` identical to the Python copy (`reference/tests/test_kernel_source_copy.py`), and, before they are called done, pass the Rust GPU checks on the owner's machine (`cargo test --release -p tenero-gpu -- --ignored --test-threads=1`).
+   includes mutation tests), rebuild the embedded fat binaries (`crates/tenero-gpu/kernels/build_kernels.py`; a test fails while they are stale), keep `crates/tenero-gpu/kernels/matmulhash.cu` identical to the Python copy (`reference/tests/test_kernel_source_copy.py`), and, before they are called done, pass the Rust GPU checks on the owner's machine (`cargo test --release -p tenero-gpu -- --ignored --test-threads=1`).
 5. **Say what is measured and what is estimated.** There is no GPU in CI or in a sandbox, so never claim GPU
    speed without a number from the owner's machine.
 6. **Every rule gets a test.** A rule with no vector or test is not finished.

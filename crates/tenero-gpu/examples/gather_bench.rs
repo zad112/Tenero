@@ -9,6 +9,7 @@
 use std::time::Instant;
 use tenero_core::matmulhash::{self as mh, Params};
 use tenero_gpu::gather::GatherEngine;
+use tenero_gpu::group::SliceGrouper;
 use tenero_gpu::Gpu;
 
 fn main() {
@@ -88,6 +89,33 @@ fn main() {
             println!(
                 "{batch:>7} {what:>16} {rate:>14.0} {:>12.0}",
                 rate * read / 1e9
+            );
+        }
+    }
+    // the FIRST design (a whole slice per attempt) on our own multiply, nonces grouped by slice: what the miner can do
+    // without cuBLASLt (gpu_bench's grouped table is the cuBLASLt figure to compare with)
+    println!("\nthe first design on our own multiply (no cuBLASLt), nonces grouped by slice:");
+    println!("{:>7} {:>7} {:>14}", "group", "batch", "attempts/s");
+    for group in [1usize, 8, 16, 32] {
+        for batch in [256usize, 512] {
+            let mut engine = GatherEngine::new(&g, &dev, batch).unwrap();
+            let mut grouper = SliceGrouper::new(header, p.num_blocks, group, 0);
+            let mut run = |grouper: &mut SliceGrouper| {
+                let b = grouper.next_batch(batch / group);
+                engine.slice_attempts(&b.seeds, &b.slices).unwrap();
+                b.len() as u64
+            };
+            for _ in 0..3 {
+                run(&mut grouper);
+            }
+            let start = Instant::now();
+            let mut total = 0u64;
+            while start.elapsed().as_secs_f64() < seconds {
+                total += run(&mut grouper);
+            }
+            println!(
+                "{group:>7} {batch:>7} {:>14.0}",
+                total as f64 / start.elapsed().as_secs_f64()
             );
         }
     }
