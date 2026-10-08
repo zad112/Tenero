@@ -8,7 +8,7 @@ Version 3 is FCMP++ and Carrot from genesis. Against version 2 it changes:
   * the PRUNABLE part is the REFERENCE HEIGHT (the block whose curve-tree root the membership proof uses) and the
     proof bytes; there are no rings;
   * a transaction's WEIGHT is its prefix bytes plus a quarter of its prunable bytes (rounded up); block limits and the
-    block-size median count weight, the minimum fee counts real bytes;
+    block-size median count weight, the minimum fee counts real bytes, at a third of version 2's rate per byte;
   * new domain tags ("... v3"), so no version 3 object can be taken for a version 2 one;
   * the SHAPE rules (sorted outputs, the ephemeral keys, ascending key images) and the curve tree's SCHEDULE (which
     outputs enter the tree when) are consensus.
@@ -49,6 +49,7 @@ MAX_PROOF = v2.MAX_PROOF
 MAX_BLOCK_TXS = v2.MAX_BLOCK_TXS
 OUTPUT_SIZE = 91
 PROOF_WEIGHT_DIVISOR = 4           # a prunable byte weighs a quarter
+FEE_REFERENCE_WEIGHT = 1000        # a third of version 2's 3000 (owner, 2026-10-08): a typical v3 transaction costs what a v2 one did
 MAX_REFERENCE_AGE = 1440           # a transaction's reference block is at most this many blocks below the tip
 COINBASE_MATURITY = 60
 SPEND_MATURITY = 10
@@ -246,9 +247,17 @@ def block_weight(txs):
     return sum(tx_weight(t) for t in txs)
 
 
-# the median, the limit and the oversize penalty are version 2's functions, applied to weights instead of sizes;
-# the minimum fee is version 2's function applied to the transaction's REAL size and the (weight) median
-dynamic_min_fee = v2.dynamic_min_fee
+# the median, the limit and the oversize penalty are version 2's functions, applied to weights instead of sizes
+
+
+def dynamic_min_fee(size, base_reward, median):
+    """Version 2's formula with version 3's FEE_REFERENCE_WEIGHT, applied to the transaction's REAL size and the
+    (weight) median: max(1, ceil(base_reward * FEE_REFERENCE_WEIGHT * size / median^2)); None if it does not fit a u64."""
+    assert median > 0
+    fee = max(1, -(-(base_reward * FEE_REFERENCE_WEIGHT * size) // (median * median)))
+    return fee if fee <= U64_MAX else None
+
+
 block_limit = v2.block_limit
 oversize_penalty = v2.oversize_penalty
 block_median = v2.block_median
@@ -480,8 +489,9 @@ def weight_vectors():
                  for c in tx_cases for r in (20 * v2.UNIT, v2.UNIT // 2) for m in (v2.MIN_BLOCK_MEDIAN, 1_000_000)]
     return wrap("v3_weight", "Version 3 weight: prefix bytes + ceil(prunable bytes / 4); a block's weight is the sum of "
                 "its transactions'. Block limits, the median and the oversize penalty are version 2's functions of "
-                "weight; the minimum fee is version 2's function of the REAL size and the (weight) median.",
-                {"proof_weight_divisor": PROOF_WEIGHT_DIVISOR, "transactions": tx_cases, "blocks": block_cases,
+                "weight; the minimum fee is version 2's formula with FEE_REFERENCE_WEIGHT 1000 (version 2: 3000), of the "
+                "REAL size and the (weight) median.",
+                {"proof_weight_divisor": PROOF_WEIGHT_DIVISOR, "fee_reference_weight": FEE_REFERENCE_WEIGHT, "transactions": tx_cases, "blocks": block_cases,
                  "fees": fee_cases})
 
 

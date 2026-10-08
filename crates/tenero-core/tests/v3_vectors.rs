@@ -279,6 +279,7 @@ fn the_genesis_of_gamma_dev_and_test() {
 fn weight_is_the_reference_s() {
     let f = load("v3_weight").unwrap();
     assert_eq!(f["proof_weight_divisor"], rules::PROOF_WEIGHT_DIVISOR);
+    assert_eq!(f["fee_reference_weight"], rules::FEE_REFERENCE_WEIGHT);
     for c in f["transactions"].as_array().unwrap() {
         let t = Transaction::from_bytes(&bytes_of(&c["hex"])).unwrap();
         assert_eq!(
@@ -289,7 +290,7 @@ fn weight_is_the_reference_s() {
         );
     }
     for c in f["fees"].as_array().unwrap() {
-        let fee = tenero_core::fees::dynamic_min_fee(
+        let fee = rules::min_fee(
             c["size"].as_u64().unwrap(),
             c["base_reward"].as_u64().unwrap(),
             c["median"].as_u64().unwrap(),
