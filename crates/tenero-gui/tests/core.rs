@@ -162,7 +162,7 @@ fn the_wallet_opens_with_no_node_and_never_shows_a_balance_it_cannot_know() {
     // open with no node: the account and its address are there, a balance is not (it would be a guess)
     let d = unlocked(&c);
     assert_eq!(d.accounts.len(), 1);
-    assert!(d.accounts[0].address.starts_with("tni1"));
+    assert!(d.accounts[0].address.starts_with("TENt"));
     assert_eq!(d.accounts[0].balance, None);
     assert_eq!(d.total, None);
     assert!(!d.synced, "with no node nothing is final");
@@ -462,6 +462,9 @@ fn mine_pay_at_every_fee_level_and_read_the_history() {
         .any(|h| h.kind == EntryKind::Mined && h.account == 0));
     assert_eq!(d.accounts[1].balance.unwrap().total, 0);
 
+    // the three fee levels, quoted before anything is sent. The miner is stopped meanwhile: a proof's size, and so the fee,
+    // grows when the curve tree gains a layer, and a block between the quote and the build could add one
+    c.handle(Cmd::StopMiner);
     // the three fee levels, quoted before anything is sent
     let amount = "0.5".to_string();
     let t0 = Instant::now();
@@ -524,7 +527,9 @@ fn mine_pay_at_every_fee_level_and_read_the_history() {
         }
     }
 
-    // the miner is still running, so a block takes the payment in; the history says so
+    // the miner again, so a block takes the payment in; the history says so
+    let ev = c.handle(Cmd::StartMiner);
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
     wait(&mut c, 180, "the payment to be confirmed", |s| {
         match &s.wallet {
             WalletView::Unlocked(d) => d.history.iter().any(|h| {
@@ -559,182 +564,42 @@ fn mine_pay_at_every_fee_level_and_read_the_history() {
         .iter()
         .any(|h| h.account == 1 && h.kind == EntryKind::Received && h.amount == 50_000_000));
 
-    // ---- proofs, signatures and the transaction key, through the same screen logic -------------------------------------
+    // ---- proofs, signatures and the transaction key: rebuilt on Carrot in milestone G5 -----------------------------------
     let sent_row = d
         .history
         .iter()
         .find(|h| matches!(h.kind, EntryKind::Sent { .. }))
         .unwrap()
         .clone();
-    assert!(sent_row.has_secret, "a payment sent now keeps its secret");
+    assert!(
+        sent_row.has_secret,
+        "a payment sent now keeps what its proof will need"
+    );
     assert_eq!(
         sent_row.note.as_deref(),
         Some("Rent"),
         "what it was for is in the history"
     );
     let id = sent_row.id.unwrap();
-    let proof_of = |c: &mut Core, req: ProofRequest| -> String {
-        let ev = c.handle(Cmd::MakeProof(req));
-        assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
-        ev.iter()
-            .find_map(|e| match e {
-                Event::Proof { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .expect("a proof")
+    // until then each of them says so, and does nothing else
+    let later = |ev: &[Event]| {
+        let e = errors(ev);
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert!(e[0].contains("rebuilt on Carrot"), "{e:?}");
     };
-    let check = |c: &mut Core, text: &str| -> Result<CheckedView, String> {
-        let ev = c.handle(Cmd::CheckProof {
-            text: text.to_string(),
-        });
-        ev.into_iter()
-            .find_map(|e| match e {
-                Event::ProofChecked(r) => Some(r),
-                _ => None,
-            })
-            .expect("an answer")
-    };
-    for key in [false, true] {
-        let text = proof_of(&mut c, ProofRequest::Sent { id, key });
-        let v = check(&mut c, &text).unwrap_or_else(|e| panic!("key={key}: {e}"));
-        assert_eq!(
-            (v.amount, v.address.as_str()),
-            (50_000_000, saving.as_str())
-        );
-        assert_eq!(v.kind, if key { "key" } else { "sent" });
-        assert!(v.confirmations >= 1 && !v.block_reward);
-        // a proof with one character changed is refused, with the reason
-        let mut bad = text.clone().into_bytes();
-        let at = bad.len() / 2;
-        bad[at] = if bad[at] == b'0' { b'1' } else { b'0' };
-        assert!(check(&mut c, &String::from_utf8(bad).unwrap()).is_err());
-    }
-    // the receiving account proves its receipt from the history, and the proof names the account's address
-    let got = d
-        .history
-        .iter()
-        .find(|h| h.account == 1 && h.kind == EntryKind::Received)
-        .unwrap();
-    let text = proof_of(
-        &mut c,
-        ProofRequest::Received {
-            account: 1,
-            global_index: got.global_index.unwrap(),
-        },
-    );
-    let v = check(&mut c, &text).unwrap();
-    assert_eq!(
-        (v.amount, v.address.as_str(), v.kind),
-        (50_000_000, saving.as_str(), "received")
-    );
-    // account 0 cannot make a proof of an output that is account 1's
-    let ev = c.handle(Cmd::MakeProof(ProofRequest::Received {
-        account: 0,
-        global_index: got.global_index.unwrap(),
-    }));
-    assert_eq!(errors(&ev).len(), 1);
-
-    // the secret is shown only when asked for, and is the 64 digits of the payment's secret
-    let ev = c.handle(Cmd::RevealTxKey { id });
-    let key_hex = ev
-        .iter()
-        .find_map(|e| match e {
-            Event::TxKey { key, .. } => Some(key.to_string()),
-            _ => None,
-        })
-        .expect("the key");
-    assert_eq!(key_hex.len(), 64);
-    assert!(
-        !format!("{:?}", c.snapshot().wallet).contains(&key_hex),
-        "the key is not part of what the window holds"
-    );
-
-    // the key and the address, checked the way Monero's check_tx_key does: the output the key made is searched for
-    let run_key = |c: &mut Core,
-                   key: &str,
-                   address: &str,
-                   from: Option<u64>|
-     -> Result<CheckedView, String> {
-        let ev = c.handle(Cmd::CheckKey {
-            key: key.to_string(),
-            address: address.to_string(),
-            from_height: from,
-        });
-        ev.into_iter()
-            .find_map(|e| match e {
-                Event::ProofChecked(r) => Some(r),
-                _ => None,
-            })
-            .expect("an answer")
-    };
-    let v = run_key(&mut c, &key_hex, &saving, None).unwrap();
-    assert_eq!(
-        (v.amount, v.address.as_str(), v.kind),
-        (50_000_000, saving.as_str(), "key")
-    );
-    assert!(run_key(&mut c, &key_hex, &saving, Some(v.height)).is_ok());
-    assert!(run_key(&mut c, &key_hex, &saving, Some(v.height + 1))
-        .unwrap_err()
-        .contains("no output made with that key"));
-    assert!(run_key(&mut c, &key_hex, &d.accounts[0].address, None)
-        .unwrap_err()
-        .contains("not addressed"));
-    assert!(run_key(&mut c, "xyz", &saving, None)
-        .unwrap_err()
-        .contains("64"));
-    assert!(
-        run_key(&mut c, &key_hex.to_uppercase(), &saving, None).is_err(),
-        "lower-case digits only"
-    );
-    assert!(run_key(&mut c, &key_hex, "tni1nonsense", None)
-        .unwrap_err()
-        .contains("address"));
-
-    // signing needs the wallet; verifying (and checking a proof) needs only the node
-    let ev = c.handle(Cmd::SignMessage {
+    later(&c.handle(Cmd::MakeProof(ProofRequest::Sent { id, key: false })));
+    later(&c.handle(Cmd::RevealTxKey { id }));
+    later(&c.handle(Cmd::SignMessage {
         account: 1,
         message: "this is mine".into(),
+    }));
+    let checked = c.handle(Cmd::CheckProof {
+        text: "anything".into(),
     });
-    let sig = ev
-        .iter()
-        .find_map(|e| match e {
-            Event::Signed { signature } => Some(signature.clone()),
-            _ => None,
-        })
-        .expect("a signature");
-    let sig = tenero_wallet::proofs::MessageSignature::from_text(&sig).unwrap();
-    let addr = tenero_wallet::Address::from_text(&saving).unwrap();
-    assert_eq!(
-        tenero_wallet::proofs::verify_message(&addr, b"this is mine", &sig),
-        Ok(())
-    );
-    assert!(tenero_wallet::proofs::verify_message(&addr, b"this is mine!", &sig).is_err());
-    assert_eq!(
-        errors(&c.handle(Cmd::SignMessage {
-            account: 1,
-            message: String::new()
-        }))
-        .len(),
-        1
-    );
-    c.handle(Cmd::Lock);
-    assert!(
-        errors(&c.handle(Cmd::SignMessage {
-            account: 1,
-            message: "x".into()
-        }))
-        .len()
-            == 1,
-        "no signing with the wallet locked"
-    );
-    assert!(
-        check(&mut c, &text).is_ok(),
-        "a proof is checked with the wallet locked"
-    );
-    assert!(errors(&c.handle(Cmd::MakeProof(ProofRequest::Sent { id, key: false }))).len() == 1);
-    c.handle(Cmd::Unlock {
-        password: pw("a long enough password"),
-    });
+    assert!(checked.iter().any(|e| matches!(
+        e,
+        Event::ProofChecked(Err(m)) if m.contains("rebuilt on Carrot")
+    )));
 
     // stopping the miner is immediate and leaves the node going; stopping the node stops everything
     c.handle(Cmd::StopMiner);
@@ -1037,7 +902,7 @@ fn an_old_settings_draft_does_not_stop_other_settings_from_applying_while_a_wall
     );
     // changing the network is the one thing that does need the wallet locked, and it says so
     let mut other = c.settings().clone();
-    other.network = tenero_app::config::Network::Alpha;
+    other.network = tenero_app::config::Network::Gamma;
     let ev = c.handle(Cmd::SetSettings(Box::new(other)));
     let e = errors(&ev);
     assert_eq!(e.len(), 1);
@@ -1347,7 +1212,9 @@ fn payment_requests_are_made_kept_in_the_wallet_file_and_removed() {
         format!("tenero:{}", d.accounts[1].address)
     );
     // the link reads back as what was asked
-    let back = tenero_wallet::PaymentRequest::from_uri(&d.requests[0].uri).unwrap();
+    let back =
+        tenero_wallet::PaymentRequest::from_uri(&d.requests[0].uri, tenero_wallet::Network::Test)
+            .unwrap();
     assert_eq!(
         (back.amount, back.label.as_deref(), back.message.as_deref()),
         (Some(150_000_000), Some("Rent"), Some("October rent"))
@@ -1417,17 +1284,23 @@ fn combining_coins_is_previewed_cancelled_sent_and_never_shown_as_money_received
     });
     let ev = c.handle(Cmd::StartMiner);
     assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
-    wait(&mut c, 180, "a dozen block rewards", |s| match &s.wallet {
-        WalletView::Unlocked(d) => {
-            d.synced
-                && d.history
-                    .iter()
-                    .filter(|h| h.kind == EntryKind::Mined)
-                    .count()
-                    >= 12
-        }
-        _ => false,
-    });
+    // a dozen SPENDABLE rewards: a reward may be spent 60 blocks after its block
+    wait(
+        &mut c,
+        240,
+        "a dozen spendable block rewards",
+        |s| match &s.wallet {
+            WalletView::Unlocked(d) => {
+                d.synced
+                    && d.history
+                        .iter()
+                        .filter(|h| h.kind == EntryKind::Mined)
+                        .count()
+                        >= 72
+            }
+            _ => false,
+        },
+    );
     c.handle(Cmd::StopMiner);
 
     // a number that cannot be combined is refused before anything is built

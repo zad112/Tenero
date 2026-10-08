@@ -13,6 +13,22 @@ publish = false
 [profile.test]
 opt-level = 3
 
+# Dependencies are optimised in debug builds too: the FCMP++ crates (monero-oxide) are unusable without it (a debug node took
+# 70 s for the block that first puts an output in the curve tree, and timed out a wallet's spend; measured 2026-10-08). Our own
+# crates stay quick to build.
+[profile.dev.package."*"]
+opt-level = 3
+
+# and the crates of ours where the FCMP++ and curve-tree generics are compiled (a generic is compiled where it is used)
+[profile.dev.package.tenero-crypto]
+opt-level = 3
+
+[profile.dev.package.tenero-tree]
+opt-level = 3
+
+[profile.dev.package.tenero-carrot]
+opt-level = 3
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

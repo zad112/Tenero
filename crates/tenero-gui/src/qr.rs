@@ -41,7 +41,8 @@ mod tests {
 
     #[test]
     fn an_address_fits_and_text_too_long_does_not() {
-        let addr = format!("tni1{}", "ab".repeat(68));
+        // an integrated address, the longest (110 characters)
+        let addr = format!("TENg{}", "a".repeat(106));
         let (w, _) = modules(&addr).unwrap();
         assert!(w <= 100, "{w}");
         assert!(modules(&"x".repeat(5000)).is_none());

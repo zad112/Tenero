@@ -7,11 +7,12 @@
 //!   debugger, and kept as a regression test (`tests/regressions.rs`).
 //!
 //! What each checks (the same rules as the proptest tests that already exist, now with a fuzzer that sees which branches an input reached):
-//! * [`decode_v2`]: no panic, hang or wild allocation decoding any of the nine version 2 objects, and what decodes re-encodes to the same bytes;
+//! * [`decode_v3`]: no panic, hang or wild allocation decoding any of the nine version 3 objects, and what decodes re-encodes to the same bytes;
 //! * [`wire_stream`]: the peer frame decoder, fed in chunks of any size, never panics, never yields a message after a failure and never holds
 //!   more than one frame's worth;
 //! * [`control_bodies`]: the control interface's requests and responses decode strictly;
-//! * [`wallet_proofs`]: a signature or a payment proof of any shape is refused or checked without a panic, and what parses writes back the same;
+//! * [`wallet_text`]: an address or a payment request of any shape is refused without a panic, and what parses writes back the same
+//!   (the target of the 0.2.0 signatures and payment proofs, which are rebuilt on Carrot in milestone G5 and get their target back then);
 //! * [`noise_handshake`]: the encrypted channel: made-up bytes never complete a handshake or authenticate as a chunk, and an honest chunk that is
 //!   flipped, cut short, replayed, reordered or preceded by a dropped one is always refused;
 //! * [`engine_messages`]: a real protocol engine, given a stream of connections, messages (valid or not, in any order), bad bytes and time,
@@ -24,7 +25,7 @@ use std::net::SocketAddr;
 use std::sync::OnceLock;
 
 use tenero_chain::{ProofsNotChecked, Sha256Pow};
-use tenero_core::v2::{
+use tenero_core::v3::{
     Block, BlockHeader, Coinbase, CoinbaseOutput, Input, Output, PrunedBlock, PrunedTransaction,
     Transaction, Wire,
 };
@@ -46,8 +47,8 @@ fn check_wire<T: Wire>(bytes: &[u8], what: &str) {
     }
 }
 
-/// Decodes `data` as each of the nine version 2 objects.
-pub fn decode_v2(data: &[u8]) {
+/// Decodes `data` as each of the nine version 3 objects.
+pub fn decode_v3(data: &[u8]) {
     check_wire::<Output>(data, "output");
     check_wire::<Input>(data, "input");
     check_wire::<Transaction>(data, "transaction");
@@ -120,75 +121,46 @@ pub fn control_bodies(data: &[u8]) {
     }
 }
 
-// ---- the wallet's signatures and payment proofs ----------------------------------------------------------------------------------
+// ---- the wallet's text: addresses and payment requests ---------------------------------------------------------------------------
 
-/// A fixed stream of "random" bytes, so that the output and the seeds below are the same on every run (a corpus made once keeps matching).
-struct Det(u64);
-
-impl rand_core::RngCore for Det {
-    fn next_u32(&mut self) -> u32 {
-        self.next_u64() as u32
-    }
-    fn next_u64(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        for b in dest {
-            *b = (self.next_u64() >> 24) as u8;
-        }
-    }
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-        self.fill_bytes(dest);
-        Ok(())
-    }
-}
-impl rand_core::CryptoRng for Det {}
-
-/// One output made for a known wallet, with honest proofs about it: what the checker is run against, and the seeds.
-pub struct ProofFixture {
-    pub out: tenero_wallet::proofs::OutputFields,
-    pub proofs: Vec<tenero_wallet::proofs::PaymentProof>,
-    pub signature: tenero_wallet::proofs::MessageSignature,
-    pub address: tenero_wallet::Address,
+/// The addresses of the reference vectors (`tests/vectors/v3_address.json`): every network and kind, the seeds of [`wallet_text`].
+pub fn address_texts() -> Vec<String> {
+    tenero_core::vectors::load("v3_address")
+        .ok()
+        .and_then(|v| {
+            v["valid"].as_array().map(|cases| {
+                cases
+                    .iter()
+                    .filter_map(|c| c["text"].as_str().map(str::to_string))
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
 }
 
-pub fn proof_fixture() -> &'static ProofFixture {
-    static F: OnceLock<ProofFixture> = OnceLock::new();
-    F.get_or_init(|| {
-        use tenero_wallet::proofs::{
-            key_proof, prove_received, prove_sent, sign_message, OutputFields,
-        };
-        let mut rng = Det(0x1234_5678_9abc_def1);
-        let keys = tenero_wallet::Keys::from_seed(&[5; 32]);
-        let address = keys.address();
-        let ctx = tenero_wallet::interim::tx_context(&[6; 32]);
-        let e = tenero_wallet::interim::create_enote(&mut rng, &address, 4242, &ctx, 1, false)
-            .expect("an output");
-        let out = OutputFields {
-            onetime_address: e.onetime_address,
-            ephemeral_pubkey: e.ephemeral_pubkey,
-            amount_commitment: e.amount_commitment,
-            amount_enc: e.amount_enc,
-            ctx,
-            index: 1,
-            public_amount: None,
-        };
-        let proofs = vec![
-            prove_received(&keys.view_keys(), &mut rng, 9, 3, &out).expect("a proof"),
-            prove_sent(&e.tx_secret, &address, &mut rng, 9, 3, &out).expect("a proof"),
-            key_proof(&e.tx_secret, &address, 9, 3, &out).expect("a proof"),
-        ];
-        let signature = sign_message(&keys, &mut rng, b"fuzz");
-        ProofFixture {
-            out,
-            proofs,
-            signature,
-            address,
+/// An address (of any network) or a payment request (on each network), as text: refused or read without a panic, and what is read writes
+/// back the same: an address has one text, and a request reads back as itself.
+pub fn wallet_text(data: &[u8]) {
+    use tenero_wallet::{Address, Network, PaymentRequest};
+    let text = String::from_utf8_lossy(data);
+    if let Ok(a) = Address::parse_any(&text) {
+        assert_eq!(
+            a.to_text(),
+            text.trim(),
+            "an address's text did not round-trip"
+        );
+        assert_eq!(Address::parse(&text, a.network), Ok(a));
+    }
+    for n in Network::ALL {
+        let _ = tenero_wallet::request::parse_pay_text(&text, n);
+        if let Ok(r) = PaymentRequest::from_uri(&text, n) {
+            assert_eq!(
+                PaymentRequest::from_uri(&r.to_uri(), n).as_ref(),
+                Ok(&r),
+                "a payment request did not read back as itself"
+            );
         }
-    })
+    }
 }
 
 // ---- the encrypted channel (the Noise handshake and the chunks after it) --------------------------------------------------------
@@ -380,42 +352,6 @@ pub fn noise_handshake(data: &[u8]) {
                     );
                 }
             }
-        }
-    }
-}
-
-/// A signature or a payment proof, as text or bytes, of any shape.
-pub fn wallet_proofs(data: &[u8]) {
-    use tenero_wallet::proofs::{check, verify_message, MessageSignature, PaymentProof};
-    let f = proof_fixture();
-    let text = String::from_utf8_lossy(data);
-    let _ = MessageSignature::from_text(&text);
-    if let Ok(p) = PaymentProof::from_text(&text) {
-        assert_eq!(
-            PaymentProof::from_text(&p.to_text()).as_ref(),
-            Ok(&p),
-            "a proof's text did not round-trip"
-        );
-    }
-    if let Ok(p) = PaymentProof::from_bytes(data) {
-        assert_eq!(
-            p.to_bytes().as_slice(),
-            data,
-            "a proof's bytes did not round-trip"
-        );
-        let _ = check(&p, &f.out);
-    }
-    // a signature made of the first 64 bytes, over the rest as the message, for the honest address and for an address from the input
-    if data.len() >= 64 {
-        let mut sig = [0u8; 64];
-        sig.copy_from_slice(&data[..64]);
-        let _ = verify_message(&f.address, &data[64..], &MessageSignature(sig));
-        if data.len() >= 128 {
-            let a = tenero_wallet::Address {
-                spend: data[64..96].try_into().expect("32 bytes"),
-                view: data[96..128].try_into().expect("32 bytes"),
-            };
-            let _ = verify_message(&a, &data[128..], &MessageSignature(sig));
         }
     }
 }
@@ -759,35 +695,24 @@ pub fn engine_messages(data: &[u8]) -> tenero_net::Stats {
 /// engine (so that the fuzzer starts deep inside the protocol, where random bytes would never get).
 pub fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
     let mut out = vec![];
-    if let Ok(v) = tenero_core::vectors::load("v2_serialization") {
+    if let Ok(v) = tenero_core::vectors::load("v3_serialization") {
         for (i, c) in v["valid"].as_array().into_iter().flatten().enumerate() {
             if let Some(h) = c["hex"]
                 .as_str()
                 .and_then(|h| tenero_core::vectors::hex(h).ok())
             {
-                out.push(("decode_v2", format!("vector-{i}"), h));
+                out.push(("decode_v3", format!("vector-{i}"), h));
             }
         }
     }
-    let pf = proof_fixture();
-    for (i, p) in pf.proofs.iter().enumerate() {
-        out.push(("wallet_proofs", format!("proof-bytes-{i}"), p.to_bytes()));
+    for (i, a) in address_texts().into_iter().enumerate() {
         out.push((
-            "wallet_proofs",
-            format!("proof-text-{i}"),
-            p.to_text().into_bytes(),
+            "wallet_text",
+            format!("request-{i}"),
+            format!("tenero:{a}?amount=1.5&label=Rent").into_bytes(),
         ));
+        out.push(("wallet_text", format!("address-{i}"), a.into_bytes()));
     }
-    out.push((
-        "wallet_proofs",
-        "signature-text".into(),
-        pf.signature.to_text().into_bytes(),
-    ));
-    out.push((
-        "wallet_proofs",
-        "signature-bytes".into(),
-        pf.signature.0.to_vec(),
-    ));
     let fx = fixture();
     let honest: Vec<(&str, Message)> = vec![
         ("ping", Message::Ping(7)),

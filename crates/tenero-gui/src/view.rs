@@ -15,7 +15,7 @@ use crate::wallets::WalletEntry;
 pub const BANNER: &str = "TEST NETWORK. NO VALUE. UNAUDITED.";
 /// Said wherever an address or a balance is shown.
 pub const SCHEME_NOTE: &str =
-    "Interim output scheme: not private in Monero's sense (not Carrot). One address per account.";
+    "Carrot addresses and FCMP++ proofs (Monero's designs, written for Tenero): UNAUDITED. Do not rely on their privacy.";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeView {

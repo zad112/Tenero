@@ -54,7 +54,7 @@ pub const USAGE: &str =
     "tenero-explorer [--app-dir FOLDER] | [--data FOLDER [--network NAME] [--control IP:PORT]]";
 
 /// `--app-dir FOLDER` (the wallet app's folder: the explorer shows the node it runs; the default), or `--data FOLDER` (a
-/// node's data folder) with `--network test|dev|beta|alpha` (its default control port) or `--control IP:PORT`. A mistake
+/// node's data folder) with `--network gamma|dev|test` (its default control port; gamma's unless given) or `--control IP:PORT`. A mistake
 /// is an error, never a guess.
 pub fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut out = Args::default();
@@ -81,10 +81,10 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
             }
             "--network" => {
                 let v = value("--network")?;
-                out.network =
-                    Some(Network::parse(&v).ok_or_else(|| {
-                        format!("--network: `{v}` is not test, dev, beta or alpha")
-                    })?);
+                out.network = Some(
+                    Network::parse(&v)
+                        .ok_or_else(|| format!("--network: `{v}` is not gamma, dev or test"))?,
+                );
             }
             other => return Err(format!("unknown argument `{other}` (usage: {USAGE})")),
         }
@@ -108,7 +108,7 @@ fn loopback(port: u16) -> SocketAddr {
 /// data folder and control port; with no settings file, the app's defaults for the test network).
 pub fn resolve(args: &Args, default_app_dir: &Path) -> Result<Source, String> {
     if let Some(data) = &args.data {
-        let network = args.network.unwrap_or(Network::Test);
+        let network = args.network.unwrap_or(Network::Gamma);
         return Ok(Source {
             data_dir: data.clone(),
             control: args
@@ -350,7 +350,7 @@ mod tests {
             timestamp,
             target: [0xff; 32],
             cumulative_work: U256::from_u64(work).to_be_bytes(),
-            size: 300,
+            weight: 0,
             tx_count: 0,
             coinbase_total: 0,
         }
@@ -449,25 +449,29 @@ mod tests {
     #[test]
     fn the_command_line_names_a_node_or_the_wallet_apps_folder() {
         assert_eq!(args(&[]).unwrap(), Args::default());
-        let a = args(&["--data", "D:/node", "--network", "beta"]).unwrap();
+        let a = args(&["--data", "D:/node", "--network", "test"]).unwrap();
         let s = resolve(&a, Path::new("unused")).unwrap();
         assert_eq!(s.data_dir, PathBuf::from("D:/node"));
-        assert_eq!(s.control, loopback(Network::Beta.default_control_port()));
+        assert_eq!(s.control, loopback(Network::Test.default_control_port()));
         let a = args(&["--data", "D:/node", "--control", "127.0.0.1:1234"]).unwrap();
         assert_eq!(resolve(&a, Path::new("x")).unwrap().control, loopback(1234));
-        // with no network, the test network's port
+        // with no network, gamma's port
         let a = args(&["--data", "D:/node"]).unwrap();
         assert_eq!(
             resolve(&a, Path::new("x")).unwrap().control,
-            loopback(18332)
+            loopback(38352)
         );
+        // the 0.2.0 networks are the 0.2.0 explorer's
+        assert!(args(&["--data", "D:/node", "--network", "beta"]).is_err());
         // mistakes are refused, not guessed at
         assert!(args(&["--control", "10.0.0.1:18332"])
             .unwrap_err()
             .contains("this computer"));
         assert!(args(&["--control", "nonsense"]).is_err());
         assert!(args(&["--network", "main"]).is_err());
-        assert!(args(&["--network", "beta"]).unwrap_err().contains("--data"));
+        assert!(args(&["--network", "gamma"])
+            .unwrap_err()
+            .contains("--data"));
         assert!(args(&["--data"]).unwrap_err().contains("needs a value"));
         assert!(args(&["--app-dir", "a", "--data", "b"]).is_err());
         assert!(args(&["--frobnicate"]).unwrap_err().contains("unknown"));
@@ -478,17 +482,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tenero-explorer-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // no settings file: the wallet app's defaults
+        // no settings file: the wallet app's defaults (gamma's)
         let s = resolve(&Args::default(), &dir).unwrap();
-        let d = tenero_gui::settings::Settings::defaults(&dir, Network::Test);
+        let d = tenero_gui::settings::Settings::defaults(&dir, Network::Gamma);
         assert_eq!((s.data_dir, s.control), (d.data_dir.clone(), d.control));
         // a settings file for another network: its folder and its port
-        let mut beta = tenero_gui::settings::Settings::defaults(&dir, Network::Beta);
-        beta.control = loopback(40000);
-        beta.save(&dir).unwrap();
+        let mut dev = tenero_gui::settings::Settings::defaults(&dir, Network::Dev);
+        dev.control = loopback(40000);
+        dev.save(&dir).unwrap();
         let s = resolve(&Args::default(), &dir).unwrap();
-        assert_eq!((s.data_dir, s.control), (beta.data_dir, loopback(40000)));
-        assert!(s.found_by.contains("beta"));
+        assert_eq!((s.data_dir, s.control), (dev.data_dir, loopback(40000)));
+        assert!(s.found_by.contains("dev"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

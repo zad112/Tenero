@@ -2,5 +2,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    tenero_fuzzcases::wallet_proofs(data);
+    tenero_fuzzcases::decode_v3(data);
 });

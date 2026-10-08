@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [decode_v2, wire_stream, control_bodies, wallet_proofs, engine_messages, noise_handshake]
+        target: [decode_v3, wire_stream, control_bodies, wallet_text, engine_messages, noise_handshake]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@0e28dd9a7764e5f83064112bb1f24025a14c313c # the "nightly" branch

@@ -1021,7 +1021,10 @@ impl App {
             self.send.note = None;
             self.send.request_message = None;
             if !self.send.pasted.trim().is_empty() {
-                match tenero_wallet::request::parse_pay_text(&self.send.pasted) {
+                match tenero_wallet::request::parse_pay_text(
+                    &self.send.pasted,
+                    self.snap.settings.network.wallet_network(),
+                ) {
                     Ok(r) => {
                         self.send.to = r.address.to_text();
                         if let Some(a) = r.amount {
@@ -1396,7 +1399,7 @@ impl App {
         ui.add_space(8.0);
         ui.label(
             RichText::new(
-                "This address works on the test networks only (the SHA-256 test, development, beta and alpha networks, none of which has value), and it is an interim format: it will change when the real privacy scheme replaces it. Every payment to it can be linked to it by anyone reading the chain.",
+                "This address works on one test network only (its first letters say which: TENg gamma, TENd development, TENt the SHA-256 test network; none has value). It is a Carrot address: a payment to it cannot be linked to it by someone reading the chain, but Carrot and FCMP++ here are unaudited.",
             )
             .small()
             .color(GREY),
@@ -1532,7 +1535,7 @@ impl App {
         }
         draw_qr(ui, &q.uri);
         ui.label(
-            RichText::new("The link shows the address and the amount to whoever gets it, and it is not private in Monero's sense.")
+            RichText::new("The link shows the address and the amount to whoever gets it, and to anyone they pass it on to.")
                 .small()
                 .color(GREY),
         );
@@ -2371,8 +2374,8 @@ impl App {
         ui.add_space(6.0);
         for line in [
             "Tenero is an experimental proof-of-work coin, a learning project: unaudited, one developer, not for real value.",
-            "Nothing on the test, development, beta or alpha network has any value. Do not treat these coins as money.",
-            "The output scheme is an INTERIM one, not private in Monero's sense. Anyone reading the chain can link payments to an address.",
+            "Nothing on the gamma, development or test network has any value. Do not treat these coins as money.",
+            "Payments use Carrot addresses and FCMP++ proofs, Monero's designs written for Tenero (the FCMP++ crates are monero-oxide's). None of it is audited as used here: do not rely on its privacy.",
             "Nothing cryptographic here has been audited as used.",
         ] {
             ui.label(line);
@@ -2437,7 +2440,7 @@ impl App {
                     ui.add_space(4.0);
                     ui.colored_label(
                         AMBER,
-                        "Whoever you give this to learns the amount and that this output went to that address. It does not show who sent it, and it is not a legal or financial proof (the scheme is interim and unaudited).",
+                        "Whoever you give this to learns the amount and that this output went to that address. It does not show who sent it, and it is not a legal or financial proof (it is unaudited).",
                     );
                     ui.horizontal(|ui| {
                         if ui.button("Copy proof").clicked() {
@@ -2484,7 +2487,7 @@ impl App {
         ui.heading("Sign, verify and prove");
         ui.colored_label(
             AMBER,
-            "UNAUDITED. These are small standard constructions put together for this project. They are not a legal or financial proof of anything, and they are tied to the interim output scheme, which will change.",
+            "UNAUDITED. Signatures and proofs are being rebuilt on Carrot for 0.3.0; they are not a legal or financial proof of anything.",
         );
         ui.add_space(8.0);
 
@@ -2736,18 +2739,9 @@ impl App {
     }
 }
 
-/// Verifies a pasted signature (needs no wallet and no node).
-fn verify_text(address: &str, message: &str, signature: &str) -> Result<String, String> {
-    let address =
-        tenero_wallet::Address::from_text(address.trim()).map_err(|e| format!("address: {e}"))?;
-    let sig =
-        tenero_wallet::proofs::MessageSignature::from_text(signature).map_err(|e| e.to_string())?;
-    tenero_wallet::proofs::verify_message(&address, message.as_bytes(), &sig)
-        .map_err(|e| e.to_string())?;
-    Ok(format!(
-        "VALID: the holder of {} signed exactly this message.",
-        text::short_address(&address.to_text())
-    ))
+/// Verifies a pasted signature (needs no wallet and no node): rebuilt on Carrot in milestone G5.
+fn verify_text(_address: &str, _message: &str, _signature: &str) -> Result<String, String> {
+    Err(crate::core::PROOFS_IN_G5.into())
 }
 
 /// A QR code of `text`, drawn as squares.

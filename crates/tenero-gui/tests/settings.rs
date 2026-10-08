@@ -11,11 +11,12 @@ fn app() -> &'static Path {
 }
 
 #[test]
-fn the_defaults_are_the_test_network_an_archive_node_and_a_miner_that_is_not_started() {
+fn the_defaults_are_a_pruned_node_and_a_miner_that_is_not_started() {
     let s = Settings::parse(app(), "").unwrap();
     assert_eq!(s, Settings::defaults(app(), Network::Test));
     assert_eq!(s.network, Network::Test);
-    assert_eq!(s.node_kind, NodeKind::Archive);
+    // pruned unless told otherwise (0.3.0)
+    assert_eq!(s.node_kind, NodeKind::Pruned { keep: 5_500 });
     assert_eq!(s.control.to_string(), "127.0.0.1:18332");
     assert_eq!(s.miner_backend, MinerBackend::Sha256);
     assert!(s.data_dir.ends_with("node") && s.wallet_file.ends_with("wallet-test.twl"));
@@ -24,6 +25,12 @@ fn the_defaults_are_the_test_network_an_archive_node_and_a_miner_that_is_not_sta
     assert_eq!(d.miner_backend, MinerBackend::Gpu);
     assert_ne!(d.wallet_file, s.wallet_file, "one wallet file per network");
     assert_ne!(d.data_dir, s.data_dir);
+    let g = Settings::defaults(app(), Network::Gamma);
+    assert_eq!(g.control.to_string(), "127.0.0.1:38352");
+    assert_eq!(g.miner_backend, MinerBackend::Gpu);
+    assert!(
+        g.wallet_file.ends_with("wallet-gamma.twl") && g.wallets_dir.ends_with("wallets-gamma")
+    );
 }
 
 #[test]
@@ -32,7 +39,7 @@ fn settings_survive_the_text_form() {
     s.node_kind = NodeKind::Pruned { keep: 5000 };
     s.seeds = vec!["seed1.example:1234".into(), "10.0.0.5:9".into()];
     s.listen = Some("0.0.0.0:18333".into());
-    s.inbound_port = Some(38333);
+    s.inbound_port = Some(38353);
     s.external_node = true;
     s.miner_backend = MinerBackend::Cpu;
     s.miner_cores = 3;
@@ -79,34 +86,52 @@ fn a_mistake_is_an_error_that_says_which_setting() {
 fn the_file_is_written_and_read_back_and_a_missing_one_gives_the_defaults() {
     let dir = std::env::temp_dir().join(format!("tenero-gui-settings-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
+    // no file: the gamma network's defaults
     assert_eq!(
         Settings::load(&dir).unwrap(),
-        Settings::defaults(&dir, Network::Test)
+        Settings::defaults(&dir, Network::Gamma)
+    );
+    // the 0.2.0 app's file beside it is not this app's: it is neither read nor written
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("settings.conf"), "network = beta\n").unwrap();
+    assert_eq!(
+        Settings::load(&dir).unwrap(),
+        Settings::defaults(&dir, Network::Gamma)
     );
     let mut s = Settings::defaults(&dir, Network::Test);
     s.miner_pace_secs = 11;
     s.save(&dir).unwrap();
     assert_eq!(Settings::load(&dir).unwrap(), s);
-    std::fs::write(dir.join("settings.conf"), "bogus = 1").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("settings.conf")).unwrap(),
+        "network = beta\n",
+        "the 0.2.0 app's settings are untouched"
+    );
+    std::fs::write(dir.join("settings-v3.conf"), "bogus = 1").unwrap();
     let e = Settings::load(&dir).unwrap_err();
-    assert!(e.contains("settings.conf") && e.contains("bogus"), "{e}");
+    assert!(e.contains("settings-v3.conf") && e.contains("bogus"), "{e}");
+    // a 0.2.0 network in it is refused with the networks this app has
+    std::fs::write(dir.join("settings-v3.conf"), "network = beta").unwrap();
+    assert!(Settings::load(&dir)
+        .unwrap_err()
+        .contains("gamma, dev or test"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn what_the_user_changed_is_laid_over_the_settings_as_they_are_now() {
-    let base = Settings::defaults(app(), Network::Alpha);
+    let base = Settings::defaults(app(), Network::Gamma);
     // the real settings moved on while the draft was open: another wallet file, another mining account
     let mut now = base.clone();
-    now.wallet_file = "appdir/wallets-alpha/Main wallet.twl".into();
+    now.wallet_file = "appdir/wallets-gamma/Main wallet.twl".into();
     now.miner_account = 2;
     // the user changed two things on the draft and left the rest alone
     let mut draft = base.clone();
-    draft.inbound_port = Some(38333);
-    draft.seeds = vec!["194.238.27.60:38333".into()];
+    draft.inbound_port = Some(38353);
+    draft.seeds = vec!["194.238.27.60:38353".into()];
     let merged = now.with_changes(&base, &draft);
-    assert_eq!(merged.inbound_port, Some(38333));
-    assert_eq!(merged.seeds, ["194.238.27.60:38333"]);
+    assert_eq!(merged.inbound_port, Some(38353));
+    assert_eq!(merged.seeds, ["194.238.27.60:38353"]);
     assert_eq!(
         merged.wallet_file, now.wallet_file,
         "untouched fields keep the current value"
@@ -135,7 +160,7 @@ fn the_tick_box_for_inbound_connections_listens_and_says_where_without_naming_an
             .join(" ")
     };
     // off (the default): the node only dials out
-    let mut s = Settings::defaults(app(), Network::Alpha);
+    let mut s = Settings::defaults(app(), Network::Gamma);
     assert_eq!(s.inbound_port, None);
     let off = args(&s);
     assert!(
@@ -143,15 +168,15 @@ fn the_tick_box_for_inbound_connections_listens_and_says_where_without_naming_an
         "{off}"
     );
     // on: it listens on the port and tells each peer "reach me on this port at the address you see me at", so a changing home IP needs nothing
-    s.inbound_port = Some(38333);
+    s.inbound_port = Some(38353);
     let on = args(&s);
     assert!(
-        on.contains("--listen 0.0.0.0:38333") && on.contains("--advertise 0.0.0.0:38333"),
+        on.contains("--listen 0.0.0.0:38353") && on.contains("--advertise 0.0.0.0:38353"),
         "{on}"
     );
     assert_eq!(on.matches("--listen").count(), 1);
     // the older free-form `listen` alone still works, but tells nobody where to find it
-    let mut old = Settings::defaults(app(), Network::Alpha);
+    let mut old = Settings::defaults(app(), Network::Gamma);
     old.listen = Some("0.0.0.0:5555".into());
     let text = args(&old);
     assert!(
@@ -162,11 +187,11 @@ fn the_tick_box_for_inbound_connections_listens_and_says_where_without_naming_an
     s.listen = Some("0.0.0.0:5555".into());
     let both = args(&s);
     assert_eq!(both.matches("--listen").count(), 1, "{both}");
-    assert!(both.contains("--listen 0.0.0.0:38333"));
+    assert!(both.contains("--listen 0.0.0.0:38353"));
     // the port each network suggests is the one its seed uses
     assert_eq!(
-        tenero_gui::settings::default_inbound_port(Network::Alpha),
-        38333
+        tenero_gui::settings::default_inbound_port(Network::Gamma),
+        38353
     );
     assert_eq!(
         tenero_gui::settings::default_inbound_port(Network::Test),
@@ -192,6 +217,13 @@ fn the_node_is_started_with_no_mining_and_the_miner_gets_only_what_its_backend_u
         !text.contains("--mine"),
         "the node never mines by itself here: {text}"
     );
+    assert!(text.contains("--prune_keep 5500"));
+    s.node_kind = NodeKind::Archive;
+    let text = node_args(&s)
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(text.contains("--prune_keep 0"));
     s.node_kind = NodeKind::Pruned { keep: 2000 };
     let text = node_args(&s)
@@ -202,7 +234,7 @@ fn the_node_is_started_with_no_mining_and_the_miner_gets_only_what_its_backend_u
     assert!(text.contains("--prune_keep 2000"));
 
     let m = |s: &Settings| {
-        miner_args(s, "tni1abc", Path::new("st.txt"))
+        miner_args(s, "TENgabc", Path::new("st.txt"))
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect::<Vec<_>>()
@@ -235,7 +267,7 @@ const KEY: &str = "0f0e0d0c0b0a09080706050403020100ffeeddccbbaa99887766554433221
 
 #[test]
 fn the_pool_settings_default_to_mining_alone_and_survive_the_text_form() {
-    let s = Settings::defaults(app(), Network::Beta);
+    let s = Settings::defaults(app(), Network::Gamma);
     assert_eq!(
         s.mining_mode,
         MiningMode::Solo,
@@ -272,7 +304,7 @@ fn a_mistake_in_a_pool_setting_is_an_error_that_names_it() {
 
 #[test]
 fn only_the_pool_fields_the_person_changed_are_taken_from_the_screen() {
-    let base = Settings::defaults(app(), Network::Beta);
+    let base = Settings::defaults(app(), Network::Gamma);
     let mut now = base.clone();
     now.miner_account = 2; // changed meanwhile, on another screen
     let mut draft = base.clone();
@@ -288,18 +320,18 @@ fn only_the_pool_fields_the_person_changed_are_taken_from_the_screen() {
 
 #[test]
 fn a_pool_miner_is_given_a_pool_a_network_and_no_node() {
-    let mut s = Settings::defaults(app(), Network::Beta);
+    let mut s = Settings::defaults(app(), Network::Gamma);
     s.mining_mode = MiningMode::Pool;
     s.miner_backend = MinerBackend::Gpu;
     // the program's own pool: no address, no key
-    let a: Vec<String> = miner_args(&s, "tni1abc", Path::new("st.txt"))
+    let a: Vec<String> = miner_args(&s, "TENgabc", Path::new("st.txt"))
         .iter()
         .map(|x| x.to_string_lossy().into_owned())
         .collect();
     let at = |k: &str| a.iter().position(|x| x == k).map(|i| a[i + 1].clone());
     assert_eq!(at("--pool").as_deref(), Some("default"));
-    assert_eq!(at("--network").as_deref(), Some("beta"));
-    assert_eq!(at("--address").as_deref(), Some("tni1abc"));
+    assert_eq!(at("--network").as_deref(), Some("gamma"));
+    assert_eq!(at("--address").as_deref(), Some("TENgabc"));
     assert!(at("--pool-key").is_none() && at("--worker").is_none());
     for node_only in ["--data", "--control", "--pace"] {
         assert!(
@@ -311,7 +343,7 @@ fn a_pool_miner_is_given_a_pool_a_network_and_no_node() {
     s.pool = "pool.example:38335".into();
     s.pool_key = KEY.into();
     s.pool_worker = "garage".into();
-    let a: Vec<String> = miner_args(&s, "tni1abc", Path::new("st.txt"))
+    let a: Vec<String> = miner_args(&s, "TENgabc", Path::new("st.txt"))
         .iter()
         .map(|x| x.to_string_lossy().into_owned())
         .collect();
@@ -321,7 +353,7 @@ fn a_pool_miner_is_given_a_pool_a_network_and_no_node() {
     assert_eq!(at("--worker").as_deref(), Some("garage"));
     // and mining alone still gets a node and no pool
     s.mining_mode = MiningMode::Solo;
-    let a: Vec<String> = miner_args(&s, "tni1abc", Path::new("st.txt"))
+    let a: Vec<String> = miner_args(&s, "TENgabc", Path::new("st.txt"))
         .iter()
         .map(|x| x.to_string_lossy().into_owned())
         .collect();
