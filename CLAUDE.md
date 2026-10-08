@@ -41,6 +41,7 @@ The old Python miner, wallet and command line (`miner.py`, `cli.py`, `gpu_test.b
   `docs/REWRITE_PLAN.md` the proposed plan and the open decisions; `docs/M8_PLAN.md` the proposed plan for
   the node, network, miner and wallet; `docs/THREAT_MODEL.md` what can go wrong and what defends it (M9, first version, by the author, not an audit); `docs/EMERGENCY_PLAN.md` what happens when a rule is wrong (a draft; the owner's decisions are marked); `docs/SEED_POLICY.md` how a new node picks its first peers and how many seed operators are needed (measured in a simulation, with its limits); `docs/M10_M11_PLAN.md` the proposed plan for the usable program (CLI, miner
   reporting, wallet GUI) and the first test release on a fresh chain
+- `docs/FCMP_CARROT_PLAN.md` the plan for 0.3.0-gamma.1: FCMP++ and Carrot from genesis on a new network, `gamma` (owner's decisions 2026-10-08)
 - `docs/WIRE_PROTOCOL.md` the DRAFT byte encoding of the peer-to-peer messages;
   `docs/CONSENSUS_V2.md` the DRAFT design of the rewrite's data model (outputs, serialization, genesis,
   privacy staging); `docs/BENCHMARKS.md` measured CPU and GPU numbers; `crates/` the Rust code
@@ -63,6 +64,9 @@ The old Python miner, wallet and command line (`miner.py`, `cli.py`, `gpu_test.b
 2. **Never commit secrets or data.** `wallets/`, `chain.json` and `mempool.json` are git-ignored and hold
    private keys and coins. Check `git status` before every commit, and never print or log a private key.
 3. **No home-made cryptography.** Use audited libraries. Ask before adding a dependency, and note its licence.
+   **Owner-approved exception (2026-10-08):** the FCMP++ crates of monero-oxide (only partly audited), pinned to an exact
+   commit, and a Rust transcription of the Carrot specification that must reproduce Monero's C++ `carrot_core` vectors bit for bit;
+   both are labelled unaudited wherever the program shows privacy (`docs/FCMP_CARROT_PLAN.md`). Never design new cryptography.
 4. **Bit for bit, or it is wrong.** Any implementation of ChaCha20, the dataset fill, the fold or the attempt
    must reproduce `tests/vectors/` exactly. CUDA changes must pass `reference/tests/test_fused_kernels.py` (which
    includes mutation tests), rebuild the embedded fat binaries (`crates/tenero-gpu/kernels/build_kernels.py`; a test fails while they are stale), keep `crates/tenero-gpu/kernels/matmulhash.cu` identical to the Python copy (`reference/tests/test_kernel_source_copy.py`), and, before they are called done, pass the Rust GPU checks on the owner's machine (`cargo test --release -p tenero-gpu -- --ignored --test-threads=1`).
