@@ -63,7 +63,7 @@ jobs:
           CARGO_PROFILE_RELEASE_STRIP: debuginfo
         run: |
           export RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/build"
-          cargo build --release --locked -p tenero-app -p tenero-gui
+          cargo build --release --locked -p tenero-app -p tenero-gui -p tenero-explorer
       - name: keep the licence tool between runs
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -93,7 +93,7 @@ jobs:
           NAME="tenero-$VERSION-${{ matrix.name }}-x64"
           echo "NAME=$NAME" >> "$GITHUB_ENV"
           mkdir "$NAME"
-          for b in tenerod tenero-miner tenero-wallet tenero-seedcheck tenero-pool tenero-poolcheck tenero-wallet-gui; do
+          for b in tenerod tenero-miner tenero-wallet tenero-seedcheck tenero-pool tenero-poolcheck tenero-wallet-gui tenero-explorer; do
             cp "target/release/$b${{ matrix.exe }}" "$NAME/"
           done
           cp LICENSE THIRD-PARTY-LICENCES.txt README.md "$NAME/"
@@ -101,7 +101,8 @@ jobs:
           cp docs/RUNNING_A_POOL.md "$NAME/RUNNING_A_POOL.md"
           if [ -f "docs/releases/v$VERSION.md" ]; then cp "docs/releases/v$VERSION.md" "$NAME/RELEASE-NOTES.md"; fi
           ls -l "$NAME"
-      # the packaged programs must run and say which build they are (the exact version and the commit this run is building)
+      # the packaged programs must run and say which build they are (the exact version and the commit this run is building); the two
+      # window programs (tenero-wallet-gui, tenero-explorer) have no console and no --version, so they are not run here
       - name: run what was packaged
         shell: bash
         run: |
@@ -117,7 +118,7 @@ jobs:
         if: matrix.name == 'linux'
         shell: bash
         run: |
-          for b in tenerod tenero-miner tenero-wallet tenero-seedcheck tenero-pool tenero-poolcheck tenero-wallet-gui; do
+          for b in tenerod tenero-miner tenero-wallet tenero-seedcheck tenero-pool tenero-poolcheck tenero-wallet-gui tenero-explorer; do
             echo "$b: needs glibc $(objdump -T "$NAME/$b" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
           done
       - name: the file properties of the Windows app (icon and version information are embedded)
