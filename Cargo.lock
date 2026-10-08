@@ -2802,7 +2802,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-app"
-version = "0.2.0-beta.3"
+version = "0.2.0-beta.4"
 dependencies = [
  "anstyle-query",
  "ctrlc",
@@ -2822,7 +2822,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-chain"
-version = "0.2.0-beta.3"
+version = "0.2.0-beta.4"
 dependencies = [
  "tenero-core",
  "tenero-store",
@@ -2830,7 +2830,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-core"
-version = "0.2.0-beta.3"
+version = "0.2.0-beta.4"
 dependencies = [
  "proptest",
  "serde_json",
@@ -2839,7 +2839,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-crypto"
-version = "0.2.0-beta.3"
+version = "0.2.0-beta.4"
 dependencies = [
  "curve25519-dalek",
  "monero-bulletproofs",
@@ -2856,7 +2856,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-explorer"
-version = "0.2.0-beta.3"
+version = "0.2.0-beta.4"
 dependencies = [
  "eframe",
  "tenero-app",
@@ -2867,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-fuzzcases"
-version = "0.2.0-beta.3"
+version = "0.2.0-beta.4"
 dependencies = [
  "rand_core 0.6.4",
  "tenero-app",
@@ -2880,7 +2880,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-gpu"
-version = "0.2.0-beta.3"
+version = "0.2.0-beta.4"
 dependencies = [
  "cudarc",
  "serde_json",
@@ -2889,7 +2889,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-gui"
-version = "0.2.0-beta.3"
+version = "0.2.0-beta.4"
 dependencies = [
  "eframe",
  "embed-resource",
@@ -2904,7 +2904,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-miner"
-version = "0.2.0-beta.3"
+version = "0.2.0-beta.4"
 dependencies = [
  "nvml-wrapper",
  "tenero-chain",
@@ -2918,7 +2918,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-net"
-version = "0.2.0-beta.3"
+version = "0.2.0-beta.4"
 dependencies = [
  "proptest",
  "serde_json",
@@ -2931,7 +2931,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-node"
-version = "0.2.0-beta.3"
+version = "0.2.0-beta.4"
 dependencies = [
  "tenero-chain",
  "tenero-core",
@@ -2941,7 +2941,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-store"
-version = "0.2.0-beta.3"
+version = "0.2.0-beta.4"
 dependencies = [
  "redb",
  "tenero-core",
@@ -2949,7 +2949,7 @@ dependencies = [
 
 [[package]]
 name = "tenero-wallet"
-version = "0.2.0-beta.3"
+version = "0.2.0-beta.4"
 dependencies = [
  "argon2",
  "bip39",
