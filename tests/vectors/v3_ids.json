@@ -1,0 +1,170 @@
+{
+ "coinbase": {
+  "coinbase": {
+   "extra": "0b9f72ea227480a3",
+   "height": 9,
+   "outputs": [
+    {
+     "amount": 2000000001,
+     "anchor_enc": "18ff1f415e5bed46f0ca4b5955f827bd",
+     "ephemeral_pubkey": "d32ade345c40e2f922c510d6d03b2130707ee7d9bf5ffb870e5801644cccad8d",
+     "onetime_address": "06d61ecc290a9332fe4ccb6457f3e09fa635e313485401c454e519c208f7e7e3",
+     "view_tag": "aae0e6"
+    },
+    {
+     "amount": 2000000000,
+     "anchor_enc": "51dad8dc887aacec93b18e08d63b7c48",
+     "ephemeral_pubkey": "b62e8d8a685192bc66a93e2a2972aa03b7e4c2b0dd3f18fc3b3c06cdd1c4d783",
+     "onetime_address": "593cbb4894d9ec8c1dc215711f9b73d5058063c3ee0e2ba5e31b01fb066478f3",
+     "view_tag": "393577"
+    }
+   ],
+   "version": 3
+  },
+  "coinbase_id": "10194850e8237ae5701b5c10ce31c92dd361a4ae5a778a63b3a99a201d44e67a"
+ },
+ "description": "Version 3 ids: the prunable hash, the transaction id (the same from the pruned form), the message the FCMP++ spend proofs sign, the coinbase id, the header hash and the block id.",
+ "header": {
+  "block_id_matmul": "cf0167f76d996dd98012536a2c42962cbe9c79185629fb09e612f1e096fe2cab",
+  "block_id_sha256": "6d3a28b0314be5e31c25761aee0947b7704ab3f21b5e3e1549599e6af6109995",
+  "header": {
+   "mix": "a68d482815a8971b7f5554c039d717b2b7c007d6d5aedc96b5a2431bd40d325882dd590119558f1f59a757b3fe8909ac77e581c93d07954af28d9fc7a779823b",
+   "nonce": 42,
+   "prev_id": "86dc36a52d17d375b25dcd9e69823ec79bbe696cfc6781757c8563a64c789064",
+   "timestamp": 1700000060,
+   "tx_root": "2dc00bd09c7e73b8b93f97049f05a1c057165469924197b352f250547d8dadf2",
+   "version": 3
+  },
+  "header_hash": "dadbafe1393e9da0ee8d3d50a1d27942f6ed57e37e3c21d1feed556ac269baed"
+ },
+ "name": "v3_ids",
+ "schema": 1,
+ "tags": {
+  "coinbase": "tenero coinbase v3",
+  "header": "tenero block header v3",
+  "message": "tenero fcmp++ message v3",
+  "prunable": "tenero tx prunable v3",
+  "tx": "tenero tx v3"
+ },
+ "transactions": [
+  {
+   "note": "2 outputs",
+   "proof_message": {
+    "chain_id": "bd366b37dc59f25d5d2e15aecd1d5c14810b5c20643f2c0f90384db9ee4c28c4",
+    "message": "98b797980359d8c49ef77bf97a8f07129e8b119086772bdc9b79e20a79f2ef3e",
+    "pseudo_outs": [
+     "f889a78f27b9bff5b52af9e8677e865d2126bbddf428c19821faa35de891113e",
+     "16e983c31e1b86f2349595eb41c60e63931e997ea73dd61bccb82840083add58"
+    ],
+    "range_proof": "78aac399be3e93c4af219dd8df20b7d912fee186489476f89faa5ba616c5b5a899cfdad479bf2f5e7ee4f3d752284a66f9bac9a8e1069b9d55c1bd3225eebb9be2e546961bdf849837d9a79883d412e31fac2b126f58a4c72c2e9bbc32d4e0dc4b8dc2c4135884c2e16cee3cba8c8bc1d39b9db89b539579ca5f5ff9695a8789306d47f559a57338603bbfdb5a1a6c949f953ce7c02c9cf78ce33f5f9d872b298169cb2905e9b3ab5324dc29c793961f5e71523817083f030b513babdaf2ffc6f2663eac9f27983e0891531052f0b300b93302d6c3fa9eb12dc04a8893df8c4886cfedb8ae909c740cd9baf78e64c8d38c35db7fecd2e3eec47529f162757faf292d0e2baacc64c41bf407cb7429b7dc6b752c4ef740117e75bf636f0fbdc0910baa1cf48a01186335e063a704cd2407bc8663e558c670862de5ad18a4f4c584a9cabf6312d32adc67058eeb9ecc088f42c06ae3dee4eb4d44c87cd474ec58071af79fef5cae9197d3448b6c9dfdf28f795d146afdf62f547ffc3f4b690e8f8506288a95e0d3ee9daaa0a05af61880bbe73cac6abeba7f5a245bd881eeba105c6eb963b9c20c66e5e2fbffb96c1ff67d54c8de882a58f301908a5f869a5b39acfbb2066299e1a508c732c1729cde4192ecc6d457047ce5ab6df41413299a303f3a93d1eb8c31c90af67ae3a523fb883f05d8f138b021ba3916e6a918e785a0d85357b87cb8643a26de26ba138852297e9710b63e9a0bcc1b94a5e7a02a482494b2caebf9356aa2006264bf52c0593f97410b935d65c682de1c25230c9b0e505dcaed8e0910f4c0458fb21a0741271ffa585e2bea91329c83e4aa88f247a79f7c319ccba60f98fc0dfc9d169130423e4e85348b1e28ab5ce382a8092e49c03730a455452986a0d4e58b0a"
+   },
+   "prunable_hash": "7e36ed99a0a3e713c3c3c87fde4f97a9378874005b21bb051d0feb82990ed338",
+   "pruned_tx_id": "4f9f9a806a925800db2fc10f2602f2e64c442bcd0e7e3e6287a8322f27a38ee7",
+   "transaction": {
+    "encrypted_payment_id": "17f64c3cb26472e6",
+    "ephemeral_pubkeys": [
+     "22c7909fc4b22fc2cb639c0c44f73a8f69a85cdb5cc602a1fb1aa281bcf18221"
+    ],
+    "fee": 123456,
+    "inputs": [
+     {
+      "key_image": "188ac643031d74a3a07507f8b477db5db8cf8849a6078126f96b202f5ebeb24a"
+     },
+     {
+      "key_image": "b61b26e9eb960553b8bf7f52c41d71a47e6f0646d8c0d401665c774066f11a7e"
+     }
+    ],
+    "outputs": [
+     {
+      "amount_commitment": "23a6c309b798ae78717bbe16676168cb37fe76513da40068f9bac8148fa5c39e",
+      "amount_enc": "8e0df4b7e67c9eb7",
+      "anchor_enc": "17274defa8fe222e15a151988ffdf2bc",
+      "onetime_address": "5b6a553e080704bf21be404abc1d01094e983a5d9bee7c0866d4d2a2b7ed1480",
+      "view_tag": "b2d3ba"
+     },
+     {
+      "amount_commitment": "7c221cde4cfc6566ad419f97d490a19b384000a7f08f8ef04332d4c00e814c0c",
+      "amount_enc": "95bd7e524766e6be",
+      "anchor_enc": "683b79695010117ceba00188c97e06cb",
+      "onetime_address": "6ac0224e631c5554311c8bc57aca3d4dc40426944b7817351cefa340ff524199",
+      "view_tag": "f4c20c"
+     }
+    ],
+    "proof_data": "55cd0bbcd00d6b20d794e9f853e0a31176dd01e4c7242102fe87df9d8fa380d70bacd2183988e018dcf081ada2c80f96da5619bddd6d934a68503e9d860e5fd4a08fa1ec77a04f009652959feab5d333ebb601fdd86614de8ad1c6eb9ac15087d1dcd022920f390cf6d6da01de597aacf6605545ea511172b0f5f1e361e7ca5fa291c5d3fe52d8d7474c41b1352e03b6c7b855af5ad86454354c7a83450ed6e83ad347eb5cde9f5e0cdcaca8fff0c7bd7b77f69b18ba5281e1ae37e8d68db9ce4ff31d1f1e709534",
+    "reference_height": 777,
+    "version": 3
+   },
+   "tx_id": "4f9f9a806a925800db2fc10f2602f2e64c442bcd0e7e3e6287a8322f27a38ee7"
+  },
+  {
+   "note": "4 outputs",
+   "proof_message": {
+    "chain_id": "bd366b37dc59f25d5d2e15aecd1d5c14810b5c20643f2c0f90384db9ee4c28c4",
+    "message": "05f82b000667d7da5c33c769551f5aa23fb2d736efbfcc150ca18974d762a336",
+    "pseudo_outs": [
+     "ff9820849b019ee4d4725673efe221920870de1d8a60a15dec45c3d8c8eadbba",
+     "9957366803415d9fc88c10a2fd5a458be26b2c3bdc77c3aca95a366b5a2abb13",
+     "70a3ae41024d7546c99eba7444d67ef79413d97046fca396ebde96b6154bffdb"
+    ],
+    "range_proof": "515dab93caa80a95d4c391d1722255936a5a7967cf3ecf2e8fcfd1572de9aad20eeb954a80fd82603982f1669787638474fc51992fec333f44ab5ce6d81b752baafcbdce523cca4e26b4869cb11b03a4cb7256af0386196390dd7d7bd01ce56217b02922e5c93989a957cadccf50f37b7340dde263da977343a6341f41ea7ae5bab49968b5f3f9ed2531e8f53e552e80482a4142c239affb5b96eb000baca3a8eea1a327bbb0ded5e64266b8ada9cb61c867742b0acc125e8fe767d7dbc7c45a0ff7dca4e332bbfaee2a4ce098d871667769c38050b32a698afb7897f9387ce2bc559b2236cc66fd2682d4803185e158966d290623ab0caaf83a650daaaafce0f37a3120800c24f744de1cbba0a4375162656ea9da784199ec1c22f10546303e6f6c2305c2a93c4f21dac45d42fe5f127fa71db7c291af409e3e5c2bea039a331c0330177bfdefc1cf80a2193366e305de789bc4d1a59d76fa7064122f4d7d2a16bcb6ed45e44a4c07d40700e13d35132cb2b594c35eb25a9123bcd5df14886351b7f1f4bad83e484fe9b070bfdbfcbce5636116c1156c4504a58f1a331d6973ece60d87bdeaa5158be29581ced7b930339cf2e55209cfa5fa1b29dd0027c914bdefcb3ed04aefda6146e5665f7b86093291262ff4e9646ec354c7ff6c2359bb8dc058f75f7691a23bbdcd49610219a172ee4f081300d7788265494e94d718f20a507511e527beecc679276098b2090b82808a4c51432583aa40d333a937cb28b06ff52502d13937459b93ef22011c4d69a7de0e7b381003f754aeedf5fa6fc450d42960a39dd014f678707ac0c2eaed7da7adf0f4ccf06ff015dff19bc9dc6956c25c8e6ab031add97313ecb4e533951d9c303cf0d564c3c4b4889aac60ef5c19f37ee8dfdbf124dd94"
+   },
+   "prunable_hash": "bf0acb4f15705a3b850c05d2449fa455cbf81fe71ebee343a6ef8b0716e0ee16",
+   "pruned_tx_id": "24dcf895bf3a45bc5d0f15d5bc2129d40820cab66a9bf8ac4a6f07a395081748",
+   "transaction": {
+    "encrypted_payment_id": "a3b466caead19d44",
+    "ephemeral_pubkeys": [
+     "41a57f29555858240e769b33b47b32b812039d6744e5cbc86edaa1a0724f9a89",
+     "ad42b3c4a2de896e1332a849d11ebf4b8717c718e86ba5b5bbe0101b3b91e287",
+     "7a69a86811361bea485db2da445f12031c81eef2b461a9ca15fd8d486ebbdf91",
+     "8e18a1cf2ac61f8423b42ca65f43231bca9d5c62b543a19b8646a8de97c0bb29"
+    ],
+    "fee": 123456,
+    "inputs": [
+     {
+      "key_image": "4f775c1540f2cde1e32756197dab87753c4afba7e7de44b6f8a408e2303245a8"
+     },
+     {
+      "key_image": "89a7c39d12a466ec640e4ea455b8146ae58404e3e146f7071474b4b77109b9f0"
+     },
+     {
+      "key_image": "a1866077e8253a00d1582c4ca945bb0c8301f51dd65d7aae968ddee7de1f2e6d"
+     }
+    ],
+    "outputs": [
+     {
+      "amount_commitment": "059536dffb85c8acda0d2a78f377ebc512d7085aa1e1023bf4d527fe82547629",
+      "amount_enc": "0879843a8366e539",
+      "anchor_enc": "7e702b982e5bbb825195e5091336b877",
+      "onetime_address": "16c41e9e7b9ea35bdcfca25cd85335cd4872e0b96e0317693296cfd8f2e22bcb",
+      "view_tag": "c66dbb"
+     },
+     {
+      "amount_commitment": "0c048289da23675897723e0b71a0e15b0f643e69735df64a08116c6937beb41d",
+      "amount_enc": "d5501906a1fa1870",
+      "anchor_enc": "d409abcb74dad64728e72d96c9aeee00",
+      "onetime_address": "89fe26272b5615615814fc9d4dbfde629909b5b94c4fedcc248629022fecef9d",
+      "view_tag": "1368bd"
+     },
+     {
+      "amount_commitment": "5b90e7d26c33b89fc8489f0e718131f7f7e847b86a7fafbd97813aed43b70dc4",
+      "amount_enc": "e4f65324b6fd986e",
+      "anchor_enc": "b708d9b1eed42d6a9479c7b5838635c8",
+      "onetime_address": "a805ae991ac3a3219edfcf04cbc472559a0b4e8d3caa4c18556568631beb0ca8",
+      "view_tag": "c34034"
+     },
+     {
+      "amount_commitment": "efb3b861eddaf0812eaf09afe96e190ba90cca18f54123b278b9810c3a8acc29",
+      "amount_enc": "6173a27b0700535f",
+      "anchor_enc": "bc0b4d89f31268e0a80311707da1da97",
+      "onetime_address": "d23012843adc46c2c16c8eb647f2ce6e3d5f9bce77b0a0c5cdc2eaa8aa37f74c",
+      "view_tag": "4556d2"
+     }
+    ],
+    "proof_data": "bbc675215185a5c52e62250313ddfe687ce30ea2e8f446e7590c17776d9e085df16aeabeeae6a26fb19e5d8cb83a007487209e3403f5d4f29240ea70b52695f6290bfc1a65abe4394a2d933c8b666ec4ce7032413871ba6acc732717b92ae4680082295e96472c6e40e102989d1ace2c988f890c7d664670d33061a7d627f14ebacd5f926f1182eb4572590f2724dc877a5327305d908eccecd3c4b4e27d92ddab2e64db8be3ce354d2cec2b610eed92bb2cc065b31c31a8d69e3da0263dff4c52c48fb5714ab6d4",
+    "reference_height": 777,
+    "version": 3
+   },
+   "tx_id": "24dcf895bf3a45bc5d0f15d5bc2129d40820cab66a9bf8ac4a6f07a395081748"
+  }
+ ]
+}

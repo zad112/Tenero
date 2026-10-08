@@ -692,3 +692,93 @@ chain was 23% smaller (14.3).
   pruning never changes a consensus number.
 - Software constants that are **policy, not consensus**: `PRUNE_KEEP_BLOCKS` (proposed default 5,500, about
   3.8 days) and the assume-valid checkpoint.
+
+## 15. Version 3: the `gamma` network (FCMP++ and Carrot from genesis)
+
+**DECIDED by the owner, 2026-10-08** (`docs/FCMP_CARROT_PLAN.md`, decisions F1-F12), except where marked PROPOSED. Version 3
+is the rules of the `gamma`, `dev` and `test` networks of the 0.3.0 programs, **from height 0**: there is no fork and no
+version 2 block on those chains. Version 2 (sections 1-14) stays the record of `alpha` and `beta`. The reference is
+`reference/tools/make_vectors_v3.py`; its vectors are `tests/vectors/v3_*.json` (rule 1). Everything cryptographic in this
+section uses code that is **only partly audited (FCMP++) or not audited at all (our Carrot and the tree's bookkeeping)**.
+
+### 15.1 What carries over unchanged
+
+The header encoding, the block encoding, the coinbase encoding and its outputs (each with its own ephemeral key), the
+Merkle root, emission, difficulty and fork choice (8.3), the proof of work (the GATHERED attempt from height 0:
+`docs/CONSENSUS.md` 8.3), the dynamic minimum fee's formula (8.1), the block-size floor and ceiling (8.2, 8.4) and the
+oversize penalty, global output indexes (14.6), the 8-decimal units. Maturity: 60 blocks for a coinbase output, 10 for
+others.
+
+### 15.2 The encodings
+
+```
+Output (91 bytes)     onetime_address [32]  amount_commitment [32]  amount_enc [8]  view_tag [3]  anchor_enc [16]
+TxPrefix              version u16 (= 3) | inputs: count u32 (1..), key_image [32] each
+                      | outputs: count u32 (2..16), Output each
+                      | ephemeral_pubkeys: [32] each, ONE when there are two outputs, else one per output (the count is
+                        not written: it follows from the outputs)
+                      | fee u64 | encrypted_payment_id [8]
+Prunable              reference_height u64 | proof_data: length u32 (..MAX_PROOF), bytes
+Transaction           TxPrefix | Prunable, at most MAX_TX_SIZE (75,000) bytes
+PrunedTransaction     TxPrefix | prunable_hash [32]
+```
+
+The Carrot ephemeral key moved from the output to the transaction (a 2-output transaction's outputs share one key by
+Carrot's design, so it is written once: 32 bytes saved, no privacy effect). `extra` is gone: in its place, the 8-byte
+encrypted payment ID every Carrot transaction carries (a dummy when no integrated address is paid), so **every
+transaction looks alike**. A coinbase keeps its free `extra` (at most 128 bytes).
+
+### 15.3 Ids and tags
+
+As in 6.4 and 5.2, with new tags so that no version 3 object can be taken for a version 2 one: `"tenero block header v3"`,
+`"tenero tx v3"`, `"tenero tx prunable v3"`, `"tenero coinbase v3"`. Genesis: the header of 5.4 with `version = 3` and
+`tx_root = SHA-256("tenero genesis v3" || label)`; the chain id is `SHA-256("tenero genesis id v3" || genesis header)`.
+Labels: `"tenero gamma network 1"`, `"tenero development network v3"`, `"tenero test network v3"`.
+
+### 15.4 Weight, limits and fees
+
+A transaction's **weight** is its prefix bytes plus a quarter of its prunable bytes, rounded up. A block's weight is the
+sum of its transactions' weights (the coinbase, as in version 2, is not counted). The block-size median, the block limit
+(twice the median, at most 4 MiB) and the oversize penalty are version 2's rules **applied to weight**. The **minimum fee**
+is version 2's formula applied to the transaction's **real size** and the (weight) median. So a typical transaction weighs
+less than in version 2 (about 2,000 against 2,400) and transactions per block do not fall, while fees pay for the real
+bytes. A node stores each block's weight with it, so pruning never changes a consensus number.
+
+### 15.5 Shape (consensus)
+
+* Key images strictly ascending (as in version 2), each a canonical, prime-order point that is not the identity.
+* Outputs strictly ascending by one-time address; every one-time address and commitment a canonical, prime-order point
+  that is not the identity.
+* Ephemeral keys non-zero; when there are several, all different.
+* A coinbase's outputs: strictly ascending by one-time address, every one-time address a canonical, prime-order point
+  that is not the identity (new: version 2 did not check coinbase points), ephemeral keys non-zero and all different.
+
+### 15.6 The curve tree and the reference block
+
+The tree of `docs/FCMP_CARROT_PLAN.md` 4.3 (`tenero-crypto::curve_tree`; leaves `{O, Hp²(O), C}`, a coinbase output's `C`
+being `1*G + amount*H`; widths 38 and 18). **Applying the block at height h adds to the tree the coinbase outputs of block
+h + 1 - 60 and the other outputs of block h + 1 - 10, in global output index order**, so the tree after block r holds
+exactly the outputs spendable in block r + 1. Undoing a block removes what it added.
+
+A transaction in the block at height B names a **reference height** r with `B - 1440 <= r <= B - 1` (`MAX_REFERENCE_AGE`,
+PROPOSED) whose tree is not empty; its membership proof is against the tree's root after block r, with that tree's number
+of layers. A transaction that waited too long is rebuilt by its wallet.
+
+### 15.7 The proofs
+
+```
+proof_data = pseudo_outs (n_inputs * 32) | Bulletproofs+ (Monero's encoding, over the outputs' commitments in order)
+             | the FCMP++ proof (monero-fcmp-plus-plus's encoding for n_inputs inputs and the reference tree's layers)
+```
+
+exactly, nothing after it. The FCMP++ spend-authorisation proofs sign
+`SHA-256("tenero fcmp++ message v3" || chain_id || prefix || reference_height u64 || pseudo_outs || range proof bytes)`
+(FCMP++ requires the prefix, the RingCT base and the pseudo-outputs to be bound; the rest is ours, as in 7). The balance
+is version 2's: `sum(pseudo_outs) = sum(output commitments) + fee * H`. A key image already spent, on the chain or earlier
+in the block, is refused (as in version 2). The block's FCMP++ proofs are verified as one batch.
+
+### 15.8 What is not consensus
+
+The Carrot derivations themselves (a node cannot check how an output was made for its receiver: that is wallet code,
+`crates/tenero-carrot`), pruning (nodes are pruned by default from 0.3.0: proofs of recent blocks only; seeds and the
+explorer keep everything), and how a wallet chooses its reference height.
