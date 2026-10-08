@@ -35,7 +35,7 @@ use rand_core::OsRng;
 use tenero_chain::PowCheck;
 use tenero_core::u256::U256;
 use tenero_core::v3::ids;
-use tenero_core::v3::{Block, BlockHeader};
+use tenero_core::v3::BlockHeader;
 use tenero_net::noise::NodeKey;
 use tenero_wallet::{Address, ChainView, FeeLevel, Submitter, Wallet};
 
@@ -70,7 +70,8 @@ pub trait PoolNode: Send + Sync {
     fn tip(&self) -> Result<(u64, [u8; 32], bool), String>;
     /// A block to search for, its reward paying the main address `to`.
     fn template(&self, to: &Address, max_weight: u64) -> Result<Template, String>;
-    fn submit_block(&self, block: Block) -> Result<BlockVerdict, String>;
+    /// A block found on one of the node's templates, handed back as its header (the node keeps the body).
+    fn submit_header(&self, header: BlockHeader) -> Result<BlockVerdict, String>;
     /// The id of the block the node's chain has at `height`.
     fn block_id_at(&self, height: u64) -> Result<Option<[u8; 32]>, String>;
     /// The full proof-of-work check of a header at a height: is the mix right? The node does it with the dataset it already holds, so the pool needs none.
@@ -85,8 +86,8 @@ impl PoolNode for RemoteNode {
     fn template(&self, to: &Address, max_weight: u64) -> Result<Template, String> {
         self.block_template(to, max_weight)
     }
-    fn submit_block(&self, block: Block) -> Result<BlockVerdict, String> {
-        RemoteNode::submit_block(self, block)
+    fn submit_header(&self, header: BlockHeader) -> Result<BlockVerdict, String> {
+        RemoteNode::submit_header(self, header)
     }
     fn block_id_at(&self, height: u64) -> Result<Option<[u8; 32]>, String> {
         Ok(ChainView::block(self, height)?.map(|b| b.id))
@@ -136,8 +137,8 @@ impl PoolNode for ReconnectingNode {
     fn template(&self, to: &Address, max_weight: u64) -> Result<Template, String> {
         self.with(|n| PoolNode::template(n, to, max_weight))
     }
-    fn submit_block(&self, block: Block) -> Result<BlockVerdict, String> {
-        self.with(|n| PoolNode::submit_block(n, block))
+    fn submit_header(&self, header: BlockHeader) -> Result<BlockVerdict, String> {
+        self.with(|n| PoolNode::submit_header(n, header.clone()))
     }
     fn block_id_at(&self, height: u64) -> Result<Option<[u8; 32]>, String> {
         self.with(|n| PoolNode::block_id_at(n, height))
@@ -175,7 +176,7 @@ impl PowCheck for NodePow {
 
 #[derive(Clone)]
 pub struct PoolConfig {
-    /// The network's name (`beta`): a miner that says another is refused.
+    /// The network's name (`gamma`): a miner that says another is refused.
     pub network: String,
     /// What the pool calls itself in `hello_ok`.
     pub name: String,
@@ -275,7 +276,8 @@ pub struct JobRecord {
     pub id: u64,
     pub height: u64,
     pub tip: [u8; 32],
-    pub block: Block,
+    /// What the block pays (its coinbase's outputs added up): the reward and the fees.
+    pub reward: u64,
     pub header: BlockHeader,
     pub block_target: U256,
     created: Instant,
@@ -806,16 +808,14 @@ impl Pool {
     /// The share is a block: hands it to the node, and if it is in the chain, fixes who is owed what for it.
     fn found_block(&self, job: &JobRecord, header: BlockHeader, need: u128) -> BlockOutcome {
         self.stats.blocks_found.fetch_add(1, Ordering::Relaxed);
-        let mut block = job.block.clone();
-        block.header = header;
-        let block_id = ids::block_id(&block.header, self.pow.kind());
-        let reward = tenero_miner::block_reward(&block);
+        let block_id = ids::block_id(&header, self.pow.kind());
+        let reward = job.reward;
         self.log(&format!(
             "a share is a BLOCK: height {}, id {}, reward {reward}",
             job.height,
             crate::daemon::short_id(&block_id)
         ));
-        match self.node.submit_block(block) {
+        match self.node.submit_header(header) {
             Ok(BlockVerdict::InChain(id)) => {
                 self.stats.blocks_in_chain.fetch_add(1, Ordering::Relaxed);
                 let credits = self.with_accounts(|a| {
@@ -908,14 +908,14 @@ impl Pool {
         let t = self
             .node
             .template(&self.cfg.pool_address, self.cfg.max_weight)?;
-        if t.height != next || t.block.header.prev_id != tip {
+        if t.height != next || t.header.prev_id != tip {
             // the tip moved between our two questions: the next look makes the job
             return Ok(());
         }
         // the node is ours, but a template that does not pay the pool must never be handed out
         check_template(&t, next, &tip, &self.cfg.pool_address, self.now())
             .map_err(|e| format!("the node's template was refused: {e}"))?;
-        let mut header = t.block.header.clone();
+        let mut header = t.header.clone();
         header.nonce = 0;
         header.mix = [0u8; 64];
         let record = {
@@ -937,7 +937,11 @@ impl Pool {
                 id,
                 height: next,
                 tip,
-                block: t.block,
+                reward: t
+                    .coinbase
+                    .outputs
+                    .iter()
+                    .fold(0u64, |a, o| a.saturating_add(o.amount)),
                 header,
                 block_target: U256::from_be_bytes(&t.target),
                 created: Instant::now(),

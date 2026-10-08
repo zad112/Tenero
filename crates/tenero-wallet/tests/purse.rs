@@ -284,7 +284,7 @@ fn an_old_one_account_wallet_file_opens_as_a_purse_and_a_changed_purse_file_is_r
     let p = Purse::load(&path, b"pw").unwrap();
     assert_eq!(p.accounts().len(), 1);
     assert_eq!(p.accounts()[0].address(), old.address());
-    assert_eq!(p.master_seed(), old.seed());
+    assert_eq!(Some(p.master_seed()), old.seed());
     assert_eq!(p.birth_height(), 7);
     // saving it writes the new format, which opens again
     p.save(&path, b"pw", KdfParams::TEST_ONLY_WEAK, &mut OsRng)

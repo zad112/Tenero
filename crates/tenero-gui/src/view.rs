@@ -72,6 +72,8 @@ pub struct HistoryRow {
     pub has_secret: bool,
     /// Sent: what it was for (the label of the request it answered).
     pub note: Option<String>,
+    /// Received at an integrated address: its payment ID.
+    pub payment_id: Option<[u8; 8]>,
 }
 
 /// A payment request this wallet made, with its link (which holds the account's address).
@@ -271,6 +273,16 @@ pub enum Cmd {
         message: String,
     },
     MakeProof(ProofRequest),
+    /// Makes an integrated address of an account's main address, with a new random payment ID.
+    MakeIntegrated {
+        account: usize,
+    },
+    /// Shows an account's view key after asking for the password: view-all, or view-received with `received`.
+    RevealViewKey {
+        password: Zeroizing<String>,
+        account: usize,
+        received: bool,
+    },
     /// Shows the secret of a sent payment (the person clicked to reveal it).
     RevealTxKey {
         id: [u8; 32],
@@ -323,6 +335,17 @@ pub enum Event {
     Proof {
         text: String,
         note: String,
+    },
+    /// An integrated address, and the payment ID inside it.
+    Integrated {
+        account: usize,
+        address: String,
+        payment_id: [u8; 8],
+    },
+    /// An account's view key (a secret), and whether it is the view-received tier.
+    ViewKey {
+        key: Zeroizing<String>,
+        received: bool,
     },
     /// The secret of a sent payment, for a window that says what it is.
     TxKey {

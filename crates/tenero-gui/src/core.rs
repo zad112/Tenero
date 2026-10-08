@@ -167,10 +167,8 @@ fn file_err(e: FileError) -> String {
     }
 }
 
-/// What the signature and proof screens say until milestone G5: the 0.2.0 signatures and proofs were built on the interim
-/// scheme, which 0.3.0 does not have; they are rebuilt on Carrot before 0.3.0-gamma.1 ships (`docs/FCMP_CARROT_PLAN.md`).
-/// A payment sent meanwhile keeps what its proof will need.
-pub const PROOFS_IN_G5: &str = "message signatures and payment proofs are being rebuilt on Carrot for 0.3.0 and are not in this build yet; a payment you send now keeps what its proof will need";
+/// Said with every signature and proof: what they are and are not (owner's decision F16, 2026-10-08).
+pub const PROOFS_NOTE: &str = "Signatures and payment proofs on Carrot are this project's own construction (Monero has not designed them yet): unaudited and unreviewed. They are not a legal or financial proof of anything.";
 
 fn purse_err(e: PurseError) -> String {
     e.to_string()
@@ -415,6 +413,12 @@ impl Core {
             }
             Cmd::MakeProof(req) => self.make_proof(req, &mut events),
             Cmd::RevealTxKey { id } => self.reveal_tx_key(&id, &mut events),
+            Cmd::MakeIntegrated { account } => self.make_integrated(account, &mut events),
+            Cmd::RevealViewKey {
+                password,
+                account,
+                received,
+            } => self.reveal_view_key(&password, account, received, &mut events),
             Cmd::CheckKey {
                 key,
                 address,
@@ -638,6 +642,53 @@ impl Core {
             return Err("wrong password".into());
         }
         events.push(Event::Phrase { words, new: false });
+        Ok(())
+    }
+
+    fn make_integrated(&mut self, account: usize, events: &mut Vec<Event>) -> Result<(), String> {
+        let purse = self.purse.as_ref().ok_or("the wallet is locked")?;
+        let wallet = purse.account(account).map_err(purse_err)?.wallet();
+        // a random ID: two integrated addresses made here never share one (all zero means "none", so it is never used)
+        let mut payment_id = [0u8; 8];
+        while payment_id == [0; 8] {
+            rand_core::RngCore::fill_bytes(&mut OsRng, &mut payment_id);
+        }
+        let address = wallet
+            .integrated_address(payment_id)
+            .ok_or("this account has no integrated address")?
+            .to_text();
+        events.push(Event::Integrated {
+            account,
+            address,
+            payment_id,
+        });
+        Ok(())
+    }
+
+    fn reveal_view_key(
+        &mut self,
+        password: &str,
+        account: usize,
+        received: bool,
+        events: &mut Vec<Event>,
+    ) -> Result<(), String> {
+        let purse = self.purse.as_ref().ok_or("the wallet is locked")?;
+        // asked again, as for the words: a view key shows every payment of the account
+        if self.pass.as_ref().map(|p| p.as_slice()) != Some(password.as_bytes()) {
+            return Err("wrong password".into());
+        }
+        let tier = if received {
+            tenero_wallet::ViewTier::ViewReceived
+        } else {
+            tenero_wallet::ViewTier::ViewAll
+        };
+        let key = purse
+            .account(account)
+            .map_err(purse_err)?
+            .wallet()
+            .view_key(tier)
+            .ok_or("this wallet has no view key of that kind")?;
+        events.push(Event::ViewKey { key, received });
         Ok(())
     }
 
@@ -891,37 +942,112 @@ impl Core {
 
     fn sign_message(
         &mut self,
-        _account: usize,
+        account: usize,
         message: &str,
-        _events: &mut Vec<Event>,
+        events: &mut Vec<Event>,
     ) -> Result<(), String> {
         if message.is_empty() {
             return Err("type the message to sign".into());
         }
-        Err(PROOFS_IN_G5.into())
+        let purse = self.purse.as_ref().ok_or("the wallet is locked")?;
+        let (_, sig) = purse
+            .sign_message(account, message.as_bytes(), &mut OsRng)
+            .map_err(purse_err)?;
+        events.push(Event::Signed {
+            signature: sig.to_text(),
+        });
+        Ok(())
     }
 
-    fn make_proof(&mut self, _req: ProofRequest, _events: &mut Vec<Event>) -> Result<(), String> {
-        Err(PROOFS_IN_G5.into())
+    fn make_proof(&mut self, req: ProofRequest, events: &mut Vec<Event>) -> Result<(), String> {
+        let node = self
+            .node
+            .as_ref()
+            .ok_or("the node is not running: a proof is made against the chain (start the node on the Node tab)")?;
+        let purse = self.purse.as_ref().ok_or("the wallet is locked")?;
+        let (proof, what) = match req {
+            ProofRequest::Received {
+                account,
+                global_index,
+            } => (
+                purse
+                    .prove_received(account, global_index, node, b"", &mut OsRng)
+                    .map_err(purse_err)?,
+                "Proves that this output paid this account's address, signed by that address. It contains the payment's anchor: whoever holds the proof can see this output's amount.",
+            ),
+            ProofRequest::Sent { id, .. } => (
+                purse.prove_sent(&id, node).map_err(purse_err)?,
+                "Proves that this output paid the recipient's address. It contains the payment's anchor (its key): whoever holds the proof can see this output's amount. It does not say who sent it.",
+            ),
+        };
+        events.push(Event::Proof {
+            text: proof.to_text(),
+            note: what.to_string(),
+        });
+        Ok(())
     }
 
-    fn reveal_tx_key(&mut self, _id: &[u8; 32], _events: &mut Vec<Event>) -> Result<(), String> {
-        Err(PROOFS_IN_G5.into())
+    fn reveal_tx_key(&mut self, id: &[u8; 32], events: &mut Vec<Event>) -> Result<(), String> {
+        let purse = self.purse.as_ref().ok_or("the wallet is locked")?;
+        let anchor = purse.payment_anchor(id).map_err(purse_err)?;
+        events.push(Event::TxKey {
+            id: *id,
+            key: Zeroizing::new(tenero_core::hash::hex_lower(&anchor)),
+        });
+        Ok(())
     }
 
-    /// Checks a transaction key and an address against the node's chain. Needs a node, not a wallet.
-    fn check_key(
-        &self,
-        _key: &str,
-        _address: &str,
-        _from_height: u64,
-    ) -> Result<CheckedView, String> {
-        Err(PROOFS_IN_G5.into())
+    fn checked_view(c: tenero_wallet::proofs::Checked) -> CheckedView {
+        CheckedView {
+            kind: if c.signed { "received" } else { "payment" },
+            address: c.address.to_text(),
+            amount: c.amount,
+            height: c.height,
+            global_index: c.global_index,
+            confirmations: c.confirmations,
+            block_reward: c.coinbase,
+        }
+    }
+
+    /// Checks a payment key (an anchor) and an address against the node's chain: the output it made is looked for from
+    /// `from_height` on. Needs a node, not a wallet.
+    fn check_key(&self, key: &str, address: &str, from_height: u64) -> Result<CheckedView, String> {
+        let k = key.trim();
+        if k.len() != 32 || !k.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err("a payment key is 32 lower-case hexadecimal digits".into());
+        }
+        let mut anchor = [0u8; 16];
+        for (i, b) in anchor.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&k[2 * i..2 * i + 2], 16).map_err(|e| e.to_string())?;
+        }
+        let address = Address::parse(address.trim(), self.settings.network.wallet_network())
+            .map_err(|e| format!("address: {e}"))?;
+        let node = self
+            .node
+            .as_ref()
+            .ok_or("the node is not running: a key is checked against the chain (start the node on the Node tab)")?;
+        tenero_wallet::proofs::check_anchor(node, &anchor, &address, from_height)
+            .map(Core::checked_view)
+            .map_err(|e| e.to_string())
     }
 
     /// Checks a proof against the node's chain. Needs a node, not a wallet.
-    fn check_proof(&self, _text: &str) -> Result<CheckedView, String> {
-        Err(PROOFS_IN_G5.into())
+    fn check_proof(&self, text: &str) -> Result<CheckedView, String> {
+        let proof =
+            tenero_wallet::proofs::PaymentProof::from_text(text).map_err(|e| e.to_string())?;
+        if proof.address.network != self.settings.network.wallet_network() {
+            return Err(format!(
+                "that proof is about an address of the {} network",
+                proof.address.network.name()
+            ));
+        }
+        let node = self
+            .node
+            .as_ref()
+            .ok_or("the node is not running: a proof is checked against the chain (start the node on the Node tab)")?;
+        tenero_wallet::proofs::check_payment(node, &proof, b"")
+            .map(Core::checked_view)
+            .map_err(|e| e.to_string())
     }
 
     // ---- the node ---------------------------------------------------------------------------------------
@@ -1489,6 +1615,7 @@ impl Core {
                 global_index: e.global_index,
                 has_secret: e.has_secret,
                 note: e.note,
+                payment_id: e.payment_id,
             })
             .collect();
         let scanned = purse

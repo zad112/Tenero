@@ -151,7 +151,7 @@ fn read_varint(data: &[u8]) -> Result<(u64, usize), AddressError> {
 }
 
 /// Monero's block base58: 8-byte blocks as 11 characters, a last block of n bytes as `ENCODED_SIZES[n]` characters.
-fn b58encode(data: &[u8]) -> String {
+pub(crate) fn b58encode(data: &[u8]) -> String {
     let mut out = String::with_capacity(data.len() * 11 / 8 + 11);
     for block in data.chunks(8) {
         let mut v: u128 = 0;
@@ -169,7 +169,7 @@ fn b58encode(data: &[u8]) -> String {
     out
 }
 
-fn b58decode(text: &str) -> Result<Vec<u8>, AddressError> {
+pub(crate) fn b58decode(text: &str) -> Result<Vec<u8>, AddressError> {
     let bytes = text.as_bytes();
     if !ENCODED_SIZES.contains(&(bytes.len() % 11)) {
         return Err(AddressError::BadLength);

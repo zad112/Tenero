@@ -476,6 +476,13 @@ fn every_event_in_plain_words() {
         text(&Event::Synced { height: 5000 }),
         "synced: the chain is up to date at height 5,000"
     );
+    // a sync that ended because every peer was gone is not "synced" (reported against v0.2.0-beta.4: a node whose
+    // peers were all banned said "in sync" at height 480 of 1,544)
+    assert_eq!(
+        text(&Event::SyncStopped { height: 480 }),
+        "the sync stopped at height 480: no peers are left, so the chain may NOT be up to date
+  what to do: wait for the node to find peers again; if it does not, check the log for `disconnecting peer` and the network"
+    );
     assert_eq!(
         text(&Event::AlarmBegan("no new block for 10 minutes".into())),
         "WARNING: no new block for 10 minutes"
@@ -568,6 +575,7 @@ fn events_have_a_severity_and_every_event_line_is_ascii() {
             Error,
         ),
         (Event::Synced { height: 1 }, Info),
+        (Event::SyncStopped { height: 1 }, Warn),
         (Event::AlarmBegan("a".into()), Warn),
         (Event::AlarmEnded("a".into()), Info),
         (Event::MiningPaused, Warn),
@@ -1675,4 +1683,25 @@ fn before_any_look_the_status_has_no_luck() {
     let shared = MiningShared::default();
     assert!(shared.status().luck.is_empty());
     assert!(shared.status_at(5000).luck.is_empty(), "no counters yet");
+}
+
+#[test]
+fn a_node_with_no_peers_is_never_said_to_be_in_sync() {
+    let mut s = status();
+    s.peers_in = 0;
+    s.peers_out = 0;
+    let block = render_status_block(&s, &OFF);
+    assert_eq!(
+        block[2],
+        "  sync     no peers: cannot tell if it is up to date"
+    );
+    assert!(render_status_block(&s, &ON)[2].contains("[33mno peers"));
+    let line = render_status_line(&s);
+    assert!(
+        line.contains("| no peers: cannot tell if it is up to date |") && !line.contains("in sync"),
+        "{line}"
+    );
+    // one peer is enough to say it
+    s.peers_out = 1;
+    assert_eq!(render_status_block(&s, &OFF)[2], "  sync     in sync");
 }

@@ -34,6 +34,8 @@ fn address(n: u8) -> Address {
 struct FakeNode {
     height: AtomicU64,
     submitted: Mutex<Vec<Block>>,
+    /// The coinbase of every template made (a header names its template by the root).
+    coinbases: Mutex<Vec<Coinbase>>,
 }
 
 impl FakeNode {
@@ -80,19 +82,30 @@ impl PoolNode for FakeNode {
             nonce: 0,
             mix: [0; 64],
         };
+        self.coinbases.lock().unwrap().push(coinbase.clone());
         Ok(Template {
-            block: Block {
-                header,
-                coinbase,
-                transactions: vec![],
-            },
+            header,
+            coinbase,
+            tx_ids: vec![],
             height,
             target: U256::pow2(250).unwrap().to_be_bytes(),
             anchor: ANCHOR,
         })
     }
-    fn submit_block(&self, block: Block) -> Result<BlockVerdict, String> {
-        self.submitted.lock().unwrap().push(block);
+    fn submit_header(&self, header: BlockHeader) -> Result<BlockVerdict, String> {
+        let coinbase = self
+            .coinbases
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|c| ids::block_tx_root(c, &[]).unwrap() == header.tx_root)
+            .cloned()
+            .expect("a header of one of this node's templates");
+        self.submitted.lock().unwrap().push(Block {
+            header,
+            coinbase,
+            transactions: vec![],
+        });
         Ok(BlockVerdict::InChain([9; 32]))
     }
     fn block_id_at(&self, _h: u64) -> Result<Option<[u8; 32]>, String> {
@@ -119,6 +132,7 @@ fn start(tweak: impl FnOnce(&mut PoolConfig)) -> Rig {
     let node = Arc::new(FakeNode {
         height: AtomicU64::new(10),
         submitted: Mutex::new(vec![]),
+        coinbases: Mutex::new(vec![]),
     });
     let mut cfg = PoolConfig::new("test", address(200), 5);
     cfg.handshake_timeout = Duration::from_millis(600);
@@ -727,11 +741,17 @@ fn the_tool_fails_cleanly_when_there_is_no_pool_or_the_key_is_wrong() {
 // ---- the pool built into the program ---------------------------------------------------------------------------------------
 
 #[test]
-fn no_network_has_a_built_in_pool_until_gamma_s_pool_has_a_key() {
+fn the_built_in_pool_is_the_authors_gamma_pool_with_its_key_and_no_other_network_has_one() {
     use tenero_app::config::Network;
     use tenero_app::pool_miner::{default_pool, DEFAULT_POOLS};
-    // beta's pool belongs to the 0.2.0 programs; gamma's is added with the key its pool prints at its first start
-    for n in Network::ALL {
+    let (addr, key) = default_pool(Network::Gamma).expect("gamma has one");
+    assert_eq!(addr, "195.26.244.245:38335");
+    let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        hex, "4eb53ae8fee5bf1596b3c652896ebf5190c0415d92542c9c536842bd5cfa770a",
+        "the key made for the gamma pool (2026-10-08)"
+    );
+    for n in [Network::Test, Network::Dev] {
         assert!(
             default_pool(n).is_none(),
             "{} has no built-in pool",

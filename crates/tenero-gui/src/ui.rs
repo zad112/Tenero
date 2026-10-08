@@ -146,6 +146,9 @@ struct ProveForm {
 struct Prompt {
     /// `Some` while the "type your password" window for showing the words is open.
     reveal: Option<Zeroizing<String>>,
+    /// `Some` while the window asking for the password before a view key is open: the password, the account, and
+    /// whether the view-received tier is wanted.
+    view_key: Option<(Zeroizing<String>, usize, bool)>,
     change: Option<(Zeroizing<String>, Zeroizing<String>, bool)>,
 }
 
@@ -160,6 +163,8 @@ pub struct App {
     phrase: Option<PhraseModal>,
     send: SendForm,
     receive_account: usize,
+    /// The last integrated address made (its account, the address, the payment ID).
+    integrated: Option<(usize, String, [u8; 8])>,
     new_account: String,
     renaming: Option<(usize, String)>,
     prompt: Prompt,
@@ -180,6 +185,7 @@ pub struct App {
     proof_window: Option<(String, String)>,
     /// The secret of a sent payment, shown on request in a window until closed.
     tx_key_window: Option<Zeroizing<String>>,
+    view_key_window: Option<(Zeroizing<String>, bool)>,
     miner_tail: (Instant, String),
     /// The pool fields of the Mining tab as typed: (address, key, worker), and the settings they were read from.
     pool_form: Option<(String, String, String)>,
@@ -236,6 +242,7 @@ impl App {
             phrase: None,
             send: SendForm::default(),
             receive_account: 0,
+            integrated: None,
             new_account: String::new(),
             renaming: None,
             prompt: Prompt::default(),
@@ -250,6 +257,7 @@ impl App {
             request: RequestForm::default(),
             proof_window: None,
             tx_key_window: None,
+            view_key_window: None,
             miner_tail: (now, String::new()),
             pool_form: None,
         };
@@ -339,8 +347,14 @@ impl App {
                     self.send = SendForm::default();
                 }
                 Event::Signed { signature } => self.prove.signature = Some(signature),
+                Event::Integrated {
+                    account,
+                    address,
+                    payment_id,
+                } => self.integrated = Some((account, address, payment_id)),
                 Event::Proof { text, note } => self.proof_window = Some((text, note)),
                 Event::TxKey { key, .. } => self.tx_key_window = Some(key),
+                Event::ViewKey { key, received } => self.view_key_window = Some((key, received)),
                 Event::ProofChecked(r) => self.prove.checked = Some(r),
                 Event::Notice(m) => self.toast(m, false),
                 Event::Error(m) => {
@@ -398,7 +412,7 @@ impl App {
                         group_digits(info.height),
                         info.peers
                     ),
-                    GREEN,
+                    if info.peers == 0 { AMBER } else { GREEN },
                 ),
             };
             ui.colored_label(col, txt);
@@ -898,6 +912,9 @@ impl App {
             if ui.button("Show my 24 words…").clicked() {
                 self.prompt.reveal = Some(Zeroizing::default());
             }
+            if ui.button("Show a view key…").clicked() {
+                self.prompt.view_key = Some((Zeroizing::default(), 0, false));
+            }
             if ui.button("Change the password…").clicked() {
                 self.prompt.change = Some((Zeroizing::default(), Zeroizing::default(), false));
             }
@@ -937,6 +954,53 @@ impl App {
                 self.prompt.reveal = None;
             } else if cancel {
                 self.prompt.reveal = None;
+            }
+        }
+        if self.prompt.view_key.is_some() {
+            let mut send = None;
+            let mut cancel = false;
+            let accounts: Vec<String> = match &self.snap.wallet {
+                WalletView::Unlocked(d) => d.accounts.iter().map(|a| a.label.clone()).collect(),
+                _ => Vec::new(),
+            };
+            egui::Window::new("Show a view key")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("A view key lets a wallet SEE this account's payments without being able to spend them (the wallet program's restore-view makes such a wallet).");
+                    if let Some((pw, account, received)) = self.prompt.view_key.as_mut() {
+                        egui::ComboBox::from_label("Account")
+                            .selected_text(accounts.get(*account).cloned().unwrap_or_default())
+                            .show_ui(ui, |ui| {
+                                for (i, label) in accounts.iter().enumerate() {
+                                    ui.selectable_value(account, i, label);
+                                }
+                            });
+                        ui.radio_value(received, false, "View-all: incoming and outgoing payments, and the balance");
+                        ui.radio_value(received, true, "View-received: incoming payments only");
+                        ui.label("Type your password again (leave it empty if you set none).");
+                        let r = ui.add(egui::TextEdit::singleline(&mut **pw).password(true));
+                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        ui.horizontal(|ui| {
+                            if ui.button("Show").clicked() || enter {
+                                send = Some(Cmd::RevealViewKey {
+                                    password: std::mem::take(pw),
+                                    account: *account,
+                                    received: *received,
+                                });
+                            }
+                            if ui.button("Cancel").clicked() {
+                                cancel = true;
+                            }
+                        });
+                    }
+                });
+            if let Some(cmd) = send {
+                self.backend.send(cmd);
+                self.prompt.view_key = None;
+            } else if cancel {
+                self.prompt.view_key = None;
             }
         }
         if self.prompt.change.is_some() {
@@ -1404,7 +1468,35 @@ impl App {
             .small()
             .color(GREY),
         );
+        self.integrated_section(ui);
         self.requests_section(ui, &d);
+    }
+
+    fn integrated_section(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(14.0);
+        ui.separator();
+        ui.heading("Integrated address");
+        ui.label("Your address with a payment ID inside it, for someone who must tell your payments apart (a shop, an exchange): the History tab shows the ID of each payment made to it. A new one each time; any of them pays this account. A subaddress (another account) is the more private way to tell payers apart.");
+        if ui.button("Make an integrated address").clicked() {
+            self.backend.send(Cmd::MakeIntegrated {
+                account: self.receive_account,
+            });
+        }
+        if let Some((account, address, id)) = &self.integrated {
+            if *account == self.receive_account {
+                ui.add(
+                    egui::Label::new(RichText::new(address).monospace())
+                        .selectable(true)
+                        .wrap(),
+                );
+                ui.horizontal(|ui| {
+                    ui.label(format!("payment ID {}", tenero_core::hash::hex_lower(id)));
+                    if ui.button("Copy the integrated address").clicked() {
+                        ui.ctx().copy_text(address.clone());
+                    }
+                });
+            }
+        }
     }
 
     fn requests_section(&mut self, ui: &mut egui::Ui, d: &WalletData) {
@@ -1616,6 +1708,12 @@ impl App {
                                     )
                                     .color(GREY),
                                 );
+                                if let Some(pid) = &row.payment_id {
+                                    ui.label(format!(
+                                        "payment ID {}",
+                                        tenero_core::hash::hex_lower(pid)
+                                    ));
+                                }
                             }
                         }
                         if let Some(id) = row.id {
@@ -1629,7 +1727,7 @@ impl App {
                                         key: false,
                                     }));
                                 }
-                                if ui.small_button("Show transaction key").clicked() {
+                                if ui.small_button("Show payment key").clicked() {
                                     self.backend.send(Cmd::RevealTxKey { id });
                                 }
                             } else {
@@ -1726,6 +1824,8 @@ impl App {
                             "State",
                             if info.syncing {
                                 "catching up".into()
+                            } else if info.peers == 0 {
+                                "no peers: cannot tell if it is up to date".into()
                             } else {
                                 "up to date".into()
                             },
@@ -2457,7 +2557,7 @@ impl App {
         }
         let mut close_key = false;
         if let Some(key) = &self.tx_key_window {
-            egui::Window::new("Transaction key (secret)")
+            egui::Window::new("Payment key (secret)")
                 .collapsible(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
@@ -2480,15 +2580,41 @@ impl App {
         if close_key {
             self.tx_key_window = None;
         }
+        let mut close_view = false;
+        if let Some((key, received)) = &self.view_key_window {
+            egui::Window::new("View key (secret)")
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.colored_label(
+                        AMBER,
+                        if *received {
+                            "Anyone who has this key sees every payment this account RECEIVES. It cannot spend anything. Keep it as secret as what it shows."
+                        } else {
+                            "Anyone who has this key sees every payment of this account, in and out, and its balance. It cannot spend anything. Keep it as secret as what it shows."
+                        },
+                    );
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(RichText::new(key.as_str()).monospace()).selectable(true).wrap());
+                    ui.horizontal(|ui| {
+                        if ui.button("Copy key").clicked() {
+                            ui.ctx().copy_text(key.to_string());
+                        }
+                        if ui.button("Hide").clicked() {
+                            close_view = true;
+                        }
+                    });
+                });
+        }
+        if close_view {
+            self.view_key_window = None;
+        }
     }
 
     fn prove_tab(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         ui.heading("Sign, verify and prove");
-        ui.colored_label(
-            AMBER,
-            "UNAUDITED. Signatures and proofs are being rebuilt on Carrot for 0.3.0; they are not a legal or financial proof of anything.",
-        );
+        ui.colored_label(AMBER, crate::core::PROOFS_NOTE);
         ui.add_space(8.0);
 
         // ---- sign
@@ -2634,9 +2760,9 @@ impl App {
         ui.add_space(10.0);
         ui.separator();
 
-        // ---- check a transaction key
-        ui.label(RichText::new("Check a transaction key").strong());
-        ui.label("A transaction key (shown in History, \"Show transaction key\") and the address it paid. The node's chain is read from the block you give until the output that key made is found, so give a block at or before the payment: a vague start is a slower check.");
+        // ---- check a payment key
+        ui.label(RichText::new("Check a payment key").strong());
+        ui.label("A payment key (shown in History, \"Show payment key\": 32 hexadecimal digits, the payment's Janus anchor) and the address it paid. The node's chain is read from the block you give until the output that key made is found, so give a block at or before the payment: a vague start is a slower check.");
         ui.horizontal(|ui| {
             ui.label("Key");
             ui.add(
@@ -2739,9 +2865,18 @@ impl App {
     }
 }
 
-/// Verifies a pasted signature (needs no wallet and no node): rebuilt on Carrot in milestone G5.
-fn verify_text(_address: &str, _message: &str, _signature: &str) -> Result<String, String> {
-    Err(crate::core::PROOFS_IN_G5.into())
+/// Verifies a pasted signature (needs no wallet and no node).
+fn verify_text(address: &str, message: &str, signature: &str) -> Result<String, String> {
+    let address =
+        tenero_wallet::Address::parse_any(address.trim()).map_err(|e| format!("address: {e}"))?;
+    let sig = tenero_wallet::proofs::Signature::from_text(signature).map_err(|e| e.to_string())?;
+    if !tenero_wallet::proofs::verify_message(&address, message.as_bytes(), &sig) {
+        return Err("the signature does not match this address and message".into());
+    }
+    Ok(format!(
+        "VALID: the holder of {} signed exactly this message.",
+        text::short_address(&address.to_text())
+    ))
 }
 
 /// A QR code of `text`, drawn as squares.

@@ -3025,7 +3025,12 @@ impl<'a> Engine<'a> {
                 }
                 p.known_txs.insert(id);
             }
-            if !self.node.pool().contains(&id)
+            // while syncing, a new transaction is judged against a chain far behind the sender's, so it would look
+            // invalid and its honest sender would be blamed: none is fetched until the sync ends
+            if self.syncing.is_none()
+                && !self.node.pool().contains(&id)
+                // in one of the latest blocks: a peer a little behind still relays it; it is not new here
+                && !self.node.pool().recently_mined(&id)
                 && !self.rejected_txs.contains(&id)
                 && !self.req_txs.contains_key(&id)
             {
@@ -3054,8 +3059,21 @@ impl<'a> Engine<'a> {
                 }
                 continue;
             }
+            // asked for before a sync began: dropped, not judged (see `on_new_tx`)
+            if self.syncing.is_some() {
+                continue;
+            }
             match self.node.submit_tx_at(t, self.now / 1000) {
                 Ok(AddOutcome::Added { id, .. }) => self.announce_tx(id, out),
+                // it spends what the chain here has spent: confirmed in a block the peer has not seen yet, or the loser
+                // of two honest spends, or confirmed on a branch the peer has and this node has not. Refused, not
+                // fetched again, and not held against the peer: from its chain it may be valid.
+                Err(PoolError::Invalid(BlockError::KeyImageSpent { .. })) => {
+                    if self.rejected_txs.len() > 8192 {
+                        self.rejected_txs.clear();
+                    }
+                    self.rejected_txs.insert(id);
+                }
                 Err(PoolError::Invalid(_)) | Err(PoolError::TooLarge { .. }) => {
                     if self.rejected_txs.len() > 8192 {
                         self.rejected_txs.clear();
@@ -3066,7 +3084,8 @@ impl<'a> Engine<'a> {
                         return;
                     }
                 }
-                // already known, in conflict, or no room: not the peer's fault
+                // already known, in conflict, no room, or built on a block this node does not have yet: not the peer's
+                // fault (a transaction that is not judged is not marked rejected, so it can be fetched again later)
                 Err(_) => {}
             }
         }

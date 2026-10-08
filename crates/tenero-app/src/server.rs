@@ -39,11 +39,18 @@ pub const MAX_CONNECTIONS: usize = 8;
 pub const QUEUE: usize = 64;
 /// Requests the loop answers per poll (so a flood cannot starve the network code).
 pub const PER_POLL: usize = 32;
-/// The most transaction weight a block template carries, whatever a miner asks for: a quarter of the largest block
-/// (`MAX_BLOCK_WEIGHT`), so that a template, whose bytes are at most four times its weight, and the mined block always
-/// fit one control frame (16 MiB). The block limit stays below this until the chain's median passes 1.5 MiB; a miner in
-/// the node's own process is not limited by it.
-pub const MAX_TEMPLATE_WEIGHT: u64 = tenero_core::v3::rules::MAX_BLOCK_WEIGHT / 4;
+/// How many recent templates the node keeps, so that a block found on one can be handed back as its header alone
+/// (`Request::SubmitHeader`). Each is its coinbase and transaction ids, not the transactions (they are in the pool): about
+/// 32 bytes a transaction. Templates for an older tip are dropped as soon as the tip moves.
+pub const KEPT_TEMPLATES: usize = 64;
+
+/// A template the node gave out: what it needs to put the block together from its header.
+struct KeptTemplate {
+    prev_id: [u8; 32],
+    tx_root: [u8; 32],
+    coinbase: tenero_core::v3::Coinbase,
+    tx_ids: Vec<[u8; 32]>,
+}
 /// A connection that has not authenticated in this long is closed.
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 /// A connection silent for this long is closed.
@@ -99,8 +106,11 @@ pub struct ControlHook {
     blocks_bytes: usize,
     /// Transactions handed to the engine whose answer waits until the next poll shows whether the pool kept them.
     pending: Vec<([u8; 32], SyncSender<Response>)>,
-    /// Blocks handed to the engine, waiting to be seen in the chain, on a side branch, or not at all.
-    pending_blocks: Vec<([u8; 32], SyncSender<Response>)>,
+    /// Blocks handed to the engine, waiting to be seen in the chain, on a side branch, or not at all (and whether they
+    /// came as a header, which is answered as `HeaderSubmitted`).
+    pending_blocks: Vec<([u8; 32], bool, SyncSender<Response>)>,
+    /// The templates given out on the current tip, newest last.
+    templates: std::collections::VecDeque<KeptTemplate>,
     /// Requests answered, for the status line.
     pub answered: u64,
 }
@@ -202,6 +212,7 @@ pub fn start_with(
             blocks_bytes: cfg.blocks_bytes,
             pending: Vec::new(),
             pending_blocks: Vec::new(),
+            templates: std::collections::VecDeque::new(),
             answered: 0,
         },
     ))
@@ -302,8 +313,8 @@ enum Outcome {
     Reply(Response),
     /// A transaction given to the engine: the answer waits for the next poll.
     HandedOver([u8; 32]),
-    /// A block given to the engine: the answer waits for the next poll.
-    BlockHandedOver([u8; 32]),
+    /// A block given to the engine (and whether it came as a header): the answer waits for the next poll.
+    BlockHandedOver([u8; 32], bool),
 }
 
 impl ControlHook {
@@ -315,6 +326,10 @@ impl ControlHook {
         events: &mut Vec<Event>,
     ) -> Outcome {
         let node = engine.node();
+        // templates for another tip can never be handed back: drop them
+        if let Ok((_, tip)) = node.tip() {
+            self.templates.retain(|t| t.prev_id == tip);
+        }
         Outcome::Reply(match req {
             Request::Auth { .. } => err("already authenticated"),
             Request::Tip => match ChainView::tip(node) {
@@ -482,30 +497,78 @@ impl ControlHook {
                         }
                     })
                 };
-                let made = node.block_template(
-                    now_ms / 1000,
-                    max_weight.min(MAX_TEMPLATE_WEIGHT),
-                    &payout,
-                );
+                let made = node.block_template(now_ms / 1000, max_weight, &payout);
                 if bad_keys.get() {
                     return Outcome::Reply(err("the address's keys are not valid points"));
                 }
-                match made {
-                    Ok(block) => Response::Template(Template {
-                        block,
-                        anchor,
-                        height: next.height,
-                        target: next.target.to_be_bytes(),
-                    }),
-                    Err(e) => err(e.to_string()),
+                let block = match made {
+                    Ok(b) => b,
+                    Err(e) => return Outcome::Reply(err(e.to_string())),
+                };
+                let tx_ids = match block
+                    .transactions
+                    .iter()
+                    .map(ids::tx_id)
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(v) => v,
+                    Err(e) => return Outcome::Reply(err(e.to_string())),
+                };
+                // kept so that a block found on it can come back as its header
+                if self.templates.len() >= KEPT_TEMPLATES {
+                    self.templates.pop_front();
                 }
+                self.templates.push_back(KeptTemplate {
+                    prev_id: block.header.prev_id,
+                    tx_root: block.header.tx_root,
+                    coinbase: block.coinbase.clone(),
+                    tx_ids: tx_ids.clone(),
+                });
+                Response::Template(Template {
+                    header: block.header,
+                    coinbase: block.coinbase,
+                    tx_ids,
+                    anchor,
+                    height: next.height,
+                    target: next.target.to_be_bytes(),
+                })
+            }
+            Request::SubmitHeader(header) => {
+                let Some(t) = self
+                    .templates
+                    .iter()
+                    .rev()
+                    .find(|t| t.tx_root == header.tx_root && t.prev_id == header.prev_id)
+                else {
+                    return Outcome::Reply(err(
+                        "no template of this node has that header's transactions (the tip moved, or it is too old): the work is stale",
+                    ));
+                };
+                // the transactions come from the pool; one that has left it (another block took it) makes the work stale
+                let mut transactions = Vec::with_capacity(t.tx_ids.len());
+                for id in &t.tx_ids {
+                    match node.pool().get(id) {
+                        Some(tx) => transactions.push(tx.clone()),
+                        None => return Outcome::Reply(err(
+                            "a transaction of that template has left the pool: the work is stale",
+                        )),
+                    }
+                }
+                let block = tenero_core::v3::Block {
+                    header,
+                    coinbase: t.coinbase.clone(),
+                    transactions,
+                };
+                let id = ids::block_id(&block.header, node.store().pow());
+                events.push(Event::LocalBlock(block));
+                return Outcome::BlockHandedOver(id, true);
             }
             Request::SubmitBlock(block) => {
                 // handed to the engine as a local block (it validates it fully and tells the peers); the answer
                 // waits for the next look, which shows what became of it
                 let id = ids::block_id(&block.header, node.store().pow());
                 events.push(Event::LocalBlock(block));
-                return Outcome::BlockHandedOver(id);
+                return Outcome::BlockHandedOver(id, false);
             }
         })
     }
@@ -514,14 +577,18 @@ impl ControlHook {
 impl Hooks for ControlHook {
     fn poll(&mut self, engine: &mut Engine<'_>, now_ms: u64) -> Vec<Event> {
         // the blocks handed over at the last poll: what became of each?
-        for (id, reply) in std::mem::take(&mut self.pending_blocks) {
-            let r = if matches!(engine.node().store().height_of(&id), Ok(Some(_))) {
-                Response::BlockSubmitted { id, in_chain: true }
-            } else if engine.node().chain().holds_block(&id) {
-                Response::BlockSubmitted {
-                    id,
-                    in_chain: false,
+        for (id, as_header, reply) in std::mem::take(&mut self.pending_blocks) {
+            let taken = |in_chain| {
+                if as_header {
+                    Response::HeaderSubmitted { id, in_chain }
+                } else {
+                    Response::BlockSubmitted { id, in_chain }
                 }
+            };
+            let r = if matches!(engine.node().store().height_of(&id), Ok(Some(_))) {
+                taken(true)
+            } else if engine.node().chain().holds_block(&id) {
+                taken(false)
             } else {
                 err("the node refused the block (it is not valid)")
             };
@@ -547,7 +614,7 @@ impl Hooks for ControlHook {
                     self.answered += 1;
                 }
                 Outcome::HandedOver(id) => self.pending.push((id, job.reply)),
-                Outcome::BlockHandedOver(id) => self.pending_blocks.push((id, job.reply)),
+                Outcome::BlockHandedOver(id, h) => self.pending_blocks.push((id, h, job.reply)),
             }
         }
         events

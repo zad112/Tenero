@@ -9,7 +9,8 @@ Version 3 of the protocol (0.3.0, FCMP++ and Carrot) retired the requests for ri
 unknown now), added `spend_paths` (20: the curve-tree paths a spend is proven with), and changed `rules` (no ring size or
 maturities; the tree's layers), `block_template` (the main address's keys and a weight, not a finished output: a Carrot
 coinbase output depends on its amount, so the node makes it), the template (the anchor the output was made with), the
-block summary (its weight, not its size) and the pool listing (each transaction's weight).
+block summary (its weight, not its size) and the pool listing (each transaction's weight). A template is COMPACT (the
+header, the coinbase and the transaction ids), and `submit_header` (21) hands a block found on one back as its header.
 
     python reference/tools/make_vectors_control.py --check     do the committed vectors match the reference?
     python reference/tools/make_vectors_control.py --write     regenerate them (a PROTOCOL CHANGE: explain it in the commit
@@ -46,11 +47,11 @@ ERROR = 0xFF
 REQUESTS = {"auth": 1, "tip": 2, "block": 3, "key_image_spent": 6, "rules": 7,
             "submit_tx": 8, "info": 9, "stop": 10, "blocks": 11, "block_template": 12, "submit_block": 13,
             "key_images_spent": 14, "check_pow": 16, "headers": 17, "mempool": 18, "chain_stats": 19,
-            "spend_paths": 20}
+            "spend_paths": 20, "submit_header": 21}
 RESPONSES = {"authed": 1, "tip": 2, "block": 3, "spent": 6, "rules": 7,
              "tx_accepted": 8, "info": 9, "stopping": 10, "blocks": 11, "template": 12, "block_submitted": 13,
              "spent_many": 14, "pow_checked": 16, "headers": 17, "mempool": 18, "chain_stats": 19,
-             "spend_paths": 20}
+             "spend_paths": 20, "header_submitted": 21}
 RETIRED = (4, 5, 15)     # output, output_count, outputs: the ring members of version 2
 
 
@@ -208,6 +209,8 @@ def enc_request(m):
         body += fixed(m["spend_pubkey"], 32) + fixed(m["view_pubkey"], 32) + u64(m["max_weight"])
     elif t == "submit_block":
         body += v3.enc_block(m["block"])
+    elif t == "submit_header":
+        body += v3.enc_header(m["header"])
     return body
 
 
@@ -248,6 +251,8 @@ def dec_request(body):
             m["max_weight"] = r.u64()
         elif t == "submit_block":
             m["block"] = v3.dec_block(r)
+        elif t == "submit_header":
+            m["header"] = v3.dec_header(r)
     except v3.DecodeError:
         raise ControlError("malformed")
     try:
@@ -293,8 +298,10 @@ def enc_response(m):
         assert len(m["blocks"]) <= MAX_BLOCKS_PER_REQUEST
         body += u32(len(m["blocks"])) + b"".join(enc_scan_block(b) for b in m["blocks"])
     elif t == "template":
-        body += u64(m["height"]) + fixed(m["target"], 32) + fixed(m["anchor"], 16) + v3.enc_block(m["block"])
-    elif t == "block_submitted":
+        assert len(m["tx_ids"]) <= v3.MAX_BLOCK_TXS
+        body += (u64(m["height"]) + fixed(m["target"], 32) + fixed(m["anchor"], 16) + v3.enc_header(m["header"])
+                 + v3.enc_coinbase(m["coinbase"]) + u32(len(m["tx_ids"])) + b"".join(fixed(i, 32) for i in m["tx_ids"]))
+    elif t in ("block_submitted", "header_submitted"):
         body += fixed(m["id"], 32) + flag(m["in_chain"])
     elif t == "headers":
         assert len(m["blocks"]) <= MAX_BLOCKS_PER_REQUEST
@@ -357,8 +364,10 @@ def dec_response(body):
                 m["height"] = r.u64()
                 m["target"] = r.fixed(32)
                 m["anchor"] = r.fixed(16)
-                m["block"] = v3.dec_block(r)
-            elif t == "block_submitted":
+                m["header"] = v3.dec_header(r)
+                m["coinbase"] = v3.dec_coinbase(r)
+                m["tx_ids"] = [r.fixed(32) for _ in range(r.count(0, v3.MAX_BLOCK_TXS))]
+            elif t in ("block_submitted", "header_submitted"):
                 m["id"] = r.fixed(32)
                 m["in_chain"] = dec_flag(r)
             elif t == "headers":
@@ -422,6 +431,14 @@ def genesis_scan_block():
     """The genesis block as the wallet sees it: no coinbase outputs and no transactions."""
     return {"height": 0, "id": "cd" * 32, "first_output_index": 0,
             "coinbase": {"version": 3, "height": 0, "outputs": [], "extra": ""}, "txs": []}
+
+
+def sample_template(height, n_ids):
+    """A compact template: the header, the coinbase and `n_ids` transaction ids (the codec does not check the root)."""
+    return {"type": "template", "height": height, "target": "00" * 4 + "ff" * 28, "anchor": h("5a", 16),
+            "header": v3.sample_header(f"template {height}", nonce=0),
+            "coinbase": {"version": 3, "height": height, "outputs": [sample_coinbase_output()], "extra": ""},
+            "tx_ids": [v3.h(f"template {height} tx {i}", 32) for i in range(n_ids)]}
 
 
 def sample_block(height=7, txs=1):
@@ -511,6 +528,9 @@ def valid_requests():
         ("a block template, any weight", sample_template_request(2 ** 64 - 1)),
         ("a mined block", {"type": "submit_block", "block": sample_block(txs=0)}),
         ("a mined block with two transactions", {"type": "submit_block", "block": sample_block(txs=2)}),
+        ("a block found on a template, as its header", {"type": "submit_header",
+                                                        "header": dict(v3.sample_header("found", nonce=77),
+                                                                       mix="5e" * 64)}),
         ("one block summary", {"type": "headers", "from": 7, "count": 1}),
         ("the most block summaries at once, from the largest height", {"type": "headers", "from": 2 ** 64 - 1, "count": 64}),
         ("the pool", {"type": "mempool"}),
@@ -560,12 +580,13 @@ def valid_responses():
         ("no blocks", {"type": "blocks", "blocks": []}),
         ("two blocks", {"type": "blocks", "blocks": [sample_scan_block(1), sample_scan_block(2, txs=2, outputs=2)]}),
         ("genesis and the block after it", {"type": "blocks", "blocks": [genesis_scan_block(), sample_scan_block(1)]}),
-        ("a template", {"type": "template", "height": 7, "target": "00" * 4 + "ff" * 28, "anchor": h("5a", 16),
-                        "block": sample_block()}),
-        ("a template with no transactions", {"type": "template", "height": 1, "target": "7f" + "ff" * 31,
-                                             "anchor": h("01", 16), "block": sample_block(1, txs=0)}),
+        ("a template", sample_template(7, 3)),
+        ("a template with no transactions", dict(sample_template(1, 0), target="7f" + "ff" * 31, anchor=h("01", 16))),
+        ("a template of 200 ids", sample_template(9, 200)),
         ("the block is in the chain", {"type": "block_submitted", "id": "33" * 32, "in_chain": True}),
         ("the block lost a race", {"type": "block_submitted", "id": "44" * 32, "in_chain": False}),
+        ("the header's block is in the chain", {"type": "header_submitted", "id": "35" * 32, "in_chain": True}),
+        ("the header's block lost a race", {"type": "header_submitted", "id": "46" * 32, "in_chain": False}),
         ("no block summaries", {"type": "headers", "blocks": []}),
         ("the genesis summary and the next two", {"type": "headers",
                                                   "blocks": [genesis_summary(), sample_summary(1, 0), sample_summary(2)]}),
@@ -616,12 +637,12 @@ def invalid_cases():
     # nothing, and kinds that do not exist
     for d in ("request", "response"):
         out.append(bad(d, "an empty body", b"", "length"))
-    for k in (0, 21, 0x80, 0x8F, 0xFE):
+    for k in (0, 22, 0x80, 0x8F, 0xFE):
         out.append(bad("request", f"unknown request kind {k}", bytes([k]), "kind"))
     for k in RETIRED:
         out.append(bad("request", f"the retired request kind {k} (version 2's ring members)", bytes([k]) + u64(1), "kind"))
         out.append(bad("response", f"the retired answer kind {k | ANSWER}", bytes([k | ANSWER, 0]), "kind"))
-    for k in (0, 1, 11, 12, 13, 14, 15, 17, 0x95, 0xFE):
+    for k in (0, 1, 11, 12, 13, 14, 15, 17, 0x96, 0xFE):
         out.append(bad("response", f"unknown response kind {k}", bytes([k]), "kind"))
     # every message cut short and with a byte too many
     for note, m in valid_requests():

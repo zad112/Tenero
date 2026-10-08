@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use curve25519_dalek::scalar::Scalar;
 use rand_core::{CryptoRng, RngCore};
-use tenero_carrot::account::{AccountSecrets, AddressIndex};
+use tenero_carrot::account::{AccountPublic, AccountSecrets, AddressIndex, ViewAll, ViewReceived};
 use tenero_carrot::output::{
     additional_payment_proposal, output_set, Additional, PaymentProposal, SelfSendKey,
 };
@@ -99,6 +99,8 @@ pub enum WalletError {
     TooManyInputs {
         max: usize,
     },
+    /// A view-only wallet cannot spend (it has no spend key).
+    ViewOnly,
     /// A transaction has at most `MAX_RECIPIENTS` recipients (16 outputs, one of them the change).
     TooManyRecipients {
         max: usize,
@@ -140,6 +142,10 @@ impl std::fmt::Display for WalletError {
                 "there are no pieces worth combining (a piece worth less than the fee it adds is left alone)"
             ),
             WalletError::BadAddress => write!(f, "that address cannot be paid this way"),
+            WalletError::ViewOnly => write!(
+                f,
+                "this is a view-only wallet: it can see, but it cannot spend or sign (that needs the wallet with its 24 words)"
+            ),
             WalletError::Prove => write!(f, "could not build the proofs"),
             WalletError::SelfCheck(e) => {
                 write!(f, "the wallet built an invalid transaction (a bug): {e}")
@@ -257,9 +263,10 @@ pub struct BatchSent {
 }
 
 pub struct Wallet {
-    seed: Zeroizing<[u8; 32]>,
+    /// The seed: `None` for a view-only wallet, which never had it.
+    seed: Option<Zeroizing<[u8; 32]>>,
     network: Network,
-    account: AccountSecrets,
+    access: Access,
     /// Every address the wallet watches, by its spend key: the main address and subaddresses (0, 1) up to (0, `watched`).
     addresses: HashMap<[u8; 32], AddressIndex>,
     watched: u32,
@@ -277,6 +284,160 @@ pub struct Wallet {
     /// Key images the chain said were NOT spent, and the tip they were asked at.
     unspent_cache: HashSet<[u8; 32]>,
     unspent_tip: Option<[u8; 32]>,
+}
+
+/// How much of an account a wallet holds (Carrot 5.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewTier {
+    /// Every secret: it sees everything and can spend.
+    Full,
+    /// The view-balance secret and the partial spend key: it sees incoming payments, its own change, and which of its
+    /// outputs are spent (it computes key images), so its balance is right. It cannot spend or sign.
+    ViewAll,
+    /// The incoming view key: it sees incoming payments only. It cannot see change or spends, so what it shows is what was
+    /// RECEIVED, not a balance. It cannot spend or sign.
+    ViewReceived,
+}
+
+/// The secrets a wallet holds, one tier of [`ViewTier`].
+#[derive(Clone)]
+pub(crate) enum Access {
+    Full(Box<AccountSecrets>),
+    ViewAll(Box<ViewAll>),
+    ViewReceived(Box<ViewReceived>),
+}
+
+impl Access {
+    pub(crate) fn tier(&self) -> ViewTier {
+        match self {
+            Access::Full(_) => ViewTier::Full,
+            Access::ViewAll(_) => ViewTier::ViewAll,
+            Access::ViewReceived(_) => ViewTier::ViewReceived,
+        }
+    }
+
+    pub(crate) fn public(&self) -> &AccountPublic {
+        match self {
+            Access::Full(a) => &a.public,
+            Access::ViewAll(v) => &v.public,
+            Access::ViewReceived(v) => &v.public,
+        }
+    }
+
+    fn k_view(&self) -> Scalar {
+        match self {
+            Access::Full(a) => a.k_view_incoming,
+            Access::ViewAll(v) => v.view_received().k_view_incoming,
+            Access::ViewReceived(v) => v.k_view_incoming,
+        }
+    }
+
+    fn s_generate_address(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(match self {
+            Access::Full(a) => a.s_generate_address,
+            Access::ViewAll(v) => v.view_received().s_generate_address,
+            Access::ViewReceived(v) => v.s_generate_address,
+        })
+    }
+
+    fn s_view_balance(&self) -> Option<Zeroizing<[u8; 32]>> {
+        match self {
+            Access::Full(a) => Some(Zeroizing::new(a.s_view_balance)),
+            Access::ViewAll(v) => Some(Zeroizing::new(v.s_view_balance)),
+            Access::ViewReceived(_) => None,
+        }
+    }
+
+    fn full(&self) -> Option<&AccountSecrets> {
+        match self {
+            Access::Full(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn address(
+        &self,
+        index: AddressIndex,
+    ) -> Result<tenero_carrot::account::Destination, tenero_carrot::CarrotError> {
+        tenero_carrot::account::address(self.public(), &self.s_generate_address(), index)
+    }
+
+    /// The key image of an output this tier found at `index`, if the output is really this account's: `Some(key image)`,
+    /// `Some([0; 32])` for a view-received wallet (which cannot compute it), `None` if the output is not ours.
+    fn key_image_of(
+        &self,
+        index: AddressIndex,
+        r: &Received,
+        onetime_address: &[u8; 32],
+    ) -> Option<[u8; 32]> {
+        match self {
+            Access::Full(a) => {
+                let keys = spend_keys(a, index, r, onetime_address)?;
+                Some(key_image(&keys.x, onetime_address))
+            }
+            Access::ViewAll(v) => {
+                // the output must be the address's key plus the sender's extensions
+                self.opens_at(index, r, onetime_address).then(|| {
+                    tenero_carrot::scan::key_image_view_all(
+                        v,
+                        &self.s_generate_address(),
+                        index,
+                        r,
+                        onetime_address,
+                    )
+                })
+            }
+            Access::ViewReceived(_) => self.opens_at(index, r, onetime_address).then_some([0; 32]),
+        }
+    }
+
+    /// Whether `Ko = K^j_s + k_g G + k_t T` (the output is the address's), checked with public keys only.
+    fn opens_at(&self, index: AddressIndex, r: &Received, onetime_address: &[u8; 32]) -> bool {
+        let Ok(d) = self.address(index) else {
+            return false;
+        };
+        let Some(k) = tenero_carrot::points::decompress(&d.spend_pubkey) else {
+            return false;
+        };
+        let ko = k
+            + curve25519_dalek::edwards::EdwardsPoint::mul_base(&r.sender_extension_g)
+            + *tenero_carrot::points::T * r.sender_extension_t;
+        tenero_carrot::points::compress(&ko) == *onetime_address
+    }
+}
+
+const VIEW_KEY_CHECKSUM_TAG: &[u8] = b"tenero view key v1";
+
+/// The view-all tier from `s_vb` and `K_ps`; `None` if `K_ps` is not a point.
+pub(crate) fn view_all_access(
+    s_view_balance: [u8; 32],
+    partial_spend_pubkey: [u8; 32],
+) -> Option<Access> {
+    ViewAll::new(s_view_balance, partial_spend_pubkey)
+        .ok()
+        .map(|v| Access::ViewAll(Box::new(v)))
+}
+
+/// The view-received tier from `k_v`, `s_ga` and the account's spend key; `None` if a key is not one.
+pub(crate) fn view_received_access(
+    k_view: [u8; 32],
+    s_generate_address: [u8; 32],
+    spend_pubkey: [u8; 32],
+) -> Option<Access> {
+    let k_v = Option::<Scalar>::from(Scalar::from_canonical_bytes(k_view))?;
+    let spend = tenero_carrot::points::decompress(&spend_pubkey)?;
+    let public = AccountPublic {
+        spend_pubkey,
+        view_pubkey: tenero_carrot::points::compress(&(spend * k_v)),
+        main_view_pubkey: tenero_carrot::points::compress(
+            &curve25519_dalek::edwards::EdwardsPoint::mul_base(&k_v),
+        ),
+    };
+    Some(Access::ViewReceived(Box::new(ViewReceived {
+        k_view_incoming: k_v,
+        s_generate_address,
+        public,
+    })))
 }
 
 fn scalar(b: &[u8; 32]) -> Scalar {
@@ -300,11 +461,109 @@ impl Wallet {
     /// secret is [`carrot_master`] of the seed.
     pub fn from_seed(seed: &[u8; 32], network: Network, birth_height: u64) -> Wallet {
         let account = AccountSecrets::from_master(&carrot_master(seed));
-        let mut w = Wallet {
-            seed: Zeroizing::new(*seed),
+        Wallet::with_access(
+            Some(Zeroizing::new(*seed)),
+            Access::Full(Box::new(account)),
             network,
-            addresses: HashMap::from([(account.public.spend_pubkey, AddressIndex::MAIN)]),
-            account,
+            birth_height,
+        )
+    }
+
+    /// The text form of a view key: this, then base58 of `network u8 | tier u8 (1 view-all, 2 view-received) | birth height
+    /// u64 | keys | checksum (4)`. The keys are `s_vb | K_ps` for view-all and `k_v | s_ga | K_s` for view-received. **A
+    /// view key is a secret**: whoever has it sees what it shows (a view-all key: every incoming and outgoing payment and the
+    /// balance). It cannot spend.
+    pub const VIEW_KEY_PREFIX: &'static str = "TENview1";
+
+    /// This wallet's view key of `tier` (a full wallet gives either; a view-all wallet a view-all or view-received one; a
+    /// view-received wallet only its own). `None` for a tier it does not hold, or [`ViewTier::Full`].
+    pub fn view_key(&self, tier: ViewTier) -> Option<Zeroizing<String>> {
+        let mut body = Zeroizing::new(vec![
+            crate::file::network_byte(self.network),
+            match tier {
+                ViewTier::ViewAll => 1,
+                ViewTier::ViewReceived => 2,
+                ViewTier::Full => return None,
+            },
+        ]);
+        body.extend_from_slice(&self.birth_height.to_le_bytes());
+        match (tier, &self.access) {
+            (ViewTier::ViewAll, Access::Full(a)) => {
+                body.extend_from_slice(&a.s_view_balance);
+                body.extend_from_slice(&tenero_carrot::derive::make_partial_spend_pubkey(
+                    &a.k_prove_spend,
+                ));
+            }
+            (ViewTier::ViewAll, Access::ViewAll(v)) => {
+                body.extend_from_slice(&v.s_view_balance);
+                body.extend_from_slice(&v.partial_spend_pubkey);
+            }
+            (ViewTier::ViewReceived, access) => {
+                body.extend_from_slice(access.k_view().as_bytes());
+                body.extend_from_slice(&*access.s_generate_address());
+                body.extend_from_slice(&access.public().spend_pubkey);
+            }
+            _ => return None,
+        }
+        let check = tenero_core::hash::sha256(&[VIEW_KEY_CHECKSUM_TAG, &body]);
+        body.extend_from_slice(&check[..4]);
+        Some(Zeroizing::new(format!(
+            "{}{}",
+            Wallet::VIEW_KEY_PREFIX,
+            crate::address::b58encode(&body)
+        )))
+    }
+
+    /// A view-only wallet from a view key's text, for `network` (a key of another network is refused). It scans from the
+    /// birth height the key carries.
+    pub fn from_view_key(text: &str, network: Network) -> Result<Wallet, String> {
+        let body = text
+            .trim()
+            .strip_prefix(Wallet::VIEW_KEY_PREFIX)
+            .ok_or("a view key starts with TENview1")?;
+        let data = Zeroizing::new(
+            crate::address::b58decode(body)
+                .map_err(|_| "not a view key (its characters)".to_string())?,
+        );
+        if data.len() < 14 {
+            return Err("not a view key (too short)".into());
+        }
+        let (body, check) = data.split_at(data.len() - 4);
+        if tenero_core::hash::sha256(&[VIEW_KEY_CHECKSUM_TAG, body])[..4] != *check {
+            return Err(
+                "not a view key (a character is wrong: the checksum does not match)".into(),
+            );
+        }
+        if crate::file::network_of_byte(body[0]) != Some(network) {
+            return Err(format!(
+                "that view key is not for the {} network",
+                network.name()
+            ));
+        }
+        let birth = u64::from_le_bytes(body[2..10].try_into().expect("8"));
+        let keys = &body[10..];
+        let b32 = |i: usize| -> [u8; 32] { keys[i..i + 32].try_into().expect("32") };
+        let access = match (body[1], keys.len()) {
+            (1, 64) => view_all_access(b32(0), b32(32)),
+            (2, 96) => view_received_access(b32(0), b32(32), b32(64)),
+            _ => None,
+        }
+        .ok_or("not a view key (its keys)")?;
+        Ok(Wallet::with_access(None, access, network, birth))
+    }
+
+    /// A wallet of one of the view-only tiers, from its keys ([`Wallet::from_view_key`] reads them from text).
+    pub(crate) fn with_access(
+        seed: Option<Zeroizing<[u8; 32]>>,
+        access: Access,
+        network: Network,
+        birth_height: u64,
+    ) -> Wallet {
+        let mut w = Wallet {
+            seed,
+            network,
+            addresses: HashMap::from([(access.public().spend_pubkey, AddressIndex::MAIN)]),
+            access,
             watched: 0,
             birth_height,
             scanned: None,
@@ -327,7 +586,7 @@ impl Wallet {
                 major: 0,
                 minor: self.watched,
             };
-            let d = self.account.address(index).expect("a subaddress index");
+            let d = self.access.address(index).expect("a subaddress index");
             self.addresses.insert(d.spend_pubkey, index);
         }
     }
@@ -338,7 +597,7 @@ impl Wallet {
 
     /// The main address: where block rewards go (Carrot pays a coinbase output to a main address only).
     pub fn address(&self) -> Address {
-        Address::of(self.network, &self.account.public.main_address())
+        Address::of(self.network, &self.access.public().main_address())
     }
 
     /// Subaddress `(0, minor)` (`minor` from 1): an address of its own for each payer, that nobody can link to the others.
@@ -348,11 +607,94 @@ impl Wallet {
             return None;
         }
         self.watch_up_to(minor.saturating_add(SUBADDRESS_LOOKAHEAD));
-        let d = self
-            .account
-            .address(AddressIndex { major: 0, minor })
-            .ok()?;
+        let d = self.access.address(AddressIndex { major: 0, minor }).ok()?;
         Some(Address::of(self.network, &d))
+    }
+
+    /// The address of one of the wallet's indexes (the main address for `(0, 0)`).
+    pub fn address_of(&self, index: AddressIndex) -> Option<Address> {
+        let d = self.access.address(index).ok()?;
+        Some(Address::of(self.network, &d))
+    }
+
+    /// The two secrets of an address's spend key, `K^j_s = a G + b T`: `a = s_j k_gi`, `b = s_j k_ps`, with `s_j` the
+    /// subaddress scalar (one for the main address). What signs as that address.
+    fn signing_secrets(
+        &self,
+        index: AddressIndex,
+    ) -> Option<(Zeroizing<Scalar>, Zeroizing<Scalar>)> {
+        let account = self.access.full()?;
+        let s = Zeroizing::new(tenero_carrot::account::subaddress_scalar(
+            &account.public,
+            &account.s_generate_address,
+            index,
+        ));
+        Some((
+            Zeroizing::new(*s * account.k_generate_image),
+            Zeroizing::new(*s * account.k_prove_spend),
+        ))
+    }
+
+    /// Signs `message` as the address of `index` (the main address for `(0, 0)`): our own construction, unreviewed
+    /// (`proofs.rs`). Gives the address too, which is what a verifier checks it against. `None` for a view-only wallet
+    /// (signing needs the spend key's secrets).
+    pub fn sign_message(
+        &self,
+        index: AddressIndex,
+        message: &[u8],
+        rng: &mut (impl RngCore + CryptoRng),
+    ) -> Option<(Address, crate::proofs::Signature)> {
+        let address = self.address_of(index)?;
+        let (a, b) = self.signing_secrets(index)?;
+        let sig = crate::proofs::sign_message(&a, &b, &address, message, rng);
+        Some((address, sig))
+    }
+
+    /// A RECEIVED proof of the output with `global_index`: its anchor, decrypted with the view key, and the receiving
+    /// address's signature over it and `message`. Refused for the wallet's own change. A view-only wallet makes the proof
+    /// without the signature (a payment proof: it cannot sign).
+    pub fn prove_received(
+        &self,
+        chain: &impl ChainView,
+        global_index: u64,
+        message: &[u8],
+        rng: &mut (impl RngCore + CryptoRng),
+    ) -> Result<crate::proofs::PaymentProof, crate::proofs::ProofError> {
+        use crate::proofs::ProofError;
+        let o = self
+            .owned
+            .iter()
+            .find(|o| o.global_index == global_index)
+            .ok_or(ProofError::Unknown)?;
+        if o.internal {
+            return Err(ProofError::Change);
+        }
+        let block = chain
+            .block(o.height)
+            .map_err(ProofError::Chain)?
+            .ok_or(ProofError::NoBlock(o.height))?;
+        let anchor =
+            crate::proofs::received_anchor(&self.access.k_view(), &block, &o.onetime_address)?;
+        let mut proof = crate::proofs::PaymentProof {
+            address: self.address_of(o.address).ok_or(ProofError::Unknown)?,
+            height: o.height,
+            onetime_address: o.onetime_address,
+            anchor,
+            signature: None,
+        };
+        // a payment to an integrated address proves as the integrated address (its payment ID is checked too)
+        if o.payment_id != NULL_PAYMENT_ID && !o.address.is_subaddress() {
+            proof.address = proof
+                .address
+                .with_payment_id(o.payment_id)
+                .ok_or(ProofError::Unknown)?;
+        }
+        if let Some((a, b)) = self.signing_secrets(o.address) {
+            proof.sign(&a, &b, message, rng)?;
+        }
+        // the proof must check before it is handed out
+        crate::proofs::check_payment(chain, &proof, message)?;
+        Ok(proof)
     }
 
     /// The main address with a payment ID: an integrated address.
@@ -362,7 +704,16 @@ impl Wallet {
 
     #[cfg(test)]
     pub(crate) fn account(&self) -> &AccountSecrets {
-        &self.account
+        self.access.full().expect("a full wallet")
+    }
+
+    /// How much of the account this wallet holds.
+    pub fn tier(&self) -> ViewTier {
+        self.access.tier()
+    }
+
+    pub(crate) fn access(&self) -> &Access {
+        &self.access
     }
 
     /// The highest subaddress minor index watched.
@@ -387,13 +738,14 @@ impl Wallet {
             sender_extension_t: scalar(&o.extension_t),
             internal_message: None,
         };
-        spend_keys(&self.account, o.address, &r, &o.onetime_address)
-            .is_some_and(|k| key_image(&k.x, &o.onetime_address) == o.key_image)
+        self.access
+            .key_image_of(o.address, &r, &o.onetime_address)
+            .is_some_and(|k| k == o.key_image)
     }
 
-    /// The seed: the wallet's whole secret. Handle with care; never log it.
-    pub fn seed(&self) -> &[u8; 32] {
-        &self.seed
+    /// The seed: the wallet's whole secret. Handle with care; never log it. `None` for a view-only wallet.
+    pub fn seed(&self) -> Option<&[u8; 32]> {
+        self.seed.as_deref()
     }
 
     pub fn birth_height(&self) -> u64 {
@@ -487,9 +839,10 @@ impl Wallet {
     }
 
     fn scan_block(&mut self, block: &crate::chain::ScanBlock) -> u64 {
-        let k_v = self.account.k_view_incoming;
-        let main = self.account.public.spend_pubkey;
-        let main_view = self.account.public.main_view_pubkey;
+        let k_v = self.access.k_view();
+        let s_vb = self.access.s_view_balance();
+        let main = self.access.public().spend_pubkey;
+        let main_view = self.access.public().main_view_pubkey;
         let mut found = 0;
         let mut index = block.first_output_index;
         for o in &block.coinbase.outputs {
@@ -541,7 +894,8 @@ impl Wallet {
                     anchor_enc: o.anchor_enc,
                     tx_first_key_image: first.key_image,
                 };
-                let r = scan_internal(&enote, &self.account.s_view_balance).or_else(|| {
+                let internal = s_vb.as_ref().and_then(|s| scan_internal(&enote, s));
+                let r = internal.or_else(|| {
                     scan_external(&enote, Some(&t.encrypted_payment_id), s_sr, &[main], &k_v)
                 });
                 if let Some(r) = r {
@@ -576,8 +930,9 @@ impl Wallet {
         let Some(&address) = self.addresses.get(&r.address_spend_pubkey) else {
             return false;
         };
-        // its secrets must open it: then it is really ours at that address (and the key image is right)
-        let Some(keys) = spend_keys(&self.account, address, r, &onetime_address) else {
+        // it must open to that address: then it is really ours there (and the key image, where the tier can compute one,
+        // is right)
+        let Some(key_image) = self.access.key_image_of(address, r, &onetime_address) else {
             return false;
         };
         if address.minor + SUBADDRESS_LOOKAHEAD > self.watched {
@@ -594,7 +949,7 @@ impl Wallet {
             address,
             extension_g: r.sender_extension_g.to_bytes(),
             extension_t: r.sender_extension_t.to_bytes(),
-            key_image: key_image(&keys.x, &onetime_address),
+            key_image,
             payment_id: r.payment_id,
             internal: r.found == Found::Internal,
         });
@@ -665,6 +1020,10 @@ impl Wallet {
         chain: &impl ChainView,
         rules: &Rules,
     ) -> Result<Vec<Owned>, WalletError> {
+        // every payment starts here: a view-only wallet cannot spend, and says so before it does anything else
+        if self.access.full().is_none() {
+            return Err(WalletError::ViewOnly);
+        }
         let unspent = self.unspent(chain)?;
         self.reserved.retain(|r| {
             r.until_height >= rules.next_height
@@ -681,6 +1040,18 @@ impl Wallet {
 
     pub fn balance(&mut self, chain: &impl ChainView) -> Result<Balance, WalletError> {
         let rules = chain.rules().map_err(chain_err)?;
+        // a view-received wallet cannot compute key images, so it cannot tell what is spent: it shows what was RECEIVED
+        // (as `total`), and nothing as spendable
+        if self.access.tier() == ViewTier::ViewReceived {
+            let mut b = Balance::default();
+            for o in &self.owned {
+                b.total += o.amount;
+                if !is_mature(&rules, o.height, o.coinbase) {
+                    b.immature += o.amount;
+                }
+            }
+            return Ok(b);
+        }
         let unspent = self.unspent(chain)?;
         self.reserved.retain(|r| {
             r.until_height >= rules.next_height
@@ -761,6 +1132,7 @@ impl Wallet {
         mut chosen: Vec<Owned>,
         dests: &[(Address, u64)],
     ) -> Result<Built, WalletError> {
+        let account = self.access.full().ok_or(WalletError::ViewOnly)?;
         // key images strictly ascending: the rules' one canonical order; the first is the input context's
         chosen.sort_by_key(|o| o.key_image);
         let paths = chain
@@ -796,7 +1168,7 @@ impl Wallet {
             0,
             change,
             false,
-            &self.account.public.spend_pubkey,
+            &self.access.public().spend_pubkey,
             false,
             rng,
         )
@@ -812,7 +1184,7 @@ impl Wallet {
             &normal,
             &selfsend,
             Some(dummy_pid),
-            SelfSendKey::ViewBalance(&self.account.s_view_balance),
+            SelfSendKey::ViewBalance(&account.s_view_balance),
             &first_key_image,
         )
         .map_err(|_| WalletError::BadAddress)?;
@@ -869,8 +1241,8 @@ impl Wallet {
                 sender_extension_t: scalar(&o.extension_t),
                 internal_message: None,
             };
-            let keys = spend_keys(&self.account, o.address, &r, &o.onetime_address)
-                .ok_or(WalletError::Prove)?;
+            let keys =
+                spend_keys(account, o.address, &r, &o.onetime_address).ok_or(WalletError::Prove)?;
             spends.push(Spend {
                 x: keys.x,
                 y: keys.y,

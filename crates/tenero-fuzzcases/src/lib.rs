@@ -11,8 +11,8 @@
 //! * [`wire_stream`]: the peer frame decoder, fed in chunks of any size, never panics, never yields a message after a failure and never holds
 //!   more than one frame's worth;
 //! * [`control_bodies`]: the control interface's requests and responses decode strictly;
-//! * [`wallet_text`]: an address or a payment request of any shape is refused without a panic, and what parses writes back the same
-//!   (the target of the 0.2.0 signatures and payment proofs, which are rebuilt on Carrot in milestone G5 and get their target back then);
+//! * [`wallet_text`]: an address, a payment request, a message signature or a payment proof of any shape is refused without a panic,
+//!   and what parses writes back the same;
 //! * [`noise_handshake`]: the encrypted channel: made-up bytes never complete a handshake or authenticate as a chunk, and an honest chunk that is
 //!   flipped, cut short, replayed, reordered or preceded by a dropped one is always refused;
 //! * [`engine_messages`]: a real protocol engine, given a stream of connections, messages (valid or not, in any order), bad bytes and time,
@@ -150,6 +150,29 @@ pub fn wallet_text(data: &[u8]) {
             "an address's text did not round-trip"
         );
         assert_eq!(Address::parse(&text, a.network), Ok(a));
+    }
+    // a signature or a payment proof, as text and as bytes: what parses writes back the same
+    use tenero_wallet::proofs::{PaymentProof, Signature};
+    if let Ok(sig) = Signature::from_text(&text) {
+        assert_eq!(
+            Signature::from_text(&sig.to_text()),
+            Ok(sig),
+            "a signature's text did not round-trip"
+        );
+    }
+    if let Ok(p) = PaymentProof::from_text(&text) {
+        assert_eq!(
+            PaymentProof::from_text(&p.to_text()).as_ref(),
+            Ok(&p),
+            "a proof's text did not round-trip"
+        );
+    }
+    if let Ok(p) = PaymentProof::from_bytes(data) {
+        assert_eq!(
+            p.to_bytes().as_slice(),
+            data,
+            "a proof's bytes did not round-trip"
+        );
     }
     for n in Network::ALL {
         let _ = tenero_wallet::request::parse_pay_text(&text, n);
@@ -702,6 +725,32 @@ pub fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
                 .and_then(|h| tenero_core::vectors::hex(h).ok())
             {
                 out.push(("decode_v3", format!("vector-{i}"), h));
+            }
+        }
+    }
+    if let Ok(v) = tenero_core::vectors::load("wallet_proofs") {
+        for (i, c) in v["proofs"].as_array().into_iter().flatten().enumerate() {
+            if let Some(t) = c["text"].as_str() {
+                out.push((
+                    "wallet_text",
+                    format!("proof-text-{i}"),
+                    t.as_bytes().to_vec(),
+                ));
+            }
+            if let Some(b) = c["bytes"]
+                .as_str()
+                .and_then(|h| tenero_core::vectors::hex(h).ok())
+            {
+                out.push(("wallet_text", format!("proof-bytes-{i}"), b));
+            }
+        }
+        for (i, c) in v["signatures"].as_array().into_iter().flatten().enumerate() {
+            if let Some(t) = c["text"].as_str() {
+                out.push((
+                    "wallet_text",
+                    format!("signature-{i}"),
+                    t.as_bytes().to_vec(),
+                ));
             }
         }
     }

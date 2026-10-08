@@ -1,6 +1,6 @@
-# Running a seed node (a guide for an operator, 2026-10-04)
+# Running a seed node (a guide for an operator; updated for `gamma`, 2026-10-08)
 
-**Experimental and unaudited; nothing on `alpha` has any value. Nobody has followed this guide yet: it was written from the code and the documents, not from a run on a server, and the Linux build has been run by hand only as a node in WSL2 (`docs/TESTING.md`), never on a server.** Read [`SEED_POLICY.md`](SEED_POLICY.md) first: a seed is a convenience for newcomers, and **a list of seeds is only as trustworthy as the number of independent operators in different network
+**Experimental and unaudited; nothing on `gamma` or any other Tenero network has any value.** The author has run seeds on rented Ubuntu servers since 2026-10-05 (`alpha`, then `beta`), set up much as below; **this exact text for `gamma` has not been followed yet** (the author's own switch is `docs/SERVER_GAMMA.md`). Read [`SEED_POLICY.md`](SEED_POLICY.md) first: a seed is a convenience for newcomers, and **a list of seeds is only as trustworthy as the number of independent operators in different network
 groups behind it.** One seed is one point of failure and one point an attacker would aim at.
 
 ## What a seed is, and what this one must do
@@ -12,28 +12,28 @@ serve the **whole chain** (an archive node, never pruned), accept connections fr
 
 * **A server that is only this.** A small cloud Linux server or a machine on a separate network, running **Ubuntu 22.04 or newer** (the Linux build needs glibc 2.34; 2.35 for the wallet app, which a seed does not need).
   **Not your own computer and not one that holds a wallet or anything else of yours.** A seed accepts connections from strangers, the part of the project that is least hardened against hostile traffic.
-* **RAM.** A node on `alpha` checks every block's real proof of work, which needs the epoch's **4 GiB dataset in memory**. **A node holds one dataset at a time** (the owner's limit for the node is
+* **RAM.** A node on `gamma` checks every block's real proof of work, which needs the epoch's **4 GiB dataset in memory**. **A node holds one dataset at a time** (the owner's limit for the node is
   8 GB, 2026-10-04): **4.01 GiB measured** for a whole check process across three epoch boundaries (a Linux node used 4.1 GiB resident with one epoch built), plus the chain database and the system. **An 8 GB
   server is the target**; I would not go below 6 GB and have not tried (nothing smaller was measured, and building a dataset touches all of it). **The price:** the node waits about 3 seconds (measured) for the first
   block of each 100-block epoch, while it frees the old dataset and builds the next. Not measured on a server. 16 GB would be headroom, not need. (The program used to hold two datasets, 8.0 GiB, which is why
   earlier drafts of this guide asked for 16 GB.) I have not priced servers of this size; the price is yours to check, and in the figures I found (unverified for Hetzner) 8 GB is the cheaper size by a wide margin.
 * **A fixed IPv4 address.** `seed` entries are `ip:port` literals (names are not accepted), and a built-in list ships with a release, so an address that changes means a new release.
-* **One open port**, TCP, of your choosing (there is no default; `38333` is a reasonable convention next to `alpha`'s local control port 38332, nothing more). Nothing else may be open to the internet except SSH.
+* **One open port**, TCP, of your choosing (`38353` is `gamma`'s, next to its local control port 38352, and the built-in seeds use it; a new seed may use another). Nothing else may be open to the internet except SSH.
 
 ## Setting it up (untested; the commands are what the programs' documentation says)
 
 1. **Make a user with no privileges and no login for the node:** `sudo useradd --system --create-home --home-dir /var/lib/tenero --shell /usr/sbin/nologin tenero`.
 2. **Install a release** (once one is published): download the Linux tar.gz **and `SHA256SUMS`**, check it (`sha256sum -c SHA256SUMS --ignore-missing`), unpack the programs into `/opt/tenero/`. Do not copy the wallet app or `tenero-wallet`
    there; a seed needs only `tenerod` (and `tenero-seedcheck` if you want to check other seeds from it).
-3. **The firewall:** allow SSH and your one P2P port, deny the rest (for example `ufw default deny incoming`, `ufw allow 22/tcp`, `ufw allow 38333/tcp`, `ufw enable`). **Do this before starting the node.** The node's
-   **control interface listens only on `127.0.0.1:38332`** and refuses any other address; leave it so.
+3. **The firewall:** allow SSH and your one P2P port, deny the rest (for example `ufw default deny incoming`, `ufw allow 22/tcp`, `ufw allow 38353/tcp`, `ufw enable`). **Do this before starting the node.** The node's
+   **control interface listens only on `127.0.0.1:38352`** and refuses any other address; leave it so.
 4. **A settings file**, `/var/lib/tenero/node.conf` (one `key = value` per line; `docs/RUNNING.md` explains each):
 
        data = /var/lib/tenero/data
-       network = alpha
-       listen = 0.0.0.0:38333
-       advertise = YOUR.SERVER.PUBLIC.IP:38333
-       prune_keep = 0
+       network = gamma
+       listen = 0.0.0.0:38353
+       advertise = YOUR.SERVER.PUBLIC.IP:38353
+       prune_keep = 0            # an ARCHIVE node: required for a seed (nodes are pruned by default since 0.3.0)
        log_file = /var/lib/tenero/node.log
        # no mining, no mine_to: a seed has no wallet
        # no_builtin_seeds = yes     (only if you want this node to ignore the program's own list)
@@ -41,7 +41,7 @@ serve the **whole chain** (an archive node, never pruned), accept connections fr
 5. **A service**, so it starts again after a reboot or a crash. `/etc/systemd/system/tenero-seed.service` (this exact file has **not been run**):
 
        [Unit]
-       Description=Tenero seed node (alpha; experimental)
+       Description=Tenero seed node (gamma; experimental)
        After=network-online.target
        Wants=network-online.target
 
@@ -59,9 +59,9 @@ serve the **whole chain** (an archive node, never pruned), accept connections fr
        [Install]
        WantedBy=multi-user.target
 
-   `sudo systemctl enable --now tenero-seed`, then `journalctl -u tenero-seed -f`. The node starts with a line `build: v..., commit ...` and the banner; `sudo -u tenero /opt/tenero/tenerod status --data /var/lib/tenero/data --control 127.0.0.1:38332` (on `alpha` the `--control` is needed: the command assumes the `test` network's port)
+   `sudo systemctl enable --now tenero-seed`, then `journalctl -u tenero-seed -f`. The node starts with a line `build: v..., commit ...` and the banner; `sudo -u tenero /opt/tenero/tenerod status --data /var/lib/tenero/data --control 127.0.0.1:38352` (on `gamma` the `--control` is needed: the command assumes the `test` network's port)
    shows height and peers. Stopping is `systemctl stop tenero-seed` (a clean shutdown: the node saves its peers and pool first).
-6. **Check it from another machine,** not the server: `tenero-seedcheck --network alpha --seed YOUR.IP:38333`. With one seed it will warn that the policy wants at least three operators in different groups: that
+6. **Check it from another machine,** not the server: `tenero-seedcheck --network gamma --seed YOUR.IP:38353`. With one seed it will warn that the policy wants at least three operators in different groups: that
    warning is true, not a fault of the node.
 
 ## Keeping it honest and safe
@@ -75,5 +75,5 @@ serve the **whole chain** (an archive node, never pruned), accept connections fr
 
 ## What nobody has checked
 
-That these steps work on a real server; how much RAM and CPU a node on a public address actually uses under strangers' traffic; whether the systemd settings above are all accepted by the node (the node writes its
+That this exact text works on a real server for `gamma`; how much disk an archive node of `gamma` needs over time (FCMP++ proofs are big: estimated, up to about 3.5 times a `beta` block for a full block); how much RAM and CPU a node on a public address actually uses under strangers' traffic; whether the systemd settings above are all accepted by the node (the node writes its
 data, log and peers file under `/var/lib/tenero`, which is the only writable place given); how it behaves with many inbound connections from hostile peers beyond the fuzzing and the simulations in `THREAT_MODEL.md`.

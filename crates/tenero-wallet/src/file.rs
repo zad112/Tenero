@@ -35,7 +35,10 @@ pub(crate) const MAGIC_PURSE: &[u8; 4] = b"TWL2";
 const HEADER: usize = 4 + 12 + 16;
 /// Version 2: the `gamma` network (Carrot outputs, the network, the subaddresses watched). Version 1 was the interim
 /// scheme of `beta`, which a 0.3.0 wallet does not read.
-const STATE_VERSION: u16 = 2;
+/// 3 (0.3.0): the state says how much of the account the wallet holds (its seed, or a view-only tier's keys). 2 (an
+/// earlier 0.3.0 build) held the seed only, and is still read.
+const STATE_VERSION: u16 = 3;
+const SEED_ONLY_STATE_VERSION: u16 = 2;
 const BETA_STATE_VERSION: u16 = 1;
 const MAX_OWNED: usize = 1_000_000;
 const MAX_RESERVED: usize = 4_096;
@@ -133,7 +136,26 @@ impl Wallet {
 
     pub(crate) fn write_state(&self, w: &mut Writer) -> Result<(), FileError> {
         w.u16(STATE_VERSION);
-        w.raw(self.seed());
+        match (self.seed(), self.access()) {
+            (Some(seed), _) => {
+                w.raw(&[0]);
+                w.raw(seed);
+            }
+            (None, crate::wallet::Access::ViewAll(v)) => {
+                w.raw(&[1]);
+                w.raw(&v.s_view_balance);
+                w.raw(&v.partial_spend_pubkey);
+            }
+            (None, crate::wallet::Access::ViewReceived(v)) => {
+                w.raw(&[2]);
+                w.raw(v.k_view_incoming.as_bytes());
+                w.raw(&v.s_generate_address);
+                w.raw(&v.public.spend_pubkey);
+            }
+            (None, crate::wallet::Access::Full(_)) => {
+                return Err(FileError::Corrupt("a full wallet with no seed".into()))
+            }
+        }
         w.raw(&[network_byte(self.network())]);
         w.u32(self.watched_subaddresses());
         w.u64(self.birth_height);
@@ -186,8 +208,9 @@ impl Wallet {
     }
 
     pub(crate) fn read_state(r: &mut Reader) -> Result<Wallet, FileError> {
-        match r.u16().map_err(dec_err)? {
-            STATE_VERSION => {}
+        let version = r.u16().map_err(dec_err)?;
+        match version {
+            STATE_VERSION | SEED_ONLY_STATE_VERSION => {}
             BETA_STATE_VERSION => {
                 return Err(FileError::Corrupt(
                     "a beta wallet: open it with the 0.2 programs (its 24 words also restore a gamma wallet)".into(),
@@ -195,7 +218,18 @@ impl Wallet {
             }
             _ => return Err(FileError::Corrupt("unknown state version".into())),
         }
-        let seed: [u8; 32] = r.array().map_err(dec_err)?;
+        // what the wallet holds: its seed (kind 0), or a view-only tier's keys
+        let kind = if version == SEED_ONLY_STATE_VERSION {
+            0
+        } else {
+            r.take(1).map_err(dec_err)?[0]
+        };
+        let keys: Zeroizing<Vec<u8>> = Zeroizing::new(match kind {
+            0 => r.take(32).map_err(dec_err)?.to_vec(),
+            1 => r.take(64).map_err(dec_err)?.to_vec(),
+            2 => r.take(96).map_err(dec_err)?.to_vec(),
+            _ => return Err(FileError::Corrupt("unknown kind of wallet".into())),
+        });
         let network = match r.take(1).map_err(dec_err)?[0] {
             0 => Network::Gamma,
             1 => Network::Dev,
@@ -250,7 +284,24 @@ impl Wallet {
                 })
             })
             .map_err(dec_err)?;
-        let mut w = Wallet::from_seed(&seed, network, birth);
+        let b32 = |i: usize| -> [u8; 32] { keys[i..i + 32].try_into().expect("32") };
+        let mut w = match kind {
+            0 => Wallet::from_seed(&b32(0), network, birth),
+            1 => Wallet::with_access(
+                None,
+                crate::wallet::view_all_access(b32(0), b32(32))
+                    .ok_or_else(|| FileError::Corrupt("a view key that is not one".into()))?,
+                network,
+                birth,
+            ),
+            _ => Wallet::with_access(
+                None,
+                crate::wallet::view_received_access(b32(0), b32(32), b32(64))
+                    .ok_or_else(|| FileError::Corrupt("a view key that is not one".into()))?,
+                network,
+                birth,
+            ),
+        };
         w.watch_subaddresses(watched);
         // the records must belong to this seed (a corrupted or swapped state is refused, not trusted)
         for o in &owned {
@@ -297,11 +348,20 @@ impl Wallet {
 }
 
 /// Encrypts `state` under `magic` and writes it to `path`, atomically.
-fn network_byte(n: Network) -> u8 {
+pub(crate) fn network_byte(n: Network) -> u8 {
     match n {
         Network::Gamma => 0,
         Network::Dev => 1,
         Network::Test => 2,
+    }
+}
+
+pub(crate) fn network_of_byte(b: u8) -> Option<Network> {
+    match b {
+        0 => Some(Network::Gamma),
+        1 => Some(Network::Dev),
+        2 => Some(Network::Test),
+        _ => None,
     }
 }
 

@@ -163,9 +163,27 @@ impl RemoteNode {
     /// Hands the node a mined block. `Err` means the connection failed; what the node made of the block is the
     /// [`BlockVerdict`].
     pub fn submit_block(&self, block: tenero_core::v3::Block) -> Result<BlockVerdict, String> {
-        match self.request_raw(&Request::SubmitBlock(block))? {
-            Response::BlockSubmitted { id, in_chain: true } => Ok(BlockVerdict::InChain(id)),
+        self.verdict(&Request::SubmitBlock(block))
+    }
+
+    /// Hands the node a block found on one of its templates, as its header (`Request::SubmitHeader`). `Err` means the
+    /// connection failed; what the node made of the block (stale work included) is the [`BlockVerdict`].
+    pub fn submit_header(
+        &self,
+        header: tenero_core::v3::BlockHeader,
+    ) -> Result<BlockVerdict, String> {
+        self.verdict(&Request::SubmitHeader(header))
+    }
+
+    fn verdict(&self, req: &Request) -> Result<BlockVerdict, String> {
+        match self.request_raw(req)? {
+            Response::BlockSubmitted { id, in_chain: true }
+            | Response::HeaderSubmitted { id, in_chain: true } => Ok(BlockVerdict::InChain(id)),
             Response::BlockSubmitted {
+                id,
+                in_chain: false,
+            }
+            | Response::HeaderSubmitted {
                 id,
                 in_chain: false,
             } => Ok(BlockVerdict::LostRace(id)),

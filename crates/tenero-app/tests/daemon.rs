@@ -1833,3 +1833,85 @@ fn a_real_node_checks_the_mix_of_a_header_for_a_client() {
     wrong.mix[7] = 1;
     assert_eq!(c.check_pow(1, &wrong), Ok(false));
 }
+
+#[test]
+fn the_wallet_program_makes_integrated_addresses_and_view_only_wallets() {
+    let d = Dir::new("walletviews");
+    let w = d.path("w.wallet");
+    let ws = w.to_str().unwrap();
+    cli(
+        &["create", "--wallet", ws, "--birth", "0"],
+        &["longenough1", "longenough1"],
+    )
+    .0
+    .unwrap();
+    let (_, said) = cli(&["address", "--wallet", ws], &["longenough1"]);
+    let main = said.last().unwrap().clone();
+
+    // an integrated address: the main address with the payment ID given, or a random one
+    let (r, said) = cli(
+        &[
+            "integrated-address",
+            "--wallet",
+            ws,
+            "--payment-id",
+            "0123456789abcdef",
+        ],
+        &["longenough1"],
+    );
+    r.unwrap();
+    let integrated = said[said.len() - 2].clone();
+    assert_eq!(said.last().unwrap(), "payment ID 0123456789abcdef");
+    let a = tenero_wallet::Address::parse(&integrated, tenero_wallet::Network::Test).unwrap();
+    assert_eq!(a.kind, tenero_wallet::Kind::Integrated);
+    assert_eq!(
+        a.payment_id,
+        [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]
+    );
+    let m = tenero_wallet::Address::parse(&main, tenero_wallet::Network::Test).unwrap();
+    assert_eq!(
+        (a.spend_pubkey, a.view_pubkey),
+        (m.spend_pubkey, m.view_pubkey)
+    );
+    let (_, again) = cli(&["integrated-address", "--wallet", ws], &["longenough1"]);
+    assert_ne!(again[again.len() - 2], integrated, "a random ID each time");
+    for bad in ["0000000000000000", "0123", "0123456789abcdeg"] {
+        let (r, _) = cli(
+            &["integrated-address", "--wallet", ws, "--payment-id", bad],
+            &["longenough1"],
+        );
+        assert!(r.unwrap_err().contains("--payment-id"), "{bad}");
+    }
+
+    // a view key, and a view-only wallet made from it that has the same address and no seed
+    for tier in ["all", "received"] {
+        let (r, said) = cli(
+            &["view-key", "--wallet", ws, "--tier", tier],
+            &["longenough1"],
+        );
+        r.unwrap();
+        let key = said
+            .iter()
+            .find_map(|l| {
+                l.trim()
+                    .strip_prefix("TENview1")
+                    .map(|_| l.trim().to_string())
+            })
+            .expect("the key is printed");
+        let v = d.path(&format!("view-{tier}.wallet"));
+        let vs = v.to_str().unwrap();
+        let (r, said) = cli(
+            &["restore-view", "--wallet", vs],
+            &[key.as_str(), "longenough2", "longenough2"],
+        );
+        r.unwrap();
+        assert!(
+            said.iter().any(|l| l.contains("view-only wallet")),
+            "{said:?}"
+        );
+        let (_, said) = cli(&["address", "--wallet", vs], &["longenough2"]);
+        assert_eq!(said.last().unwrap(), &main);
+        let (_, said) = cli(&["seed", "--wallet", vs], &["longenough2"]);
+        assert!(said.iter().any(|l| l.contains("no seed")), "{said:?}");
+    }
+}

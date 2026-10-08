@@ -144,6 +144,7 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             global_index: None,
             has_secret: true,
             note: Some("Rent".into()),
+            payment_id: None,
         },
         HistoryRow {
             account: 0,
@@ -155,6 +156,7 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             global_index: Some(3),
             has_secret: false,
             note: None,
+            payment_id: None,
         },
         HistoryRow {
             account: 1,
@@ -166,6 +168,7 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             global_index: Some(5),
             has_secret: false,
             note: None,
+            payment_id: Some([0xab; 8]),
         },
     ];
     WalletView::Unlocked(Box::new(WalletData {
@@ -845,6 +848,7 @@ fn the_history_shows_what_came_in_what_went_out_and_where_a_payment_stands() {
         "2023-11-14 22:13 UTC",
         "Copy id",
         "sender unknown",
+        "payment ID abababababababab",
     ] {
         assert!(
             t.contains(needle),
@@ -1019,7 +1023,7 @@ fn the_history_offers_proofs_and_the_transaction_key_is_not_shown_until_asked() 
     );
     rig.app.set_snapshot(s);
     let (t, _) = rig.frame();
-    for needle in ["Prove payment", "Show transaction key", "Prove receipt"] {
+    for needle in ["Prove payment", "Show payment key", "Prove receipt"] {
         assert!(
             t.contains(needle),
             "`{needle}` missing from the history:
@@ -1027,7 +1031,7 @@ fn the_history_offers_proofs_and_the_transaction_key_is_not_shown_until_asked() 
         );
     }
     // nothing secret is on screen yet
-    let key = "ab".repeat(32);
+    let key = "ab".repeat(16);
     assert!(!t.contains(&key));
     // after the click the worker answers; only then is the key drawn, in a window that says what it is, with a copy button of its own
     rig.events
@@ -1038,7 +1042,7 @@ fn the_history_offers_proofs_and_the_transaction_key_is_not_shown_until_asked() 
         .unwrap();
     let (t, copies) = rig.frame();
     assert!(
-        t.contains("Transaction key (secret)") && t.contains(&key),
+        t.contains("Payment key (secret)") && t.contains(&key),
         "{t}"
     );
     assert!(t.contains("It cannot spend anything"), "{t}");
@@ -1082,7 +1086,7 @@ fn the_prove_screen_signs_verifies_and_checks_and_says_what_it_does_not_show() {
         "Unlock the wallet",
         "Verify a signed message",
         "Check a payment proof",
-        "Check a transaction key",
+        "Check a payment key",
         "Search from block",
         "start the node first",
     ] {
@@ -1227,6 +1231,8 @@ fn the_receive_screen_makes_requests_and_the_send_screen_reads_them() {
     rig.app.goto("Receive");
     let (t, _) = rig.frame();
     for needle in [
+        "Integrated address",
+        "Make an integrated address",
         "Request a payment",
         "is not marked as paid",
         "Make request",
@@ -1295,4 +1301,30 @@ fn the_confirmation_and_the_history_say_what_a_payment_was_for() {
     rig.app.goto("History");
     let (t, _) = rig.frame();
     assert!(t.contains("for Rent"), "{t}");
+}
+
+#[test]
+fn a_node_with_no_peers_is_not_called_up_to_date() {
+    let mut rig = Rig::new();
+    rig.app.goto("Node");
+    for peers in [0, 3] {
+        let s = snap(
+            &rig,
+            wallet(true, true),
+            NodeView::Running {
+                info: info(false, peers),
+                ours: true,
+            },
+            MinerView::Off,
+            None,
+        );
+        rig.app.set_snapshot(s);
+        let (t, _) = rig.frame();
+        // the Node tab's State row ("Wallet: up to date" in the top bar is about the wallet, not the node)
+        assert_eq!(
+            t.contains("no peers: cannot tell if it is up to date"),
+            peers == 0,
+            "{peers} peers:\n{t}"
+        );
+    }
 }
