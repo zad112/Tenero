@@ -23,7 +23,8 @@ use std::time::{Duration, Instant};
 use tenero_chain::{ChainParams, MatmulPow, ProofsNotChecked};
 use tenero_core::matmulhash::Params;
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{self, PowKind};
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids;
 use tenero_miner::gpu::GpuBackend;
 use tenero_miner::{Backend, Counters, Job, Miner, MinerConfig, MinerHook, PlaceholderPayout};
 use tenero_net::sim::LABEL;
@@ -83,7 +84,7 @@ fn the_gpu_mines_blocks_a_cpu_node_verifies_in_full() {
     let store = Store::open(&db.0, LABEL, PowKind::Matmul).unwrap();
     // an easy target (about one attempt in eight), so a block takes a handful of attempts and the time is the
     // GPU's speed and the node's checking, not luck
-    let chain = ChainParams::version_2(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
+    let chain = ChainParams::version_3(LABEL, PowKind::Matmul, U256::pow2(253).unwrap());
     // the node's own CPU proof of work: every block the GPU finds goes through this, bit for bit
     let pow = Arc::new(
         MatmulPow::new(params, epoch, 6)
@@ -224,16 +225,14 @@ fn how_many_attempts_per_second_the_gpu_backend_does_at_each_batch_size() {
     )
     .unwrap();
     let block = node
-        .block_template(
-            1_700_000_060,
-            1000,
-            tenero_node::Payout {
+        .block_template(1_700_000_060, 1000, &|_| {
+            tenero_net::sim::test_payout(tenero_node::Payout {
                 onetime_address: [1; 32],
                 view_tag: [0; 3],
                 ephemeral_pubkey: [2; 32],
                 anchor_enc: [0; 16],
-            },
-        )
+            })
+        })
         .unwrap();
     eprintln!("{:>7} {:>14}", "batch", "attempts/s");
     for batch in [32usize, 64, 128, 256] {

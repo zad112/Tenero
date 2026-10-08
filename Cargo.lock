@@ -3384,6 +3384,7 @@ dependencies = [
  "tenero-net",
  "tenero-node",
  "tenero-store",
+ "tenero-tree",
  "tenero-wallet",
 ]
 
