@@ -481,12 +481,20 @@ pub fn default_pool(network: crate::config::Network) -> Option<(&'static str, [u
         .map(|(_, addr, key)| (*addr, *key))
 }
 
-/// `(network, address, public key)`: the pools built into the program. **None in 0.3.0 yet**: the author's test pool served `beta`
-/// (`195.26.244.245:38335`, with the 0.2.0 programs), and a `gamma` pool gets its entry once it has run and printed its key
-/// (`tenero-pool key`), which a miner that uses the entry pins, so that a person who sits between the miner and the pool is
-/// refused. A pool keeps the block rewards and pays by its own rules, and nothing on the network has any value. **A change of
-/// this list needs a new release**, as the seeds' does.
-pub const DEFAULT_POOLS: &[(&str, &str, [u8; 32])] = &[];
+/// `(network, address, public key)`: the pools built into the program. **One**: the author's test pool on the `gamma` network, on the
+/// second server (195.26.244.245, port 38335, where `beta`'s pool ran; decision S1, 2026-10-08). Its key was made on the owner's PC before
+/// the release (`tenero-pool key`) and is copied to the server, so that the program can carry it; a miner that uses this entry pins it, and
+/// a person who sits between the miner and the pool is refused. It is one computer run by one person, the pool keeps the block rewards and
+/// pays by its own rules, and nothing on the network has any value. **A change of this list needs a new release**, as the seeds' does.
+pub const DEFAULT_POOLS: &[(&str, &str, [u8; 32])] = &[(
+    "gamma",
+    "195.26.244.245:38335",
+    [
+        0x4e, 0xb5, 0x3a, 0xe8, 0xfe, 0xe5, 0xbf, 0x15, 0x96, 0xb3, 0xc6, 0x52, 0x89, 0x6e, 0xbf,
+        0x51, 0x90, 0xc0, 0x41, 0x5d, 0x92, 0x54, 0x2c, 0x9c, 0x53, 0x68, 0x42, 0xbd, 0x5c, 0xfa,
+        0x77, 0x0a,
+    ],
+)];
 
 /// Dials a pool: its address and, if the miner was given one, its public key (pinned).
 pub fn connect(
