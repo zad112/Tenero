@@ -174,8 +174,9 @@ fn every_node_of_a_120_node_network_reaches_50_peers() {
     // and 50 or more connections still make one working network
     sim.mine(77, None);
     assert!(sim.run_until(120 * SEC, |s| s.all_agree()));
-    // a block body is still sent once per node, however many peers each has
-    assert_eq!(sim.sent_by_kind["blocks"], (n - 1) as u64);
+    // a new block is sent once per node, however many peers each has, and in compact form (no whole blocks)
+    assert_eq!(sim.sent_by_kind["compact"], (n - 1) as u64);
+    assert!(!sim.sent_by_kind.contains_key("blocks"));
 }
 
 #[test]

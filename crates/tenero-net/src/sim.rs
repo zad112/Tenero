@@ -13,8 +13,9 @@ use std::path::PathBuf;
 
 use tenero_chain::{ChainParams, ProofsNotChecked, Sha256Pow};
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{block_id, PowKind};
-use tenero_core::v2::Block;
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids::block_id;
+use tenero_core::v3::Block;
 use tenero_node::{Node, NodeConfig, Payout};
 use tenero_store::Store;
 
@@ -41,10 +42,12 @@ pub fn sim_addr(i: usize) -> String {
 }
 
 /// A block on `node`'s tip, mined on the SHA-256 test chain (a nonce search that takes a few hashes), with
-/// `payout` in its coinbase and the pool's best transactions in its body. **Not for a real chain.**
+/// `payout` in its coinbase and the pool's best transactions in its body. The payout's one-time address and ephemeral key
+/// are hashed to points first, so any bytes make a valid coinbase. **Not for a real chain.**
 pub fn mine_test_block(node: &tenero_node::Node<'_>, timestamp: u64, payout: Payout) -> Block {
+    let payout = test_payout(payout);
     let mut b = node
-        .block_template(timestamp, 1_000_000, payout)
+        .block_template(timestamp, 1_000_000, &|_| payout.clone())
         .expect("a template");
     let target = node.next_block().expect("next block").target;
     for nonce in 0.. {
@@ -56,14 +59,20 @@ pub fn mine_test_block(node: &tenero_node::Node<'_>, timestamp: u64, payout: Pay
     b
 }
 
-/// The rules of the SHA-256 test chain (a target one hash in four meets, small rings, short maturity): what the
+/// A payout whose one-time address and ephemeral key are valid points: `p`'s bytes hashed to points (Monero's
+/// hash-to-point). For tests: nobody can spend such an output.
+pub fn test_payout(p: Payout) -> Payout {
+    Payout {
+        onetime_address: tenero_tree::hash_to_point(p.onetime_address),
+        ephemeral_pubkey: tenero_tree::hash_to_point(p.ephemeral_pubkey),
+        ..p
+    }
+}
+
+/// The rules of the SHA-256 test chain (a target one hash in four meets; the version 3 rules otherwise): what the
 /// simulator, the socket tests and the test-node program all run. **Not a real chain.**
 pub fn test_chain_params() -> ChainParams {
-    let mut params = ChainParams::version_2(LABEL, PowKind::Sha256, U256::pow2(254).unwrap());
-    params.ring_size = 2;
-    params.coinbase_maturity = 1;
-    params.spend_maturity = 1;
-    params
+    ChainParams::version_3(LABEL, PowKind::Sha256, U256::pow2(254).unwrap())
 }
 
 /// The id of the test chain (what a handshake is bound to), worked out from a scratch store.
@@ -85,8 +94,7 @@ pub struct SimRig {
 }
 
 impl SimRig {
-    /// A rig on the SHA-256 test chain (a target one hash in four meets), with small rings and short
-    /// maturity so a few blocks are enough to spend.
+    /// A rig on the SHA-256 test chain (a target one hash in four meets).
     pub fn new(tag: &str, index: usize) -> SimRig {
         let path = std::env::temp_dir().join(format!(
             "tenero-sim-{}-{tag}-{index}.redb",
@@ -872,7 +880,7 @@ impl<'a> Sim<'a> {
     }
 
     /// Submits a transaction at `node` as its own.
-    pub fn submit_tx(&mut self, node: usize, tx: tenero_core::v2::Transaction) {
+    pub fn submit_tx(&mut self, node: usize, tx: tenero_core::v3::Transaction) {
         let out = self.engines[node].handle(self.now_ms, Event::LocalTx(tx));
         self.process(End::Node(node), out);
     }

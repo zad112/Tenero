@@ -4,7 +4,7 @@
 //! reply once, and only to the peer that was slow, and only for a while.
 
 use tenero_core::u256::U256;
-use tenero_core::v2::{Input, Output, Prunable, Transaction, TxPrefix, VERSION};
+use tenero_core::v3::{Input, Output, Prunable, Transaction, TxPrefix, VERSION};
 use tenero_net::sim::{Sim, SimConfig, SimRig};
 use tenero_net::{AssumeValid, EngineConfig, Hello, Message, PROTOCOL_VERSION};
 
@@ -56,7 +56,6 @@ fn a_tx() -> Transaction {
         amount_commitment: [n; 32],
         amount_enc: [n; 8],
         view_tag: [n; 3],
-        ephemeral_pubkey: [n; 32],
         anchor_enc: [n; 16],
     };
     Transaction {
@@ -64,11 +63,12 @@ fn a_tx() -> Transaction {
             version: VERSION,
             inputs: vec![Input { key_image: [5; 32] }],
             outputs: vec![out(1), out(2)],
+            ephemeral_pubkeys: vec![[9; 32]],
             fee: 1,
-            extra: vec![],
+            encrypted_payment_id: [0; 8],
         },
         prunable: Prunable {
-            rings: vec![vec![0, 1]],
+            reference_height: 0,
             proof_data: vec![7; 20],
         },
     }
@@ -222,7 +222,7 @@ fn a_late_transaction_we_asked_for_is_forgiven_once() {
     let rigs = SimRig::rigs("late-txs", 1);
     let mut sim = Sim::new(&rigs, T0, SimConfig::default(), config());
     let tx = a_tx();
-    let id = tenero_core::v2::ids::tx_id(&tx).unwrap();
+    let id = tenero_core::v3::ids::tx_id(&tx).unwrap();
     let h = sim.add_hostile(0, "slow");
     sim.hostile_send(h, hello(&rigs[0], 0, U256::ZERO));
     sim.hostile_send(h, Message::NewTx { ids: vec![id] });

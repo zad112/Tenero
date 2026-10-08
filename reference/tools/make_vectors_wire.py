@@ -1,9 +1,11 @@
 """The reference for the peer-to-peer WIRE PROTOCOL (docs/WIRE_PROTOCOL.md) and its golden vectors.
 
 An independent implementation, in Python and the standard library only, of how the messages of
-crates/tenero-net become bytes: the frame, the sixteen message layouts, the caps, and the order in which a
-decoder checks a frame. The transaction and block encodings inside `blocks` and `txs` come from the version 2
-data-model reference (`reference/tools/make_vectors_v2.py`), which is itself checked against the Rust code.
+crates/tenero-net become bytes: the frame, the twenty message layouts, the caps, and the order in which a
+decoder checks a frame. The transaction, block, header and coinbase encodings inside the messages come from the version 3
+data-model reference (`reference/tools/make_vectors_v3.py`), which is itself checked against the Rust code. Protocol
+version 2 (the `gamma` network): version 3 blocks, and compact blocks (17-20) for relaying blocks and for sending the ones
+too big for a frame.
 
     python reference/tools/make_vectors_wire.py --check     do the committed vectors match the reference?
     python reference/tools/make_vectors_wire.py --write     regenerate them (a PROTOCOL CHANGE: explain it in the commit
@@ -18,11 +20,13 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import make_vectors_v2 as v2  # noqa: E402  (the data-model reference)
+import make_vectors_v2 as v2  # noqa: E402  (the codec)
+import make_vectors_v3 as v3  # noqa: E402  (the data-model reference)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the repository (the tools live in reference/tools)
 VECTOR_DIR = os.path.join(ROOT, "tests", "vectors")
-NAME = "v2_wire"
+NAME = "v3_wire"
+PROTOCOL_VERSION = 2
 
 MAX_FRAME = 16 * 1024 * 1024
 MAX_LOCATOR = 32
@@ -33,10 +37,15 @@ MAX_NOT_FOUND = 64
 MAX_ADDRS = 100
 MAX_HEADERS = 500
 HEADER_SIZE = 2 + 32 + 8 + 32 + 8 + 64
+# a block's transactions are at most MAX_BLOCK_TXS: a compact block lists their ids, a request their indexes
+MAX_BLOCK_TXS = v3.MAX_BLOCK_TXS
+# the largest coinbase: version, height, count, its outputs (91 bytes each), the extra's length and bytes
+COINBASE_MAX = 2 + 8 + 4 + v3.MAX_COINBASE_OUTPUTS * 91 + 4 + v3.MAX_EXTRA
 
 KINDS = {1: "hello", 2: "ping", 3: "pong", 4: "get_block_ids", 5: "block_ids", 6: "get_blocks",
          7: "blocks", 8: "not_found", 9: "new_block", 10: "new_tx", 11: "get_txs", 12: "txs",
-         13: "get_addrs", 14: "addrs", 15: "get_headers", 16: "headers"}
+         13: "get_addrs", 14: "addrs", 15: "get_headers", 16: "headers",
+         17: "get_compact", 18: "compact", 19: "get_block_txs", 20: "block_txs"}
 BY_NAME = {v: k for k, v in KINDS.items()}
 
 # the largest allowed value of `length` (kind byte + body), per kind
@@ -56,11 +65,16 @@ CAPS = {
     "addrs": 1 + 4 + MAX_ADDRS * 26,
     "get_headers": 1 + 4 + MAX_LOCATOR * 32,
     "headers": 1 + 8 + 4 + MAX_HEADERS * HEADER_SIZE,
+    "get_compact": 1 + 32,
+    "compact": 1 + HEADER_SIZE + COINBASE_MAX + 4 + MAX_BLOCK_TXS * 32,
+    "get_block_txs": 1 + 32 + 4 + MAX_BLOCK_TXS * 4,
+    "block_txs": MAX_FRAME,
 }
 # the largest allowed count in a list, per kind
 MAX_COUNT = {"get_block_ids": MAX_LOCATOR, "block_ids": MAX_IDS, "get_blocks": MAX_BLOCKS, "blocks": MAX_BLOCKS,
              "not_found": MAX_NOT_FOUND, "new_tx": MAX_TXS, "get_txs": MAX_TXS, "txs": MAX_TXS,
-             "addrs": MAX_ADDRS, "get_headers": MAX_LOCATOR, "headers": MAX_HEADERS}
+             "addrs": MAX_ADDRS, "get_headers": MAX_LOCATOR, "headers": MAX_HEADERS,
+             "compact": MAX_BLOCK_TXS, "get_block_txs": MAX_BLOCK_TXS, "block_txs": MAX_BLOCK_TXS}
 
 ERRORS = ("short frame", "empty frame", "unknown kind", "frame too large", "trailing bytes",
           "count out of range", "short read", "length over maximum")
@@ -109,6 +123,16 @@ def enc_body(m):
             ids_hex([a["ip"]], 16) + struct.pack("<HQ", a["port"], a["last_seen"]) for a in m["addrs"])
     if k == "new_block":
         return ids_hex([m["id"]]) + struct.pack("<Q", m["height"]) + ids_hex([m["cumulative_work"]])
+    if k == "get_compact":
+        return ids_hex([m["id"]])
+    if k == "compact":
+        return (bytes.fromhex(m["header"]) + bytes.fromhex(m["coinbase"]) + struct.pack("<I", len(m["tx_ids"]))
+                + ids_hex(m["tx_ids"]))
+    if k == "get_block_txs":
+        return ids_hex([m["block_id"]]) + struct.pack("<I", len(m["indexes"])) + b"".join(
+            struct.pack("<I", i) for i in m["indexes"])
+    if k == "block_txs":
+        return ids_hex([m["block_id"]]) + struct.pack("<I", len(m["txs"])) + b"".join(bytes.fromhex(x) for x in m["txs"])
     raise AssertionError(k)
 
 
@@ -123,7 +147,9 @@ def encode(m):
     if 1 + len(body) > CAPS[k]:
         raise ValueError(f"{k}: over the cap")
     if k in MAX_COUNT:
-        n = struct.unpack("<I", body[:4] if k not in ("block_ids", "headers") else body[8:12])[0]
+        at = {"block_ids": 8, "headers": 8, "get_block_txs": 32, "block_txs": 32,
+              "compact": HEADER_SIZE + len(bytes.fromhex(m.get("coinbase", "")))}.get(k, 0)
+        n = struct.unpack("<I", body[at:at + 4])[0]
         if n > MAX_COUNT[k]:
             raise ValueError(f"{k}: count over the cap")
     return frame(BY_NAME[k], body)
@@ -203,10 +229,10 @@ class Reader:
 
 def inner(fn, r):
     """Runs a data-model decoder over the reader; its errors pass through under their own names."""
-    sub = v2.Reader(r.data[r.pos:])
+    sub = v3.Reader(r.data[r.pos:])
     try:
         obj = fn(sub)
-    except v2.DecodeError as e:
+    except v3.DecodeError as e:
         raise WireError(e.kind)
     used = sub.pos
     out = r.take(used).hex()
@@ -232,9 +258,21 @@ def decode_body(kind, body):
     elif kind in ("get_blocks", "not_found", "new_tx", "get_txs"):
         m["ids"] = [r.h32() for _ in range(r.count(kind))]
     elif kind == "blocks":
-        m["blocks"] = [inner(v2.dec_block, r)[0] for _ in range(r.count(kind))]
+        m["blocks"] = [inner(v3.dec_block, r)[0] for _ in range(r.count(kind))]
     elif kind == "txs":
-        m["txs"] = [inner(v2.dec_tx, r)[0] for _ in range(r.count(kind))]
+        m["txs"] = [inner(v3.dec_tx, r)[0] for _ in range(r.count(kind))]
+    elif kind == "get_compact":
+        m["id"] = r.h32()
+    elif kind == "compact":
+        m["header"] = r.take(HEADER_SIZE).hex()
+        m["coinbase"] = inner(v3.dec_coinbase, r)[0]
+        m["tx_ids"] = [r.h32() for _ in range(r.count(kind))]
+    elif kind == "get_block_txs":
+        m["block_id"] = r.h32()
+        m["indexes"] = [r.u32() for _ in range(r.count(kind))]
+    elif kind == "block_txs":
+        m["block_id"] = r.h32()
+        m["txs"] = [inner(v3.dec_tx, r)[0] for _ in range(r.count(kind))]
     elif kind == "get_addrs":
         pass
     elif kind == "addrs":
@@ -253,7 +291,7 @@ def decode_body(kind, body):
 
 
 def h(label, n=32):
-    return v2.h("wire " + label, n)
+    return v3.h("wire " + label, n)
 
 
 def work(n):
@@ -261,25 +299,33 @@ def work(n):
 
 
 def sample_block(tag, ntx=1):
-    txs = [v2.sample_tx(f"{tag} tx{i}", proof=64 + i, ring_size=16) for i in range(ntx)]
-    tx_ids = [v2.tx_id(t).hex() for t in txs]
-    return {"header": v2.sample_header(tag, txs=tx_ids), "coinbase": v2.sample_coinbase(7), "transactions": txs}
+    txs = [v3.sample_tx(f"{tag} tx{i}", proof=64 + i) for i in range(ntx)]
+    coinbase = v3.sample_coinbase(7)
+    ids = [v3.coinbase_id(coinbase).hex()] + [v3.tx_id(t).hex() for t in txs]
+    return {"header": v3.sample_header(tag, txs=ids), "coinbase": coinbase, "transactions": txs}
 
 
 def block_hex(tag, ntx=1):
-    return v2.enc_block(sample_block(tag, ntx)).hex()
+    return v3.enc_block(sample_block(tag, ntx)).hex()
 
 
 def header_hex(tag):
-    return v2.enc_header(v2.sample_header(tag)).hex()
+    return v3.enc_header(v3.sample_header(tag)).hex()
 
 
 def tx_hex(tag, **kw):
-    return v2.enc_tx(v2.sample_tx(tag, **kw)).hex()
+    return v3.enc_tx(v3.sample_tx(tag, **kw)).hex()
+
+
+def compact_of(tag, ntx):
+    """The compact form of a sample block: its header, its coinbase and its transactions' ids."""
+    b = sample_block(tag, ntx)
+    return {"kind": "compact", "header": v3.enc_header(b["header"]).hex(),
+            "coinbase": v3.enc_coinbase(b["coinbase"]).hex(), "tx_ids": [v3.tx_id(t).hex() for t in b["transactions"]]}
 
 
 def valid_messages():
-    hello = {"kind": "hello", "version": 1, "chain_id": h("chain"), "tip_height": 123456,
+    hello = {"kind": "hello", "version": PROTOCOL_VERSION, "chain_id": h("chain"), "tip_height": 123456,
              "cumulative_work": work(2 ** 70 + 5), "tip_id": h("tip"), "pruned_below": 1000,
              "nonce": 0x1122334455667788}
     out = [
@@ -314,6 +360,18 @@ def valid_messages():
         ("a request for transactions", {"kind": "get_txs", "ids": [h("t1")]}),
         ("a request for 64 transactions", {"kind": "get_txs", "ids": [h(f"q{i}") for i in range(64)]}),
         ("two transactions", {"kind": "txs", "txs": [tx_hex("x", n_in=1), tx_hex("y", n_in=2, n_out=3)]}),
+        ("a request for a compact block", {"kind": "get_compact", "id": h("compact")}),
+        ("a compact block of three transactions", compact_of("cmp", 3)),
+        ("a compact block of none", compact_of("cmp0", 0)),
+        ("a compact block at the cap of 8192 ids", {**compact_of("cmpmax", 0),
+                                                    "tx_ids": [h(f"cid{i}") for i in range(MAX_BLOCK_TXS)]}),
+        ("a request for three of a block's transactions", {"kind": "get_block_txs", "block_id": h("blk"),
+                                                           "indexes": [0, 7, 0xFFFFFFFF]}),
+        ("a request for 8192 of them", {"kind": "get_block_txs", "block_id": h("blkmax"),
+                                        "indexes": list(range(MAX_BLOCK_TXS))}),
+        ("a block's transactions", {"kind": "block_txs", "block_id": h("blk"),
+                                    "txs": [tx_hex("bt0"), tx_hex("bt1", n_in=3, n_out=4)]}),
+        ("none of a block's transactions", {"kind": "block_txs", "block_id": h("blk"), "txs": []}),
         ("no transactions", {"kind": "txs", "txs": []}),
         ("a request for addresses", {"kind": "get_addrs"}),
         ("two addresses", {"kind": "addrs", "addrs": [
@@ -351,6 +409,15 @@ def u32(n):
     return struct.pack("<I", n)
 
 
+def tx_with_17_outputs():
+    """A transaction's wire form with an output count of 17 (one over MAX_OUTPUTS): its prefix up to the count."""
+    t = v3.sample_tx("bad17", n_in=1)
+    prefix = v3.enc_tx(t)
+    # version u16, input count u32, one input (32), then the output count
+    at = 2 + 4 + 32
+    return (prefix[:at] + u32(17) + prefix[at + 4:]).hex()
+
+
 def invalid_cases():
     ping = encode({"kind": "ping", "nonce": 7})
     getbi = encode({"kind": "get_block_ids", "locator": [h("a")]})
@@ -362,7 +429,7 @@ def invalid_cases():
         bad("a length of zero", u32(0) + b"\x02", "empty frame"),
         bad("a length of zero and nothing else", u32(0), "empty frame"),
         bad("kind 0", u32(9) + b"\x00" + b"\x00" * 8, "unknown kind"),
-        bad("kind 17", u32(9) + b"\x11" + b"\x00" * 8, "unknown kind"),
+        bad("kind 21", u32(9) + b"\x15" + b"\x00" * 8, "unknown kind"),
         bad("kind 255", u32(1) + b"\xff", "unknown kind"),
         bad("an unknown kind is reported before a too-large length", u32(0xFFFFFFFF) + b"\x00", "unknown kind"),
         bad("a ping declaring one byte too many", u32(10) + b"\x02" + b"\x00" * 9, "frame too large"),
@@ -395,16 +462,16 @@ def invalid_cases():
             "short read"),
         bad("transactions claiming one and holding ten zero bytes (a transaction needs at least one input)",
             u32(1 + 4 + 10) + b"\x0c" + u32(1) + b"\x00" * 10, "count out of range"),
-        bad("a transaction with a ring of 17 inside a well-formed frame",
-            (lambda body: u32(1 + len(body)) + b"\x0c" + body)(u32(1) + v2.enc_tx(v2.sample_tx("bad", ring_size=17))),
+        bad("a transaction with 17 outputs inside a well-formed frame",
+            (lambda body: u32(1 + len(body)) + b"\x0c" + body)(u32(1) + bytes.fromhex(tx_with_17_outputs())),
             "count out of range"),
         bad("a transaction whose proof is one byte over the limit inside a well-formed frame",
             (lambda body: u32(1 + len(body)) + b"\x0c" + body)(
-                u32(1) + v2.enc_tx(v2.sample_tx("big", proof=v2.MAX_PROOF + 1))),
+                u32(1) + v3.enc_tx(v3.sample_tx("big", proof=v3.MAX_PROOF + 1))),
             "length over maximum"),
         bad("a transaction one byte over MAX_TX_SIZE inside a well-formed frame",
-            (lambda body: u32(1 + len(body)) + b"" + body)(
-                u32(1) + v2.enc_tx(v2.sized_tx("huge", v2.MAX_TX_SIZE + 1))),
+            (lambda body: u32(1 + len(body)) + b"\x0c" + body)(
+                u32(1) + v3.enc_tx(v3.sized_tx("huge", v3.MAX_TX_SIZE + 1))),
             "length over maximum"),
         bad("a valid block with a byte missing inside a well-formed frame",
             (lambda body: u32(1 + len(body)) + b"\x07" + body)(u32(1) + bytes.fromhex(block_hex("cut"))[:-1]),
@@ -426,6 +493,22 @@ def invalid_cases():
         bad("no headers but bytes after the count", u32(1 + 8 + 4 + 1) + b"\x10" + struct.pack("<Q", 1) + u32(0) + b"\x00",
             "trailing bytes"),
         bad("a message announcing a block with a body one byte long", u32(2) + b"\x09" + b"\x00", "short read"),
+        bad("a compact block claiming 8193 ids", (lambda body: u32(1 + len(body)) + b"\x12" + body)(
+            bytes.fromhex(compact_of("c8193", 0)["header"]) + bytes.fromhex(compact_of("c8193", 0)["coinbase"])
+            + u32(MAX_BLOCK_TXS + 1)), "count out of range"),
+        bad("a compact block whose coinbase is cut short", (lambda body: u32(1 + len(body)) + b"\x12" + body)(
+            bytes.fromhex(compact_of("ccut", 0)["header"]) + bytes.fromhex(compact_of("ccut", 0)["coinbase"])[:-3]),
+            "short read"),
+        bad("a compact block with a stray byte", (lambda f: u32(len(f) - 4 + 1) + f[4:] + b"\x00")(
+            encode(compact_of("cstray", 1))), "trailing bytes"),
+        bad("a request for a block's transactions claiming 8193 indexes",
+            u32(1 + 32 + 4) + b"\x13" + bytes.fromhex(h("x")) + u32(MAX_BLOCK_TXS + 1), "count out of range"),
+        bad("a request claiming 2 indexes and holding one", u32(1 + 32 + 4 + 4) + b"\x13" + bytes.fromhex(h("x"))
+            + u32(2) + u32(5), "short read"),
+        bad("a block's transactions claiming 8193", u32(1 + 32 + 4) + b"\x14" + bytes.fromhex(h("x"))
+            + u32(MAX_BLOCK_TXS + 1), "count out of range"),
+        bad("a request for a compact block with a body one byte short", u32(32) + b"\x11" + b"\x00" * 31,
+            "short read"),
     ]
     # every kind with a cap below 16 MiB: one byte over the cap is refused from the header alone
     covered = {"hello", "ping", "block_ids"}
@@ -459,10 +542,12 @@ def build():
         "description": "The peer-to-peer wire protocol (docs/WIRE_PROTOCOL.md): every message as a whole frame, "
                        "malformed frames with the error a decoder must give, and the prefixes on which a stream "
                        "decoder must already fail. Made by reference/tools/make_vectors_wire.py. `blocks` and `txs` hold "
-                       "the wire form (CONSENSUS_V2.md) of each block and transaction as hex.",
+                       "the wire form (CONSENSUS_V2.md 15) of each block and transaction as hex; a compact block's "
+                       "`header` and `coinbase` are their wire forms as hex.",
+        "protocol_version": PROTOCOL_VERSION,
         "limits": {"max_frame": MAX_FRAME, "max_locator": MAX_LOCATOR, "max_ids": MAX_IDS, "max_blocks": MAX_BLOCKS,
                    "max_txs": MAX_TXS, "max_not_found": MAX_NOT_FOUND, "max_addrs": MAX_ADDRS,
-                   "max_headers": MAX_HEADERS},
+                   "max_headers": MAX_HEADERS, "max_block_txs": MAX_BLOCK_TXS},
         "kinds": {str(k): v for k, v in KINDS.items()},
         "caps": CAPS,
         "valid": valid_cases(),

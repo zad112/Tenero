@@ -1,14 +1,16 @@
 //! The protocol engine on the simulated network. Real engines, real stores, really mined and validated blocks;
 //! hostile peers are scripted endpoints that can send anything.
 
-use tenero_core::fees;
 use tenero_core::hash::sha256;
 use tenero_core::u256::U256;
-use tenero_core::v2::ids::{block_id, block_tx_root, PowKind};
-use tenero_core::v2::*;
+use tenero_core::v2::ids::PowKind;
+use tenero_core::v3::ids::{self, block_id, block_tx_root};
+use tenero_core::v3::rules;
+use tenero_core::v3::*;
 use tenero_net::sim::{Sim, SimConfig, SimRig};
 use tenero_net::{EngineConfig, Hello, Message, PROTOCOL_VERSION};
 use tenero_node::Payout;
+use tenero_tree::hash_to_point;
 
 const T0: u64 = 1_700_000_000;
 const SEC: u64 = 1000;
@@ -48,16 +50,14 @@ fn forged_block(sim: &mut Sim<'_>, node: usize) -> Block {
     let eng = &sim.engines[node];
     let mut b = eng
         .node()
-        .block_template(
-            ts,
-            1_000_000,
-            Payout {
+        .block_template(ts, 1_000_000, &|_| {
+            tenero_net::sim::test_payout(Payout {
                 onetime_address: [3; 32],
                 view_tag: [4; 3],
                 ephemeral_pubkey: [5; 32],
                 anchor_enc: [6; 16],
-            },
-        )
+            })
+        })
         .unwrap();
     b.coinbase.outputs[0].amount += 1;
     b.header.tx_root = block_tx_root(&b.coinbase, &b.transactions).unwrap();
@@ -71,34 +71,61 @@ fn forged_block(sim: &mut Sim<'_>, node: usize) -> Block {
     b
 }
 
-/// A transaction valid at `node`'s tip (ring of the first two outputs), paying the minimum plus `fee_delta`.
+/// A block's compact form, as a peer sends it for a new block.
+fn compact(b: &Block) -> Message {
+    Message::Compact(Box::new(tenero_net::CompactBlock {
+        header: b.header.clone(),
+        coinbase: b.coinbase.clone(),
+        tx_ids: b
+            .transactions
+            .iter()
+            .map(|t| ids::tx_id(t).unwrap())
+            .collect(),
+    }))
+}
+
+/// Mines on node 0 until block 61, a minute apart, and waits for everyone: from then on the curve tree holds outputs, so
+/// transactions can be made (a reference block needs a non-empty tree).
+fn ready_for_spends(sim: &mut Sim<'_>) {
+    while sim.tip(0).0 < 61 {
+        sim.mine(0, None);
+        assert!(sim.run_until(60 * SEC, |s| s.all_agree()));
+        sim.run_for(61 * SEC);
+    }
+}
+
+/// A transaction valid at `node`'s tip (its reference block the tip, whose tree must hold outputs: from block 60 on),
+/// paying the minimum plus `fee_delta`. Its proof is junk: the simulator does not check proofs.
 fn make_tx(sim: &Sim<'_>, node: usize, image: u64, fee_delta: i64) -> Transaction {
     let next = sim.engines[node].node().next_block().unwrap();
+    let pt = |tag: &[u8], n: u8| hash_to_point(sha256(&[tag, &image.to_le_bytes(), &[n]]));
     let out = |n: u8| Output {
-        onetime_address: sha256(&[b"addr", &image.to_le_bytes(), &[n]]),
-        amount_commitment: sha256(&[b"commit", &image.to_le_bytes(), &[n]]),
+        onetime_address: pt(b"addr", n),
+        amount_commitment: pt(b"commit", n),
         amount_enc: [n; 8],
         view_tag: [n; 3],
-        ephemeral_pubkey: sha256(&[b"eph", &image.to_le_bytes(), &[n]]),
         anchor_enc: [n; 16],
     };
+    let mut outputs = vec![out(1), out(2)];
+    outputs.sort_by_key(|o| o.onetime_address);
     let mut t = Transaction {
         prefix: TxPrefix {
             version: VERSION,
             inputs: vec![Input {
-                key_image: sha256(&[b"key image", &image.to_le_bytes()]),
+                key_image: pt(b"key image", 0),
             }],
-            outputs: vec![out(1), out(2)],
+            outputs,
+            ephemeral_pubkeys: vec![pt(b"eph", 0)],
             fee: 0,
-            extra: vec![],
+            encrypted_payment_id: [0; 8],
         },
         prunable: Prunable {
-            rings: vec![vec![0, 1]],
+            reference_height: next.height - 1,
             proof_data: vec![7; 200],
         },
     };
     let size = t.to_bytes().unwrap().len() as u64;
-    let min = fees::dynamic_min_fee(size, next.reward, next.median).unwrap();
+    let min = rules::min_fee(size, next.reward, next.median).unwrap();
     t.prefix.fee = u64::try_from(i64::try_from(min).unwrap() + fee_delta).unwrap();
     t
 }
@@ -378,8 +405,8 @@ fn an_invalid_block_bans_the_peer_at_once_and_the_ban_holds() {
     assert!(sim.hostiles[h]
         .inbox
         .iter()
-        .any(|m| matches!(m, Message::GetBlocks { ids } if ids == &vec![bad_id])));
-    sim.hostile_send(h, Message::Blocks { blocks: vec![bad] });
+        .any(|m| matches!(m, Message::GetCompact { id } if *id == bad_id)));
+    sim.hostile_send(h, compact(&bad));
     sim.run_for(2 * SEC);
     assert!(sim.hostiles[h].disconnected);
     let now = sim.now_ms();
@@ -518,11 +545,11 @@ fn a_peer_that_has_pruned_the_blocks_we_need_is_not_asked_to_serve_them() {
 fn an_invalid_transaction_is_punished_and_not_fetched_again() {
     let rigs = SimRig::rigs("badtx", 1);
     let mut sim = new_sim(&rigs);
-    sim.mine_chain(0, 4);
+    sim.mine_chain(0, 64);
     let bad = make_tx(&sim, 0, 1, -1); // one unit under the minimum fee
     let id = tx_id_of(&bad);
     let h = sim.add_hostile(0, "spammer");
-    sim.hostile_send(h, hello_for(&rigs[0], 4, zero_work()));
+    sim.hostile_send(h, hello_for(&rigs[0], 64, zero_work()));
     sim.hostile_send(h, Message::NewTx { ids: vec![id] });
     sim.run_for(SEC);
     assert!(sim.hostiles[h]
@@ -548,7 +575,7 @@ fn an_invalid_transaction_is_punished_and_not_fetched_again() {
 }
 
 fn tx_id_of(t: &Transaction) -> [u8; 32] {
-    tenero_core::v2::ids::tx_id(t).unwrap()
+    tenero_core::v3::ids::tx_id(t).unwrap()
 }
 
 // ---- relay ---------------------------------------------------------------------------------------
@@ -566,10 +593,11 @@ fn a_block_reaches_every_node_and_each_downloads_it_once() {
     );
     assert_eq!(sim.tip(0).1, block_id(&b.header, PowKind::Sha256));
     assert_eq!(
-        sim.sent_by_kind["blocks"], 7,
-        "the block body is sent once per node, not once per peer"
+        sim.sent_by_kind["compact"], 7,
+        "the block is sent once per node, not once per peer (in compact form)"
     );
-    assert_eq!(sim.sent_by_kind["get_blocks"], 7);
+    assert_eq!(sim.sent_by_kind["get_compact"], 7);
+    assert!(!sim.sent_by_kind.contains_key("blocks"));
     assert!(sim.sent_by_kind["new_block"] >= 7);
 }
 
@@ -579,11 +607,7 @@ fn a_transaction_spreads_and_is_dropped_from_every_pool_when_mined() {
     let mut sim = new_sim(&rigs);
     sim.connect_all();
     sim.run_for(3 * SEC);
-    for _ in 0..4 {
-        sim.mine(0, None);
-        assert!(sim.run_until(60 * SEC, |s| s.all_agree()));
-        sim.run_for(70 * SEC); // a minute passes between blocks
-    }
+    ready_for_spends(&mut sim);
     let t = make_tx(&sim, 0, 1, 0);
     let id = tx_id_of(&t);
     sim.submit_tx(2, t);
@@ -633,12 +657,12 @@ fn a_new_node_syncs_a_long_chain_in_batches() {
     );
 }
 
-/// Mines `blocks` blocks on `node`, a minute apart; from the eleventh on each carries one transaction, so that
-/// pruning has something to delete (a block with only a coinbase has no proofs to prune).
+/// Mines `blocks` blocks on `node`, a minute apart; from block 61 on (when the curve tree holds outputs) each carries one
+/// transaction, so that pruning has something to delete (a block with only a coinbase has no proofs to prune).
 fn mine_with_txs(sim: &mut Sim<'_>, node: usize, blocks: u64) {
     for _ in 0..blocks {
         let h = sim.tip(node).0;
-        if h >= 10 {
+        if h >= 60 {
             let t = make_tx(sim, node, h, 0);
             sim.submit_tx(node, t);
         }
@@ -819,7 +843,7 @@ fn sixty_nodes_with_fifty_nine_peers_each_converge_and_download_each_block_once(
     }
     assert_eq!(sim.tip(0).0, blocks as u64);
     assert_eq!(
-        sim.sent_by_kind["blocks"],
+        sim.sent_by_kind["compact"],
         (blocks * (n - 1)) as u64,
         "every node downloads every block exactly once, whatever its peer count"
     );
@@ -919,16 +943,14 @@ fn unshared_block(sim: &mut Sim<'_>, node: usize) -> Block {
     let eng = &sim.engines[node];
     let mut b = eng
         .node()
-        .block_template(
-            ts,
-            1_000_000,
-            Payout {
+        .block_template(ts, 1_000_000, &|_| {
+            tenero_net::sim::test_payout(Payout {
                 onetime_address: [7; 32],
                 view_tag: [7; 3],
                 ephemeral_pubkey: [7; 32],
                 anchor_enc: [7; 16],
-            },
-        )
+            })
+        })
         .unwrap();
     let target = eng.node().next_block().unwrap().target;
     for nonce in 0.. {
@@ -940,11 +962,12 @@ fn unshared_block(sim: &mut Sim<'_>, node: usize) -> Block {
     b
 }
 
+/// How many times the node asked hostile `h` for block `id` (a new block is asked for in compact form).
 fn count_get_blocks(sim: &Sim<'_>, h: usize, id: [u8; 32]) -> usize {
     sim.hostiles[h]
         .inbox
         .iter()
-        .filter(|m| matches!(m, Message::GetBlocks { ids } if ids == &vec![id]))
+        .filter(|m| matches!(m, Message::GetCompact { id: x } if *x == id))
         .count()
 }
 
@@ -1265,11 +1288,7 @@ fn a_transaction_is_announced_once_and_not_echoed() {
     let mut sim = new_sim(&rigs);
     sim.connect(0, 1);
     sim.run_for(3 * SEC);
-    for _ in 0..4 {
-        sim.mine(0, None);
-        assert!(sim.run_until(60 * SEC, |s| s.all_agree()));
-        sim.run_for(70 * SEC);
-    }
+    ready_for_spends(&mut sim);
     let t = make_tx(&sim, 0, 1, 0);
     let id = tx_id_of(&t);
     sim.submit_tx(0, t);
@@ -1317,7 +1336,7 @@ fn an_orphan_block_starts_a_sync_with_the_peer_that_sent_it() {
     assert_eq!(count_get_blocks(&sim, h, two_id), 1);
     assert!(!sim.engines[0].is_syncing());
     // its parent is unknown here: an orphan, and the node asks that peer for the chain
-    sim.hostile_send(h, Message::Blocks { blocks: vec![two] });
+    sim.hostile_send(h, compact(&two));
     sim.run_for(SEC);
     assert!(sim.engines[0].is_syncing());
     assert!(sim.hostiles[h]
@@ -1601,13 +1620,13 @@ fn a_block_a_peer_already_announced_is_not_announced_back_to_it() {
 fn a_transaction_is_not_announced_to_a_peer_that_already_announced_it() {
     let rigs = SimRig::rigs("txknown", 1);
     let mut sim = new_sim(&rigs);
-    sim.mine_chain(0, 4);
+    sim.mine_chain(0, 64);
     let t = make_tx(&sim, 0, 1, 0);
     let id = tx_id_of(&t);
     let a = sim.add_hostile(0, "first");
     let b = sim.add_hostile(0, "second");
     for h in [a, b] {
-        sim.hostile_send(h, hello_for(&rigs[0], 4, zero_work()));
+        sim.hostile_send(h, hello_for(&rigs[0], 64, zero_work()));
     }
     sim.run_for(SEC);
     sim.hostile_send(a, Message::NewTx { ids: vec![id] });

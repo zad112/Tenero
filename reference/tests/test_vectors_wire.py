@@ -13,7 +13,7 @@ VEC = w.VECTOR_DIR
 
 
 def load():
-    with open(os.path.join(VEC, "v2_wire.json"), encoding="utf-8") as f:
+    with open(os.path.join(VEC, "v3_wire.json"), encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -49,10 +49,11 @@ def test_the_frame_caps_are_the_ones_the_document_states():
     doc = open(os.path.join(os.path.dirname(w.ROOT + "/x"), "docs", "WIRE_PROTOCOL.md"), encoding="utf-8").read()
     stated = {"hello": 125, "ping": 9, "pong": 9, "new_block": 73, "get_block_ids": 1029, "get_blocks": 1029,
               "not_found": 2053, "new_tx": 2053, "get_txs": 2053, "block_ids": 16013, "blocks": 16_777_216,
-              "txs": 16_777_216, "get_addrs": 1, "addrs": 2605, "get_headers": 1029, "headers": 73013}
+              "txs": 16_777_216, "get_addrs": 1, "addrs": 2605, "get_headers": 1029, "headers": 73013,
+              "get_compact": 33, "compact": 263_897, "get_block_txs": 32_805, "block_txs": 16_777_216}
     assert w.CAPS == stated
     # the document's own numbers agree with the table above
-    for number in ("125", "1029", "2053", "16013", "16,777,216", "2605", "73013"):
+    for number in ("125", "1029", "2053", "16013", "16,777,216", "2605", "73013", "263,897", "32,805"):
         assert number in doc
 
 
@@ -65,6 +66,23 @@ def test_every_cap_is_what_the_layout_implies():
     assert w.CAPS["get_headers"] == w.CAPS["get_block_ids"]
     assert w.CAPS["new_tx"] == 1 + 4 + 64 * 32
     assert w.CAPS["new_block"] == 1 + 32 + 8 + 32
+    # a compact block: the header, the largest coinbase (16 outputs of 91 bytes, 128 bytes of extra), 8192 ids
+    assert w.CAPS["compact"] == 1 + 146 + (2 + 8 + 4 + 16 * 91 + 4 + 128) + 4 + 8192 * 32
+    assert w.CAPS["get_block_txs"] == 1 + 32 + 4 + 8192 * 4
+    assert w.CAPS["get_compact"] == 1 + 32
+
+
+def test_a_compact_block_s_ids_are_the_leaves_of_its_header_s_root():
+    # what makes a compact block trustworthy before any transaction arrives: the header's Merkle root is over the
+    # coinbase's id and these ids, and the header carries the proof of work
+    for c in load()["valid"]:
+        m = c["message"]
+        if m["kind"] != "compact" or len(m["tx_ids"]) > 100:
+            continue
+        cb = w.v3.dec_coinbase(w.v3.Reader(bytes.fromhex(m["coinbase"])))
+        leaves = [w.v3.coinbase_id(cb)] + [bytes.fromhex(x) for x in m["tx_ids"]]
+        header = w.v3.dec_header(w.v3.Reader(bytes.fromhex(m["header"])))
+        assert w.v3.merkle_root(leaves).hex() == header["tx_root"], c["note"]
 
 
 def test_a_frame_is_length_kind_body_in_little_endian():
@@ -116,6 +134,7 @@ def test_the_encoder_refuses_what_the_decoder_would_refuse():
               {"kind": "block_ids", "first_height": 1, "ids": ["00" * 32] * 501},
               {"kind": "get_blocks", "ids": ["00" * 32] * 33},
               {"kind": "new_tx", "ids": ["00" * 32] * 65},
+              {"kind": "get_block_txs", "block_id": "00" * 32, "indexes": [0] * 8193},
               {"kind": "addrs", "addrs": [{"ip": "00" * 16, "port": 1, "last_seen": 1}] * 101}]:
         try:
             w.encode(m)

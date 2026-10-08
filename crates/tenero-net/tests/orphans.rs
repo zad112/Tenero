@@ -2,7 +2,7 @@
 //! scripted peer serves real blocks in a chosen order.
 
 use tenero_core::u256::U256;
-use tenero_core::v2::Block;
+use tenero_core::v3::Block;
 use tenero_net::sim::{Sim, SimConfig, SimRig};
 use tenero_net::{EngineConfig, Hello, Message, PROTOCOL_VERSION};
 
@@ -42,8 +42,26 @@ fn requests_for(sim: &Sim<'_>, h: usize, id: &[u8; 32]) -> usize {
     sim.hostiles[h]
         .inbox
         .iter()
-        .filter(|m| matches!(m, Message::GetBlocks { ids } if ids.contains(id)))
+        .filter(|m| match m {
+            Message::GetBlocks { ids } => ids.contains(id),
+            // a new block is asked for in compact form
+            Message::GetCompact { id: x } => x == id,
+            _ => false,
+        })
         .count()
+}
+
+/// A block's compact form (what answers `GetCompact`).
+fn compact(b: &Block) -> Message {
+    Message::Compact(Box::new(tenero_net::CompactBlock {
+        header: b.header.clone(),
+        coinbase: b.coinbase.clone(),
+        tx_ids: b
+            .transactions
+            .iter()
+            .map(|t| tenero_core::v3::ids::tx_id(t).unwrap())
+            .collect(),
+    }))
 }
 
 /// Node 1 has no connection but a scripted peer; the peer announces block 3 and serves it first, then the ids,
@@ -68,12 +86,7 @@ fn a_block_that_arrives_before_its_ancestors_is_held_not_fetched_again_and_appli
     sim.run_for(2 * SEC);
     assert_eq!(requests_for(&sim, h, &ids[2]), 1, "block 3 is asked for");
     // served first, before anything it builds on
-    sim.hostile_send(
-        h,
-        Message::Blocks {
-            blocks: vec![blocks[2].clone()],
-        },
-    );
+    sim.hostile_send(h, compact(&blocks[2]));
     sim.run_for(2 * SEC);
     assert_eq!(sim.tip(1).0, 0, "it cannot be applied yet");
     assert_eq!(sim.engines[1].node().chain().orphan_count(), 1);

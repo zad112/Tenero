@@ -1,17 +1,21 @@
 //! A request for blocks whose size together passes the wire's frame ceiling (16 MiB) used to fail to encode, and the transport
 //! only logged it: the requester never got an answer. Found by reading the engine while fuzzing it (M9). The reply is now
-//! split into as many `blocks` messages as it takes.
+//! split into as many `blocks` messages as it takes; and since version 2 of the protocol a block bigger than a whole reply goes
+//! as a compact block, its transactions in pieces (`split_txs`).
 
-use tenero_core::v2::{Block, Transaction, Wire};
+use tenero_core::v3::{Block, Transaction, Wire};
 use tenero_core::vectors::{hex, load};
 use tenero_net::sim::{Sim, SimConfig, SimRig};
-use tenero_net::{encode, split_blocks, EngineConfig, Message, BLOCKS_REPLY_BYTES, MAX_FRAME};
+use tenero_net::{
+    encode, split_blocks, split_txs, CompactBlock, EngineConfig, Message, BLOCKS_REPLY_BYTES,
+    MAX_FRAME,
+};
 
 const T0: u64 = 1_700_000_000;
 
-/// A block of about `txs` * 75 KB: the vector block with copies of the longest transaction the format allows (MAX_TX_SIZE - 1 bytes) added.
+/// A block of about `txs` * 75 KB: the vector block with copies of the longest transaction the format allows (MAX_TX_SIZE bytes) added.
 fn big_block(txs: usize, salt: u8) -> Block {
-    let v = load("v2_serialization").unwrap();
+    let v = load("v3_serialization").unwrap();
     let cases = v["valid"].as_array().unwrap();
     let find = |kind: &str, note: &str| {
         cases
@@ -20,10 +24,8 @@ fn big_block(txs: usize, salt: u8) -> Block {
             .map(|c| hex(c["hex"].as_str().unwrap()).unwrap())
             .unwrap()
     };
-    let mut b =
-        Block::from_bytes(&find("block", "a header, a coinbase and two transactions")).unwrap();
-    let tx =
-        Transaction::from_bytes(&find("transaction", "one byte under the maximum size")).unwrap();
+    let mut b = Block::from_bytes(&find("block", "")).unwrap();
+    let tx = Transaction::from_bytes(&find("transaction", "exactly MAX_TX_SIZE")).unwrap();
     b.transactions = vec![tx; txs];
     b.header.nonce = u64::from(salt);
     b
@@ -62,34 +64,50 @@ fn three_blocks_of_ten_megabytes_cannot_be_one_message_but_can_be_three() {
     assert_eq!(flat, blocks);
 }
 
-/// The ceiling of the rules (`fees::V2_MAX_BLOCK_BODY`) leaves no block that cannot be sent.
+/// The ceiling of the rules (48 MiB of transactions, `rules::MAX_BLOCK_BYTES`) leaves no block that cannot be sent: one far over
+/// a frame goes as a compact block (its ids) and its transactions in replies that each fit a frame.
 #[test]
-fn a_block_as_large_as_the_rules_allow_is_sent_in_a_reply_of_its_own() {
-    use tenero_core::fees::V2_MAX_BLOCK_BODY;
-    // 55 transactions of the longest the format allows: just under the ceiling
-    let b = big_block(55, 1);
+fn a_block_as_large_as_the_rules_allow_is_sent_compact_and_in_pieces() {
+    use tenero_core::v3::rules::MAX_BLOCK_BYTES;
+    // 671 transactions of the longest the format allows (75,000 bytes each): just under the ceiling
+    let b = big_block(671, 1);
     let body: usize = b
         .transactions
         .iter()
         .map(|t| t.to_bytes().unwrap().len())
         .sum();
     assert!(
-        body as u64 <= V2_MAX_BLOCK_BODY && body as u64 > V2_MAX_BLOCK_BODY - 80_000,
+        body as u64 <= MAX_BLOCK_BYTES && body as u64 > MAX_BLOCK_BYTES - 80_000,
         "{body}"
     );
-    let frame = encode(&Message::Blocks {
-        blocks: vec![b.clone()],
+    assert!(encode(&Message::Blocks {
+        blocks: vec![b.clone()]
     })
-    .expect("it fits a frame");
-    assert!(frame.len() < MAX_FRAME);
-    // three of them (together over the budget) go in more than one reply, every reply fits a frame, and none is lost
-    let (groups, too_big) = split_blocks(vec![b.clone(), b.clone(), b.clone()], BLOCKS_REPLY_BYTES);
-    assert!(too_big.is_empty());
-    assert!(groups.len() >= 2, "{} replies", groups.len());
-    assert_eq!(groups.iter().map(Vec::len).sum::<usize>(), 3);
-    for g in groups {
-        assert!(encode(&Message::Blocks { blocks: g }).is_ok());
+    .is_err());
+    let compact = Message::Compact(Box::new(CompactBlock {
+        header: b.header.clone(),
+        coinbase: b.coinbase.clone(),
+        tx_ids: b
+            .transactions
+            .iter()
+            .map(|t| tenero_core::v3::ids::tx_id(t).unwrap())
+            .collect(),
+    }));
+    assert!(encode(&compact).unwrap().len() < 64 * 1024);
+    let groups = split_txs(b.transactions.clone(), BLOCKS_REPLY_BYTES);
+    assert!(groups.len() >= 6, "{} replies", groups.len());
+    for g in &groups {
+        let frame = encode(&Message::BlockTxs {
+            block_id: [1; 32],
+            txs: g.clone(),
+        })
+        .expect("each reply fits a frame");
+        assert!(frame.len() <= MAX_FRAME + 4);
     }
+    assert_eq!(
+        groups.into_iter().flatten().collect::<Vec<_>>(),
+        b.transactions
+    );
 }
 
 #[test]
@@ -132,12 +150,13 @@ fn nothing_to_send_is_no_message() {
     assert!(groups.is_empty() && too_big.is_empty());
 }
 
-/// The engine, end to end: a node that answers a request for many blocks in many small replies is still synced from.
+/// The engine, end to end: a node whose replies are smaller than any block sends every block in compact form, and is still
+/// synced from.
 #[test]
 fn a_node_that_answers_in_many_small_replies_is_still_synced_from() {
     let rigs = SimRig::rigs("split-sync", 2);
     let small = EngineConfig {
-        // every block alone in its own reply
+        // every block bigger than a reply: each goes compact
         blocks_reply_bytes: 1,
         ..EngineConfig::default()
     };
@@ -158,12 +177,10 @@ fn a_node_that_answers_in_many_small_replies_is_still_synced_from() {
     let sent = sim.engines[0]
         .stats
         .sent
-        .get("blocks")
+        .get("compact")
         .copied()
         .unwrap_or(0);
-    assert!(
-        sent >= 40,
-        "{sent} replies for 40 blocks: they were not split"
-    );
+    assert!(sent >= 40, "{sent} compact blocks for 40 blocks");
+    assert!(!sim.engines[0].stats.sent.contains_key("blocks"));
     assert_eq!(sim.engines[1].stats.bans, 0);
 }
