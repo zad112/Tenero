@@ -36,7 +36,7 @@ Monero's: we run their code before they do, and add code of our own around it.
 | F3 | Carrot | **DECIDED (owner, 2026-10-08): written in Rust here, from the specification; no C++ in the build.** Checked against Monero's C++ `carrot_core` results (section 8). |
 | F4 | wallet scope | **DECIDED (owner, 2026-10-08): all of it in 0.3.0-gamma.1, nothing deferred:** core Carrot, subaddresses, view-only wallets (including outgoing), integrated addresses, payment proofs redone. |
 | F5 | order | **DECIDED (owner, 2026-10-08): this first**; the remote wallet and Tor plan waits, and the remote wallet is designed afterwards around curve-tree paths. |
-| F6 | address text | **DECIDED (owner, 2026-10-08): Monero-style base58** with Tenero's own network bytes, chosen so that the first characters are plainly different from Monero's and from the interim `tni1` form. |
+| F6 | address text | **DECIDED (owner, 2026-10-08): Monero-style base58** with Tenero's own network prefixes (a varint before the keys, a 4-byte Keccak checksum after): 99 characters, 110 for an integrated address. **The first four characters show the NETWORK** (owner's choice of "option 1"): `TENg…` on `gamma`, `TENd…` on `dev`, `TENt…` on `test`, for every kind of address (main, subaddress, integrated: three different prefix numbers that all give the same four characters; the wallet names the kind). `TENm…`, `TENs…` and `TENi…` are kept for a future main net. Computed, not guessed: `Ten…` (lower case) is impossible in this encoding, four fixed characters is the most every key allows. The prefix numbers are fixed in G5, after checking them against known CryptoNote coins. |
 | F7 | `x25519-dalek` | **DECIDED (owner, 2026-10-08): approved** (BSD-3-Clause, same authors as `curve25519-dalek`, already in the tree), for Carrot's key exchange. |
 | F8 | interim addresses | **DECIDED (owner, 2026-10-08): the new wallet refuses to pay a `tni1` address.** On `gamma` they cannot exist anyway. |
 | F9 | `dev` and `test` | **DECIDED (owner, 2026-10-08)**, as amended by F1: with no fork, `dev` and `test` simply use the `gamma` rules from block 0 (the "height 100" answer was for the fork). |
@@ -109,10 +109,11 @@ code we write.**
 ### 4.4 Storage
 
 The tree lives in the `redb` store, next to the output set, with a per-block undo record. **A pruned node must still keep the
-tree**: it is state, not history. Size, my arithmetic and **not measured**: a leaf is stored as the output's index (its points
-come from the output set) and each layer above holds about 1/38, then 1/18, of the one below, 32 bytes a node: a few hundred bytes
-per thousand outputs above the leaves. RAM, also an estimate: small next to the 4 GiB proof-of-work dataset (rule 8). Measured in
-G3 on the owner's machine.
+tree**: it is state, not history. A leaf is stored as the output's index (its points come from the output set) and each layer
+above holds about 1/38, then 1/18, of the one below, 32 bytes a node: **measured in G3, about 2,800 points (90 KB) for 100,000
+outputs**, so RAM is small next to the 4 GiB proof-of-work dataset (rule 8). Growing costs about 0.3 ms an output, undoing a block
+of 100 outputs 8 ms (`docs/BENCHMARKS.md`). As built (G3): a trim recomputes the last chunk of each layer from its children,
+rather than subtracting as Monero's `hash_trim` does; the result is the same root by definition, and is tested.
 
 ## 5. Checking a proof
 
@@ -197,8 +198,8 @@ transcription, and the reliance on a branch that Monero may still change.
 | G0 | this plan agreed (section 11); `CLAUDE.md` records the rule 3 exception | the owner |
 | G1 | the pinned crates in the build (P1), licences listed; Monero's FCMP++ test proofs verify; **verify and prove times measured** on the owner's machine. **Done 2026-10-08** | nothing else |
 | G2 | `tenero-carrot`: keys, addresses, outputs, scanning, against the C++ vectors. **Done 2026-10-08**: Monero's 36 convergence values and the harness's 6 accounts, 12 output sets, coinbase outputs, X25519 and hash-to-point cases are reproduced bit for bit. Left for G5: `s_m` from the BIP39 seed and the base58 address text (Tenero's own, with Python reference vectors) | the WSL harness |
-| G3 | the curve tree, its storage and reorganisation, against the C++ vectors | G1 |
-| G4 | the `gamma` network: genesis, version 3 transactions, validation, the mempool; CLSAG and the version 2 rules out of the 0.3.0 path (P2); tested on `test` and `dev` | G1, G3 |
+| G3 | the curve tree and its reorganisation, against the C++ vectors. **Done 2026-10-08** (`tenero-crypto::curve_tree`): Monero's roots after 19 blocks (1 to 26,498 outputs, 1 to 4 layers) reproduced growing and trimming; a property test of random block and reorganisation histories against from-scratch builds; real FCMP++ proofs from our paths verify against our root (1 to 4 layers, several inputs); timings in `BENCHMARKS.md`. **Storage moved to G4**: which outputs enter the tree and when is part of the `gamma` rules, so the tree is stored where those rules are applied | G1 |
+| G4 | the `gamma` network: genesis, version 3 transactions, validation, the mempool; the curve tree in the store (its layers by index in `redb`, a per-block record of the leaves added, roots kept for `MAX_REFERENCE_AGE`), grown and trimmed with the chain; CLSAG and the version 2 rules out of the 0.3.0 path (P2); tested on `test` and `dev` | G1, G3 |
 | G5 | the wallet: Carrot receiving and sending, FCMP++ proving, the control requests, the CLI | G2, G4 |
 | G6 | subaddresses, integrated addresses, view-only tiers, payment proofs | G5 |
 | G7 | the GUI, the explorer, the pool; the docs; release notes; `gamma` seeds; launch (`release.yml` titles every release "(beta, experimental)": it must say gamma) | G6 |
