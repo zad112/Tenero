@@ -22,6 +22,7 @@ cd reference; ..\.venv\Scripts\activate; pip install -r requirements-dev.txt
 python -m pytest -q                          # about 340 tests, no GPU needed; 5 expected failures (KNOWN_ISSUES)
 cd ..; python reference/tools/make_vectors.py --check        # do the golden vectors still match the reference?
 python reference/tools/make_vectors_v2.py --check            # the version 2 data-model vectors (a DRAFT design)
+python reference/tools/make_vectors_v3.py --check            # the version 3 (gamma) data-model vectors
 python reference/tools/make_vectors_wire.py --check          # the peer-to-peer wire protocol vectors (a DRAFT)
 python reference/tools/make_vectors_control.py --check       # the control protocol vectors
 python reference/tools/make_vectors_pool.py --check          # the pool protocol vectors (a DRAFT: nothing speaks it yet)
