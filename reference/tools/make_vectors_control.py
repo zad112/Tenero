@@ -98,18 +98,19 @@ def flag(b):
 def enc_scan_block(b):
     # the coinbase is written here (not with the consensus encoding): the genesis block has no outputs
     cb = b["coinbase"]
-    return (u64(b["height"]) + fixed(b["id"], 32) + u64(b["first_output_index"]) + u16(cb["version"]) + u64(cb["height"])
+    return (u64(b["height"]) + fixed(b["id"], 32) + u64(b["first_output_index"]) + u64(b["timestamp"])
+            + u16(cb["version"]) + u64(cb["height"])
             + v3.w_list(cb["outputs"], v3.enc_cb_output) + v3.w_var(cb["extra"])
             + v3.w_list(b["txs"], v3.enc_tx_prefix))
 
 
 def dec_scan_block(r):
-    height, bid, first = r.u64(), r.fixed(32), r.u64()
+    height, bid, first, timestamp = r.u64(), r.fixed(32), r.u64(), r.u64()
     version, cb_height = r.u16(), r.u64()
     outputs = [v3.dec_cb_output(r) for _ in range(r.count(0, v3.MAX_COINBASE_OUTPUTS))]
     extra = r.var(v3.MAX_EXTRA)
     txs = [v3.dec_tx_prefix(r) for _ in range(r.count(0, v3.MAX_BLOCK_TXS))]
-    return {"height": height, "id": bid, "first_output_index": first,
+    return {"height": height, "id": bid, "first_output_index": first, "timestamp": timestamp,
             "coinbase": {"version": version, "height": cb_height, "outputs": outputs, "extra": extra}, "txs": txs}
 
 
@@ -421,7 +422,7 @@ def sample_coinbase_output():
 
 
 def sample_scan_block(height=77, txs=1, outputs=1):
-    return {"height": height, "id": "ab" * 32, "first_output_index": 1000,
+    return {"height": height, "id": "ab" * 32, "first_output_index": 1000, "timestamp": 1_700_000_000 + 60 * height,
             "coinbase": {"version": 3, "height": height, "outputs": [sample_coinbase_output() for _ in range(outputs)],
                          "extra": ""},
             "txs": [sample_prefix() for _ in range(txs)]}
@@ -429,7 +430,7 @@ def sample_scan_block(height=77, txs=1, outputs=1):
 
 def genesis_scan_block():
     """The genesis block as the wallet sees it: no coinbase outputs and no transactions."""
-    return {"height": 0, "id": "cd" * 32, "first_output_index": 0,
+    return {"height": 0, "id": "cd" * 32, "first_output_index": 0, "timestamp": 1_700_000_000,
             "coinbase": {"version": 3, "height": 0, "outputs": [], "extra": ""}, "txs": []}
 
 
@@ -740,7 +741,7 @@ def invalid_cases():
     # a coinbase with too many outputs, and a transaction with no inputs
     big = bytearray(enc_response({"type": "block", "block": genesis_scan_block()}))
     out.append(bad("response", "a coinbase of 17 outputs",
-                   bytes(big[: 1 + 1 + 8 + 32 + 8 + 2 + 8]) + u32(17), "malformed"))
+                   bytes(big[: 1 + 1 + 8 + 32 + 8 + 8 + 2 + 8]) + u32(17), "malformed"))
     blk = sample_scan_block()
     cb17 = dict(blk["coinbase"], outputs=[sample_coinbase_output() for _ in range(17)])
     forged = enc_scan_block(dict(blk, coinbase=cb17))

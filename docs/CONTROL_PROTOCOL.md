@@ -84,8 +84,8 @@ The answer to request `k` has kind `k | 0x80`. Any request may instead be answer
 | 21 | `submit_header` | a block header (146 bytes) | `header_submitted`: as `block_submitted`. **Added in 0.3.0**: a block found on one of this node's recent templates (the last 64 on the current tip), handed back as its header: the header's `tx_root` names the template, and the node puts the block together from the coinbase and the ids it kept, taking the transactions from its pool. **An error if no recent template has that root and parent, or one of its transactions has left the pool**: the work is stale |
 | 20 | `spend_paths` | a count u32 (1 to 512) and that many global indexes (u64) | `spend_paths`: the reference height u64 (the tip), its *tree* (leaves u64, layers u8, root 32), a count u32, then for each index a flag and (if 1) a *path*, in order (0 for an output not in that tree). **Added in 0.3.0**: what a wallet proves a spend with. Every path is in the tree of that ONE block; a client with more than 512 splits the list and asks again if the pieces came from different tips. **The node learns which outputs are about to be spent**: harmless for a node on the wallet's own machine, which is the only kind this interface reaches (a remote wallet needs another way, `docs/FCMP_CARROT_PLAN.md` 7) |
 
-* A **scan block** is what a wallet needs: height u64, block id (32), the global index of its first output u64, the
-  coinbase (version u16, height u64, a count of coinbase outputs from **0** to 16 and the outputs, extra as a var), and a
+* A **scan block** is what a wallet needs: height u64, block id (32), the global index of its first output u64, the header's
+  timestamp u64 (Unix seconds; the wallet's history shows it), the coinbase (version u16, height u64, a count of coinbase outputs from **0** to 16 and the outputs, extra as a var), and a
   count of transaction **prefixes** (0 to 8192) and the prefixes. It carries no rings and no proofs, so a pruned node can
   serve it. **The genesis block has no coinbase outputs** (the consensus coinbase encoding requires at least one), which
   is why a scan block writes the coinbase itself.

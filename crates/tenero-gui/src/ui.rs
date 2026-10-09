@@ -1790,13 +1790,13 @@ impl App {
                             RichText::new(format!("{sign}{}", text::coins(row.amount))).strong(),
                         );
                         ui.label(format!("· {}", row.account_label));
-                        match &row.kind {
-                            EntryKind::Sent { time, .. } => ui.label(format!(
+                        match row.time {
+                            Some(time) => ui.label(format!(
                                 "· {} (block {})",
-                                text::when(*time),
+                                text::when(time),
                                 group_digits(row.height)
                             )),
-                            _ => ui.label(format!("· block {}", group_digits(row.height))),
+                            None => ui.label(format!("· block {}", group_digits(row.height))),
                         };
                     });
                     ui.horizontal_wrapped(|ui| {
