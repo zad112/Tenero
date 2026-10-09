@@ -1759,9 +1759,13 @@ fn choose(
 }
 
 /// The exact size in bytes of a transaction of `n_inputs` inputs and `n_outputs` outputs proven against a tree of `layers`
-/// layers (`docs/CONSENSUS_V2.md` 15.2; the proof's length is `tenero_crypto::fcmp::proof_data_size`). A wallet knows its fee
+/// layers (at least one) (`docs/CONSENSUS_V2.md` 15.2; the proof's length is `tenero_crypto::fcmp::proof_data_size`). A wallet knows its fee
 /// before it proves; it checks the real size afterwards.
 pub fn transaction_size(n_inputs: usize, n_outputs: usize, layers: usize) -> usize {
+    // a tree of no layers (a chain whose first outputs have not entered it yet) holds no coins, so nothing is ever proven
+    // against it: sizes are worked out as for one layer, as the proof's size is not defined for none (the FCMP++ crate's
+    // arithmetic underflows on it)
+    let layers = layers.max(1);
     // version, input count, key images, output count, the outputs of 91, the ephemeral keys, fee, payment ID
     let prefix =
         2 + 4 + 32 * n_inputs + 4 + 91 * n_outputs + 32 * n_ephemeral_keys(n_outputs) + 8 + 8;
@@ -1773,6 +1777,7 @@ pub fn transaction_size(n_inputs: usize, n_outputs: usize, layers: usize) -> usi
 /// How many coins a transaction of `n_outputs` outputs can spend: the most whose [`transaction_size`] is within
 /// `MAX_TX_SIZE` and whose proof is within `MAX_PROOF`.
 pub fn max_inputs_for(n_outputs: usize, layers: usize) -> usize {
+    let layers = layers.max(1);
     let fits = |n: usize| {
         transaction_size(n, n_outputs, layers) <= MAX_TX_SIZE
             && fcmp::proof_data_size(n, n_outputs, layers) <= tenero_core::v3::MAX_PROOF
