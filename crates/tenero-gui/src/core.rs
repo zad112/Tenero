@@ -1651,6 +1651,7 @@ impl Core {
                 has_secret: e.has_secret,
                 note: e.note,
                 payment_id: e.payment_id,
+                time: e.time,
             })
             .collect();
         let scanned = purse

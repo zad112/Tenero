@@ -74,6 +74,8 @@ pub struct HistoryRow {
     pub note: Option<String>,
     /// Received at an integrated address: its payment ID.
     pub payment_id: Option<[u8; 8]>,
+    /// When (Unix seconds): its block's timestamp, or when a recorded payment was sent.
+    pub time: Option<u64>,
 }
 
 /// A payment request this wallet made, with its link (which holds the account's address).

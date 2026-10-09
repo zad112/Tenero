@@ -33,6 +33,8 @@ pub struct ScanBlock {
     /// The global index of the block's first output (its coinbase's first output); the outputs follow in order:
     /// the coinbase's, then each transaction's.
     pub first_output_index: u64,
+    /// The header's timestamp (Unix seconds): when the history says something happened.
+    pub timestamp: u64,
     pub coinbase: Coinbase,
     pub txs: Vec<TxPrefix>,
 }
@@ -94,6 +96,7 @@ impl ChainView for Node<'_> {
                 height: 0,
                 id: i.block_id,
                 first_output_index: i.first_output_index,
+                timestamp: i.header.timestamp,
                 coinbase: Coinbase {
                     version: tenero_core::v3::VERSION,
                     height: 0,
@@ -108,6 +111,7 @@ impl ChainView for Node<'_> {
             height,
             id: b.index.block_id,
             first_output_index: b.index.first_output_index,
+            timestamp: b.index.header.timestamp,
             coinbase: b.coinbase,
             txs: b.transactions.into_iter().map(|t| t.tx.prefix).collect(),
         }))

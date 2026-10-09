@@ -37,8 +37,9 @@ const HEADER: usize = 4 + 12 + 16;
 /// scheme of `beta`, which a 0.3.0 wallet does not read.
 /// 3 (0.3.0): the state says how much of the account the wallet holds (its seed, or a view-only tier's keys). 2 (an
 /// earlier 0.3.0 build) held the seed only, and is still read.
-/// 4: also the transactions found spending the wallet's coins ([`Outgoing`]). A state of 3 or 2 has none: it is read, and
-/// its scanning starts again from its birth height so that they are found.
+/// 4: also the transactions found spending the wallet's coins ([`Outgoing`]), and the time of each coin and of each of those
+/// (its block's timestamp). A state of 3 or 2 has neither: it is read, and its scanning starts again from its birth height so
+/// that they are found.
 const STATE_VERSION: u16 = 4;
 const NO_OUTGOING_STATE_VERSION: u16 = 3;
 const SEED_ONLY_STATE_VERSION: u16 = 2;
@@ -140,7 +141,12 @@ impl Wallet {
     }
 
     pub(crate) fn write_state(&self, w: &mut Writer) -> Result<(), FileError> {
-        w.u16(STATE_VERSION);
+        self.write_state_as(w, STATE_VERSION)
+    }
+
+    /// The state as `version` writes it (only the tests write an older one, to check it is still read).
+    fn write_state_as(&self, w: &mut Writer, version: u16) -> Result<(), FileError> {
+        w.u16(version);
         match (self.seed(), self.access()) {
             (Some(seed), _) => {
                 w.raw(&[0]);
@@ -184,6 +190,9 @@ impl Wallet {
         for o in &self.owned {
             w.u64(o.global_index);
             w.u64(o.height);
+            if version == STATE_VERSION {
+                w.u64(o.time);
+            }
             w.raw(&[u8::from(o.coinbase) | (u8::from(o.internal) << 1)]);
             w.raw(&o.onetime_address);
             w.raw(&o.commitment);
@@ -202,10 +211,14 @@ impl Wallet {
             w.raw(&r.key_image);
             w.u64(r.until_height);
         }
+        if version != STATE_VERSION {
+            return Ok(());
+        }
         w.count(self.outgoing.len(), 0, MAX_OUTGOING)
             .map_err(enc_err)?;
         for o in &self.outgoing {
             w.u64(o.height);
+            w.u64(o.time);
             w.count(o.spends.len(), 1, MAX_OUTGOING_SPENDS)
                 .map_err(enc_err)?;
             for k in &o.spends {
@@ -270,6 +283,12 @@ impl Wallet {
             .list(0, MAX_OWNED, |r| {
                 let global_index = r.u64()?;
                 let height = r.u64()?;
+                // a state before version 4 has no times (it is scanned again: see below)
+                let time = if version == STATE_VERSION {
+                    r.u64()?
+                } else {
+                    0
+                };
                 let flags = r.take(1)?[0];
                 if flags > 3 {
                     return Err(DecodeError::CountOutOfRange);
@@ -277,6 +296,7 @@ impl Wallet {
                 Ok(Owned {
                     global_index,
                     height,
+                    time,
                     coinbase: flags & 1 == 1,
                     internal: flags & 2 == 2,
                     onetime_address: r.array()?,
@@ -306,6 +326,7 @@ impl Wallet {
             r.list(0, MAX_OUTGOING, |r| {
                 Ok(Outgoing {
                     height: r.u64()?,
+                    time: r.u64()?,
                     spends: r.list(1, MAX_OUTGOING_SPENDS, |r| r.array::<32>())?,
                     spent: r.u64()?,
                     returned: r.u64()?,
@@ -513,6 +534,7 @@ mod tests {
         Owned {
             global_index,
             height: 3,
+            time: 1_700_000_180,
             coinbase: false,
             onetime_address: ko,
             commitment: [5; 32],
@@ -559,6 +581,7 @@ mod tests {
         let spends = vec![w.owned[0].key_image];
         w.outgoing = vec![Outgoing {
             height: 3,
+            time: 1_700_000_180,
             spends,
             spent: 77,
             returned: 70,
@@ -572,6 +595,7 @@ mod tests {
         let mut bad = sample();
         bad.outgoing = vec![Outgoing {
             height: 3,
+            time: 1_700_000_180,
             spends: vec![[1; 32]],
             spent: 1,
             returned: 0,
@@ -581,16 +605,20 @@ mod tests {
         let mut late = sample();
         late.outgoing = vec![Outgoing {
             height: 4,
+            time: 1_700_000_240,
             spends: vec![late.owned[0].key_image],
             spent: 77,
             returned: 0,
             fee: 1,
         }];
         assert!(Wallet::from_state_bytes(&late.state_bytes().unwrap()).is_err());
-        // version 3 is version 4 without the list at the end: read, and its scan starts again from the birth height
-        let mut v3 = sample().state_bytes().unwrap().to_vec();
-        v3.truncate(v3.len() - 4);
-        v3[..2].copy_from_slice(&3u16.to_le_bytes());
+        // version 3 (no times, no payments out) is read, and its scan starts again from the birth height
+        let mut v3 = Writer::new();
+        sample()
+            .write_state_as(&mut v3, NO_OUTGOING_STATE_VERSION)
+            .unwrap();
+        let v3 = v3.into_bytes();
+        assert_eq!(v3[..2], 3u16.to_le_bytes());
         let old = Wallet::from_state_bytes(&v3).unwrap();
         assert_eq!((old.scanned, old.owned.len()), (None, 0));
         assert!(old.recent.is_empty() && old.outgoing.is_empty());

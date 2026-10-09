@@ -66,6 +66,7 @@ fn sample_scan_block() -> ScanBlock {
         height: 77,
         id: [0xab; 32],
         first_output_index: 1000,
+        timestamp: 1_700_004_620,
         coinbase: Coinbase {
             version: VERSION,
             height: 77,
@@ -1318,7 +1319,7 @@ fn a_block_with_too_many_transactions_is_refused_both_ways() {
     assert!(Response::Block(Some(over)).to_body().is_err());
     // one more, when decoding: the count says so, and the bytes of that many are all there
     let mut forged = body.clone();
-    let count_at = 1 + 1 + 8 + 32 + 8 + 2 + 8 + 4 + 4; // after the coinbase (no outputs, no extra)
+    let count_at = 1 + 1 + 8 + 32 + 8 + 8 + 2 + 8 + 4 + 4; // after the timestamp and the coinbase (no outputs, no extra)
     assert_eq!(
         &forged[count_at..count_at + 4],
         &(MAX_BLOCK_TXS as u32).to_le_bytes()

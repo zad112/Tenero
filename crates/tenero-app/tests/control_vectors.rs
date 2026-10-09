@@ -102,6 +102,7 @@ fn scan_block(v: &Value) -> ScanBlock {
         height: u(&v["height"]),
         id: arr(&v["id"]),
         first_output_index: u(&v["first_output_index"]),
+        timestamp: u(&v["timestamp"]),
         coinbase: Coinbase {
             version: u(&cb["version"]) as u16,
             height: u(&cb["height"]),

@@ -156,6 +156,17 @@ fn payments_out_are_found_on_the_chain_by_a_wallet_that_did_not_record_them() {
                 if fee == combine.fee && moved > 0
         ));
     }
+    // every entry has its time: the timestamp of its block (this test's blocks are 60 s apart), or, for a payment the
+    // wallet recorded, when it sent it
+    for p in [&alice, &restored, &view_all] {
+        for e in p.history(&node).unwrap() {
+            let want = match e.kind {
+                EntryKind::Sent { time, .. } => time,
+                _ => T0 + 60 * e.height,
+            };
+            assert_eq!(e.time, Some(want), "{e:?}");
+        }
+    }
     // the wallet's own record of the transactions agrees: what it spent, less what came back, less the fee
     let w = view_all.accounts()[0].wallet();
     assert_eq!(w.outgoing().len(), 2);
