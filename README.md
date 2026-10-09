@@ -21,7 +21,7 @@ Inspired by Monero's design ideas; not affiliated with or endorsed by the Monero
 |---|---|
 | **Built** | a node (pruned by default), a miner (GPU and CPU), a command-line wallet, a wallet app with a window, a block explorer, a seed checker, a network protocol with an encrypted channel, **a mining pool** (`tenero-pool`, with a miner mode and an app option that need no node, and a checker for pools), and **the `gamma` network: FCMP++ and Carrot from block 0** (version 0.3.0) |
 | **Tested** | about 1,170 automated tests (1,151 passing and 37 skipped in the last full run, 2026-10-08, on the author's PC; the skipped ones need the author's GPU or are long runs started by hand), the Rust code checked bit for bit against an independent Python reference and, for Carrot and FCMP++, against Monero's own C++ results and test proofs |
-| **Run on `gamma`** | **nothing yet: `gamma` starts with the `v0.3.0-gamma.1` release.** Every number about `gamma` on this page is from tests on the author's PC or worked out from the rules, not seen on the real network |
+| **Run on `gamma`** | **launched 2026-10-09** with `v0.3.0-gamma.1`: two seeds and the pool on the author's two servers, checked from outside at launch (both seeds answered on the `gamma` chain; the pool passed 13 of 15 protocol checks, the other 2 need a real share). **Nothing had been mined at launch**: every number about `gamma` on this page is from tests on the author's PC or worked out from the rules, not seen on the real network |
 | **Reviewed by anyone else** | **no.** There has been no independent cryptographic, security or hardware review. Parts of the FCMP++ libraries have been audited for Monero; how this project uses them has not |
 | **Released** | **the latest is `v0.3.0-gamma.1`** (the `gamma` network); before it, `v0.2.0-beta.1` to `beta.4` (the `beta` network, 2026-10-07) and `v0.1.0-alpha.1` to `alpha.4` (the `alpha` network, 2026-10-05 and 06), all on the [Releases](../../releases) page. **They are TEST releases**: "released" means published for people to try, not finished, reviewed or safe; see [Get it](#get-it) |
 | **Planned** | **The author plans to launch a permanent main network on 1 November 2026**: a chain the author does not intend to reset, built on the `gamma` rules. **That is an intention, not a promise: the date can move, and a launch would not make the software finished, reviewed or safe.** Everything above stays true until then and after it: the program is unaudited and written by one person, and the network's seeds are run by one person. A main network existing does not change that, so put nothing into it that you cannot lose |
@@ -110,7 +110,7 @@ for, and a special-purpose chip would need the same memory to compete. **That is
 ## Get it
 
 **The latest release, `v0.3.0-gamma.1`, is on the [Releases](../../releases) page.** It runs the new `gamma` network (and the `dev` and `test` networks for testing); **it does
-not run `beta` or `alpha`**: for those, keep the 0.2.0 programs, and nothing moves from `beta` to `gamma`. Each release is a Windows zip and a Linux tar.gz with a `SHA256SUMS`
+not run `beta` or `alpha`**, which are both closed (`beta` closed when `gamma` launched, 2026-10-09), and nothing moves from `beta` to `gamma`. Each release is a Windows zip and a Linux tar.gz with a `SHA256SUMS`
 file. **It is a test release and says so in its notes and this page: "released" means published for people to try, not finished, audited or safe, and the network may be
 reset.** How it is made and checked is in [`docs/RELEASING.md`](docs/RELEASING.md). The files are **not code-signed** (Windows SmartScreen will warn), and the Linux build has
 been run by hand **only as a node and a pool** (in WSL2 and on rented servers; the Linux wallet app and GPU miner have not been run). Prefer to build it yourself? The next
@@ -168,8 +168,9 @@ target of 2^237 (about 524,000 attempts a block), control port 38352 and peer po
 ## The older networks: `beta` and `alpha`
 
 `beta` (2026-10-07, chain id `577cc63d…641b`, ports 38342 and 38343) and `alpha` (2026-10-05, control port 38332) ran ring signatures and an *interim* output scheme that was
-**not Carrot and gave no Monero-style privacy**. **The 0.3.0 programs do not run them.** They keep going with the 0.2.0 and 0.1.0 programs for as long as their seeds run (the
-`beta` pool stops when the `gamma` pool starts on the same server), and nothing on them moves to `gamma`. What happened on them, measured, is in their release notes
+**not Carrot and gave no Monero-style privacy**. **The 0.3.0 programs do not run them, and both are closed:** `alpha` has had no seed since 2026-10-07, and `beta` closed on
+2026-10-09, when `gamma` launched on the same two servers (both `beta` seeds and the `beta` pool stopped; the pool owed nothing at the end, after 109 blocks in the chain and
+3,605.17 coins paid). The 0.1.0 and 0.2.0 programs have no seed to start from, and nothing on them moves to `gamma`. What happened on them, measured, is in their release notes
 ([`docs/releases/`](docs/releases/)): on `alpha`, a chain past block 689 mined by the author's GPU and at least one other miner; on `beta`, a seed, a pool and one payout seen.
 
 ## Helping with the seed server

@@ -1,14 +1,15 @@
 # The servers for `gamma` (0.3.0-gamma.1): two seeds and the pool
 
-What the owner runs on the two servers when `gamma` launches (decision S1, 2026-10-08). **Nothing here has been run yet**:
-it follows the programs' documentation and the steps that worked for `beta` (`docs/SERVER_UPGRADE_BETA2.md`,
+What the owner ran on the two servers when `gamma` launched (decision S1, 2026-10-08, amended 2026-10-09: **`beta` closed on
+both servers**). **Run on 2026-10-09**, as written below except where it says otherwise, with Claude checking each output; it
+follows the programs' documentation and the steps that worked for `beta` (`docs/SERVER_UPGRADE_BETA2.md`,
 `docs/RUNNING_A_POOL.md`). Every command is run by the owner (Claude has no access to the servers). The names are choices:
 change one, change it everywhere.
 
 | | 195.26.244.245 (the second server, 11 GiB) | 194.238.27.60 (the Contabo server) |
 |---|---|---|
 | before | `beta` seed (`tenero-beta`), `beta` pool's node and pool | `beta` seed |
-| after | **`gamma` seed**, **`gamma` pool's node and pool**; its `beta` seed and pool stopped | `beta` seed **and `gamma` seed** (if the memory allows: step 3.1) |
+| after (2026-10-09) | **`gamma` seed**, **`gamma` pool's node and pool**; its `beta` seed and pool stopped | **`gamma` seed**; its `beta` seed stopped |
 
 The ports (`gamma` follows `beta`'s pattern; **every control port is on loopback only**):
 
@@ -34,9 +35,13 @@ The ports (`gamma` follows `beta`'s pattern; **every control port is on loopback
    scp C:\Users\12143\tenero-gamma-pool-key\pool.key root@195.26.244.245:/root/gamma-pool.key
    ```
 
-3. **Tell the testers** (the pinned issue https://github.com/zad112/Tenero/issues/1): the `beta` pool closes on launch day
-   (its last payout runs first), `gamma` is a new network with new wallets (`TENg...` addresses), and the 0.2.0 programs keep
-   working for `beta` on its remaining seed (194.238.27.60) for as long as that runs.
+3. **Tell the testers** (the pinned issue https://github.com/zad112/Tenero/issues/1) before stopping anything: `beta` closes
+   on launch day (both seeds and the pool; the pool's last payout runs first), and `gamma` is a new network with new wallets
+   (`TENg...` addresses). After launch the 0.2.0 programs have no seed.
+4. **The order on the day** (what was done, 2026-10-09): the servers first, the release last. Install `gamma` on both servers
+   from the DRAFT release's package (`gh release download v0.3.0-gamma.1 --pattern "*linux-x64.tar.gz" --pattern SHA256SUMS`,
+   which the repository's owner can do before it is published), close `beta`, start `gamma`, run the checks of section 4,
+   then publish the release: nobody downloads programs with no network to join.
 
 ## 2. The second server (195.26.244.245)
 
@@ -93,6 +98,7 @@ User=tenero-gamma
 ExecStart=/opt/tenero-gamma/tenerod --config /var/lib/tenero-gamma/node.conf
 Restart=on-failure
 RestartSec=10
+LimitNOFILE=65536
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/tenero-gamma
@@ -190,23 +196,17 @@ free -h
 **The memory:** two nodes and a pool; on `beta` the same three measured 8.5 GiB of 11 GiB (2026-10-07). Look once both nodes
 have built their 4 GiB dataset (after the first mined block).
 
-## 3. The Contabo server (194.238.27.60): a `gamma` seed beside the `beta` seed
+## 3. The Contabo server (194.238.27.60): the `gamma` seed in place of the `beta` seed
 
-### 3.1 The memory first
+The `beta` seed stops and the `gamma` seed takes its place, so this server (7.8 GiB) runs one node, as before. (The first plan
+kept `beta`'s seed here beside a second node, if the memory allowed; the owner closed `beta` instead, 2026-10-09.)
 
 ```
-free -h
+systemctl disable --now tenero-beta && ufw delete allow 38343/tcp
 ```
 
-Two nodes need about 9 GiB (a 4 GiB dataset and about half a GiB more each). **If the server has less, do not start the
-second node**: decide first between keeping `beta`'s last seed and adding `gamma`'s second (with only one `gamma` seed, a
-new `gamma` node still starts from 195.26.244.245).
-
-### 3.2 The seed
-
-As 2.2, with this server's address: `advertise = 194.238.27.60:38353`, and its own user and folders
-(`tenero-gamma`, `/opt/tenero-gamma`, `/var/lib/tenero-gamma`). Its control port 38352 is free here (the `beta` seed uses
-38342). `ufw allow 38353/tcp`.
+Then the seed as 2.2, with this server's address: `advertise = 194.238.27.60:38353`, and its own user and folders
+(`tenero-gamma`, `/opt/tenero-gamma`, `/var/lib/tenero-gamma`); control port 38352. `ufw allow 38353/tcp`.
 
 ## 4. Checks, from your PC
 
@@ -219,12 +219,20 @@ The seed check warns that two seeds of one operator are below the policy's three
 an experiment, as on `beta`. Two of the pool checks are skipped on a network with the real proof of work (they need the 4 GiB
 dataset); a real miner covers them.
 
+**At launch (2026-10-09, from the owner's PC):** both seeds answered on the `gamma` chain (`bd366b37`) at height 0 in about
+80 ms, with WARN only (3 addresses each: the network then had three nodes; and the two-operator warning); the pool passed 13
+checks, skipped 2 and failed none, its pinned key proved in the handshake.
+
 ## 5. The first blocks
 
 `gamma` starts empty: nothing is mined until someone mines. A block reward can be spent **60 blocks** after its block, and the
 first spends hide among very few outputs (`docs/FCMP_CARROT_PLAN.md` section 10): say so to the testers.
 
-## What this guide has not checked
+## What was seen at launch, and what was not
 
-That the services start as written (no `gamma` build has run on these servers), the memory of two `gamma` nodes and a pool, and
-whether the Contabo server has room for a second node.
+**Seen (2026-10-09):** every service started as written; the `gamma` pool's key file arrived whole (its SHA-256 matched the
+owner's PC) and `tenero-pool key` printed the built-in key; the pool's node found the seed beside it at once; with `beta`
+stopped and `gamma` started, the second server used 483 MiB of 11 GiB (before the first block, so before any dataset). Port
+38352 had been held by `beta`'s pool node (its control port) until `beta` stopped: the `gamma` seed could not have started
+first. **Not yet seen:** the memory once both nodes hold their 4 GiB datasets (expected about 8.5 GiB, as on `beta`), the
+first block, a miner on the pool, a payout.

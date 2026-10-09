@@ -16,7 +16,7 @@ This makes `target\release\tenerod.exe` (the node) and `target\release\tenero-wa
 ## The three networks
 
 All three use the version 3 rules from block 0: FCMP++ spends, Carrot outputs, block weight (`docs/CONSENSUS_V2.md` section 15). **`beta` and `alpha` are not run by the
-0.3.0 programs**: keep the 0.2.0 programs for them; nothing moves between networks.
+0.3.0 programs**, and both are closed (`beta` on 2026-10-09, when `gamma` launched); nothing moves between networks.
 
 | name | proof of work | what it is for |
 |---|---|---|
