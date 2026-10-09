@@ -35,7 +35,7 @@ pub use purse::{Entry, EntryKind, Purse, PurseError, SavedRequest, SentRecord, S
 pub use request::{PaymentRequest, RequestError};
 pub use wallet::{
     max_inputs_for, transaction_size, Balance, BatchSent, Built, FeeLevel, Owned, PaymentPart,
-    Plan, SyncReport, ViewTier, Wallet, WalletError, MAX_RECIPIENTS,
+    Plan, SyncReport, TxQuote, ViewTier, Wallet, WalletError, MAX_RECIPIENTS,
 };
 
 /// What the program must say wherever it shows an address or a balance.

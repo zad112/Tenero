@@ -11,7 +11,7 @@ use tenero_app::config::Network;
 use tenero_gui::core::Core;
 use tenero_gui::settings::{MinerBackend, Settings};
 use tenero_gui::view::*;
-use tenero_wallet::{EntryKind, FeeLevel, KdfParams, SentStatus};
+use tenero_wallet::{EntryKind, FeeLevel, KdfParams, SentStatus, ViewTier};
 use zeroize::Zeroizing;
 
 fn pw(s: &str) -> Zeroizing<String> {
@@ -531,7 +531,7 @@ fn mine_pay_at_every_fee_level_and_read_the_history() {
     let fees = ev
         .iter()
         .find_map(|e| match e {
-            Event::Estimate { fees } => Some(*fees),
+            Event::Estimate { fees, .. } => Some(*fees),
             _ => None,
         })
         .unwrap_or_else(|| panic!("no estimate: {:?}", errors(&ev)));
@@ -1617,4 +1617,102 @@ fn a_miner_for_a_pool_starts_with_no_node_and_the_reasons_it_does_not_start_are_
     );
     c.handle(Cmd::StopMiner);
     assert!(matches!(c.snapshot().miner, MinerView::Off));
+}
+
+#[test]
+fn a_view_only_wallet_is_made_from_a_view_key_and_refuses_what_needs_the_words_or_the_spend_key() {
+    let rig = Rig::new("viewonly", 18484);
+    let mut c = rig.core();
+    let ev = c.handle(Cmd::CreateWallet {
+        name: Some("Main".into()),
+        password: Password::Set(pw("correct horse battery")),
+    });
+    assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    let main_addr = unlocked(&c).accounts[0].address.clone();
+    assert_eq!(unlocked(&c).tier, ViewTier::Full);
+    let key_of = |c: &mut Core, received: bool| {
+        c.handle(Cmd::RevealViewKey {
+            password: pw("correct horse battery"),
+            account: 0,
+            received,
+        })
+        .iter()
+        .find_map(|e| match e {
+            Event::ViewKey { key, .. } => Some(key.to_string()),
+            _ => None,
+        })
+        .unwrap()
+    };
+    let keys = [(false, key_of(&mut c, false)), (true, key_of(&mut c, true))];
+    c.handle(Cmd::Lock);
+
+    // a bad key is refused and nothing is written
+    let ev = c.handle(Cmd::RestoreViewOnly {
+        key: pw("TENview1notakey"),
+        password: Password::None,
+        name: Some("Bad".into()),
+    });
+    assert_eq!(errors(&ev).len(), 1);
+    assert_eq!(c.snapshot().wallets.len(), 1);
+
+    for (received, key) in keys {
+        let name = if received { "Watch in" } else { "Watch all" };
+        let ev = c.handle(Cmd::RestoreViewOnly {
+            key: pw(&key),
+            password: Password::Set(pw("watching password")),
+            name: Some(name.into()),
+        });
+        assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+        let d = unlocked(&c);
+        let tier = if received {
+            ViewTier::ViewReceived
+        } else {
+            ViewTier::ViewAll
+        };
+        assert_eq!(d.tier, tier);
+        assert_eq!(d.accounts.len(), 1);
+        assert_eq!(
+            d.accounts[0].address, main_addr,
+            "the same account, watched"
+        );
+
+        // no words, no new accounts, no signatures: each refused with the reason
+        let ev = c.handle(Cmd::RevealPhrase {
+            password: pw("watching password"),
+        });
+        assert!(words_of(&ev).is_none());
+        assert!(errors(&ev)[0].contains("view-only"), "{:?}", errors(&ev));
+        let ev = c.handle(Cmd::AddAccount {
+            label: "More".into(),
+        });
+        assert!(errors(&ev)[0].contains("view-only"), "{:?}", errors(&ev));
+        let ev = c.handle(Cmd::SignMessage {
+            account: 0,
+            message: "hello".into(),
+        });
+        assert!(errors(&ev)[0].contains("view-only"), "{:?}", errors(&ev));
+        assert_eq!(unlocked(&c).accounts.len(), 1);
+        // what needs only the view key still works
+        let ev = c.handle(Cmd::MakeIntegrated { account: 0 });
+        assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+        let ev = c.handle(Cmd::RevealViewKey {
+            password: pw("watching password"),
+            account: 0,
+            received: true,
+        });
+        assert!(
+            errors(&ev).is_empty(),
+            "either tier gives a view-received key"
+        );
+
+        // it stays view-only through its file
+        c.handle(Cmd::Lock);
+        assert!(errors(&c.handle(Cmd::Unlock {
+            password: pw("watching password")
+        }))
+        .is_empty());
+        assert_eq!(unlocked(&c).tier, tier);
+        c.handle(Cmd::Lock);
+    }
+    assert_eq!(c.snapshot().wallets.len(), 3);
 }

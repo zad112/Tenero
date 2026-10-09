@@ -348,6 +348,7 @@ impl Core {
             tip: None,
             synced: false,
             has_password: self.has_password,
+            tier: p.tier(),
         }
     }
 
@@ -371,6 +372,11 @@ impl Core {
                 birth,
                 name,
             } => self.restore_wallet(&phrase, password, birth, name),
+            Cmd::RestoreViewOnly {
+                key,
+                password,
+                name,
+            } => self.restore_view_only(&key, password, name),
             Cmd::Unlock { password } => self.unlock(&password),
             Cmd::Lock => self.lock(),
             Cmd::RevealPhrase { password } => self.reveal(&password, &mut events),
@@ -547,7 +553,7 @@ impl Core {
             self.settings.network.wallet_network(),
             self.birth_now(),
         );
-        let words = purse.phrase();
+        let words = purse.phrase().ok_or("a new wallet has no words")?;
         self.open(purse, pw);
         if let Err(e) = self.save_wallet() {
             // nothing was written: go back to what was selected
@@ -584,6 +590,29 @@ impl Core {
             self.purse = None;
             self.pass = None;
             self.needs_discovery = false;
+            self.settings.wallet_file = before;
+            return Err(e);
+        }
+        self.remember_new_wallet();
+        Ok(())
+    }
+
+    /// A view-only wallet from a view key: one account, no words, scanning from the height the key carries. Nothing is
+    /// looked for beyond it (a view key is one account's).
+    fn restore_view_only(
+        &mut self,
+        key: &str,
+        password: Password,
+        name: Option<String>,
+    ) -> Result<(), String> {
+        let pw = pass_ok(&password)?;
+        let purse = Purse::from_view_key(key, self.settings.network.wallet_network())?;
+        let before = self.settings.wallet_file.clone();
+        self.target_for_new(name)?;
+        self.open(purse, pw);
+        if let Err(e) = self.save_wallet() {
+            self.purse = None;
+            self.pass = None;
             self.settings.wallet_file = before;
             return Err(e);
         }
@@ -636,7 +665,12 @@ impl Core {
     }
 
     fn reveal(&mut self, password: &str, events: &mut Vec<Event>) -> Result<(), String> {
-        let words = self.purse.as_ref().ok_or("the wallet is locked")?.phrase();
+        let words = self
+            .purse
+            .as_ref()
+            .ok_or("the wallet is locked")?
+            .phrase()
+            .ok_or("a view-only wallet has no 24 words: it was made from a view key")?;
         // asked again on purpose: someone at an open window must not be able to read the words by a click
         if self.pass.as_ref().map(|p| p.as_slice()) != Some(password.as_bytes()) {
             return Err("wrong password".into());
@@ -802,24 +836,25 @@ impl Core {
         self.ready_to_pay()?;
         let node = self.node.as_ref().expect("checked");
         let purse = self.purse.as_mut().ok_or("the wallet is locked")?;
-        let plan = purse
-            .build_batch(account, node, &mut OsRng, &[(addr, units)], FeeLevel::Low)
+        // worked out, not built: a payment's proofs take about a second a coin to make, and the quote is thrown away
+        let quotes = purse
+            .quote_batch(account, node, &[(addr, units)], FeeLevel::Low)
             .map_err(purse_err)?;
         let rules = node.rules()?;
         // a payment that needs several transactions pays the fee of each
         let mut fees = [0u64; 3];
-        for built in &plan.txs {
+        for q in &quotes {
             // version 3's rule, the one the wallet builds by: real bytes, at a third of version 2's rate
-            let size = tenero_core::v3::Wire::to_bytes(&built.tx)
-                .map_err(|e| e.to_string())?
-                .len() as u64;
-            let min = tenero_core::v3::rules::min_fee(size, rules.reward, rules.median)
+            let min = tenero_core::v3::rules::min_fee(q.size, rules.reward, rules.median)
                 .map_err(|e| e.to_string())?;
             for (f, level) in fees.iter_mut().zip(FeeLevel::ALL) {
                 *f += min.saturating_mul(level.percent_of_minimum()) / 100 + 1;
             }
         }
-        events.push(Event::Estimate { fees });
+        events.push(Event::Estimate {
+            fees,
+            coins: quotes.iter().map(|q| q.inputs).sum(),
+        });
         Ok(())
     }
 
@@ -1634,6 +1669,7 @@ impl Core {
             tip: Some(tip),
             synced,
             has_password: self.has_password,
+            tier: purse.tier(),
         });
         self.refresh_due = false;
         self.last_refresh = Some(Instant::now());

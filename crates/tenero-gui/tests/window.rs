@@ -10,7 +10,7 @@ use tenero_gui::backend::Backend;
 use tenero_gui::settings::Settings;
 use tenero_gui::ui::App;
 use tenero_gui::view::*;
-use tenero_wallet::{Address, Balance, EntryKind, FeeLevel, Network, SentStatus};
+use tenero_wallet::{Address, Balance, EntryKind, FeeLevel, Network, SentStatus, ViewTier};
 use zeroize::Zeroizing;
 
 fn texts(shapes: &[egui::epaint::ClippedShape]) -> String {
@@ -189,7 +189,19 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
         tip: with_balances.then_some(1234),
         synced,
         has_password: true,
+        tier: ViewTier::Full,
     }))
+}
+
+/// [`wallet`] (synced, with balances) as a view-only wallet of `tier`.
+fn view_only(tier: ViewTier) -> WalletView {
+    match wallet(true, true) {
+        WalletView::Unlocked(mut d) => {
+            d.tier = tier;
+            WalletView::Unlocked(d)
+        }
+        other => other,
+    }
 }
 
 fn report(stale: bool) -> MinerView {
@@ -1327,4 +1339,121 @@ fn a_node_with_no_peers_is_not_called_up_to_date() {
             "{peers} peers:\n{t}"
         );
     }
+}
+
+#[test]
+fn a_view_only_wallet_says_so_and_offers_nothing_that_needs_the_spend_key() {
+    let mut rig = Rig::new();
+    let running = || NodeView::Running {
+        info: info(false, 3),
+        ours: true,
+    };
+    for tier in [ViewTier::ViewAll, ViewTier::ViewReceived] {
+        let s = snap(&rig, view_only(tier), running(), MinerView::Off, None);
+        rig.app.set_snapshot(s.clone());
+        rig.app.goto("Wallet");
+        let (t, _) = rig.frame();
+        assert!(t.contains("VIEW-ONLY"), "{t}");
+        for absent in ["Show my 24 words", "Add account", "Send from here"] {
+            assert!(
+                !t.contains(absent),
+                "{tier:?}: `{absent}` is offered:
+{t}"
+            );
+        }
+        assert!(
+            t.contains("Show a view key"),
+            "a view-all wallet can give a view key"
+        );
+        if tier == ViewTier::ViewReceived {
+            assert!(t.contains("Received in all (not a balance)"), "{t}");
+            assert!(!t.contains("Spendable"), "{t}");
+        } else {
+            assert!(t.contains("Balance") && t.contains("Spendable"), "{t}");
+        }
+        rig.app.set_snapshot(s.clone());
+        rig.app.goto("Send");
+        let (t, _) = rig.frame();
+        assert!(t.contains("VIEW-ONLY wallet: it cannot send"), "{t}");
+        assert!(!t.contains("Paste a payment request"), "{t}");
+        rig.app.set_snapshot(s);
+        rig.app.goto("Prove");
+        let (t, _) = rig.frame();
+        assert!(t.contains("cannot sign"), "{t}");
+        assert!(!t.contains("Sign as"), "{t}");
+    }
+    // a full wallet is not called view-only
+    let s = snap(&rig, wallet(true, true), running(), MinerView::Off, None);
+    rig.app.set_snapshot(s);
+    rig.app.goto("Wallet");
+    let (t, _) = rig.frame();
+    assert!(
+        !t.contains("VIEW-ONLY") && t.contains("Show my 24 words"),
+        "{t}"
+    );
+}
+
+#[test]
+fn a_view_only_wallet_can_be_added_from_the_welcome_and_the_locked_screens() {
+    let mut rig = Rig::new();
+    let s = snap(
+        &rig,
+        WalletView::NoWallet,
+        NodeView::Stopped,
+        MinerView::Off,
+        None,
+    );
+    rig.app.set_snapshot(s);
+    let (t, _) = rig.frame();
+    assert!(t.contains("View-only, from a view key"), "{t}");
+    let s = snap(
+        &rig,
+        WalletView::Locked,
+        NodeView::Stopped,
+        MinerView::Off,
+        None,
+    );
+    rig.app.set_snapshot(s);
+    let (t, _) = rig.frame();
+    assert!(t.contains("Add a view-only wallet"), "{t}");
+}
+
+#[test]
+fn a_payment_of_many_pieces_says_before_review_how_long_its_proofs_take() {
+    let mut rig = Rig::new();
+    rig.app.goto("Send");
+    let s = snap(
+        &rig,
+        wallet(true, true),
+        NodeView::Running {
+            info: info(false, 3),
+            ours: true,
+        },
+        MinerView::Off,
+        None,
+    );
+    rig.app.set_snapshot(s);
+    rig.app.set_send_inputs(&addr(9), "1");
+    rig.frame();
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    rig.frame();
+    // a payment of 50 block rewards: said before Review is pressed
+    rig.events
+        .send(Event::Estimate {
+            fees: [100, 200, 500],
+            coins: 50,
+        })
+        .unwrap();
+    let (t, _) = rig.frame();
+    assert!(t.contains("This payment spends 50 pieces"), "{t}");
+    assert!(t.contains("about a second for each"), "{t}");
+    // and a payment of a few pieces says nothing about it
+    rig.events
+        .send(Event::Estimate {
+            fees: [100, 200, 500],
+            coins: 2,
+        })
+        .unwrap();
+    let (t, _) = rig.frame();
+    assert!(!t.contains("pieces. Making its proofs"), "{t}");
 }
