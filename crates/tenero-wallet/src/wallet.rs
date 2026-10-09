@@ -265,6 +265,32 @@ pub struct TxQuote {
     pub fee: u64,
 }
 
+/// A transaction on the chain that spends coins of this wallet, as scanning finds it: what a wallet that did not send it
+/// (a view-all wallet, or a wallet restored from its words) still knows of a payment out. **Whom it paid is not known**:
+/// Carrot hides the recipient from everyone but the sender's own record. Only a wallet that can compute its coins' key
+/// images finds these (a full or view-all wallet, not a view-received one).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Outgoing {
+    /// The block it is in.
+    pub height: u64,
+    /// The key images of this wallet's coins it spends (they identify the transaction).
+    pub spends: Vec<[u8; 32]>,
+    /// What those coins held.
+    pub spent: u64,
+    /// What came back to this wallet in the same transaction: change, or what it paid itself.
+    pub returned: u64,
+    pub fee: u64,
+}
+
+impl Outgoing {
+    /// What left the wallet besides the fee: 0 for a transaction that only moved its own coins (a combine).
+    pub fn sent(&self) -> u64 {
+        self.spent
+            .saturating_sub(self.returned)
+            .saturating_sub(self.fee)
+    }
+}
+
 /// How a [`Wallet::send_batch`] went: the first `sent` transactions were handed to the node (and their coins reserved);
 /// `failed` is why the next one was not.
 #[derive(Debug)]
@@ -288,6 +314,8 @@ pub struct Wallet {
     /// The ids of the last scanned blocks, oldest first.
     pub(crate) recent: Vec<(u64, [u8; 32])>,
     pub(crate) owned: Vec<Owned>,
+    /// The transactions found spending this wallet's coins, oldest first.
+    pub(crate) outgoing: Vec<Outgoing>,
     pub(crate) reserved: Vec<Reserved>,
     /// Key images the chain has said are spent (a spent output stays spent, so it is asked once). In memory only; forgotten
     /// when a reorganisation is seen, which is the only way a spend can undo.
@@ -580,6 +608,7 @@ impl Wallet {
             scanned: None,
             recent: Vec::new(),
             owned: Vec::new(),
+            outgoing: Vec::new(),
             reserved: Vec::new(),
             spent_cache: HashSet::new(),
             unspent_cache: HashSet::new(),
@@ -768,6 +797,11 @@ impl Wallet {
         self.scanned
     }
 
+    /// The transactions found spending this wallet's coins (see [`Outgoing`]), oldest first.
+    pub fn outgoing(&self) -> &[Outgoing] {
+        &self.outgoing
+    }
+
     pub fn owned(&self) -> &[Owned] {
         &self.owned
     }
@@ -810,8 +844,14 @@ impl Wallet {
         };
         if self.scanned != keep {
             match keep {
-                Some(h) => self.owned.retain(|o| o.height <= h),
-                None => self.owned.clear(),
+                Some(h) => {
+                    self.owned.retain(|o| o.height <= h);
+                    self.outgoing.retain(|o| o.height <= h);
+                }
+                None => {
+                    self.owned.clear();
+                    self.outgoing.clear();
+                }
             }
             self.scanned = keep;
         }
@@ -856,6 +896,14 @@ impl Wallet {
         let main_view = self.access.public().main_view_pubkey;
         let mut found = 0;
         let mut index = block.first_output_index;
+        // this wallet's coins by key image, to see which transactions spend them (a view-received wallet has no key
+        // images, so it sees none: it watches what comes in only)
+        let mine: HashMap<[u8; 32], u64> =
+            if block.txs.is_empty() || matches!(self.access, Access::ViewReceived(_)) {
+                HashMap::new()
+            } else {
+                self.owned.iter().map(|o| (o.key_image, o.amount)).collect()
+            };
         for o in &block.coinbase.outputs {
             let enote = CoinbaseEnote {
                 onetime_address: o.onetime_address,
@@ -884,6 +932,12 @@ impl Wallet {
                 index += t.outputs.len() as u64;
                 continue;
             };
+            let spends: Vec<([u8; 32], u64)> = t
+                .inputs
+                .iter()
+                .filter_map(|i| mine.get(&i.key_image).map(|a| (i.key_image, *a)))
+                .collect();
+            let kept_before = self.owned.len();
             // one shared secret per ephemeral key (a 2-output transaction has one key for both)
             let secrets: Vec<[u8; 32]> = t
                 .ephemeral_pubkeys
@@ -920,6 +974,15 @@ impl Wallet {
                     ));
                 }
                 index += 1;
+            }
+            if !spends.is_empty() {
+                self.outgoing.push(Outgoing {
+                    height: block.height,
+                    spends: spends.iter().map(|(k, _)| *k).collect(),
+                    spent: spends.iter().map(|(_, a)| *a).sum(),
+                    returned: self.owned[kept_before..].iter().map(|o| o.amount).sum(),
+                    fee: t.fee,
+                });
             }
         }
         found

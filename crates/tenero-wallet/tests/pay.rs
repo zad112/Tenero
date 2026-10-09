@@ -520,6 +520,11 @@ fn a_reorganisation_takes_back_what_the_wallet_thought_it_had() {
     bob.sync(&n1).unwrap();
     alice.sync(&n1).unwrap();
     assert_eq!(bob.balance(&n1).unwrap().total, 2_000_000);
+    assert_eq!(
+        alice.outgoing().len(),
+        1,
+        "the payment out, found on the chain"
+    );
     // branch 2: longer, without the payment (mined to somebody else)
     let carol = wallet(3);
     for k in 0..3 {
@@ -547,6 +552,10 @@ fn a_reorganisation_takes_back_what_the_wallet_thought_it_had() {
     );
     let ra = alice.sync(&n1).unwrap();
     assert!(ra.blocks_rolled_back >= 1 && !ra.rescanned);
+    assert!(
+        alice.outgoing().is_empty(),
+        "the payment out is gone with its block"
+    );
     let after = alice.balance(&n1).unwrap();
     assert_eq!(
         after.total, before.total,

@@ -1457,3 +1457,57 @@ fn a_payment_of_many_pieces_says_before_review_how_long_its_proofs_take() {
     let (t, _) = rig.frame();
     assert!(!t.contains("pieces. Making its proofs"), "{t}");
 }
+
+#[test]
+fn a_payment_out_the_wallet_did_not_record_is_listed_without_a_recipient() {
+    let mut rig = Rig::new();
+    rig.app.goto("History");
+    let row = |to_self: bool, amount: u64| HistoryRow {
+        account: 0,
+        account_label: "Main".into(),
+        kind: EntryKind::SentUnrecorded {
+            fee: 300_000,
+            to_self,
+        },
+        amount,
+        height: 1500,
+        id: None,
+        global_index: None,
+        has_secret: false,
+        note: None,
+        payment_id: None,
+    };
+    let w = match view_only(ViewTier::ViewAll) {
+        WalletView::Unlocked(mut d) => {
+            d.history = vec![row(false, 1_500_000_000), row(true, 4_000_000_000)];
+            WalletView::Unlocked(d)
+        }
+        other => other,
+    };
+    let s = snap(
+        &rig,
+        w,
+        NodeView::Running {
+            info: info(false, 3),
+            ours: true,
+        },
+        MinerView::Off,
+        None,
+    );
+    rig.app.set_snapshot(s);
+    let (t, _) = rig.frame();
+    for needle in [
+        "-15 TNR",
+        "whom it paid is not known",
+        "Moved",
+        "40 TNR",
+        "between your own coins",
+        "fee 0.003 TNR",
+    ] {
+        assert!(t.contains(needle), "`{needle}` missing:\n{t}");
+    }
+    assert!(
+        !t.contains("Prove payment"),
+        "nothing to prove it with: {t}"
+    );
+}

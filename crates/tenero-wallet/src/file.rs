@@ -26,7 +26,7 @@ use tenero_core::v3::{DecodeError, EncodeError, Reader, Writer};
 use zeroize::Zeroizing;
 
 use crate::address::Network;
-use crate::wallet::{Owned, Reserved, Wallet, RECENT_BLOCKS};
+use crate::wallet::{Outgoing, Owned, Reserved, Wallet, RECENT_BLOCKS};
 
 /// One wallet (one account), the first format.
 const MAGIC: &[u8; 4] = b"TWL1";
@@ -37,8 +37,13 @@ const HEADER: usize = 4 + 12 + 16;
 /// scheme of `beta`, which a 0.3.0 wallet does not read.
 /// 3 (0.3.0): the state says how much of the account the wallet holds (its seed, or a view-only tier's keys). 2 (an
 /// earlier 0.3.0 build) held the seed only, and is still read.
-const STATE_VERSION: u16 = 3;
+/// 4: also the transactions found spending the wallet's coins ([`Outgoing`]). A state of 3 or 2 has none: it is read, and
+/// its scanning starts again from its birth height so that they are found.
+const STATE_VERSION: u16 = 4;
+const NO_OUTGOING_STATE_VERSION: u16 = 3;
 const SEED_ONLY_STATE_VERSION: u16 = 2;
+const MAX_OUTGOING: usize = 1_000_000;
+const MAX_OUTGOING_SPENDS: usize = 4_096;
 const BETA_STATE_VERSION: u16 = 1;
 const MAX_OWNED: usize = 1_000_000;
 const MAX_RESERVED: usize = 4_096;
@@ -197,6 +202,19 @@ impl Wallet {
             w.raw(&r.key_image);
             w.u64(r.until_height);
         }
+        w.count(self.outgoing.len(), 0, MAX_OUTGOING)
+            .map_err(enc_err)?;
+        for o in &self.outgoing {
+            w.u64(o.height);
+            w.count(o.spends.len(), 1, MAX_OUTGOING_SPENDS)
+                .map_err(enc_err)?;
+            for k in &o.spends {
+                w.raw(k);
+            }
+            w.u64(o.spent);
+            w.u64(o.returned);
+            w.u64(o.fee);
+        }
         Ok(())
     }
 
@@ -210,7 +228,7 @@ impl Wallet {
     pub(crate) fn read_state(r: &mut Reader) -> Result<Wallet, FileError> {
         let version = r.u16().map_err(dec_err)?;
         match version {
-            STATE_VERSION | SEED_ONLY_STATE_VERSION => {}
+            STATE_VERSION | NO_OUTGOING_STATE_VERSION | SEED_ONLY_STATE_VERSION => {}
             BETA_STATE_VERSION => {
                 return Err(FileError::Corrupt(
                     "a beta wallet: open it with the 0.2 programs (its 24 words also restore a gamma wallet)".into(),
@@ -284,6 +302,20 @@ impl Wallet {
                 })
             })
             .map_err(dec_err)?;
+        let outgoing = if version == STATE_VERSION {
+            r.list(0, MAX_OUTGOING, |r| {
+                Ok(Outgoing {
+                    height: r.u64()?,
+                    spends: r.list(1, MAX_OUTGOING_SPENDS, |r| r.array::<32>())?,
+                    spent: r.u64()?,
+                    returned: r.u64()?,
+                    fee: r.u64()?,
+                })
+            })
+            .map_err(dec_err)?
+        } else {
+            Vec::new()
+        };
         let b32 = |i: usize| -> [u8; 32] { keys[i..i + 32].try_into().expect("32") };
         let mut w = match kind {
             0 => Wallet::from_seed(&b32(0), network, birth),
@@ -317,10 +349,26 @@ impl Wallet {
                 "the scanned blocks are not in order".into(),
             ));
         }
-        w.scanned = scanned;
-        w.recent = recent;
-        w.owned = owned;
+        // a transaction found spending the wallet's coins spends coins it holds, and is no later than the scan
+        if outgoing.iter().any(|o| {
+            Some(o.height) > scanned
+                || o.spends
+                    .iter()
+                    .any(|k| !owned.iter().any(|w| &w.key_image == k))
+        }) {
+            return Err(FileError::Corrupt(
+                "a payment out spends coins the wallet does not hold".into(),
+            ));
+        }
         w.reserved = reserved;
+        if version == STATE_VERSION {
+            w.scanned = scanned;
+            w.recent = recent;
+            w.owned = owned;
+            w.outgoing = outgoing;
+        }
+        // an older state never looked for payments out: it is scanned again from its birth height (what it held comes
+        // back with them; the reservations are kept)
         Ok(w)
     }
 
@@ -503,6 +551,52 @@ mod tests {
         assert_eq!(back.address(), w.address());
         assert_eq!(back.network(), Network::Test);
         assert_eq!(back.watched_subaddresses(), w.watched_subaddresses());
+    }
+
+    #[test]
+    fn payments_out_round_trip_and_an_older_state_is_scanned_again_to_find_them() {
+        let mut w = sample();
+        let spends = vec![w.owned[0].key_image];
+        w.outgoing = vec![Outgoing {
+            height: 3,
+            spends,
+            spent: 77,
+            returned: 70,
+            fee: 2,
+        }];
+        let bytes = w.state_bytes().unwrap();
+        let back = Wallet::from_state_bytes(&bytes).unwrap();
+        assert_eq!(back.outgoing, w.outgoing);
+        assert_eq!(back.outgoing[0].sent(), 5);
+        // a payment out that spends a coin the wallet does not hold, or after its scan, is refused
+        let mut bad = sample();
+        bad.outgoing = vec![Outgoing {
+            height: 3,
+            spends: vec![[1; 32]],
+            spent: 1,
+            returned: 0,
+            fee: 0,
+        }];
+        assert!(Wallet::from_state_bytes(&bad.state_bytes().unwrap()).is_err());
+        let mut late = sample();
+        late.outgoing = vec![Outgoing {
+            height: 4,
+            spends: vec![late.owned[0].key_image],
+            spent: 77,
+            returned: 0,
+            fee: 1,
+        }];
+        assert!(Wallet::from_state_bytes(&late.state_bytes().unwrap()).is_err());
+        // version 3 is version 4 without the list at the end: read, and its scan starts again from the birth height
+        let mut v3 = sample().state_bytes().unwrap().to_vec();
+        v3.truncate(v3.len() - 4);
+        v3[..2].copy_from_slice(&3u16.to_le_bytes());
+        let old = Wallet::from_state_bytes(&v3).unwrap();
+        assert_eq!((old.scanned, old.owned.len()), (None, 0));
+        assert!(old.recent.is_empty() && old.outgoing.is_empty());
+        assert_eq!(old.birth_height, 2);
+        assert_eq!(old.reserved, sample().reserved, "the reservations are kept");
+        assert_eq!(old.address(), sample().address());
     }
 
     #[test]
