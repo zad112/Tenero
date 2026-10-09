@@ -322,3 +322,27 @@ fn time_proving() {
     }
     println!("(one thread; each proof was verified after it was made)");
 }
+
+/// A payment from many small coins (a miner's block rewards): where the time of one proof of many inputs goes, at the
+/// depths of a young chain's tree. `cargo test --release -p tenero-crypto --test fcmp_pp_prove_timing -- --ignored
+/// --nocapture time_proving_many_inputs`
+#[test]
+#[ignore]
+fn time_proving_many_inputs() {
+    let _ = &*FCMP_PARAMS;
+    let _ = &SELENE_FCMP_GENERATORS.generators;
+    let _ = &HELIOS_FCMP_GENERATORS.generators;
+    for layers in [2usize, 3] {
+        // the test tree puts every input in one chunk of the first layer (at most 38)
+        for n in [8usize, 16, 32, 38] {
+            let ours: Vec<Owned> = (0..n).map(|_| owned()).collect();
+            let one = prove_once(&ours, layers);
+            let all = one.sal + one.blinds + one.membership;
+            println!(
+                "FCMP++ prove, {n:>2} inputs, {layers} layers, {:>6} bytes: {:>8.2?} in all (spend-auth {:>7.2?}, blinds {:>8.2?}, membership {:>8.2?})",
+                one.bytes, all, one.sal, one.blinds, one.membership
+            );
+        }
+    }
+    println!("(one thread; each proof was verified after it was made)");
+}

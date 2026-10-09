@@ -11,7 +11,9 @@ use tenero_net::sim::{test_chain_params, LABEL};
 use tenero_node::{Node, NodeConfig};
 use tenero_store::Store;
 use tenero_wallet::testing::{test_block_to, READY};
-use tenero_wallet::{Address, KdfParams, Network, Purse, ViewTier, Wallet, WalletError};
+use tenero_wallet::{
+    Address, FeeLevel, KdfParams, Network, Purse, PurseError, ViewTier, Wallet, WalletError,
+};
 
 const T0: u64 = 1_700_000_000;
 
@@ -173,7 +175,7 @@ fn a_view_key_is_refused_on_another_network_or_with_a_character_changed() {
 }
 
 #[test]
-fn a_view_only_wallet_survives_its_file_and_is_not_taken_for_a_purse() {
+fn a_view_only_wallet_survives_its_file_and_opens_as_a_view_only_purse() {
     let dir = std::env::temp_dir().join(format!("tenero-view-file-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -187,11 +189,107 @@ fn a_view_only_wallet_survives_its_file_and_is_not_taken_for_a_purse() {
         assert_eq!((back.tier(), back.address()), (tier, alice.address()));
         assert!(back.seed().is_none());
         assert_eq!(back.view_key(tier), v.view_key(tier));
-        // the wallet app opens purses: a view-only file is refused with the reason, never taken for one
-        let e = Purse::load(&path, b"passphrase").err().unwrap();
-        assert!(e.to_string().contains("view-only"), "{e}");
+        // the wallet app opens it too: a view-only purse of one account, no words, the same address
+        let p = Purse::load(&path, b"passphrase").unwrap();
+        assert!(p.is_view_only());
+        assert_eq!(p.tier(), tier);
+        assert_eq!(p.accounts().len(), 1);
+        assert_eq!(p.accounts()[0].address(), alice.address());
+        assert!(p.phrase().is_none() && p.master_seed().is_none());
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_view_only_purse_survives_its_file_and_refuses_what_needs_the_seed_or_the_spend_key() {
+    let dir = std::env::temp_dir().join(format!("tenero-view-purse-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let full = Purse::from_seed(&[7; 32], Network::Test, 9);
+    let account = full.accounts()[0].wallet();
+    for tier in [ViewTier::ViewAll, ViewTier::ViewReceived] {
+        let key = account.view_key(tier).unwrap();
+        let mut p = Purse::from_view_key(&key, Network::Test).unwrap();
+        assert!(p.is_view_only());
+        assert_eq!(p.tier(), tier);
+        assert_eq!(p.birth_height(), 9, "from the key");
+        assert_eq!(p.accounts()[0].address(), account.address());
+        // what needs the seed or the spend key is refused, with the reason
+        assert_eq!(p.add_account("More", 0), Err(PurseError::ViewOnly));
+        assert!(PurseError::ViewOnly.to_string().contains("view-only"));
+        assert_eq!(
+            p.sign_message(0, b"x", &mut OsRng).err(),
+            Some(PurseError::ViewOnly)
+        );
+        assert!(p.phrase().is_none());
+        // the file keeps it view-only: no seed is made up on the way
+        let path = dir.join(format!("{tier:?}.twl"));
+        p.save(&path, b"pw", KdfParams::TEST_ONLY_WEAK, &mut OsRng)
+            .unwrap();
+        let back = Purse::load(&path, b"pw").unwrap();
+        assert_eq!(back.tier(), tier);
+        assert_eq!(back.accounts()[0].address(), account.address());
+        assert_eq!(
+            back.accounts()[0].wallet().view_key(tier),
+            Some(key.clone())
+        );
+        assert!(back.master_seed().is_none());
+        // and a key of another network is refused
+        assert!(Purse::from_view_key(&key, Network::Gamma).is_err());
+    }
+    // a full purse still is one, after its file
+    let path = dir.join("full.twl");
+    full.save(&path, b"pw", KdfParams::TEST_ONLY_WEAK, &mut OsRng)
+        .unwrap();
+    let back = Purse::load(&path, b"pw").unwrap();
+    assert_eq!(
+        (back.tier(), back.master_seed()),
+        (ViewTier::Full, Some(&[7; 32]))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_view_only_purse_sees_what_its_tier_sees_and_finds_nothing_more() {
+    let rig = Rig::new("purse-tiers");
+    let mut node = rig.node();
+    let mut alice = Wallet::from_seed(&[8; 32], Network::Test, 0);
+    let bob = Wallet::from_seed(&[9; 32], Network::Test, 0);
+    for _ in 0..READY {
+        mine(&mut node, &alice.address());
+    }
+    alice.sync(&node).unwrap();
+    alice
+        .pay(&mut node, &mut OsRng, &bob.address(), 1_000_000_000)
+        .unwrap();
+    mine(&mut node, &alice.address());
+    alice.sync(&node).unwrap();
+    let full = alice.balance(&node).unwrap();
+    let mut all =
+        Purse::from_view_key(&alice.view_key(ViewTier::ViewAll).unwrap(), Network::Test).unwrap();
+    // discovering finds no other accounts: a view key is one account's
+    assert_eq!(all.discover(&node).unwrap(), 1);
+    assert_eq!(all.total_balance(&node).unwrap(), full);
+    let mut received = Purse::from_view_key(
+        &alice.view_key(ViewTier::ViewReceived).unwrap(),
+        Network::Test,
+    )
+    .unwrap();
+    received.sync(&node).unwrap();
+    let r = received.total_balance(&node).unwrap();
+    assert!(r.total > full.total, "what came in, not what is left");
+    assert_eq!(r.spendable, 0);
+    // a view-only purse cannot pay
+    assert!(all
+        .build_payment(
+            0,
+            &node,
+            &mut OsRng,
+            &bob.address(),
+            1_000,
+            FeeLevel::Normal
+        )
+        .is_err());
 }
 
 #[test]

@@ -267,7 +267,7 @@ fn the_phrase_of_a_purse_is_not_in_the_file_in_the_clear() {
         !bytes.windows(32).any(|w| w == [0x42; 32]),
         "the seed is encrypted"
     );
-    let first_word = p.phrase().split(' ').next().unwrap().to_string();
+    let first_word = p.phrase().unwrap().split(' ').next().unwrap().to_string();
     assert!(
         !String::from_utf8_lossy(&bytes).contains(&first_word) || first_word.len() < 4,
         "no words in the file"
@@ -284,7 +284,7 @@ fn an_old_one_account_wallet_file_opens_as_a_purse_and_a_changed_purse_file_is_r
     let p = Purse::load(&path, b"pw").unwrap();
     assert_eq!(p.accounts().len(), 1);
     assert_eq!(p.accounts()[0].address(), old.address());
-    assert_eq!(Some(p.master_seed()), old.seed());
+    assert_eq!(p.master_seed(), old.seed());
     assert_eq!(p.birth_height(), 7);
     // saving it writes the new format, which opens again
     p.save(&path, b"pw", KdfParams::TEST_ONLY_WEAK, &mut OsRng)
@@ -390,7 +390,7 @@ fn restoring_from_the_words_finds_the_accounts_that_were_used() {
     assert_eq!(p.total_balance(&node).unwrap().total, m0 + m2);
 
     // a new computer: only the words
-    let words = p.phrase();
+    let words = p.phrase().unwrap();
     let seed = seed_of(&words).unwrap();
     let mut back = Purse::from_seed(&seed, Network::Test, 0);
     assert_eq!(back.accounts().len(), 1);
@@ -418,7 +418,7 @@ fn an_account_after_a_long_enough_gap_is_not_found_by_the_search_but_can_be_adde
     let m0 = mine(&mut node, &to0);
     let mf = mine(&mut node, &to_far);
 
-    let mut back = Purse::from_seed(p.master_seed(), Network::Test, 0);
+    let mut back = Purse::from_seed(p.master_seed().unwrap(), Network::Test, 0);
     let n = back.discover(&node).unwrap();
     assert_eq!(
         n,
@@ -621,7 +621,7 @@ fn the_history_lists_what_came_in_what_went_out_and_where_each_payment_stands_an
         .unwrap();
     let back = Purse::load(&path, b"pw").unwrap();
     assert_eq!(back.sent_records(), alice.sent_records());
-    let mut restored = Purse::from_seed(alice.master_seed(), Network::Test, 0);
+    let mut restored = Purse::from_seed(alice.master_seed().unwrap(), Network::Test, 0);
     restored.sync(&node).unwrap();
     let hr = restored.history(&node).unwrap();
     assert!(hr.iter().all(|e| !matches!(e.kind, EntryKind::Sent { .. })));

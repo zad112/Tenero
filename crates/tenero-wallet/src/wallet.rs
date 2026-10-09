@@ -254,6 +254,17 @@ pub struct Plan {
     pub unsent: Vec<(Address, u64)>,
 }
 
+/// One transaction of a payment as [`Wallet::quote_batch`] works it out, before it is made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TxQuote {
+    /// The coins it spends.
+    pub inputs: usize,
+    pub outputs: usize,
+    /// Its exact size in bytes, proofs included.
+    pub size: u64,
+    pub fee: u64,
+}
+
 /// How a [`Wallet::send_batch`] went: the first `sent` transactions were handed to the node (and their coins reserved);
 /// `failed` is why the next one was not.
 #[derive(Debug)]
@@ -1320,6 +1331,54 @@ impl Wallet {
         dests: &[(Address, u64)],
         level: FeeLevel,
     ) -> Result<Plan, WalletError> {
+        let (txs, unsent) = self.batch_with(chain, dests, level, |w, rules, chosen, group| {
+            let b = w.assemble(chain, rng, rules, level, chosen, group)?;
+            let spends = b.spends.clone();
+            Ok((b, spends))
+        })?;
+        Ok(Plan { txs, unsent })
+    }
+
+    /// What [`Wallet::build_batch`] would make, worked out WITHOUT making it: the same coins chosen and grouped the same way,
+    /// each transaction's exact size and fee, but no proofs (seconds per coin) and no request to the node for spend paths.
+    /// For showing the fees before the person decides. (A tree that gains a layer between the quote and the build makes the
+    /// built transaction slightly bigger; the build works its fee out again.)
+    pub fn quote_batch(
+        &mut self,
+        chain: &impl ChainView,
+        dests: &[(Address, u64)],
+        level: FeeLevel,
+    ) -> Result<Vec<TxQuote>, WalletError> {
+        self.access.full().ok_or(WalletError::ViewOnly)?;
+        let (quotes, _) = self.batch_with(chain, dests, level, |_, rules, chosen, group| {
+            let outputs = group.len() + 1;
+            let size = transaction_size(chosen.len(), outputs, rules.tree_layers) as u64;
+            let q = TxQuote {
+                inputs: chosen.len(),
+                outputs,
+                size,
+                fee: fee_for_size(rules, level, size)?,
+            };
+            Ok((q, chosen.iter().map(|o| o.key_image).collect()))
+        })?;
+        Ok(quotes)
+    }
+
+    /// The batching of [`Wallet::build_batch`] and [`Wallet::quote_batch`]: groups the recipients, chooses each group's
+    /// coins, and hands them to `make`, which gives what it made and the key images it spent.
+    #[allow(clippy::type_complexity)]
+    fn batch_with<T>(
+        &mut self,
+        chain: &impl ChainView,
+        dests: &[(Address, u64)],
+        level: FeeLevel,
+        mut make: impl FnMut(
+            &Wallet,
+            &Rules,
+            Vec<Owned>,
+            &[(Address, u64)],
+        ) -> Result<(T, Vec<[u8; 32]>), WalletError>,
+    ) -> Result<(Vec<T>, Vec<(Address, u64)>), WalletError> {
         if dests.is_empty() || dests.iter().any(|(_, v)| *v == 0) {
             return Err(WalletError::ZeroAmount);
         }
@@ -1346,7 +1405,7 @@ impl Wallet {
         let reserve = fee_for_size(&rules, level, MAX_TX_SIZE as u64)?;
         let mut pending: std::collections::VecDeque<(Address, u64)> =
             dests.iter().copied().collect();
-        let mut txs: Vec<Built> = Vec::new();
+        let mut txs: Vec<T> = Vec::new();
         while !pending.is_empty() {
             let mut group: Vec<(Address, u64)> =
                 pending.iter().take(MAX_RECIPIENTS).copied().collect();
@@ -1396,10 +1455,10 @@ impl Wallet {
             }
             let amount: u64 = group.iter().map(|(_, v)| *v).sum();
             let built = choose(&rules, level, &available, amount, group.len() + 1)
-                .and_then(|chosen| self.assemble(chain, rng, &rules, level, chosen, &group));
+                .and_then(|chosen| make(self, &rules, chosen, &group));
             match built {
-                Ok(b) => {
-                    available.retain(|o| !b.spends.contains(&o.key_image));
+                Ok((b, spends)) => {
+                    available.retain(|o| !spends.contains(&o.key_image));
                     for _ in 0..consumed {
                         pending.pop_front();
                     }
@@ -1412,10 +1471,7 @@ impl Wallet {
                 Err(_) => break,
             }
         }
-        Ok(Plan {
-            txs,
-            unsent: pending.into_iter().collect(),
-        })
+        Ok((txs, pending.into_iter().collect()))
     }
 
     /// Combines coins: every spendable coin that is worth more than the fee it adds, grouped as many to a transaction as

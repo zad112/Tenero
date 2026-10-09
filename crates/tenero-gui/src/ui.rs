@@ -14,7 +14,7 @@ use eframe::egui::{self, Color32, RichText};
 use rand_core::RngCore;
 use tenero_app::config::Network;
 use tenero_app::ui::{format_rate, group_digits};
-use tenero_wallet::{EntryKind, FeeLevel, KdfParams, SentStatus};
+use tenero_wallet::{EntryKind, FeeLevel, KdfParams, SentStatus, ViewTier};
 use zeroize::Zeroizing;
 
 use crate::backend::Backend;
@@ -27,6 +27,8 @@ const AMBER: Color32 = Color32::from_rgb(230, 160, 30);
 const RED: Color32 = Color32::from_rgb(220, 70, 70);
 const GREEN: Color32 = Color32::from_rgb(90, 190, 110);
 const GREY: Color32 = Color32::from_rgb(150, 150, 150);
+/// From how many pieces a payment is slow enough to say so before Review (its proofs take about a second a piece).
+const SLOW_PIECES: usize = 10;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -61,11 +63,23 @@ struct Toast {
     until: Instant,
 }
 
+/// What the welcome screen makes.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Making {
+    #[default]
+    New,
+    /// From the 24 words.
+    Restore,
+    /// A view-only wallet, from a view key.
+    ViewOnly,
+}
+
 #[derive(Default)]
 struct Welcome {
     /// The new wallet's name (empty: the suggestion is used).
     name: String,
-    restoring: bool,
+    making: Making,
+    view_key: Zeroizing<String>,
     pw1: Zeroizing<String>,
     pw2: Zeroizing<String>,
     no_password: bool,
@@ -96,6 +110,8 @@ struct SendForm {
     amount: String,
     level: Option<FeeLevel>,
     estimate: Option<[u64; 3]>,
+    /// How many pieces the payment of the estimate spends.
+    coins: Option<usize>,
     /// What the estimate was asked for, so it is asked once per change.
     asked: String,
     /// Why the fees (or the payment) could not be worked out, if they could not: shown instead of "working".
@@ -319,7 +335,8 @@ impl App {
                         stage: PhraseStage::Show,
                     });
                 }
-                Event::Estimate { fees } => {
+                Event::Estimate { fees, coins } => {
+                    self.send.coins = Some(coins);
                     self.send.estimate = Some(fees);
                     self.send.error = None;
                     self.send.working = None;
@@ -442,6 +459,9 @@ impl App {
                     .file_stem()
                     .map_or(String::new(), |s| s.to_string_lossy().into_owned());
                 ui.label(format!("Wallet {name}"));
+                if self.wallet().is_some_and(|d| d.tier != ViewTier::Full) {
+                    ui.colored_label(AMBER, "VIEW-ONLY");
+                }
             }
             if let Some(d) = self.wallet() {
                 ui.separator();
@@ -547,11 +567,15 @@ impl App {
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("Create another wallet").clicked() {
-                        self.welcome.restoring = false;
+                        self.welcome.making = Making::New;
                         self.adding = true;
                     }
                     if ui.button("Restore another wallet from 24 words").clicked() {
-                        self.welcome.restoring = true;
+                        self.welcome.making = Making::Restore;
+                        self.adding = true;
+                    }
+                    if ui.button("Add a view-only wallet").clicked() {
+                        self.welcome.making = Making::ViewOnly;
                         self.adding = true;
                     }
                 });
@@ -585,15 +609,35 @@ impl App {
         ui.label("This wallet keeps coins of an experimental test network. They have no value, and nothing here is audited.");
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.welcome.restoring, false, "Create a new wallet");
+            ui.selectable_value(&mut self.welcome.making, Making::New, "Create a new wallet");
             ui.selectable_value(
-                &mut self.welcome.restoring,
-                true,
+                &mut self.welcome.making,
+                Making::Restore,
                 "Restore from my 24 words",
+            );
+            ui.selectable_value(
+                &mut self.welcome.making,
+                Making::ViewOnly,
+                "View-only, from a view key",
             );
         });
         ui.separator();
-        if self.welcome.restoring {
+        if self.welcome.making == Making::ViewOnly {
+            ui.label("Paste a view key (TENview1...). It comes from Settings, \"Show a view key…\", of the wallet you want to watch.");
+            ui.add(
+                egui::TextEdit::multiline(&mut *self.welcome.view_key)
+                    .desired_rows(2)
+                    .desired_width(f32::INFINITY),
+            );
+            ui.label(
+                RichText::new(
+                    "A VIEW-ONLY wallet sees and cannot spend or sign. A view-all key sees payments in and out and the balance; a view-received key sees only what comes in, so it shows what was received, not a balance. Whoever has the key sees the same: keep it secret.",
+                )
+                .small()
+                .color(GREY),
+            );
+        }
+        if self.welcome.making == Making::Restore {
             ui.label("Type your 24 words, separated by spaces:");
             ui.add(
                 egui::TextEdit::multiline(&mut *self.welcome.phrase)
@@ -616,10 +660,19 @@ impl App {
         }
         ui.add_space(6.0);
         ui.heading("A password for the wallet file on this computer");
-        ui.label("It only locks the file. Your 24 words restore the wallet anywhere, with or without it.");
+        let view_only = self.welcome.making == Making::ViewOnly;
+        ui.label(if view_only {
+            "It only locks the file. The view key makes the same view-only wallet anywhere, with or without it."
+        } else {
+            "It only locks the file. Your 24 words restore the wallet anywhere, with or without it."
+        });
         ui.checkbox(
             &mut self.welcome.no_password,
-            "No password (anyone who can read the wallet file can spend what is in it)",
+            if view_only {
+                "No password (anyone who can read the wallet file can see what it sees)"
+            } else {
+                "No password (anyone who can read the wallet file can spend what is in it)"
+            },
         );
         if !self.welcome.no_password {
             ui.horizontal(|ui| {
@@ -658,11 +711,15 @@ impl App {
         if !birth_ok {
             ui.colored_label(AMBER, "The block number must be digits only.");
         }
-        let phrase_ok = !self.welcome.restoring || !self.welcome.phrase.trim().is_empty();
-        let label = if self.welcome.restoring {
-            "Restore wallet"
-        } else {
-            "Create wallet"
+        let phrase_ok = match self.welcome.making {
+            Making::New => true,
+            Making::Restore => !self.welcome.phrase.trim().is_empty(),
+            Making::ViewOnly => !self.welcome.view_key.trim().is_empty(),
+        };
+        let label = match self.welcome.making {
+            Making::New => "Create wallet",
+            Making::Restore => "Restore wallet",
+            Making::ViewOnly => "Add view-only wallet",
         };
         if ui
             .add_enabled(
@@ -676,20 +733,31 @@ impl App {
             } else {
                 Password::Set(std::mem::take(&mut self.welcome.pw1))
             };
-            if self.welcome.restoring {
-                let phrase = std::mem::take(&mut self.welcome.phrase);
-                let birth = self.welcome.birth.trim().parse().ok();
-                self.backend.send(Cmd::RestoreWallet {
-                    phrase,
-                    password,
-                    birth,
-                    name: Some(self.welcome.name.clone()),
-                });
-            } else {
-                self.backend.send(Cmd::CreateWallet {
-                    password,
-                    name: Some(self.welcome.name.clone()),
-                });
+            match self.welcome.making {
+                Making::Restore => {
+                    let phrase = std::mem::take(&mut self.welcome.phrase);
+                    let birth = self.welcome.birth.trim().parse().ok();
+                    self.backend.send(Cmd::RestoreWallet {
+                        phrase,
+                        password,
+                        birth,
+                        name: Some(self.welcome.name.clone()),
+                    });
+                }
+                Making::ViewOnly => {
+                    let key = std::mem::take(&mut self.welcome.view_key);
+                    self.backend.send(Cmd::RestoreViewOnly {
+                        key,
+                        password,
+                        name: Some(self.welcome.name.clone()),
+                    });
+                }
+                Making::New => {
+                    self.backend.send(Cmd::CreateWallet {
+                        password,
+                        name: Some(self.welcome.name.clone()),
+                    });
+                }
             }
             self.welcome = Welcome::default();
             self.adding = false;
@@ -787,21 +855,34 @@ impl App {
             return;
         };
         ui.add_space(6.0);
+        let received_only = d.tier == ViewTier::ViewReceived;
+        match d.tier {
+            ViewTier::Full => {}
+            ViewTier::ViewAll => {
+                ui.colored_label(AMBER, "VIEW-ONLY wallet (view-all): it sees every payment in and out and the balance, and cannot spend or sign.");
+            }
+            ViewTier::ViewReceived => {
+                ui.colored_label(AMBER, "VIEW-ONLY wallet (view-received): it sees the payments that come in, and cannot spend or sign. It cannot see what was spent, so it shows what was RECEIVED, not a balance.");
+            }
+        }
         match d.total {
             Some(t) => {
-                let title = if d.synced {
-                    "Balance"
-                } else {
-                    "Balance (NOT FINAL: the wallet is still catching up)"
+                let title = match (received_only, d.synced) {
+                    (true, true) => "Received in all (not a balance)",
+                    (true, false) => "Received in all (NOT FINAL: the wallet is still catching up)",
+                    (false, true) => "Balance",
+                    (false, false) => "Balance (NOT FINAL: the wallet is still catching up)",
                 };
                 ui.label(RichText::new(title).color(if d.synced { GREY } else { AMBER }));
                 ui.label(RichText::new(text::coins(t.total)).size(30.0).strong());
-                ui.label(format!(
-                    "Spendable {}   ·   waiting to mature {}   ·   tied up in a payment waiting for a block {}",
-                    text::coins(t.spendable),
-                    text::coins(t.immature),
-                    text::coins(t.reserved)
-                ));
+                if !received_only {
+                    ui.label(format!(
+                        "Spendable {}   ·   waiting to mature {}   ·   tied up in a payment waiting for a block {}",
+                        text::coins(t.spendable),
+                        text::coins(t.immature),
+                        text::coins(t.reserved)
+                    ));
+                }
                 let (n, amount, fee) = pending_out(&d, None);
                 if n > 0 {
                     ui.colored_label(
@@ -857,7 +938,7 @@ impl App {
                     });
                 });
                 ui.label(RichText::new(&a.address).monospace().small());
-                if let Some(b) = a.balance {
+                if let Some(b) = a.balance.filter(|_| !received_only) {
                     ui.label(
                         RichText::new(format!(
                             "spendable {} · maturing {} · tied up in a waiting payment {}",
@@ -870,7 +951,7 @@ impl App {
                     );
                 }
                 ui.horizontal(|ui| {
-                    if ui.small_button("Send from here").clicked() {
+                    if d.tier == ViewTier::Full && ui.small_button("Send from here").clicked() {
                         self.send.account = a.index;
                         self.tab = Tab::Send;
                     }
@@ -881,35 +962,46 @@ impl App {
                 });
             });
         }
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_account)
-                    .hint_text("name of a new account")
-                    .desired_width(200.0),
+        if d.tier != ViewTier::Full {
+            ui.label(
+                RichText::new("A view-only wallet watches the one account its view key is for: it has no words to make others from.")
+                    .small()
+                    .color(GREY),
             );
-            if ui
-                .add_enabled(
-                    !self.new_account.trim().is_empty(),
-                    egui::Button::new("Add account"),
+        }
+        if d.tier == ViewTier::Full {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_account)
+                        .hint_text("name of a new account")
+                        .desired_width(200.0),
+                );
+                if ui
+                    .add_enabled(
+                        !self.new_account.trim().is_empty(),
+                        egui::Button::new("Add account"),
+                    )
+                    .clicked()
+                {
+                    let label = std::mem::take(&mut self.new_account);
+                    self.backend.send(Cmd::AddAccount { label });
+                }
+            });
+        }
+        if d.tier == ViewTier::Full {
+            ui.label(
+                RichText::new(
+                    "Each account has its own address and balance, and a payment comes from one account only. All of them come back from the same 24 words (the names do not).",
                 )
-                .clicked()
-            {
-                let label = std::mem::take(&mut self.new_account);
-                self.backend.send(Cmd::AddAccount { label });
-            }
-        });
-        ui.label(
-            RichText::new(
-                "Each account has its own address and balance, and a payment comes from one account only. All of them come back from the same 24 words (the names do not).",
-            )
-            .small()
-            .color(GREY),
-        );
+                .small()
+                .color(GREY),
+            );
+        }
         ui.add_space(12.0);
         ui.separator();
         ui.heading("Security");
         ui.horizontal(|ui| {
-            if ui.button("Show my 24 words…").clicked() {
+            if d.tier == ViewTier::Full && ui.button("Show my 24 words…").clicked() {
                 self.prompt.reveal = Some(Zeroizing::default());
             }
             if ui.button("Show a view key…").clicked() {
@@ -919,10 +1011,14 @@ impl App {
                 self.prompt.change = Some((Zeroizing::default(), Zeroizing::default(), false));
             }
         });
-        ui.label(if d.has_password {
-            "The wallet file has a password."
-        } else {
-            "The wallet file has NO password: anyone who can read it can spend what is in it."
+        ui.label(match (d.has_password, d.tier) {
+            (true, _) => "The wallet file has a password.",
+            (false, ViewTier::Full) => {
+                "The wallet file has NO password: anyone who can read it can spend what is in it."
+            }
+            (false, _) => {
+                "The wallet file has NO password: anyone who can read it can see what this wallet sees."
+            }
         });
     }
 
@@ -968,7 +1064,7 @@ impl App {
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    ui.label("A view key lets a wallet SEE this account's payments without being able to spend them (the wallet program's restore-view makes such a wallet).");
+                    ui.label("A view key lets a wallet SEE this account's payments without being able to spend them (\"View-only, from a view key\" when adding a wallet, here or on another computer, makes one).");
                     if let Some((pw, account, received)) = self.prompt.view_key.as_mut() {
                         egui::ComboBox::from_label("Account")
                             .selected_text(accounts.get(*account).cloned().unwrap_or_default())
@@ -1060,6 +1156,10 @@ impl App {
             return;
         }
         ui.heading("Send");
+        if d.tier != ViewTier::Full {
+            ui.label("This is a VIEW-ONLY wallet: it cannot send. Send from the wallet whose view key this is.");
+            return;
+        }
         if d.total.is_none() {
             ui.label(
                 "The node is not running, so the wallet cannot send. Start it on the Node tab.",
@@ -1207,15 +1307,39 @@ impl App {
                 ui.label(RichText::new(blurb).small().color(GREY));
             });
         }
+        // the proofs of a payment take about a second a piece to make (measured: 0.7 to 0.9 s on a Ryzen 9 5900X, one
+        // thread; `docs/BENCHMARKS.md`), all of it when Review is pressed: say so before, and while it runs
+        let slow = self
+            .send
+            .coins
+            .filter(|n| *n >= SLOW_PIECES && self.send.estimate.is_some());
         if let Some(e) = &self.send.error {
             ui.colored_label(RED, format!("This payment cannot be made yet: {e}"));
+        } else if let (Some(n), Some(t)) = (slow, self.send.working) {
+            ui.label(
+                RichText::new(format!(
+                    "Making the proofs for {n} pieces: about a second each ({} s so far). The window stays usable meanwhile.",
+                    t.elapsed().as_secs()
+                ))
+                .small()
+                .color(AMBER),
+            );
+        } else if let Some(n) = slow {
+            ui.label(
+                RichText::new(format!(
+                    "This payment spends {n} pieces. Making its proofs, when you press Review, takes about a second for each (about {} s on a fast desktop). Combining pieces beforehand (below) makes later payments quick.",
+                    n
+                ))
+                .small()
+                .color(AMBER),
+            );
         } else if self
             .send
             .working
             .is_some_and(|t| t.elapsed() > Duration::from_secs(15))
         {
             ui.label(
-                RichText::new("Still working. The node answers slowly while it is busy (a miner using the GPU slows it down).")
+                RichText::new("Still working: the proofs take about a second for each piece the payment spends, and a node busy with a GPU miner answers more slowly.")
                     .small()
                     .color(AMBER),
             );
@@ -2624,6 +2748,12 @@ impl App {
         match &wallet {
             None => {
                 ui.label(RichText::new("Unlock the wallet (Wallet tab) to sign.").color(GREY));
+            }
+            Some(d) if d.tier != ViewTier::Full => {
+                ui.label(
+                    RichText::new("A view-only wallet cannot sign: it has no spend key. It can still prove a payment it received (History).")
+                        .color(GREY),
+                );
             }
             Some(d) => {
                 if self.prove.sign_account >= d.accounts.len() {
