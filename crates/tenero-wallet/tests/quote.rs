@@ -118,3 +118,43 @@ fn the_quote_is_exactly_the_payment_it_quotes_without_making_its_proofs() {
         Err(WalletError::ViewOnly)
     );
 }
+
+/// On a chain so young that no output has entered the curve tree yet (a coinbase output enters 60 blocks after its block),
+/// the tree has no layers, and a wallet holds nothing it can spend. Asking what a payment would cost, building one,
+/// combining coins or sweeping them must say so. Combining and sweeping worked out a transaction's size before looking for
+/// coins, which reached the FCMP++ proof-size arithmetic for zero layers: it underflows (a panic in a debug build, a
+/// meaningless size in a release build).
+#[test]
+fn a_chain_with_an_empty_tree_quotes_and_pays_nothing_instead_of_failing() {
+    let rig = Rig::new("emptytree");
+    let mut node = rig.node();
+    let mut miner = Wallet::from_seed(&[1; 32], Network::Test, 0);
+    for _ in 0..10 {
+        mine(&mut node, &miner.address());
+    }
+    miner.sync(&node).unwrap();
+    assert_eq!(
+        tenero_wallet::ChainView::rules(&node).unwrap().tree_layers,
+        0
+    );
+    assert_eq!(
+        tenero_wallet::wallet::transaction_size(1, 2, 0),
+        tenero_wallet::wallet::transaction_size(1, 2, 1)
+    );
+    let to = Wallet::from_seed(&[2; 32], Network::Test, 0).address();
+    assert!(matches!(
+        miner.quote_batch(&node, &[(to, COIN)], FeeLevel::Low),
+        Err(WalletError::NotEnough { spendable: 0, .. })
+    ));
+    assert!(matches!(
+        miner.build_batch(&node, &mut OsRng, &[(to, COIN)], FeeLevel::Low),
+        Err(WalletError::NotEnough { spendable: 0, .. })
+    ));
+    // combining and sweeping have nothing to combine
+    assert!(miner
+        .build_combine(&node, &mut OsRng, 2, FeeLevel::Low)
+        .is_err());
+    assert!(miner
+        .build_sweep(&node, &mut OsRng, None, FeeLevel::Low)
+        .is_err());
+}
