@@ -34,8 +34,8 @@ pub use mnemonic::{phrase_of, seed_of, PhraseError};
 pub use purse::{Entry, EntryKind, Purse, PurseError, SavedRequest, SentRecord, SentStatus};
 pub use request::{PaymentRequest, RequestError};
 pub use wallet::{
-    max_inputs_for, transaction_size, Balance, BatchSent, Built, FeeLevel, Owned, PaymentPart,
-    Plan, SyncReport, TxQuote, ViewTier, Wallet, WalletError, MAX_RECIPIENTS,
+    max_inputs_for, transaction_size, Balance, BatchSent, Built, FeeLevel, Outgoing, Owned,
+    PaymentPart, Plan, SyncReport, TxQuote, ViewTier, Wallet, WalletError, MAX_RECIPIENTS,
 };
 
 /// What the program must say wherever it shows an address or a balance.

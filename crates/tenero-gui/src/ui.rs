@@ -646,7 +646,7 @@ impl App {
             );
             ui.label(
                 RichText::new(
-                    "A restored wallet finds what it received. It cannot know whom you paid: that is kept only in the wallet file, not in the words.",
+                    "A restored wallet finds what it received, and what it sent (the amounts and fees). It cannot know whom you paid: that is kept only in the wallet file, not in the words.",
                 )
                 .small()
                 .color(GREY),
@@ -1780,6 +1780,8 @@ impl App {
                         EntryKind::Received => ("Received", GREEN, "+"),
                         EntryKind::Mined => ("Mined", GREEN, "+"),
                         EntryKind::Sent { .. } => ("Sent", RED, "-"),
+                        EntryKind::SentUnrecorded { to_self: true, .. } => ("Moved", GREY, ""),
+                        EntryKind::SentUnrecorded { .. } => ("Sent", RED, "-"),
                     };
                     ui.horizontal_wrapped(|ui| {
                         ui.colored_label(col, RichText::new(kind).strong());
@@ -1821,6 +1823,18 @@ impl App {
                                 if let Some(n) = &row.note {
                                     ui.label(RichText::new(format!("for {n}")).color(GREY));
                                 }
+                            }
+                            EntryKind::SentUnrecorded { fee, to_self } => {
+                                ui.colored_label(GREEN, "taken in");
+                                ui.label(format!("fee {}", text::coins(*fee)));
+                                ui.label(
+                                    RichText::new(if *to_self {
+                                        "between your own coins (a combine, or a payment to yourself)"
+                                    } else {
+                                        "seen on the chain; whom it paid is not known (only the wallet that sent it records that)"
+                                    })
+                                    .color(GREY),
+                                );
                             }
                             EntryKind::Mined => {
                                 ui.label(RichText::new("block reward").color(GREY));
@@ -1871,7 +1885,7 @@ impl App {
                 }
             });
         ui.label(
-            RichText::new("The history of payments you SENT is kept in the wallet file. A wallet restored from the 24 words shows what it received but not whom it paid.")
+            RichText::new("Whom you paid is kept in the wallet file only. A wallet restored from the 24 words, or a view-all wallet, finds your payments out on the chain (the amount and the fee) but not whom they paid; a view-received wallet does not see payments out at all.")
                 .small()
                 .color(GREY),
         );

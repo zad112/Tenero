@@ -120,7 +120,8 @@ fn check_label(label: &str) -> Result<(), PurseError> {
 }
 
 /// A payment this wallet sent, written down when it is sent (the address it went to is on no chain; **a wallet restored
-/// from the words has no such records**, and its history shows what it received and its own change, not whom it paid).
+/// from the words has no such records**: its history lists the payments out it finds on the chain, with their amounts and fees, but
+/// not whom they paid; [`EntryKind::SentUnrecorded`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SentRecord {
     pub account: u32,
@@ -179,6 +180,10 @@ pub enum EntryKind {
         status: SentStatus,
         time: u64,
     },
+    /// A transaction found on the chain spending this account's coins that the wallet has no record of sending (a
+    /// view-all wallet, or one restored from its words): the amount is what left it besides the fee; **whom it paid is not
+    /// known**. `to_self` when nothing left it (its own coins combined, or paid to itself): the amount is then what it moved.
+    SentUnrecorded { fee: u64, to_self: bool },
 }
 
 /// One line of the history.
@@ -878,6 +883,32 @@ impl Purse {
                     note: None,
                     payment_id: (o.payment_id != tenero_carrot::NULL_PAYMENT_ID)
                         .then_some(o.payment_id),
+                });
+            }
+        }
+        // payments out found on the chain, except those the wallet sent and recorded (listed below, with whom they paid)
+        for (i, a) in self.accounts.iter().enumerate() {
+            for o in a.wallet.outgoing() {
+                let recorded = self.sent.iter().any(|r| {
+                    r.account as usize == i && r.spends.iter().any(|k| o.spends.contains(k))
+                });
+                if recorded {
+                    continue;
+                }
+                out.push(Entry {
+                    account: i,
+                    kind: EntryKind::SentUnrecorded {
+                        fee: o.fee,
+                        to_self: o.sent() == 0,
+                    },
+                    // what left it; for a transaction that only moved its own coins, what it moved
+                    amount: if o.sent() == 0 { o.returned } else { o.sent() },
+                    height: o.height,
+                    id: None,
+                    global_index: None,
+                    has_secret: false,
+                    note: None,
+                    payment_id: None,
                 });
             }
         }
