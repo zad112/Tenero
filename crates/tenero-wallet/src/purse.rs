@@ -203,6 +203,9 @@ pub struct Entry {
     pub note: Option<String>,
     /// For something received at an integrated address: its payment ID (which says what the payment was for).
     pub payment_id: Option<[u8; 8]>,
+    /// When (Unix seconds): the timestamp of the block it is in, or for a payment this wallet sent and recorded, when it
+    /// was sent. `None` for a coin scanned before times were kept (it gets one when the wallet scans again).
+    pub time: Option<u64>,
 }
 
 pub struct Account {
@@ -883,6 +886,7 @@ impl Purse {
                     note: None,
                     payment_id: (o.payment_id != tenero_carrot::NULL_PAYMENT_ID)
                         .then_some(o.payment_id),
+                    time: (o.time > 0).then_some(o.time),
                 });
             }
         }
@@ -909,6 +913,7 @@ impl Purse {
                     has_secret: false,
                     note: None,
                     payment_id: None,
+                    time: (o.time > 0).then_some(o.time),
                 });
             }
         }
@@ -946,6 +951,7 @@ impl Purse {
                 has_secret: r.anchor.is_some(),
                 note: r.note.clone(),
                 payment_id: None,
+                time: Some(r.time),
             });
         }
         out.sort_by_key(|e| std::cmp::Reverse(e.height));

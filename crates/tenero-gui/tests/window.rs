@@ -145,6 +145,7 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             has_secret: true,
             note: Some("Rent".into()),
             payment_id: None,
+            time: Some(1_700_000_000),
         },
         HistoryRow {
             account: 0,
@@ -157,6 +158,7 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             has_secret: false,
             note: None,
             payment_id: None,
+            time: Some(1_699_990_000),
         },
         HistoryRow {
             account: 1,
@@ -169,6 +171,7 @@ fn wallet(synced: bool, with_balances: bool) -> WalletView {
             has_secret: false,
             note: None,
             payment_id: Some([0xab; 8]),
+            time: Some(1_699_900_000),
         },
     ];
     WalletView::Unlocked(Box::new(WalletData {
@@ -861,6 +864,9 @@ fn the_history_shows_what_came_in_what_went_out_and_where_a_payment_stands() {
         "Copy id",
         "sender unknown",
         "payment ID abababababababab",
+        // every entry has its time: the block's timestamp, or when a recorded payment was sent
+        "2023-11-14 19:26 UTC",
+        "2023-11-13 18:26 UTC",
     ] {
         assert!(
             t.contains(needle),
@@ -1476,6 +1482,7 @@ fn a_payment_out_the_wallet_did_not_record_is_listed_without_a_recipient() {
         has_secret: false,
         note: None,
         payment_id: None,
+        time: Some(1_700_100_000),
     };
     let w = match view_only(ViewTier::ViewAll) {
         WalletView::Unlocked(mut d) => {

@@ -167,6 +167,8 @@ fn chain_err(e: String) -> WalletError {
 pub struct Owned {
     pub global_index: u64,
     pub height: u64,
+    /// The timestamp of the block it is in (Unix seconds).
+    pub time: u64,
     pub coinbase: bool,
     pub onetime_address: [u8; 32],
     /// The commitment as the curve tree has it (a coinbase output's is `1*G + amount*H`).
@@ -271,8 +273,9 @@ pub struct TxQuote {
 /// images finds these (a full or view-all wallet, not a view-received one).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outgoing {
-    /// The block it is in.
+    /// The block it is in, and that block's timestamp (Unix seconds).
     pub height: u64,
+    pub time: u64,
     /// The key images of this wallet's coins it spends (they identify the transaction).
     pub spends: Vec<[u8; 32]>,
     /// What those coins held.
@@ -918,7 +921,7 @@ impl Wallet {
                 let commitment = tenero_tree::coinbase_commitment(o.amount);
                 found += u64::from(self.keep(
                     index,
-                    block.height,
+                    (block.height, block.timestamp),
                     true,
                     o.onetime_address,
                     commitment,
@@ -966,7 +969,7 @@ impl Wallet {
                 if let Some(r) = r {
                     found += u64::from(self.keep(
                         index,
-                        block.height,
+                        (block.height, block.timestamp),
                         false,
                         o.onetime_address,
                         o.amount_commitment,
@@ -978,6 +981,7 @@ impl Wallet {
             if !spends.is_empty() {
                 self.outgoing.push(Outgoing {
                     height: block.height,
+                    time: block.timestamp,
                     spends: spends.iter().map(|(k, _)| *k).collect(),
                     spent: spends.iter().map(|(_, a)| *a).sum(),
                     returned: self.owned[kept_before..].iter().map(|o| o.amount).sum(),
@@ -991,7 +995,7 @@ impl Wallet {
     fn keep(
         &mut self,
         global_index: u64,
-        height: u64,
+        (height, time): (u64, u64),
         coinbase: bool,
         onetime_address: [u8; 32],
         commitment: [u8; 32],
@@ -1015,6 +1019,7 @@ impl Wallet {
         self.owned.push(Owned {
             global_index,
             height,
+            time,
             coinbase,
             onetime_address,
             commitment,

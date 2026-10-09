@@ -463,6 +463,7 @@ fn write_scan_block(w: &mut Writer, b: &ScanBlock) -> Result<(), EncodeError> {
     w.u64(b.height);
     w.raw(&b.id);
     w.u64(b.first_output_index);
+    w.u64(b.timestamp);
     // the coinbase is written here, not with its consensus encoding, because the genesis block has none
     // (no outputs), which that encoding forbids
     w.u16(b.coinbase.version);
@@ -553,6 +554,7 @@ fn read_scan_block(r: &mut Reader<'_>) -> Result<ScanBlock, DecodeError> {
         height: r.u64()?,
         id: r.array()?,
         first_output_index: r.u64()?,
+        timestamp: r.u64()?,
         coinbase: Coinbase {
             version: r.u16()?,
             height: r.u64()?,
