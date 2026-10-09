@@ -13,6 +13,8 @@
 
 Inspired by Monero's design ideas; not affiliated with or endorsed by the Monero project.
 
+**Website: <https://teneronetwork.com>**, a short introduction and the `gamma` network as the author's seed at 194.238.27.60 sees it (height, peers, waiting payments; one node's view, read once a minute). Its source is [zad112/tenero-website](https://github.com/zad112/tenero-website). It is not a place for notices, and it offers no downloads of its own: it links to this repository's [Releases](../../releases) page.
+
 **Testers can join the Discord server: <https://discord.gg/QzfqaGDVcm>.** It is for questions, bug reports and hardware numbers. Nothing said there is an official notice: the only place a "stop mining" notice is posted is the pinned [issue #1](https://github.com/zad112/Tenero/issues/1), and only the author can post there. Only download the programs from this repository's [Releases](../../releases) page, whatever a link on Discord says.
 
 ## Where it stands (2026-10-08)
