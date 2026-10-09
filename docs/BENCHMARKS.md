@@ -328,6 +328,22 @@ almost all of it, the spend-authorisation proof under 1 ms an input):
 | 6 (320 million) | 0.86 s | 2.17 s | 4.78 s |
 | 7 (12.2 billion) | 0.91 s | 2.37 s | 5.15 s |
 
+**A payment from many coins** (a miner's block rewards; measured 2026-10-08, same machine, release build, one thread;
+`--test fcmp_pp_prove_timing -- --ignored --nocapture time_proving_many_inputs`; each proof verified after it was made):
+
+| inputs | 2 layers | of which membership | 3 layers | of which membership |
+|---|---|---|---|---|
+| 8 | 5.7 s | 5.1 s | 8.1 s | 7.1 s |
+| 16 | 13.0 s | 11.4 s | 16.3 s | 14.6 s |
+| 32 | 25.2 s | 22.1 s | 32.1 s | 28.8 s |
+| 38 | 30.4 s | 26.8 s | 38.1 s | 34.0 s |
+
+About 0.7 to 1 s a coin, almost all of it the one membership proof, which the pinned upstream crate makes on one thread
+(it has no option to use more; the blinds, about a tenth, could be made in parallel). A payment of 1,000 coins from rewards
+of 20 is about 50 coins and 35 to 45 s (the owner saw about 40 s, 2026-10-08). The wallet app's fee quote no longer
+makes these proofs (it worked the payment out in full and threw it away, so the wait came twice); it says before Review
+how many coins a payment spends. Combining coins beforehand moves the wait to a time of the owner's choosing.
+
 The upstream crate proves on one thread; nothing here was parallelised. **Proof sizes** are exact, not measured
 (`FcmpPlusPlus::proof_size`; `--test upstream_fcmp_pp -- --ignored print_proof_sizes`): the most inputs whose FCMP++ proof alone fits
 today's `MAX_PROOF` of 64 KiB is 126 at 1 layer, 69 at 4, 48 at 7 and 31 at 12, before the pseudo-outputs and the range proof

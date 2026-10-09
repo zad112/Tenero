@@ -17,6 +17,10 @@
 //!
 //! Each account is a Carrot account of its own (`crate::address::carrot_master` of its seed), with its own subaddresses. The
 //! purse file of `beta` (versions 1 to 4, the interim scheme) is not read: the same 24 words restore a `gamma` purse.
+//!
+//! **A view-only purse** ([`Purse::from_view_key`]) has no master seed and exactly one account, a view-only [`Wallet`]
+//! (view-all or view-received). It scans, shows what its tier sees and proves what it received (unsigned); everything
+//! that needs the spend key or the seed (the words, more accounts, paying, signing) is refused with [`PurseError::ViewOnly`].
 
 use std::path::Path;
 
@@ -30,7 +34,9 @@ use crate::address::{Address, Kind, Network};
 use crate::chain::{ChainView, Submitter};
 use crate::file::{open, seal, FileError, KdfParams, MAGIC_PURSE};
 use crate::request::{check_text, PaymentRequest, MAX_LABEL as MAX_REQUEST_LABEL, MAX_MESSAGE};
-use crate::wallet::{Balance, BatchSent, Built, FeeLevel, Plan, SyncReport, Wallet, WalletError};
+use crate::wallet::{
+    Balance, BatchSent, Built, FeeLevel, Plan, SyncReport, ViewTier, Wallet, WalletError,
+};
 
 /// The most accounts one purse holds.
 pub const MAX_ACCOUNTS: usize = 64;
@@ -39,8 +45,10 @@ pub const MAX_LABEL: usize = 48;
 /// How many unused accounts in a row end the search on a restore.
 pub const GAP: usize = 3;
 
-/// Version 5: the `gamma` network (Carrot accounts; a sent payment keeps its Janus anchor). Versions 1 to 4 were `beta`'s.
-const PURSE_VERSION: u16 = 5;
+/// Version 6: a kind byte after the version (0: a master seed follows; 1: view-only, no seed, one view-only account).
+/// Version 5 (the first `gamma` builds) always held a master seed and is still read. Versions 1 to 4 were `beta`'s.
+const PURSE_VERSION: u16 = 6;
+const SEED_ONLY_PURSE_VERSION: u16 = 5;
 /// The most sent-payment records a purse keeps (the oldest are dropped past this).
 pub const MAX_SENT_RECORDS: usize = 20_000;
 /// The most saved payment requests a purse keeps.
@@ -59,6 +67,8 @@ pub enum PurseError {
     Wallet(WalletError),
     /// A payment request that cannot be made or found (why).
     Request(String),
+    /// A view-only wallet was asked for what only the seed or the spend key can do.
+    ViewOnly,
 }
 
 impl std::fmt::Display for PurseError {
@@ -74,6 +84,10 @@ impl std::fmt::Display for PurseError {
             ),
             PurseError::Wallet(e) => write!(f, "{e}"),
             PurseError::Request(e) => write!(f, "{e}"),
+            PurseError::ViewOnly => write!(
+                f,
+                "a view-only wallet cannot do that: it has no seed and no spend key"
+            ),
         }
     }
 }
@@ -211,7 +225,8 @@ impl Account {
 }
 
 pub struct Purse {
-    master: Zeroizing<[u8; 32]>,
+    /// `None` for a view-only purse.
+    master: Option<Zeroizing<[u8; 32]>>,
     network: Network,
     birth_height: u64,
     accounts: Vec<Account>,
@@ -235,7 +250,7 @@ impl Purse {
     /// use a birth height at or before the first coin, or 0.
     pub fn from_seed(master: &[u8; 32], network: Network, birth_height: u64) -> Purse {
         Purse {
-            master: Zeroizing::new(*master),
+            master: Some(Zeroizing::new(*master)),
             network,
             birth_height,
             accounts: vec![Account {
@@ -247,15 +262,40 @@ impl Purse {
         }
     }
 
-    /// One account of an existing one-account wallet (how an old wallet file is read).
+    /// A view-only purse from a view key's text (`TENview1...`, [`Wallet::view_key`]), for `network`: one account, named
+    /// after its tier, that scans from the birth height the key carries.
+    pub fn from_view_key(text: &str, network: Network) -> Result<Purse, String> {
+        Ok(Purse::from_view_wallet(Wallet::from_view_key(
+            text, network,
+        )?))
+    }
+
+    fn from_view_wallet(wallet: Wallet) -> Purse {
+        Purse {
+            master: None,
+            network: wallet.network(),
+            birth_height: wallet.birth_height(),
+            accounts: vec![Account {
+                label: match wallet.tier() {
+                    ViewTier::ViewReceived => "View-received",
+                    _ => "View-all",
+                }
+                .to_string(),
+                wallet,
+            }],
+            sent: Vec::new(),
+            requests: Vec::new(),
+        }
+    }
+
+    /// One account of an existing one-account wallet (how an old wallet file, or one `tenero-wallet` wrote, is read): a
+    /// view-only one becomes a view-only purse.
     fn from_wallet(wallet: Wallet) -> Result<Purse, FileError> {
-        let seed = wallet.seed().ok_or_else(|| {
-            FileError::Corrupt(
-                "a view-only wallet: it opens in the wallet program (tenero-wallet), not as a purse".into(),
-            )
-        })?;
+        let Some(seed) = wallet.seed() else {
+            return Ok(Purse::from_view_wallet(wallet));
+        };
         Ok(Purse {
-            master: Zeroizing::new(*seed),
+            master: Some(Zeroizing::new(*seed)),
             network: wallet.network(),
             birth_height: wallet.birth_height(),
             accounts: vec![Account {
@@ -267,14 +307,27 @@ impl Purse {
         })
     }
 
-    /// The master seed: the whole secret of every account. Never log it.
-    pub fn master_seed(&self) -> &[u8; 32] {
-        &self.master
+    /// The master seed: the whole secret of every account (`None` for a view-only purse). Never log it.
+    pub fn master_seed(&self) -> Option<&[u8; 32]> {
+        self.master.as_deref()
     }
 
-    /// The 24 words of the master seed.
-    pub fn phrase(&self) -> Zeroizing<String> {
-        crate::mnemonic::phrase_of(&self.master)
+    /// The 24 words of the master seed (`None` for a view-only purse).
+    pub fn phrase(&self) -> Option<Zeroizing<String>> {
+        self.master.as_deref().map(crate::mnemonic::phrase_of)
+    }
+
+    /// How much of the account this purse holds: [`ViewTier::Full`] with a seed, else its one account's view-only tier.
+    pub fn tier(&self) -> ViewTier {
+        if self.master.is_some() {
+            ViewTier::Full
+        } else {
+            self.accounts[0].wallet.tier()
+        }
+    }
+
+    pub fn is_view_only(&self) -> bool {
+        self.master.is_none()
     }
 
     pub fn birth_height(&self) -> u64 {
@@ -298,12 +351,13 @@ impl Purse {
     /// Adds the next account. It scans from `birth_height`: the chain's tip for an account made now (it cannot hold
     /// older coins), 0 or the purse's own birth height when looking for old ones.
     pub fn add_account(&mut self, label: &str, birth_height: u64) -> Result<usize, PurseError> {
+        let master = self.master.as_ref().ok_or(PurseError::ViewOnly)?;
         check_label(label)?;
         if self.accounts.len() >= MAX_ACCOUNTS {
             return Err(PurseError::TooManyAccounts);
         }
         let index = self.accounts.len();
-        let seed = account_seed(&self.master, index as u32);
+        let seed = account_seed(master, index as u32);
         self.accounts.push(Account {
             label: label.trim().to_string(),
             wallet: Wallet::from_seed(&seed, self.network, birth_height),
@@ -338,6 +392,10 @@ impl Purse {
     /// them "Account N". Returns how many accounts the purse has.
     pub fn discover(&mut self, chain: &impl ChainView) -> Result<usize, PurseError> {
         self.sync(chain)?;
+        // a view-only purse has its one account and no seed to derive others from
+        if self.master.is_none() {
+            return Ok(self.accounts.len());
+        }
         loop {
             let after_last_used = self.accounts.len()
                 - self
@@ -468,6 +526,21 @@ impl Purse {
             .get_mut(index)
             .ok_or(PurseError::NoSuchAccount(index))?;
         Ok(a.wallet.build_batch(chain, rng, dests, level)?)
+    }
+
+    /// What [`Purse::build_batch`] would make, without making it (no proofs): each transaction's coins, size and fee.
+    pub fn quote_batch(
+        &mut self,
+        index: usize,
+        chain: &impl ChainView,
+        dests: &[(Address, u64)],
+        level: FeeLevel,
+    ) -> Result<Vec<crate::wallet::TxQuote>, PurseError> {
+        let a = self
+            .accounts
+            .get_mut(index)
+            .ok_or(PurseError::NoSuchAccount(index))?;
+        Ok(a.wallet.quote_batch(chain, dests, level)?)
     }
 
     /// Sends the transactions of a [`Purse::build_batch`] one after another, reserves their coins and writes a record for every payment in them (a
@@ -703,6 +776,9 @@ impl Purse {
         message: &[u8],
         rng: &mut (impl RngCore + CryptoRng),
     ) -> Result<(Address, crate::proofs::Signature), PurseError> {
+        if self.master.is_none() {
+            return Err(PurseError::ViewOnly);
+        }
         self.account(account)?
             .wallet
             .sign_message(
@@ -857,7 +933,19 @@ impl Purse {
         let bad = |e: tenero_core::v3::EncodeError| FileError::Corrupt(e.to_string());
         let mut w = Writer::new();
         w.u16(version);
-        w.raw(&*self.master);
+        match (&self.master, version) {
+            (Some(m), SEED_ONLY_PURSE_VERSION) => w.raw(&**m),
+            (Some(m), _) => {
+                w.raw(&[0]);
+                w.raw(&**m);
+            }
+            (None, SEED_ONLY_PURSE_VERSION) => {
+                return Err(FileError::Corrupt(
+                    "a view-only purse has no version 5 form".into(),
+                ))
+            }
+            (None, _) => w.raw(&[1]),
+        }
         w.u64(self.birth_height);
         w.count(self.accounts.len(), 1, MAX_ACCOUNTS).map_err(bad)?;
         for a in &self.accounts {
@@ -938,18 +1026,31 @@ impl Purse {
         let bad = |e: tenero_core::v3::DecodeError| FileError::Corrupt(e.as_str().to_string());
         let mut r = Reader::new(data);
         let version = r.u16().map_err(bad)?;
-        if (1..PURSE_VERSION).contains(&version) {
+        if (1..SEED_ONLY_PURSE_VERSION).contains(&version) {
             return Err(FileError::Corrupt(
                 "a beta wallet: open it with the 0.2 programs (its 24 words also restore a gamma wallet)".into(),
             ));
         }
-        if version != PURSE_VERSION {
+        if version != PURSE_VERSION && version != SEED_ONLY_PURSE_VERSION {
             return Err(FileError::Corrupt("unknown purse version".into()));
         }
-        let master: [u8; 32] = r.array().map_err(bad)?;
-        let master = Zeroizing::new(master);
+        let kind = if version == SEED_ONLY_PURSE_VERSION {
+            0
+        } else {
+            r.take(1).map_err(bad)?[0]
+        };
+        let master = match kind {
+            0 => Some(Zeroizing::new(r.array::<32>().map_err(bad)?)),
+            1 => None,
+            _ => return Err(FileError::Corrupt("unknown kind of purse".into())),
+        };
         let birth_height = r.u64().map_err(bad)?;
         let n = r.count(1, MAX_ACCOUNTS).map_err(bad)?;
+        if master.is_none() && n != 1 {
+            return Err(FileError::Corrupt(
+                "a view-only wallet has one account".into(),
+            ));
+        }
         let mut accounts = Vec::with_capacity(n);
         for i in 0..n {
             let label = String::from_utf8(r.var(MAX_LABEL).map_err(bad)?)
@@ -960,11 +1061,23 @@ impl Purse {
             let mut ir = Reader::new(&inner);
             let wallet = Wallet::read_state(&mut ir)?;
             ir.finish().map_err(bad)?;
-            // an account's seed must be the one its number derives from the master seed
-            if wallet.seed() != Some(&*account_seed(&master, i as u32)) {
-                return Err(FileError::Corrupt(
-                    "an account does not belong to this seed".into(),
-                ));
+            match &master {
+                // an account's seed must be the one its number derives from the master seed
+                Some(m) => {
+                    if wallet.seed() != Some(&*account_seed(m, i as u32)) {
+                        return Err(FileError::Corrupt(
+                            "an account does not belong to this seed".into(),
+                        ));
+                    }
+                }
+                // and a view-only purse's one account is view-only
+                None => {
+                    if wallet.tier() == ViewTier::Full {
+                        return Err(FileError::Corrupt(
+                            "a view-only wallet holds a spend key".into(),
+                        ));
+                    }
+                }
             }
             accounts.push(Account { label, wallet });
         }
@@ -1147,6 +1260,36 @@ mod tests {
             payment_onetime: secret.then_some([12; 32]),
             note: secret.then(|| "Rent".to_string()),
         }
+    }
+
+    #[test]
+    fn a_version_5_purse_still_opens_and_a_view_only_one_has_no_version_5_form() {
+        let mut p = Purse::from_seed(&[3; 32], Network::Test, 4);
+        p.sent.push(record(true));
+        let v5 = p.state_bytes_as(SEED_ONLY_PURSE_VERSION).unwrap();
+        assert_eq!(v5[..2], 5u16.to_le_bytes());
+        let back = Purse::from_state_bytes(&v5).unwrap();
+        assert_eq!(back.master_seed(), Some(&[3; 32]));
+        assert_eq!(back.sent, p.sent);
+        // version 6 writes a kind byte: one byte longer than version 5
+        assert_eq!(p.state_bytes().unwrap().len(), v5.len() + 1);
+        let key = p.accounts[0].wallet.view_key(ViewTier::ViewAll).unwrap();
+        let v = Purse::from_view_key(&key, Network::Test).unwrap();
+        assert!(v.state_bytes_as(SEED_ONLY_PURSE_VERSION).is_err());
+        // a kind that is neither is refused
+        let mut bad = p.state_bytes().unwrap().to_vec();
+        bad[2] = 7;
+        assert!(Purse::from_state_bytes(&bad).is_err());
+        // a view-only purse with a second account, or with a full account, is refused
+        let mut two = Purse::from_view_key(&key, Network::Test).unwrap();
+        two.accounts.push(Account {
+            label: "x".into(),
+            wallet: Wallet::from_view_key(&key, Network::Test).unwrap(),
+        });
+        assert!(Purse::from_state_bytes(&two.state_bytes().unwrap()).is_err());
+        let mut spender = Purse::from_view_key(&key, Network::Test).unwrap();
+        spender.accounts[0].wallet = Wallet::from_seed(&[3; 32], Network::Test, 4);
+        assert!(Purse::from_state_bytes(&spender.state_bytes().unwrap()).is_err());
     }
 
     #[test]

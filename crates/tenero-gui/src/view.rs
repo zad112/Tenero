@@ -4,7 +4,7 @@
 
 use tenero_app::control::NodeInfo;
 use tenero_app::miner_report::MinerReport;
-use tenero_wallet::{Balance, EntryKind, FeeLevel};
+use tenero_wallet::{Balance, EntryKind, FeeLevel, ViewTier};
 use zeroize::Zeroizing;
 
 use crate::settings::Settings;
@@ -127,6 +127,9 @@ pub struct WalletData {
     pub synced: bool,
     /// The wallet file has a password (an empty one is allowed on purpose and is said so on screen).
     pub has_password: bool,
+    /// How much of the account the wallet holds: `Full` (it has its 24 words), or a VIEW-ONLY tier made from a view key,
+    /// which sees and cannot spend or sign. A view-received wallet's totals are what it RECEIVED, not a balance.
+    pub tier: ViewTier,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -209,6 +212,12 @@ pub enum Cmd {
         password: Password,
         /// The height of the first block that could hold the wallet's coins, if known (default: the start).
         birth: Option<u64>,
+        name: Option<String>,
+    },
+    /// Makes a VIEW-ONLY wallet from a view key (`TENview1...`): it sees and cannot spend or sign.
+    RestoreViewOnly {
+        key: Zeroizing<String>,
+        password: Password,
         name: Option<String>,
     },
     /// Selects another wallet file to open (the wallet must be locked).
@@ -324,6 +333,8 @@ pub enum Event {
     },
     Estimate {
         fees: [u64; 3],
+        /// How many coins (pieces) the payment spends: its proofs take about a second each to make.
+        coins: usize,
     },
     /// The fees could not be worked out, and why (shown under the fee choice, so it never says "working" for ever).
     EstimateFailed(String),
