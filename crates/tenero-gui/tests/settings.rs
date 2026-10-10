@@ -359,3 +359,47 @@ fn a_pool_miner_is_given_a_pool_a_network_and_no_node() {
         .collect();
     assert!(a.iter().any(|x| x == "--data") && !a.iter().any(|x| x == "--pool"));
 }
+
+// ---- the AMD backend ------------------------------------------------------------------------------------------------------
+
+/// The AMD backend is offered only by a build with the `amd-hip` feature (the Linux AMD package); a settings file that names it
+/// still opens in any other build, on the normal GPU backend.
+#[test]
+fn the_amd_backend_is_offered_only_where_the_miner_has_it() {
+    use tenero_gui::settings::AMD_SUPPORTED;
+    let offered = MinerBackend::for_network(Network::Gamma).contains(&MinerBackend::Amd);
+    assert_eq!(offered, AMD_SUPPORTED);
+    assert!(!MinerBackend::for_network(Network::Test).contains(&MinerBackend::Amd));
+    assert_eq!(MinerBackend::parse("amd"), Some(MinerBackend::Amd));
+    assert_eq!(MinerBackend::Amd.name(), "amd");
+    assert!(MinerBackend::Amd
+        .label()
+        .contains("not tested by the author"));
+    let s = Settings::parse(app(), "network = gamma\nminer_backend = amd\n").unwrap();
+    if AMD_SUPPORTED {
+        assert_eq!(s.miner_backend, MinerBackend::Amd);
+        let args = miner_args(&s, "TENgabc", Path::new("st.txt"))
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            args.contains("--backend amd") && args.contains("--gpu-device 0"),
+            "{args}"
+        );
+        assert!(
+            !args.contains("--gpu-batch"),
+            "no batch measuring on AMD: {args}"
+        );
+    } else {
+        assert_eq!(
+            s.miner_backend,
+            MinerBackend::Gpu,
+            "an AMD setting opens on the NVIDIA backend in a build without AMD"
+        );
+    }
+    // and never on the SHA-256 test network
+    if AMD_SUPPORTED {
+        assert!(Settings::parse(app(), "network = test\nminer_backend = amd\n").is_err());
+    }
+}

@@ -221,6 +221,8 @@ pub fn miner_args(s: &Settings, address: &str, status_file: &Path) -> Vec<OsStri
                 push("gpu-batch", "auto".into());
             }
         }
+        // the AMD backend has no batch measuring: it uses the miner's default batch
+        MinerBackend::Amd => push("gpu-device", s.miner_gpu_device.to_string().into()),
         MinerBackend::Sha256 => {}
     }
     push("status-file", status_file.as_os_str().to_os_string());

@@ -137,11 +137,13 @@ cargo test --workspace            # no GPU needed
 |---|---|
 | Run a node or the wallet | Windows 11 (the only Windows tried) or Linux (built for Ubuntu 22.04 or newer; **run by hand as a node, the pool and the command-line wallet**: in WSL2 and on one rented server); on `gamma` or `dev`, about **4.3 GiB of free RAM** for the node (it holds one 4 GiB dataset at a time, and pauses about 3 seconds for the first block of each 100-block epoch while it builds the next); **mining adds its own memory** |
 | Mine on a GPU | an NVIDIA GPU of the RTX 30 series or newer (compute capability 8.0+; A100, H100 and the like too) with a **driver for CUDA 13 (R580 or newer)**. **The CUDA Toolkit is not needed** (the kernels are compiled into the miner and the driver loads them; releases up to v0.2.0-beta.3 needed the Toolkit); nothing from NVIDIA is shipped here. One 4 GiB dataset is kept in video memory (the miner process commits about 5 GiB on Windows, of which under 0.5 GiB is RAM in use): **only a 16 GB card has been tried**; whether an 8 GB card works is untested |
+| Mine on an AMD GPU | **Linux only**, an RX 7000 series card (RDNA3) and AMD's **ROCm 6**, with the **Linux AMD package** (`...-linux-x64-amd`). **Contributed, and not tested by the author**, who has no AMD card: see [`docs/AMD_MINING.md`](docs/AMD_MINING.md) |
 | Mine on a CPU | nothing extra, but on `gamma` it is **impractical** (see the next section) |
 
-**An AMD (or other non-NVIDIA) GPU miner:** today the GPU miner is **NVIDIA only** (it is written for CUDA). If someone wants to build one for AMD cards, the author is 100% fine with that and would be glad to see it; the author
-**cannot test it, because they do not own an AMD card.** What such a miner has to match is exact: the proof of work is specified in [`docs/CONSENSUS.md`](docs/CONSENSUS.md) (section 8.2) and pinned by the golden vectors in [`tests/vectors/`](tests/vectors/README.md), the existing
-CUDA kernels are in [`crates/tenero-gpu/kernels/matmulhash.cu`](crates/tenero-gpu/kernels/matmulhash.cu), and the rule is **bit for bit, or it is wrong**: a block the node's check refuses is just wasted work. Nothing about its speed or safety would be claimed until someone measures it on a card they own.
+**An AMD GPU miner, contributed:** an outside contributor wrote an AMD backend (HIP, for the RX 7000 series on Linux with ROCm 6), now in the miner and the wallet app of the **Linux AMD package** ([`docs/AMD_MINING.md`](docs/AMD_MINING.md)). **The author
+cannot test it, because they do not own an AMD card,** and no CI machine has one: CI only builds it. It has to match the proof of work exactly (specified in [`docs/CONSENSUS.md`](docs/CONSENSUS.md) section 8.2 and pinned by the golden vectors in
+[`tests/vectors/`](tests/vectors/README.md)), and it carries a bit-for-bit test against the CPU code that only an AMD card can run; the rule is **bit for bit, or it is wrong**, and a block the node's check refuses is just wasted work. Nothing about its speed
+is claimed. AMD on Windows, and other non-NVIDIA cards, are still open for anyone who wants to try.
 
 ## The `gamma` network, and its pool
 

@@ -2132,6 +2132,7 @@ impl App {
         }
         let notice = match s.miner_backend {
             MinerBackend::Gpu => "This uses your GPU at full load: the card gets hot and loud, and anything else using the GPU slows down.".to_string(),
+            MinerBackend::Amd => "This uses your AMD GPU at full load: the card gets hot and loud, and anything else using the GPU slows down. The AMD backend was contributed and has not been tested by the author; the miner's screen shows no card readings for it.".to_string(),
             MinerBackend::Cpu => format!("This uses {} CPU core(s) at full load.", s.miner_cores),
             MinerBackend::Sha256 => "Test-network mining: a light load on one CPU core.".to_string(),
         };
@@ -2525,10 +2526,10 @@ impl App {
                 ui.label(RichText::new("Mining").strong());
                 ui.add_enabled_ui(!miner_busy, |ui| {
                     egui::ComboBox::from_label("Backend")
-                        .selected_text(draft.miner_backend.name())
+                        .selected_text(draft.miner_backend.label())
                         .show_ui(ui, |ui| {
                             for b in MinerBackend::for_network(draft.network) {
-                                ui.selectable_value(&mut draft.miner_backend, *b, b.name());
+                                ui.selectable_value(&mut draft.miner_backend, *b, b.label());
                             }
                         });
                     ui.horizontal(|ui| {
@@ -2536,7 +2537,7 @@ impl App {
                         ui.add(egui::DragValue::new(&mut draft.miner_cores).range(1..=6));
                     });
                     ui.horizontal(|ui| {
-                        ui.label("GPU number (gpu backend)");
+                        ui.label("GPU number (gpu and amd backends)");
                         ui.add(egui::DragValue::new(&mut draft.miner_gpu_device).range(0..=15));
                     });
                     ui.checkbox(

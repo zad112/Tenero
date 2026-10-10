@@ -23,11 +23,11 @@
 //! of the node's loop), a wallet address to pay (the payout is a [`PayoutSource`], and the default one is a
 //! placeholder that nobody can spend), and a command-line program.
 
+#[cfg(feature = "amd-hip")]
+pub mod amd;
 pub mod gpu;
 pub mod gpu_stats;
 pub mod rate;
-#[cfg(feature = "amd-hip")]
-pub mod amd;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};

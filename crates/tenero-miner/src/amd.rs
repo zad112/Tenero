@@ -1,4 +1,5 @@
-//! Tenero mining backend for AMD RDNA3 through HIP.
+//! Tenero mining backend for AMD RDNA3 through HIP (Linux, ROCm 6; contributed, not tested by the
+//! project's author: see `tenero_gpu::amd`). The card's health readings (NVML) are NVIDIA's only.
 
 use std::sync::atomic::Ordering;
 
@@ -9,7 +10,7 @@ use tenero_gpu::group::SliceGrouper;
 
 use crate::{Backend, Counters, Job, Solution};
 
-/// Slice grouping is still useful before the gather fork. It cannot help gathered attempts.
+/// Slice grouping helps the first design of the attempt only (not used on `gamma`, which gathers from block 0).
 const GROUP: usize = 16;
 
 pub struct AmdBackend {
@@ -117,8 +118,12 @@ impl Backend for AmdBackend {
         // normally still in cache for the rest of its group.
         let group = GROUP.min(self.batch);
         let groups = (self.batch / group).max(1);
-        let mut grouper =
-            SliceGrouper::new(header_hash, self.params.num_blocks, group, job.first_nonce());
+        let mut grouper = SliceGrouper::new(
+            header_hash,
+            self.params.num_blocks,
+            group,
+            job.first_nonce(),
+        );
         loop {
             if job.stale.load(Ordering::SeqCst) {
                 return Ok(None);

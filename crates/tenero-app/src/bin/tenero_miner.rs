@@ -19,9 +19,9 @@ use tenero_app::ui::{
 use tenero_chain::MatmulPow;
 use tenero_core::matmulhash::Params;
 use tenero_core::v2::ids::PowKind;
-use tenero_miner::gpu::GpuBackend;
 #[cfg(feature = "amd-hip")]
 use tenero_miner::amd::AmdBackend;
+use tenero_miner::gpu::GpuBackend;
 use tenero_miner::{CpuMatmulBackend, Miner, Sha256Backend, WalletPayout, MAX_CORES};
 
 const USAGE: &str = "\
@@ -44,7 +44,8 @@ tenero-miner: mines for a Tenero node in another process (EXPERIMENTAL, UNAUDITE
   --network NET      with --pool: the network the pool serves (gamma, dev or test; default: the address's), so that a pool of
                      another network is refused
   --worker NAME      with --pool: a name for this machine, shown to the pool (default: the computer's name, at most 32 characters)
-  --backend B        sha256 (the test network), cpu or gpu (the dev network's matmulhash)
+  --backend B        sha256 (the test network), cpu or gpu (NVIDIA) for gamma's and dev's matmulhash, or amd (an AMD RX 7000
+                     series card on Linux with ROCm 6: only in the Linux AMD package; contributed, not tested by the author)
   --cores N          CPU threads for the cpu backend, 1 to 6 (default 6)
   --gpu-device N     which GPU (default 0)       --gpu-batch N|auto   attempts per batch (default 128; auto measures at start-up)
   --pace SECS        wait this long after a block is found before the next job (default 0)
@@ -253,8 +254,14 @@ fn parse() -> Result<Args, String> {
         return Err("--address is required".into());
     }
     if !matches!(a.backend.as_str(), "sha256" | "cpu" | "gpu")
-        && !(cfg!(feature = "amd-hip") && a.backend == "amd") {
-        return Err("--backend must be sha256, cpu or gpu (or amd with amd-hip)".into());
+        && !(cfg!(feature = "amd-hip") && a.backend == "amd")
+    {
+        return Err(if a.backend == "amd" {
+            "--backend amd: this miner was built without AMD support (the Linux AMD package, tenero-...-linux-x64-amd, has it)"
+                .into()
+        } else {
+            "--backend must be sha256, cpu, gpu or amd".into()
+        });
     }
     if a.cores == 0 || a.cores > MAX_CORES {
         return Err(format!("--cores must be 1 to {MAX_CORES}"));
@@ -489,7 +496,12 @@ fn main() {
                 if network == Network::Test {
                     "sha256"
                 } else {
-                    "cpu or gpu"
+                    // `amd` only where this miner has it (the Linux AMD package)
+                    if cfg!(feature = "amd-hip") {
+                        "cpu, gpu or amd"
+                    } else {
+                        "cpu or gpu"
+                    }
                 },
                 args.backend
             ));

@@ -1,6 +1,8 @@
 name: release
 
-# Builds the release packages (Windows zip, Linux tar.gz, each with a SHA-256 file) on GitHub's hosted runners.
+# Builds the release packages (Windows zip, Linux tar.gz, and the Linux AMD tar.gz: each with a SHA-256 file) on GitHub's hosted
+# runners. The AMD package is the Linux one plus the AMD GPU backend (`amd-hip`: RX 7000 series, ROCm 6 needed by the user;
+# contributed, and NOT run by CI or the author, who has no AMD card: only built).
 # * A push of a tag `vX.Y.Z...` builds both and creates a DRAFT, pre-release GitHub release with the packages, a combined SHA256SUMS and the notes in
 #   docs/releases/<tag>.md. Nothing is public until the owner edits the notes and presses "Publish". The tag must equal "v" + the version in Cargo.toml.
 # * "Run workflow" by hand is a dry run: it builds and keeps the packages as workflow artifacts (a week), and creates no release.
@@ -31,14 +33,23 @@ jobs:
           - name: windows
             runner: windows-latest
             exe: ".exe"
+            pkg: windows-x64
+            features: ""
           - name: linux
             runner: ubuntu-22.04
             exe: ""
+            pkg: linux-x64
+            features: ""
+          - name: linux-amd
+            runner: ubuntu-22.04
+            exe: ""
+            pkg: linux-x64-amd
+            features: "--features tenero-app/amd-hip,tenero-gui/amd-hip"
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # the "stable" branch
-        if: matrix.name == 'linux'
+        if: matrix.name != 'windows'
         with:
           toolchain: stable
       - name: the version, and that a tag matches it
@@ -56,6 +67,10 @@ jobs:
             echo "::error::docs/releases/$GITHUB_REF_NAME.md (the release notes) does not exist"
             exit 1
           fi
+      - name: ROCm, for the AMD backend (the AMD package only)
+        if: matrix.name == 'linux-amd'
+        shell: bash
+        run: bash .github/rocm-install.sh
       # --locked: exactly the versions in Cargo.lock. The build paths are removed from the programs (they hold the runner's folder names otherwise).
       - name: build the programs
         shell: bash
@@ -63,7 +78,7 @@ jobs:
           CARGO_PROFILE_RELEASE_STRIP: debuginfo
         run: |
           export RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/build"
-          cargo build --release --locked -p tenero-app -p tenero-gui -p tenero-explorer
+          cargo build --release --locked -p tenero-app -p tenero-gui -p tenero-explorer ${{ matrix.features }}
       - name: keep the licence tool between runs
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -86,11 +101,25 @@ jobs:
             printf '================================================================================\n'
             for f in Hack-Regular.txt emoji-icon-font-mit-license.txt; do printf '\n--- %s\n\n' "$f"; cat "$1/$f"; done
           } >> THIRD-PARTY-LICENCES.txt
+          # the AMD package also carries code of AMD's: rocWMMA (header-only) and the HIP headers, compiled into the miner (MIT); the
+          # HIP runtime itself is the user's own ROCm install, not shipped. Stop if a licence text cannot be found.
+          if [ "${{ matrix.name }}" = "linux-amd" ]; then
+            for part in rocwmma hip; do
+              lic=$(find /opt/rocm/share/doc -maxdepth 3 -ipath "*${part}*" -iname 'license*' | head -1)
+              if [ -z "$lic" ]; then echo "::error::cannot find the licence of ${part} under /opt/rocm/share/doc"; exit 1; fi
+              {
+                printf '\n================================================================================\n'
+                printf 'AMD %s (ROCm), compiled into tenero-miner of this package: %s\n' "$part" "$lic"
+                printf '================================================================================\n\n'
+                cat "$lic"
+              } >> THIRD-PARTY-LICENCES.txt
+            done
+          fi
           wc -c THIRD-PARTY-LICENCES.txt
       - name: put the package together
         shell: bash
         run: |
-          NAME="tenero-$VERSION-${{ matrix.name }}-x64"
+          NAME="tenero-$VERSION-${{ matrix.pkg }}"
           echo "NAME=$NAME" >> "$GITHUB_ENV"
           mkdir "$NAME"
           for b in tenerod tenero-miner tenero-wallet tenero-seedcheck tenero-pool tenero-poolcheck tenero-wallet-gui tenero-explorer; do
@@ -100,6 +129,7 @@ jobs:
           cp docs/RUNNING.md "$NAME/RUNNING.md"
           cp docs/RUNNING_A_POOL.md "$NAME/RUNNING_A_POOL.md"
           cp docs/WALLET_PROOFS.md "$NAME/WALLET_PROOFS.md"
+          if [ "${{ matrix.name }}" = "linux-amd" ]; then cp docs/AMD_MINING.md "$NAME/AMD_MINING.md"; fi
           if [ -f "docs/releases/v$VERSION.md" ]; then cp "docs/releases/v$VERSION.md" "$NAME/RELEASE-NOTES.md"; fi
           ls -l "$NAME"
       # the packaged programs must run and say which build they are (the exact version and the commit this run is building); the two
@@ -116,7 +146,7 @@ jobs:
             esac
           done
       - name: the oldest glibc the Linux programs need (measured, goes in the release notes)
-        if: matrix.name == 'linux'
+        if: matrix.name != 'windows'
         shell: bash
         run: |
           for b in tenerod tenero-miner tenero-wallet tenero-seedcheck tenero-pool tenero-poolcheck tenero-wallet-gui tenero-explorer; do
