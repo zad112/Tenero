@@ -1,6 +1,6 @@
 #!/bin/bash
 # Installs what building the AMD GPU backend needs (the `amd-hip` feature) on a GitHub-hosted Ubuntu 22.04 runner: AMD's HIP
-# compiler (hipcc), the HIP headers and runtime, and rocWMMA, from AMD's own apt repository, at ONE pinned ROCm version. It is
+# compiler (hipcc), its GPU device library (rocm-device-libs), the HIP headers and runtime, and rocWMMA, from AMD's own apt repository, at ONE pinned ROCm version. It is
 # not the whole ROCm SDK (several GiB of maths libraries this backend does not use). Used by release.yml (the Linux AMD package)
 # and amd.yml (the check of AMD changes). No GPU is needed to build; nothing here can RUN the AMD backend.
 #
@@ -18,6 +18,6 @@ echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.
 # prefer AMD's packages over Ubuntu's for anything both have
 printf 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600\n' | sudo tee /etc/apt/preferences.d/rocm-pin-600 > /dev/null
 sudo apt-get update -q
-sudo apt-get install -y -q --no-install-recommends hipcc hip-dev rocwmma-dev
+sudo apt-get install -y -q --no-install-recommends hipcc hip-dev rocm-device-libs rocwmma-dev
 /opt/rocm/bin/hipcc --version
 ls /opt/rocm/lib/libamdhip64.so*
