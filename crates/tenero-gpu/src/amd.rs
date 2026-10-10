@@ -261,10 +261,10 @@ impl AmdGpu {
         self.last_batch_ms = milliseconds;
         Ok(seeds
             .iter()
-            .zip(sums.chunks_exact(8))
+            .zip(sums.as_chunks::<8>().0)
             .enumerate()
             .map(|(index, (seed, values))| {
-                let sums: [u64; 8] = values.try_into().expect("chunks of eight");
+                let sums: [u64; 8] = *values;
                 let mix = mh::mix_bytes(&sums);
                 Attempt {
                     seed: *seed,
