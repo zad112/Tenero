@@ -26,6 +26,8 @@
 pub mod gpu;
 pub mod gpu_stats;
 pub mod rate;
+#[cfg(feature = "amd-hip")]
+pub mod amd;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};

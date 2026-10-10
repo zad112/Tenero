@@ -20,12 +20,14 @@ use tenero_chain::MatmulPow;
 use tenero_core::matmulhash::Params;
 use tenero_core::v2::ids::PowKind;
 use tenero_miner::gpu::GpuBackend;
+#[cfg(feature = "amd-hip")]
+use tenero_miner::amd::AmdBackend;
 use tenero_miner::{CpuMatmulBackend, Miner, Sha256Backend, WalletPayout, MAX_CORES};
 
 const USAGE: &str = "\
 tenero-miner: mines for a Tenero node in another process (EXPERIMENTAL, UNAUDITED; test networks only, nothing on them has value)
 
-  tenero-miner --data DIR --address TENg... --backend sha256|cpu|gpu [options]
+  tenero-miner --data DIR --address TENg... --backend sha256|cpu|gpu|amd [options]
 
   --data DIR         the node's data directory (the miner reads the node's cookie from it)
   --control IP:PORT  the node's control interface (default: the address's network's port on this machine, 127.0.0.1:38352
@@ -250,8 +252,9 @@ fn parse() -> Result<Args, String> {
     if a.address.is_empty() {
         return Err("--address is required".into());
     }
-    if !matches!(a.backend.as_str(), "sha256" | "cpu" | "gpu") {
-        return Err("--backend must be sha256, cpu or gpu".into());
+    if !matches!(a.backend.as_str(), "sha256" | "cpu" | "gpu")
+        && !(cfg!(feature = "amd-hip") && a.backend == "amd") {
+        return Err("--backend must be sha256, cpu or gpu (or amd with amd-hip)".into());
     }
     if a.cores == 0 || a.cores > MAX_CORES {
         return Err(format!("--cores must be 1 to {MAX_CORES}"));
@@ -478,7 +481,7 @@ fn main() {
     }
     let pow = match (network, args.backend.as_str()) {
         (Network::Test, "sha256") => PowKind::Sha256,
-        (n, "cpu" | "gpu") if n.real_pow() => PowKind::Matmul,
+        (n, "cpu" | "gpu" | "amd") if n.real_pow() => PowKind::Matmul,
         _ => {
             log.error(&format!(
                 "the {} network needs {}, not --backend {}",
@@ -516,7 +519,7 @@ fn main() {
             let cores = args.cores;
             Miner::spawn(move || Ok(CpuMatmulBackend::new(pow, epoch, cores, 10)))
         }
-        _ => {
+        "gpu" => {
             let device = args.gpu_device;
             let batch = if args.gpu_batch_auto {
                 let l = Arc::clone(&log);
@@ -536,6 +539,20 @@ fn main() {
                     .map(|b| b.gathered_from(gather_from))
             })
         }
+        #[cfg(feature = "amd-hip")]
+        "amd" => {
+            let device = args.gpu_device;
+            let batch = args.gpu_batch;
+            if args.gpu_batch_auto {
+                log.info("AMD: auto-batch disabled; using the specified batch");
+            }
+            let gather_from = network.gather_from();
+            Miner::spawn(move || {
+                AmdBackend::new(device, Params::DEFAULT, epoch, batch)
+                    .map(|b| b.gathered_from(gather_from))
+            })
+        }
+        _ => unreachable!("backend validated during argument parsing"),
     };
     let l = Arc::clone(&log);
     let tally = Arc::new(MiningShared::default());

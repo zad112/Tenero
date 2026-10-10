@@ -14,6 +14,8 @@
 
 pub mod gather;
 pub mod group;
+#[cfg(feature = "amd-hip")]
+pub mod amd;
 
 use cudarc::driver::sys::CUfunction_attribute;
 use cudarc::driver::{
