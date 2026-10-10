@@ -5,6 +5,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+build = "build.rs"
+
+[features]
+default = []
+# Local AMD port. This is opt-in so the unmodified NVIDIA build still needs no ROCm installation.
+amd-hip = []
 
 [dependencies]
 tenero-core = { path = "../tenero-core" }

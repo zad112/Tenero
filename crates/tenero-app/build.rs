@@ -23,4 +23,11 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TENERO_COMMIT");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/index");
+
+    // The HIP runtime lives outside the default loader path on the supported ROCm install.
+    // Record it in AMD-enabled executables so the installed miner is self-contained apart
+    // from the system ROCm runtime itself.
+    if std::env::var_os("CARGO_FEATURE_AMD_HIP").is_some() {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,/opt/rocm/lib");
+    }
 }

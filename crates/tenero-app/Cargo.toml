@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+amd-hip = ["tenero-miner/amd-hip"]
+
 [[bin]]
 name = "tenerod"
 path = "src/bin/tenerod.rs"
