@@ -12,10 +12,10 @@
 //!
 //! Unsafe code is confined to the calls into CUDA, each with a `SAFETY` comment.
 
-pub mod gather;
-pub mod group;
 #[cfg(feature = "amd-hip")]
 pub mod amd;
+pub mod gather;
+pub mod group;
 
 use cudarc::driver::sys::CUfunction_attribute;
 use cudarc::driver::{

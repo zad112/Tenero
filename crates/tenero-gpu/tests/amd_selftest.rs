@@ -51,8 +51,7 @@ fn compare(p: Params, epoch: u64, nonces: &[u64], batch: usize) {
         for (&nonce, got) in chunk.iter().zip(&gathered) {
             assert_eq!(
                 *got,
-                mh::compute_gathered_attempt(&cpu, &header, nonce)
-                    .expect("CPU gathered attempt"),
+                mh::compute_gathered_attempt(&cpu, &header, nonce).expect("CPU gathered attempt"),
                 "gathered nonce {nonce}"
             );
         }

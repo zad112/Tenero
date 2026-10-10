@@ -1,0 +1,73 @@
+name: amd
+
+# The AMD GPU backend (the `amd-hip` feature: tenero-gpu's HIP kernel and wrapper, tenero-miner's backend, the miner's and the
+# wallet app's AMD choice) only builds with AMD's ROCm installed, which the other workflows do not have. This checks that it
+# still builds, passes clippy, and that the app offers it as it should. It does NOT run the backend: no hosted runner has an AMD
+# GPU, and the author has none either. Its bit-for-bit test against the CPU code (`crates/tenero-gpu/tests/amd_selftest.rs`)
+# runs only on a real RX 7000 series card. Runs only when something the backend depends on changes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/tenero-gpu/**"
+      - "crates/tenero-miner/**"
+      - "crates/tenero-core/src/matmulhash.rs"
+      - "crates/tenero-app/build.rs"
+      - "crates/tenero-app/Cargo.toml"
+      - "crates/tenero-app/src/bin/tenero_miner.rs"
+      - "crates/tenero-gui/**"
+      - "Cargo.lock"
+      - ".github/rocm-install.sh"
+      - ".github/workflows/amd.yml"
+  pull_request:
+    paths:
+      - "crates/tenero-gpu/**"
+      - "crates/tenero-miner/**"
+      - "crates/tenero-core/src/matmulhash.rs"
+      - "crates/tenero-app/build.rs"
+      - "crates/tenero-app/Cargo.toml"
+      - "crates/tenero-app/src/bin/tenero_miner.rs"
+      - "crates/tenero-gui/**"
+      - "Cargo.lock"
+      - ".github/rocm-install.sh"
+      - ".github/workflows/amd.yml"
+  workflow_dispatch:
+
+# GitHub's own hosted runners only; nothing here uses pull_request_target or secrets; the token is read-only.
+permissions:
+  contents: read
+
+concurrency:
+  group: amd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  build:
+    name: build the AMD backend (Linux, ROCm)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # the "stable" branch
+        with:
+          toolchain: stable
+          components: clippy
+      - name: ROCm (the HIP compiler, headers and rocWMMA)
+        run: bash .github/rocm-install.sh
+      - name: build the miner with the AMD backend
+        run: cargo build --locked -p tenero-app --features amd-hip --bin tenero-miner
+      - name: clippy, with the AMD backend
+        run: cargo clippy --locked -p tenero-gpu -p tenero-miner -p tenero-app --features tenero-app/amd-hip --all-targets -- -D warnings
+      - name: the miner knows the amd backend
+        run: |
+          out=$(./target/debug/tenero-miner --data /nonexistent --address TENgx --backend amd 2>&1 || true)
+          echo "$out"
+          case "$out" in
+            *"built without AMD support"*) echo "::error::the AMD build does not accept --backend amd"; exit 1 ;;
+          esac
+      - name: the wallet app offers the AMD backend (with the feature)
+        run: cargo test --locked -p tenero-gui --features amd-hip --test settings

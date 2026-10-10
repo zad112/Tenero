@@ -26,8 +26,12 @@ fn main() {
 
     // The HIP runtime lives outside the default loader path on the supported ROCm install.
     // Record it in AMD-enabled executables so the installed miner is self-contained apart
-    // from the system ROCm runtime itself.
-    if std::env::var_os("CARGO_FEATURE_AMD_HIP").is_some() {
-        println!("cargo:rustc-link-arg=-Wl,-rpath,/opt/rocm/lib");
+    // from the system ROCm runtime itself. (Linux only: the AMD backend builds nowhere else.)
+    println!("cargo:rerun-if-env-changed=TENERO_ROCM");
+    if std::env::var_os("CARGO_FEATURE_AMD_HIP").is_some()
+        && std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
+    {
+        let rocm = std::env::var("TENERO_ROCM").unwrap_or_else(|_| "/opt/rocm".to_string());
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{rocm}/lib");
     }
 }

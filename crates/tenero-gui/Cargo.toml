@@ -6,6 +6,12 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# Offers the AMD GPU backend on the Mining tab: set in the Linux AMD package, whose tenero-miner is built with tenero-app's
+# `amd-hip` (the app itself links nothing of AMD's; it only starts the miner with --backend amd).
+amd-hip = []
+
 [[bin]]
 name = "tenero-wallet-gui"
 path = "src/bin/tenero_wallet_gui.rs"

@@ -1,8 +1,12 @@
 //! AMD RDNA3 backend for matmulhash v2, through HIP and native signed INT8 rocWMMA.
 //!
 //! The C++ side owns all device allocations and implements dataset generation, the original
-//! slice attempt, the gathered attempt required by beta from height 500, and the consensus fold.
-//! This wrapper keeps hashing and target comparison in the official Rust implementation.
+//! slice attempt, the gathered attempt (what `gamma` and `dev` use from block 0), and the consensus
+//! fold. This wrapper keeps hashing and target comparison in the official Rust implementation.
+//!
+//! **Contributed, and not tested by the project's author** (no AMD card): RDNA3 (gfx11, the RX 7000
+//! series) on Linux with ROCm 6 only. Its bit-for-bit check against the CPU code is
+//! `tests/amd_selftest.rs`, which only an AMD card can run.
 
 use std::ffi::{c_char, c_void, CStr};
 use std::ptr::NonNull;
@@ -200,13 +204,17 @@ impl AmdGpu {
         slices: Option<&[usize]>,
     ) -> Result<Vec<Attempt>, GpuError> {
         if seeds.is_empty() || seeds.len() > self.batch {
-            return Err(GpuError::new("between 1 and `batch` AMD attempts are required"));
+            return Err(GpuError::new(
+                "between 1 and `batch` AMD attempts are required",
+            ));
         }
         if let Some(values) = slices {
             if values.len() != seeds.len()
                 || values.iter().any(|&slice| slice >= self.params.num_blocks)
             {
-                return Err(GpuError::new("one in-range slice is required for every attempt"));
+                return Err(GpuError::new(
+                    "one in-range slice is required for every attempt",
+                ));
             }
         }
         let pick_keys: Vec<[u8; 32]> = if slices.is_none() {

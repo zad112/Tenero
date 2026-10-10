@@ -32,9 +32,15 @@ pub enum MinerBackend {
     Sha256,
     /// The real proof of work on the CPU (slow; for trying).
     Cpu,
-    /// The real proof of work on the GPU.
+    /// The real proof of work on an NVIDIA GPU.
     Gpu,
+    /// The real proof of work on an AMD GPU (RX 7000 series, Linux, ROCm 6): offered only by a build with the `amd-hip`
+    /// feature (the Linux AMD package), whose miner has the backend. Contributed, not tested by the author.
+    Amd,
 }
+
+/// Whether this build's miner has the AMD backend.
+pub const AMD_SUPPORTED: bool = cfg!(feature = "amd-hip");
 
 impl MinerBackend {
     pub fn name(self) -> &'static str {
@@ -42,6 +48,17 @@ impl MinerBackend {
             MinerBackend::Sha256 => "sha256",
             MinerBackend::Cpu => "cpu",
             MinerBackend::Gpu => "gpu",
+            MinerBackend::Amd => "amd",
+        }
+    }
+
+    /// What the Mining settings show for it.
+    pub fn label(self) -> &'static str {
+        match self {
+            MinerBackend::Sha256 => "sha256 (test network)",
+            MinerBackend::Cpu => "cpu",
+            MinerBackend::Gpu => "gpu (NVIDIA)",
+            MinerBackend::Amd => "amd (AMD RX 7000, Linux; contributed, not tested by the author)",
         }
     }
 
@@ -50,6 +67,7 @@ impl MinerBackend {
             "sha256" => Some(MinerBackend::Sha256),
             "cpu" => Some(MinerBackend::Cpu),
             "gpu" => Some(MinerBackend::Gpu),
+            "amd" => Some(MinerBackend::Amd),
             _ => None,
         }
     }
@@ -58,6 +76,9 @@ impl MinerBackend {
     pub fn for_network(n: Network) -> &'static [MinerBackend] {
         match n {
             Network::Test => &[MinerBackend::Sha256],
+            Network::Dev | Network::Gamma if AMD_SUPPORTED => {
+                &[MinerBackend::Gpu, MinerBackend::Amd, MinerBackend::Cpu]
+            }
             Network::Dev | Network::Gamma => &[MinerBackend::Gpu, MinerBackend::Cpu],
         }
     }
@@ -266,8 +287,8 @@ impl Settings {
                     s.external_node = parse_bool(&v).ok_or_else(|| bad("is not yes or no"))?
                 }
                 "miner_backend" => {
-                    s.miner_backend =
-                        MinerBackend::parse(&v).ok_or_else(|| bad("is not sha256, cpu or gpu"))?
+                    s.miner_backend = MinerBackend::parse(&v)
+                        .ok_or_else(|| bad("is not sha256, cpu, gpu or amd"))?
                 }
                 "miner_cores" => {
                     let n: usize = v.parse().map_err(|_| bad("is not a number"))?;
@@ -320,6 +341,11 @@ impl Settings {
                 "wallets_dir" => s.wallets_dir = PathBuf::from(&v),
                 other => return Err(format!("unknown setting `{other}`")),
             }
+        }
+        // a settings file from the Linux AMD package, read by a build without AMD: back to this network's first backend, not
+        // an app that will not start
+        if s.miner_backend == MinerBackend::Amd && !AMD_SUPPORTED {
+            s.miner_backend = MinerBackend::for_network(network)[0];
         }
         if !MinerBackend::for_network(network).contains(&s.miner_backend) {
             return Err(format!(

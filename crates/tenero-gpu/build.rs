@@ -1,9 +1,10 @@
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=TENERO_HIPCC");
+    println!("cargo:rerun-if-env-changed=TENERO_ROCM");
     println!("cargo:rerun-if-env-changed=TENERO_HIP_ARCH");
     const TUNABLES: &[&str] = &[
         "TENERO_AMD_GEMM_THREADS",
@@ -36,21 +37,26 @@ fn main() {
     if env::var_os("CARGO_FEATURE_AMD_HIP").is_none() {
         return;
     }
+    // ROCm, and so this backend, is built and run on Linux only (the NVIDIA build needs none of it)
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
+        panic!("the amd-hip feature (the AMD GPU backend) builds on Linux with ROCm only");
+    }
+    // where ROCm is installed (its default place unless TENERO_ROCM says otherwise)
+    let rocm = PathBuf::from(env::var_os("TENERO_ROCM").unwrap_or_else(|| "/opt/rocm".into()));
 
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"));
     let object = out.join("amd_hip.o");
     let archive = out.join("libtenero_hip.a");
-    let hipcc = env::var("TENERO_HIPCC").unwrap_or_else(|_| "hipcc".to_string());
+    let hipcc = env::var("TENERO_HIPCC").unwrap_or_else(|_| {
+        rocm.join("bin")
+            .join("hipcc")
+            .to_string_lossy()
+            .into_owned()
+    });
     let arch = env::var("TENERO_HIP_ARCH").unwrap_or_else(|_| "gfx1100".to_string());
 
     let mut command = Command::new(&hipcc);
-    command.args([
-            "-std=c++17",
-            "-O3",
-            "-fPIC",
-            "-c",
-            "kernels/amd_hip.cpp",
-        ]);
+    command.args(["-std=c++17", "-O3", "-fPIC", "-c", "kernels/amd_hip.cpp"]);
     for name in TUNABLES {
         if let Some(value) = env::var_os(name) {
             command.arg(format!("-D{name}={}", value.to_string_lossy()));
@@ -75,7 +81,7 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=tenero_hip");
-    let rocm_lib = Path::new("/opt/rocm/lib");
+    let rocm_lib = rocm.join("lib");
     println!("cargo:rustc-link-search=native={}", rocm_lib.display());
     println!("cargo:rustc-link-lib=dylib=amdhip64");
     println!("cargo:rustc-link-lib=dylib=stdc++");

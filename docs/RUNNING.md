@@ -220,8 +220,9 @@ no node settings.
 
 * `--data` is the node's data directory (the miner reads the node's cookie from it); `--control` is the node's control address
   (the test network's default, 127.0.0.1:18332, otherwise); `--address` is where block rewards go; `--backend` is `sha256`
-  (the test network), or `cpu` or `gpu` (the real proof of work of `gamma` and `dev`), and a backend that does not fit the node's
-  network is refused with a message. `--cores`, `--gpu-device`, `--gpu-batch`, `--pace`, `--log-level`, `--log-file` and
+  (the test network), or `cpu`, `gpu` (NVIDIA) or `amd` (the real proof of work of `gamma` and `dev`; `amd` only in the Linux
+  AMD package, for an RX 7000 series card with ROCm 6, contributed and not tested by the author: `docs/AMD_MINING.md`), and a
+  backend that does not fit the node's network is refused with a message. `--cores`, `--gpu-device`, `--gpu-batch`, `--pace`, `--log-level`, `--log-file` and
   `--status-every` work as the node's settings of the same names; `tenero-miner help` lists them.
 * **A node on another computer:** `--node HOST:PORT --key HEX` (instead of `--data` and `--control`) connects to that node's miner
   service (`miner_listen` and `miner_key` above) over an encrypted channel. The miner then **checks every block it is given**: it
