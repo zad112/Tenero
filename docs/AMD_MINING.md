@@ -24,7 +24,7 @@ carries one copy per chip. Nobody on the project has an AMD card, so "built" mea
 | RX 7900 XTX / XT / GRE | gfx1100 | the contributor's own kind of card: written and checked bit for bit there (the version before ROCm 7; check again) |
 | RX 7800 XT, RX 7700 XT | gfx1101 | built, the same code as gfx1100; **not run by anyone yet** |
 | RX 7600 / 7600 XT | gfx1102 | built, the same code; **not run yet** |
-| Radeon 780M / 760M (laptop) | gfx1103 | built, the same code; **not run yet** (shares system memory: about 5 GiB of it) |
+| Radeon 780M / 760M (laptop) | gfx1103 | **not built**: AMD's rocWMMA does not support this chip |
 | Ryzen AI 300 / Strix Halo graphics | gfx1150 / gfx1151 | built, the same code; **not run yet** |
 | **RX 9070 XT / 9070 / 9070 GRE** | gfx1201 | built, through **rocWMMA's own path** (RDNA4's matrix instruction and layout differ from RDNA3's, so the hand-written RDNA3 fast path is not used): **not run yet** |
 | **RX 9060 XT / 9060** | gfx1200 | as gfx1201: **not run yet** |
