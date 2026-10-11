@@ -237,20 +237,20 @@ impl<'a> Node<'a> {
             .map_err(|e| e.to_string())
     }
 
-    /// The transactions a miner should put in the next block: best fee rate first, weighing at most `max_weight`.
+    /// The transactions a miner should put in the next block (see [`Node::block_template`]); none if the rules cannot be
+    /// read.
     pub fn block_template_txs(&self, max_weight: u64) -> Vec<Transaction> {
-        // never more than a block may carry, whatever the caller asks for (none if the rules cannot be read)
-        let limit = self
-            .validator()
-            .next_block()
-            .map(|n| rules::block_limit(n.median))
-            .unwrap_or(0);
-        self.pool.select(max_weight.min(limit))
+        let v = self.validator();
+        v.next_block()
+            .and_then(|next| template_txs(&v, &self.pool, &next, max_weight))
+            .map(|(txs, _, _)| txs)
+            .unwrap_or_default()
     }
 
-    /// An unmined block on the tip: transactions from the pool (best fee rate first, weighing at most `max_weight`), a
-    /// coinbase paying exactly `reward - penalty + fees` to `payout(amount)`, the Merkle root, and a timestamp no
-    /// earlier than the rules allow. The miner searches the nonce (and mix) and submits it.
+    /// An unmined block on the tip: transactions from the pool (best fee rate first, weighing at most `max_weight`, and
+    /// past the median only while each one adds more in fees than the penalty it costs), a coinbase paying exactly
+    /// `reward - penalty + fees` to `payout(amount)`, the Merkle root, and a timestamp no earlier than the rules allow. The
+    /// miner searches the nonce (and mix) and submits it.
     pub fn block_template(
         &self,
         timestamp: u64,
@@ -259,16 +259,7 @@ impl<'a> Node<'a> {
     ) -> Result<Block, BlockError> {
         let v = self.validator();
         let next = v.next_block()?;
-        // never more than a block may carry, whatever the caller asks for (a block over the limit is invalid)
-        let txs = self
-            .pool
-            .select(max_weight.min(rules::block_limit(next.median)));
-        let mut weight = 0u64;
-        let mut fees_total = 0u64;
-        for t in &txs {
-            weight += rules::tx_weight(t).map_err(|e| BlockError::Malformed(e.to_string()))?;
-            fees_total += t.prefix.fee;
-        }
+        let (txs, weight, fees_total) = template_txs(&v, &self.pool, &next, max_weight)?;
         let amount = v.coinbase_amount(&next, weight, fees_total)?;
         let to = payout(amount);
         let coinbase = Coinbase {
@@ -309,4 +300,34 @@ impl<'a> Node<'a> {
         let (h, i) = self.store.tip()?;
         Ok((h, i.block_id))
     }
+}
+
+/// The transactions of a block template, its weight and its fees: the pool's, best fee rate first, never more than
+/// `max_weight` or a block may carry (a block over the limit is invalid). Up to the median a block pays no penalty, so
+/// every transaction that fits is taken; past it the penalty grows with the square of the excess, and a transaction is
+/// taken only if the coinbase pays MORE with it than without (its fee is more than the penalty it adds), as Monero's
+/// template does. Without this a template filled to twice the median: on `gamma` (2026-10-11) block 2,859 took 16
+/// transactions of a combine (weight 291,344 at a median of 150,000), gained 1.16 TNR in fees and lost about 17.8 of its
+/// 20 TNR reward. Which transactions a block takes is the miner's choice, not a rule: nothing here is consensus.
+fn template_txs(
+    v: &Validator<'_>,
+    pool: &Mempool,
+    next: &tenero_chain::NextBlock,
+    max_weight: u64,
+) -> Result<(Vec<Transaction>, u64, u64), BlockError> {
+    let candidates = pool.select(max_weight.min(rules::block_limit(next.median)));
+    let (mut weight, mut fees) = (0u64, 0u64);
+    let mut paid = v.coinbase_amount(next, 0, 0)?;
+    let mut txs = Vec::with_capacity(candidates.len());
+    for t in candidates {
+        let w = rules::tx_weight(&t).map_err(|e| BlockError::Malformed(e.to_string()))?;
+        let with = v.coinbase_amount(next, weight + w, fees + t.prefix.fee)?;
+        if with > paid {
+            weight += w;
+            fees += t.prefix.fee;
+            paid = with;
+            txs.push(t);
+        }
+    }
+    Ok((txs, weight, fees))
 }
