@@ -549,6 +549,99 @@ fn a_block_template_never_holds_more_than_a_block_may_carry_whatever_it_is_asked
     ));
 }
 
+/// Past the median a block pays a penalty that grows with the square of the excess, so a template takes a transaction there
+/// only if the coinbase pays more with it. It used to fill to the block limit whatever it cost: block 2,859 on `gamma`
+/// (2026-10-11) took 291,344 of weight at a median of 150,000, gained 1.16 TNR in fees and lost about 17.8 of its reward.
+#[test]
+fn a_block_template_goes_past_the_median_only_when_the_fees_pay_for_the_penalty() {
+    let rig = Rig::new("penalty");
+    let mut net = Net::new("penalty-net", 9);
+    let mut node = rig.node(BIG);
+    grow(&mut net, &mut node, SPENDABLE);
+    // about 380,000 of heavy transactions at about the minimum fee: more than twice the median
+    for i in 0..25u64 {
+        node.submit_tx(net.tx(i + 1, 5 + i as i64, BIG_PROOF))
+            .unwrap();
+    }
+    let v = rig.validator();
+    let next = v.next_block().unwrap();
+    let weigh = |txs: &[Transaction]| -> (u64, u64) {
+        txs.iter().fold((0, 0), |(w, f), t| {
+            (w + rules::tx_weight(t).unwrap(), f + t.prefix.fee)
+        })
+    };
+    let pays = |txs: &[Transaction]| {
+        let (w, f) = weigh(txs);
+        v.coinbase_amount(&next, w, f).unwrap()
+    };
+    let got = node.block_template_txs(u64::MAX);
+    let (weight, _) = weigh(&got);
+    // the old way: everything that fits under the limit, best rate first
+    let mut filled = Vec::new();
+    let mut w = 0;
+    for e in node.pool().listing(usize::MAX) {
+        if w + e.weight <= rules::block_limit(next.median) {
+            w += e.weight;
+            filled.push(e.id);
+        }
+    }
+    let filled: Vec<Transaction> = filled
+        .iter()
+        .map(|id| node.pool().get(id).unwrap().clone())
+        .collect();
+    assert!(
+        weigh(&filled).0 > 280_000,
+        "the pool fills a block to near its limit"
+    );
+    assert!(
+        pays(&got) > pays(&filled),
+        "{} against {}",
+        pays(&got),
+        pays(&filled)
+    );
+    assert!(
+        pays(&got) >= next.reward,
+        "a template never pays less than an empty block"
+    );
+    assert!(
+        weight < weigh(&filled).0 && weight >= next.median - 20_000,
+        "{weight}"
+    );
+    // and no one transaction more of the pool would have paid more
+    for e in node.pool().listing(usize::MAX) {
+        if got.iter().any(|t| id_of(t) == e.id) {
+            continue;
+        }
+        let mut more = got.clone();
+        more.push(node.pool().get(&e.id).unwrap().clone());
+        if weigh(&more).0 <= rules::block_limit(next.median) {
+            assert!(pays(&more) <= pays(&got), "leaving one out cost the miner");
+        }
+    }
+
+    // a transaction whose fee pays for its penalty is taken past the median
+    node.submit_tx(net.tx(100, 5_000_000_000, BIG_PROOF))
+        .unwrap();
+    let got = node.block_template_txs(u64::MAX);
+    assert!(got.iter().any(|t| t.prefix.inputs[0].key_image
+        == hash_to_point(sha256(&[b"key image", &100u64.to_le_bytes()]))));
+    // and the block the node builds for a miner is the same choice, and valid
+    let payout = |amount: u64| tenero_node::Payout {
+        onetime_address: hash_to_point(sha256(&[b"payout", &amount.to_le_bytes()])),
+        view_tag: [2; 3],
+        ephemeral_pubkey: [3; 32],
+        anchor_enc: [4; 16],
+    };
+    let template = node.block_template(NOW, u64::MAX, &payout).unwrap();
+    assert_eq!(template.transactions, got);
+    assert_eq!(template.coinbase.outputs[0].amount, pays(&got));
+    let b = net.extend(got);
+    assert!(matches!(
+        node.submit_block(&b, NOW).unwrap(),
+        Submitted::Extended(_)
+    ));
+}
+
 #[test]
 fn a_block_template_takes_the_best_fee_rates_within_the_budget() {
     let rig = Rig::new("select");
