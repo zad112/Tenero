@@ -41,7 +41,7 @@ frame  = length u32      the number of bytes that follow: 1 (the kind) + the bod
 | ids in `compact`, indexes in `get_block_txs`, transactions in `block_txs` | 0 to 8192 (`MAX_BLOCK_TXS`) |
 | frame length (kind + body) | per kind, below |
 
-Caps on `length`: `hello` 125, `ping` and `pong` 9, `get_addrs` 1, `addrs` 2605, `new_block` 73, `get_block_ids` and `get_blocks` 1029,
+Caps on `length`: `hello` 125, `ping` and `pong` 9, `get_addrs` 1, `addrs` 4605, `new_block` 73, `get_block_ids` and `get_blocks` 1029,
 `not_found`, `new_tx` and `get_txs` 2053, `get_headers` 1029, `headers` 73013, `block_ids` 16013, `get_compact` 33,
 `compact` 263,897 (the header, the largest coinbase of 1,602 bytes, 8192 ids), `get_block_txs` 32,805, and **`blocks`, `txs`,
 `block_txs` and `stem_tx` 16,777,216 (16 MiB)**. The
@@ -66,7 +66,7 @@ engine's rule, not the codec's.
 | 11 | `get_txs` | `count` u32, then transaction ids |
 | 12 | `txs` | `count` u32, then `count` transactions, each in the full wire form of `CONSENSUS_V2.md` 6.2 |
 | 13 | `get_addrs` | (empty) |
-| 14 | `addrs` | `count` u32, then `count` addresses: `ip` 16 (IPv6; IPv4 as `::ffff:a.b.c.d`), `port` u16, `last_seen` u64 (Unix seconds) |
+| 14 | `addrs` | `count` u32, then `count` addresses: `type` u8, then for type 1 `ip` 16 (IPv6; IPv4 as `::ffff:a.b.c.d`) or for type 2 a version 3 onion address's 35 bytes (public key 32, checksum 2, version 1: what its 56 base32 characters encode, `docs/TOR_PLAN.md`; **version 3**), then `port` u16, `last_seen` u64 (Unix seconds). Any other type is an error ("unknown address type") |
 | 15 | `get_headers` | `count` u32, then `count` block ids (32 each): the locator, newest first (the same as `get_block_ids`) |
 | 16 | `headers` | `first_height` u64, `count` u32, then `count` block headers, oldest first, each 146 bytes: `version` u16, `prev_id` 32, `timestamp` u64, `tx_root` 32, `nonce` u64, `mix` 64 (the header form of `CONSENSUS_V2.md` 4) |
 
@@ -77,7 +77,9 @@ engine's rule, not the codec's.
 | 21 | `stem_tx` | one transaction (the full wire form of `CONSENSUS_V2.md` 15.2), nothing else: a transaction in its Dandelion++ stem, pushed unasked to ONE peer and not announced (**version 3**, `docs/DANDELION_PLAN.md`) |
 
 **Version 3 (Dandelion++, 2026-10-11).** `hello`'s `version` is 3, and a peer of any other version is dropped (the owner's
-decision: a clean switch, so nodes of 0.3.0-gamma.1 cannot connect to version 3 nodes). The one new message is `stem_tx`. A
+decision: a clean switch, so nodes of 0.3.0-gamma.1 cannot connect to version 3 nodes). The one new message is `stem_tx`, and an address in `addrs` now starts with its type, so a `.onion`
+address can be gossiped (`docs/TOR_PLAN.md`; an onion address's checksum is not checked here: Tor checks it when it is
+dialled). A
 `txs` is still only the answer to a `get_txs`, and a transaction in a node's stem is never served to `get_txs`.
 
 A header does not carry its own id: the receiver computes it from the header. A pruned node keeps every header, so

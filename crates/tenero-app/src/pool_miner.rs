@@ -550,12 +550,14 @@ pub const DEFAULT_POOLS: &[(&str, &str, [u8; 32])] = &[(
     ],
 )];
 
-/// Dials a pool: its address and, if the miner was given one, its public key (pinned).
+/// Dials a pool: its address, if the miner was given one its public key (pinned), and Tor's SOCKS port if the connection is to
+/// go through Tor.
 pub fn connect(
-    addr: std::net::SocketAddr,
+    addr: &str,
     pinned: Option<[u8; 32]>,
+    proxy: Option<std::net::SocketAddr>,
 ) -> Result<(ReadHalf, WriteHalf), String> {
-    pool_net::connect(addr, pinned.as_ref())
+    pool_net::connect(addr, pinned.as_ref(), proxy)
 }
 
 fn sleep_until(shutdown: &AtomicBool, d: Duration) {

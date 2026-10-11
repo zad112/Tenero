@@ -87,8 +87,16 @@ fn gossiped_addresses_convert_both_ways() {
     }
     // an IPv4 address is carried IPv4-mapped
     let a = string_to_peer_addr("1.2.3.4:5", 0).unwrap();
-    assert_eq!(&a.ip[..12], &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff]);
-    assert_eq!(&a.ip[12..], &[1, 2, 3, 4]);
+    let tenero_net::message::PeerHost::Ip(ip) = a.host else {
+        panic!("not an IP address")
+    };
+    assert_eq!(&ip[..12], &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff]);
+    assert_eq!(&ip[12..], &[1, 2, 3, 4]);
+    // and a version 3 onion address, both ways
+    let onion = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:38353";
+    let o = string_to_peer_addr(onion, 9).unwrap();
+    assert!(matches!(o.host, tenero_net::message::PeerHost::Onion(_)));
+    assert_eq!(peer_addr_to_string(&o).unwrap(), onion);
     assert!(string_to_peer_addr("not an address", 0).is_none());
 }
 

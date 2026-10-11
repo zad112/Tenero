@@ -420,3 +420,56 @@ fn the_mining_tab_names_the_fee_for_gpu_and_amd_on_gamma_and_none_elsewhere() {
     );
     assert!(MinerBackend::Gpu.fee_text(Network::Dev).contains("none"));
 }
+
+/// Tor (`docs/TOR_PLAN.md`): the proxy and "every connection through Tor" survive the file; the node is given the proxy,
+/// and with Tor only it listens on nothing public and advertises no IP address (even if "let others connect" was on); the
+/// pool miner reaches its pool through Tor too.
+#[test]
+fn tor_settings_survive_the_file_and_reach_the_node_and_the_pool_miner() {
+    let mut s = Settings::defaults(app(), Network::Gamma);
+    assert!(s.tor_proxy.is_none() && !s.tor_only);
+    s.tor_proxy = Some("127.0.0.1:9150".into());
+    s.tor_only = true;
+    s.inbound_port = Some(38353);
+    let back = Settings::parse(app(), &s.to_text()).unwrap();
+    assert_eq!(
+        (back.tor_proxy.as_deref(), back.tor_only),
+        (Some("127.0.0.1:9150"), true)
+    );
+    let args: Vec<String> = node_args(&s)
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let at = |k: &str| {
+        args.iter()
+            .position(|x| x == k)
+            .map(|i| args[i + 1].clone())
+    };
+    assert_eq!(at("--proxy").as_deref(), Some("127.0.0.1:9150"));
+    assert_eq!(at("--tor_only").as_deref(), Some("yes"));
+    assert!(
+        at("--listen").is_none() && at("--advertise").is_none(),
+        "{args:?}"
+    );
+    // Tor without "every connection": the proxy only, and inbound as the person set it
+    s.tor_only = false;
+    let args: Vec<String> = node_args(&s)
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert!(args.iter().any(|a| a == "--proxy") && !args.iter().any(|a| a == "--tor_only"));
+    assert!(args.iter().any(|a| a == "--listen"));
+    // the pool miner
+    s.mining_mode = MiningMode::Pool;
+    let m: Vec<String> = miner_args(&s, "TENgabc", Path::new("st.txt"))
+        .iter()
+        .map(|x| x.to_string_lossy().into_owned())
+        .collect();
+    let i = m
+        .iter()
+        .position(|x| x == "--proxy")
+        .expect("the pool miner gets the proxy");
+    assert_eq!(m[i + 1], "127.0.0.1:9150");
+    // a proxy that is not ip:port is refused
+    assert!(Settings::parse(app(), "network = gamma\ntor_proxy = nine\n").is_err());
+}

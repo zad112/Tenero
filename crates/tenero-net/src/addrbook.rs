@@ -22,7 +22,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use tenero_core::hash::sha256;
 
-use crate::message::PeerAddr;
+use crate::message::{PeerAddr, PeerHost};
+use crate::onion::{is_onion, onion_addr, parse_onion};
 
 /// A small deterministic generator: address selection must be a function of the configured seed.
 #[derive(Clone, Debug)]
@@ -116,20 +117,32 @@ pub fn host_of(addr: &str) -> String {
     }
 }
 
-/// A gossiped address as text, or `None` if it is not one we can use.
+/// A gossiped address as text (`ip:port`, or `xxxx.onion:port`), or `None` if it is not one we can use.
 pub fn peer_addr_to_string(a: &PeerAddr) -> Option<String> {
-    let v6 = Ipv6Addr::from(a.ip);
-    let ip = match v6.to_ipv4_mapped() {
-        Some(v4) => IpAddr::V4(v4),
-        None => IpAddr::V6(v6),
-    };
-    Some(SocketAddr::new(ip, a.port).to_string())
+    match &a.host {
+        PeerHost::Ip(ip) => {
+            let v6 = Ipv6Addr::from(*ip);
+            let ip = match v6.to_ipv4_mapped() {
+                Some(v4) => IpAddr::V4(v4),
+                None => IpAddr::V6(v6),
+            };
+            Some(SocketAddr::new(ip, a.port).to_string())
+        }
+        PeerHost::Onion(o) => {
+            let text = onion_addr(o, a.port);
+            // only a well-formed version 3 address
+            parse_onion(&text).map(|_| text)
+        }
+    }
 }
 
 /// Is this the unspecified address (`0.0.0.0` or `::`) with a real port? A node that sends it as its own address means "the address you see me
 /// at, on this port" (it does not know its own public IP, and the IP of a home connection changes).
 pub fn is_unspecified(a: &PeerAddr) -> bool {
-    let v6 = Ipv6Addr::from(a.ip);
+    let PeerHost::Ip(ip) = a.host else {
+        return false;
+    };
+    let v6 = Ipv6Addr::from(ip);
     let unspecified = match v6.to_ipv4_mapped() {
         Some(v4) => v4.is_unspecified(),
         None => v6.is_unspecified(),
@@ -143,18 +156,21 @@ pub fn host_with_port(seen: &str, port: u16) -> Option<String> {
     Some(SocketAddr::new(sa.ip(), port).to_string())
 }
 
-/// An address as it goes on the wire, or `None` if it is not `ip:port`.
+/// An address as it goes on the wire, or `None` if it is neither `ip:port` nor a version 3 `xxxx.onion:port`.
 pub fn string_to_peer_addr(addr: &str, last_seen: u64) -> Option<PeerAddr> {
+    if let Some((o, port)) = parse_onion(addr) {
+        return Some(PeerAddr {
+            host: PeerHost::Onion(o),
+            port,
+            last_seen,
+        });
+    }
     let sa = addr.parse::<SocketAddr>().ok()?;
     let ip = match sa.ip() {
         IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
         IpAddr::V6(v6) => v6.octets(),
     };
-    Some(PeerAddr {
-        ip,
-        port: sa.port(),
-        last_seen,
-    })
+    Some(PeerAddr::ip(ip, sa.port(), last_seen))
 }
 
 #[derive(Clone, Debug)]
@@ -175,6 +191,8 @@ pub struct AddrBookConfig {
     pub stale_secs: u64,
     /// Accept private and loopback addresses (a private test network, or a simulation).
     pub accept_private: bool,
+    /// Keep version 3 `.onion` addresses: only a node with a Tor proxy can dial them (`docs/TOR_PLAN.md`).
+    pub accept_onion: bool,
     /// When choosing among never-tried addresses, those reported by two or more different source groups come first. Off by
     /// default: it only helps when honest sources report overlapping lists (see `docs/SEED_POLICY.md` for the measurement).
     pub prefer_corroborated: bool,
@@ -196,6 +214,7 @@ impl Default for AddrBookConfig {
             max_failures: 48,
             stale_secs: 30 * 24 * 3600,
             accept_private: false,
+            accept_onion: false,
             prefer_corroborated: false,
             seed: 0x5eed_5eed_5eed_5eed,
         }
@@ -262,14 +281,20 @@ impl AddrBook {
         self.entries.keys().cloned().collect()
     }
 
-    fn usable(&self, addr: &str) -> Option<SocketAddr> {
+    fn usable(&self, addr: &str) -> Option<()> {
+        // a version 3 onion address, written as `onion_addr` writes it, and only if this node can dial one (it has a Tor
+        // proxy, `docs/TOR_PLAN.md`)
+        if is_onion(addr) {
+            let (o, port) = parse_onion(addr)?;
+            return (self.cfg.accept_onion && onion_addr(&o, port) == addr).then_some(());
+        }
         let sa = addr.parse::<SocketAddr>().ok();
         match sa {
             Some(sa) if self.cfg.accept_private || is_routable(&sa) => {
                 if sa.port() == 0 {
                     None
                 } else {
-                    Some(sa)
+                    Some(())
                 }
             }
             _ => None,

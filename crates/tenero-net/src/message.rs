@@ -51,13 +51,31 @@ impl Default for Limits {
     }
 }
 
-/// A peer's address as gossiped: an IPv6 address (an IPv4 one is written IPv4-mapped, `::ffff:a.b.c.d`), a port,
-/// and when it was last seen alive, in Unix seconds.
+/// A peer's address as gossiped: its host, a port, and when it was last seen alive, in Unix seconds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PeerAddr {
-    pub ip: [u8; 16],
+    pub host: PeerHost,
     pub port: u16,
     pub last_seen: u64,
+}
+
+/// Where a peer is: an IP address, or (protocol version 3, `docs/TOR_PLAN.md`) a version 3 onion service.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerHost {
+    /// An IPv6 address; an IPv4 one is written IPv4-mapped, `::ffff:a.b.c.d`.
+    Ip([u8; 16]),
+    /// A version 3 onion address's 35 bytes (`onion.rs`).
+    Onion([u8; crate::onion::ONION_LEN]),
+}
+
+impl PeerAddr {
+    pub fn ip(ip: [u8; 16], port: u16, last_seen: u64) -> PeerAddr {
+        PeerAddr {
+            host: PeerHost::Ip(ip),
+            port,
+            last_seen,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

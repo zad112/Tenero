@@ -149,6 +149,12 @@ pub struct Settings {
     /// Do not start a node of our own: use one that is already running (or will be) at `control`, with its data in
     /// `data_dir`.
     pub external_node: bool,
+    /// Tor's SOCKS port, `ip:port` (the Tor Browser's 127.0.0.1:9150 while it is open, or the Tor Expert Bundle's
+    /// 127.0.0.1:9050), or none: the node and the pool miner reach `.onion` peers through it (`docs/TOR_PLAN.md`).
+    pub tor_proxy: Option<String>,
+    /// Every connection through Tor: peers never learn this computer's IP address. Needs `tor_proxy`; others cannot then
+    /// connect to this node ("Let other nodes connect to me" is off).
+    pub tor_only: bool,
     pub miner_backend: MinerBackend,
     pub miner_cores: usize,
     pub miner_gpu_device: usize,
@@ -216,6 +222,8 @@ impl Settings {
             listen: None,
             inbound_port: None,
             external_node: false,
+            tor_proxy: None,
+            tor_only: false,
             miner_backend: MinerBackend::for_network(network)[0],
             miner_cores: 2,
             miner_gpu_device: 0,
@@ -304,6 +312,17 @@ impl Settings {
                 "external_node" => {
                     s.external_node = parse_bool(&v).ok_or_else(|| bad("is not yes or no"))?
                 }
+                "tor_proxy" => {
+                    s.tor_proxy = if v.is_empty() || v == "none" {
+                        None
+                    } else {
+                        v.parse::<SocketAddr>().map_err(|_| {
+                            bad("is not ip:port (Tor's SOCKS port, such as 127.0.0.1:9150)")
+                        })?;
+                        Some(v.clone())
+                    }
+                }
+                "tor_only" => s.tor_only = parse_bool(&v).ok_or_else(|| bad("is not yes or no"))?,
                 "miner_backend" => {
                     s.miner_backend = MinerBackend::parse(&v)
                         .ok_or_else(|| bad("is not sha256, cpu, gpu or amd"))?
@@ -393,6 +412,8 @@ impl Settings {
             listen,
             inbound_port,
             external_node,
+            tor_proxy,
+            tor_only,
             miner_backend,
             miner_cores,
             miner_gpu_device,
@@ -434,6 +455,10 @@ impl Settings {
             t.push_str(&format!("inbound_port = {p}\n"));
         }
         t.push_str(&format!("external_node = {}\n", yes_no(self.external_node)));
+        if let Some(p) = &self.tor_proxy {
+            t.push_str(&format!("tor_proxy = {p}\n"));
+        }
+        t.push_str(&format!("tor_only = {}\n", yes_no(self.tor_only)));
         t.push_str(&format!("miner_backend = {}\n", self.miner_backend.name()));
         t.push_str(&format!("miner_cores = {}\n", self.miner_cores));
         t.push_str(&format!("miner_gpu_device = {}\n", self.miner_gpu_device));

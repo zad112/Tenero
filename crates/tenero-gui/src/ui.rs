@@ -2445,7 +2445,9 @@ impl App {
                             .desired_width(f32::INFINITY),
                     );
                     let mut inbound = draft.inbound_port.is_some();
-                    ui.checkbox(&mut inbound, "Let other nodes connect to me");
+                    ui.add_enabled_ui(!draft.tor_only, |ui| {
+                        ui.checkbox(&mut inbound, "Let other nodes connect to me");
+                    });
                     if inbound {
                         let mut port = draft
                             .inbound_port
@@ -2477,6 +2479,37 @@ impl App {
                             .color(GREY),
                         );
                     }
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Tor").strong());
+                    let mut proxy = draft.tor_proxy.clone().unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        ui.label("Tor's SOCKS port (empty = no Tor)");
+                        ui.add(egui::TextEdit::singleline(&mut proxy).desired_width(140.0).hint_text("127.0.0.1:9150"));
+                    });
+                    let proxy = proxy.trim().to_string();
+                    draft.tor_proxy = (!proxy.is_empty()).then_some(proxy);
+                    ui.add_enabled_ui(draft.tor_proxy.is_some(), |ui| {
+                        ui.checkbox(&mut draft.tor_only, "Every connection through Tor (peers never learn my IP address)");
+                    });
+                    if draft.tor_proxy.is_none() {
+                        draft.tor_only = false;
+                    }
+                    if draft.tor_only {
+                        draft.inbound_port = None;
+                    }
+                    ui.label(
+                        RichText::new(
+                            concat!(
+                                "Tor is a separate program: the Tor Browser (port 9150, while it is open) or the Tor Expert Bundle (port 9050). With it, the node",
+                                " reaches .onion peers through Tor and sends your own payments through a Tor peer first. With every connection through Tor,",
+                                " nobody learns this computer's IP address, and other nodes cannot connect to it. Tor hides where you connect from, not what",
+                                " you pay (that is the wallet's unaudited privacy), and it is slower."
+                            ),
+                        )
+                        .small()
+                        .color(GREY),
+                    );
+                    ui.add_space(4.0);
                     ui.checkbox(
                         &mut draft.external_node,
                         "Use a node that is already running; do not start one",

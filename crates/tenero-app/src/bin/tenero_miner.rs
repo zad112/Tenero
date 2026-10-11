@@ -44,6 +44,8 @@ tenero-miner: mines for a Tenero node in another process (EXPERIMENTAL, UNAUDITE
   --network NET      with --pool: the network the pool serves (gamma, dev or test; default: the address's), so that a pool of
                      another network is refused
   --worker NAME      with --pool: a name for this machine, shown to the pool (default: the computer's name, at most 32 characters)
+  --proxy IP:PORT    with --pool: reach the pool through Tor at this SOCKS port (127.0.0.1:9050 for the Tor Expert Bundle, 9150
+                     for the Tor Browser); the pool may then be a .onion address, and Tor looks the name up (docs/TOR_PLAN.md)
   --backend B        sha256 (the test network), cpu or gpu (NVIDIA) for gamma's and dev's matmulhash, or amd (an AMD RX 7000 or 9000
                      series card on Linux with ROCm 7: only in the Linux AMD package; contributed, not tested by the author)
   --cores N          CPU threads for the cpu backend, 1 to 6 (default 6)
@@ -68,6 +70,8 @@ struct Args {
     pool: Option<String>,
     pool_key: Option<[u8; 32]>,
     pool_unpinned: bool,
+    /// Tor's SOCKS port, to reach the pool through Tor.
+    proxy: Option<std::net::SocketAddr>,
     network: Option<String>,
     worker: String,
     address: String,
@@ -95,6 +99,7 @@ fn parse() -> Result<Args, String> {
         pool: None,
         pool_key: None,
         pool_unpinned: false,
+        proxy: None,
         network: None,
         worker: String::new(),
         address: String::new(),
@@ -173,6 +178,12 @@ fn parse() -> Result<Args, String> {
                 a.key = Some(k);
             }
             "pool" => a.pool = Some(v.clone()),
+            "proxy" => {
+                a.proxy = Some(
+                    v.parse()
+                        .map_err(|_| format!("--proxy: `{v}` is not ip:port (Tor's SOCKS port)"))?,
+                )
+            }
             "pool-key" => {
                 if v.len() != 64 || !v.bytes().all(|b| b.is_ascii_hexdigit()) {
                     return Err("--pool-key must be 64 hexadecimal digits".into());
@@ -274,7 +285,8 @@ fn parse() -> Result<Args, String> {
 
 /// Where a pool is and what to pin.
 struct PoolTarget {
-    addr: std::net::SocketAddr,
+    /// `ip:port`, or through Tor as given (a name or a `.onion` address: Tor looks it up, so this computer does not).
+    addr: String,
     pin: Option<[u8; 32]>,
     network: Network,
 }
@@ -294,14 +306,31 @@ fn resolve_pool(spec: &str, args: &Args, address_network: Network) -> Result<Poo
                 network.name()
             ));
         };
-        let addr: std::net::SocketAddr = addr
-            .parse()
+        addr.parse::<std::net::SocketAddr>()
             .map_err(|_| "the built-in pool address is not valid".to_string())?;
         return Ok(PoolTarget {
-            addr,
+            addr: addr.to_string(),
             pin: Some(key),
             network,
         });
+    }
+    // through Tor the name is Tor's to look up (looking it up here would tell this computer's DNS server where it is going)
+    if args.proxy.is_some() {
+        if tenero_net::onion::split_host_port(spec).is_none()
+            && spec.parse::<std::net::SocketAddr>().is_err()
+        {
+            return Err(format!("--pool: `{spec}` is not HOST:PORT"));
+        }
+        return Ok(PoolTarget {
+            addr: spec.to_string(),
+            pin: args.pool_key,
+            network,
+        });
+    }
+    if tenero_net::onion::is_onion(spec) {
+        return Err(format!(
+            "--pool: `{spec}` is a .onion address: it needs Tor (--proxy 127.0.0.1:9050)"
+        ));
     }
     let addr = spec
         .to_socket_addrs()
@@ -309,7 +338,7 @@ fn resolve_pool(spec: &str, args: &Args, address_network: Network) -> Result<Poo
         .next()
         .ok_or_else(|| format!("--pool: `{spec}` has no address"))?;
     Ok(PoolTarget {
-        addr,
+        addr: addr.to_string(),
         pin: args.pool_key,
         network,
     })
@@ -621,9 +650,12 @@ fn main() {
             )
         });
         let counters = pm.counters();
-        let (addr, pin) = (target.addr, target.pin);
+        let (addr, pin, proxy) = (target.addr, target.pin, args.proxy);
         let runner: Runner = Box::new(move |shutdown| {
-            let result = pm.run(|| tenero_app::pool_miner::connect(addr, pin), shutdown);
+            let result = pm.run(
+                || tenero_app::pool_miner::connect(&addr, pin, proxy),
+                shutdown,
+            );
             let s = pm.stats;
             (
                 result,

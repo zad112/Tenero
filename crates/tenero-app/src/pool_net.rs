@@ -132,14 +132,37 @@ pub fn accept(
     Ok((r, w, s.remote_public))
 }
 
-/// Dials a pool and finishes the handshake. If `pinned` is given, the pool must prove exactly that public key, or the connection is
-/// refused (a pool that proves another key is not the pool the miner was told about, or someone is in the middle).
+/// Dials a pool at `addr` (`ip:port`, or through Tor also `host:port` or a `.onion` address) and finishes the handshake. With
+/// `proxy` (Tor's SOCKS port, `docs/TOR_PLAN.md`) the connection goes through Tor, which looks the name up itself; without,
+/// `addr` must be `ip:port`. If `pinned` is given, the pool must prove exactly that public key, or the connection is refused (a
+/// pool that proves another key is not the pool the miner was told about, or someone is in the middle).
 pub fn connect(
-    addr: SocketAddr,
+    addr: &str,
     pinned: Option<&[u8; 32]>,
+    proxy: Option<SocketAddr>,
 ) -> Result<(ReadHalf, WriteHalf), String> {
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
-        .map_err(|e| format!("cannot reach the pool at {addr}: {e}"))?;
+    let mut stream = match proxy {
+        Some(p) => {
+            let isolation = tenero_net::socks::isolation_name(
+                0,
+                rand_core::RngCore::next_u64(&mut rand_core::OsRng),
+            );
+            tenero_net::socks::connect(p, addr, &isolation, Duration::from_secs(60))
+                .map_err(|e| format!("cannot reach the pool at {addr} through Tor: {e}"))?
+        }
+        None => {
+            if tenero_net::onion::is_onion(addr) {
+                return Err(format!(
+                    "the pool at {addr} is a .onion address: it needs Tor (--proxy)"
+                ));
+            }
+            let sa: SocketAddr = addr
+                .parse()
+                .map_err(|_| format!("the pool address `{addr}` is not ip:port"))?;
+            TcpStream::connect_timeout(&sa, Duration::from_secs(5))
+                .map_err(|e| format!("cannot reach the pool at {addr}: {e}"))?
+        }
+    };
     stream.set_nodelay(true).map_err(|e| e.to_string())?;
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))

@@ -188,7 +188,7 @@ fn recv(r: &mut ReadHalf) -> Option<PoolMessage> {
 }
 
 fn dial(rig: &Rig) -> (ReadHalf, WriteHalf) {
-    pool_net::connect(rig.handle.addr, Some(&rig.key)).unwrap()
+    pool_net::connect(&rig.handle.addr.to_string(), Some(&rig.key), None).unwrap()
 }
 
 /// The pool's connection is over: the next read is the end, not a message.
@@ -221,8 +221,11 @@ fn a_miner_works_for_a_pool_over_a_real_socket_and_shares_and_a_block_are_counte
     let (addr, key) = (rig.handle.addr, rig.key);
     let s = Arc::clone(&shutdown);
     let t = thread::spawn(move || {
-        pm.run(|| tenero_app::pool_miner::connect(addr, Some(key)), &s)
-            .unwrap();
+        pm.run(
+            || tenero_app::pool_miner::connect(&addr.to_string(), Some(key), None),
+            &s,
+        )
+        .unwrap();
         pm
     });
     let end = Instant::now() + Duration::from_secs(60);
@@ -310,8 +313,11 @@ fn in_the_fee_s_minute_a_pool_miner_logs_in_with_the_fee_s_address_and_then_with
     let (addr, key) = (rig.handle.addr, rig.key);
     let s = Arc::clone(&shutdown);
     let t = thread::spawn(move || {
-        pm.run(|| tenero_app::pool_miner::connect(addr, Some(key)), &s)
-            .unwrap();
+        pm.run(
+            || tenero_app::pool_miner::connect(&addr.to_string(), Some(key), None),
+            &s,
+        )
+        .unwrap();
         pm
     });
     // in the fee's minute: the work is credited to the fee's address only
@@ -362,8 +368,11 @@ fn a_pool_that_will_not_take_the_fee_s_address_gets_the_miner_s_own_for_the_rest
     let (addr, key) = (rig.handle.addr, rig.key);
     let s = Arc::clone(&shutdown);
     let t = thread::spawn(move || {
-        pm.run(|| tenero_app::pool_miner::connect(addr, Some(key)), &s)
-            .unwrap();
+        pm.run(
+            || tenero_app::pool_miner::connect(&addr.to_string(), Some(key), None),
+            &s,
+        )
+        .unwrap();
         pm
     });
     let end = Instant::now() + Duration::from_secs(60);
@@ -386,11 +395,11 @@ fn a_miner_that_was_given_the_pools_key_refuses_a_pool_with_another_and_one_give
 {
     let rig = start(|_| {});
     let right = rig.key;
-    assert!(pool_net::connect(rig.handle.addr, Some(&right)).is_ok());
-    assert!(pool_net::connect(rig.handle.addr, None).is_ok());
+    assert!(pool_net::connect(&rig.handle.addr.to_string(), Some(&right), None).is_ok());
+    assert!(pool_net::connect(&rig.handle.addr.to_string(), None, None).is_ok());
     let mut wrong = right;
     wrong[0] ^= 1;
-    let e = pool_net::connect(rig.handle.addr, Some(&wrong))
+    let e = pool_net::connect(&rig.handle.addr.to_string(), Some(&wrong), None)
         .err()
         .expect("refused");
     assert!(
@@ -601,7 +610,7 @@ fn too_many_connections_from_one_address_and_too_many_miners_are_turned_away() {
         })
         .collect();
     // the third from the same address never gets as far as a handshake answer that works
-    let third = pool_net::connect(rig.handle.addr, Some(&rig.key));
+    let third = pool_net::connect(&rig.handle.addr.to_string(), Some(&rig.key), None);
     if let Ok((mut r, mut w)) = third {
         let _ = write_message(&mut w, &hello("test", 12).to_body().unwrap());
         assert!(ended(&mut r) || recv(&mut r).is_none());
