@@ -148,6 +148,8 @@ A seed is a public node that must stay up. A pool beside it must not take its ro
 
 `journalctl -u tenero-pool -f`, or the `log-file`. A status line every minute: miners connected, shares (and how many were stale or refused), blocks found (in the chain, lost to another block, refused by the node), what is owed, how many blocks are maturing, what has been paid. A payout round logs how many payments, transactions and units it paid and what it cost in network fees.
 
+* **The blocks' record** (`pool-blocks.dat`: the blocks found, in the chain, lost and refused, and the latest 20) is written after every block. A damaged one is
+  logged and started again from the books; it is a separate file so that `pool-state.dat` keeps its format.
 * **The books** are in `pool-state.dat` (written atomically, with a checksum, after every block and payout and every few seconds). **If the file is damaged the pool will not start over it** (it says so): move it away to start with empty books, and know that what the miners were owed is gone.
 * **The wallet file** is saved after every payout that sent anything (the reservations are in it).
 * **If the node is down** the pool says so and tries again; no jobs are handed out and shares for the old jobs are stale.
@@ -162,7 +164,9 @@ reader never sees half a file). Nothing listens for it: a web server serves the 
 * `pool`: miners and addresses online, the **estimated** hash rate (attempts a second: the work of the accepted shares of the last
   `window_secs`, 600, over that time), shares accepted, stale and refused, blocks found, in the chain, lost and refused, blocks
   maturing, what is owed and what has been paid in all, payout rounds;
-* `blocks`: the latest 20 blocks the pool found (height, time, reward, status);
+* `blocks`: the latest 20 blocks the pool found (height, time, reward, status). **The block counts and this list survive a restart**:
+  they are kept in `pool-blocks.dat`, next to the books (a pool that has none yet starts from the blocks its books credited; losing the
+  file loses only these counts). Shares stale and refused count from the pool's start;
 * `miners`: for every miner with anything to show, **keyed by the SHA-256 of its address as text** (hexadecimal), its connections
   online, estimated hash rate, shares of the last ten minutes, last share, share of the PPLNS window (percent), and what is
   maturing, owed and paid, in units (`units_per_coin`, 100,000,000).

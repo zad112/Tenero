@@ -129,6 +129,15 @@ impl Rig {
 }
 
 fn start(tweak: impl FnOnce(&mut PoolConfig)) -> Rig {
+    start_with(tweak, Accounts::new(), None)
+}
+
+/// [`start`], from these books and with its state kept at `state` (a restart reads both files from there).
+fn start_with(
+    tweak: impl FnOnce(&mut PoolConfig),
+    accounts: Accounts,
+    state: Option<std::path::PathBuf>,
+) -> Rig {
     let node = Arc::new(FakeNode {
         height: AtomicU64::new(10),
         submitted: Mutex::new(vec![]),
@@ -145,8 +154,8 @@ fn start(tweak: impl FnOnce(&mut PoolConfig)) -> Rig {
         node.clone(),
         Arc::new(Sha256Pow),
         key,
-        Accounts::new(),
-        None,
+        accounts,
+        state,
         Arc::new(|_| {}),
     );
     let handle = pool.start("127.0.0.1:0".parse().unwrap()).unwrap();
@@ -923,4 +932,77 @@ fn the_stats_file_is_json_whatever_the_pool_is_called() {
     assert_eq!(j["miners"], serde_json::json!({}));
     assert_eq!(j["blocks"], serde_json::json!([]));
     assert_eq!(j["pool"]["hashrate_estimate"].as_f64(), Some(0.0));
+}
+
+/// The pool's blocks survive a restart: a pool that found a block, stopped and started again from its files (the books and
+/// the blocks' record) still counts the block and lists it in its stats file. A pool with books but no record yet (as when
+/// this came in) counts the blocks its books credited.
+#[test]
+fn the_block_counts_survive_a_restart_of_the_pool() {
+    let dir = std::env::temp_dir().join(format!("tenero-pool-blocks-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state = dir.join("pool-state.dat");
+    let rig = start_with(
+        |c| c.shares_per_minute = 1_000_000,
+        Accounts::new(),
+        Some(state.clone()),
+    );
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let mut pm = PoolMiner::new(
+        Miner::spawn(|| Ok(Sha256Backend)),
+        PowKind::Sha256,
+        PoolMinerConfig::new("test", &address(9).to_text(), "rig9"),
+    );
+    let (addr, key) = (rig.handle.addr, rig.key);
+    let s = Arc::clone(&shutdown);
+    let t = thread::spawn(move || {
+        let _ = pm.run(
+            || tenero_app::pool_miner::connect(&addr.to_string(), Some(key), None),
+            &s,
+        );
+    });
+    let end = Instant::now() + Duration::from_secs(60);
+    while rig.pool().stats.blocks_in_chain.load(Ordering::Relaxed) < 1 {
+        assert!(Instant::now() < end, "no block");
+        thread::sleep(Duration::from_millis(50));
+    }
+    shutdown.store(true, Ordering::SeqCst);
+    t.join().unwrap();
+    rig.pool().save_state();
+    let before: serde_json::Value = serde_json::from_str(&rig.pool().stats_json()).unwrap();
+    let in_chain = before["pool"]["blocks_in_chain"].as_u64().unwrap();
+    assert!(in_chain >= 1);
+    drop(rig);
+    assert!(
+        dir.join("pool-blocks.dat").exists(),
+        "the record was written"
+    );
+
+    // started again from its files
+    let books = Accounts::from_bytes(&std::fs::read(&state).unwrap(), Network::Test).unwrap();
+    let again = start_with(|_| {}, books.clone(), Some(state.clone()));
+    let after: serde_json::Value = serde_json::from_str(&again.pool().stats_json()).unwrap();
+    assert_eq!(after["pool"]["blocks_in_chain"], in_chain, "{after}");
+    assert_eq!(
+        after["pool"]["blocks_found"],
+        before["pool"]["blocks_found"]
+    );
+    assert_eq!(
+        after["blocks"], before["blocks"],
+        "the latest blocks are still listed"
+    );
+    assert_eq!(
+        after["pool"]["shares_accepted"],
+        before["pool"]["shares_accepted"]
+    );
+    drop(again);
+
+    // books, but no record yet: the blocks the books credited
+    std::fs::remove_file(dir.join("pool-blocks.dat")).unwrap();
+    let fresh = start_with(|_| {}, books.clone(), Some(state));
+    let seeded: serde_json::Value = serde_json::from_str(&fresh.pool().stats_json()).unwrap();
+    assert_eq!(seeded["pool"]["blocks_in_chain"], books.blocks_found);
+    drop(fresh);
+    let _ = std::fs::remove_dir_all(&dir);
 }

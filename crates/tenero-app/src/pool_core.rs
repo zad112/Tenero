@@ -593,6 +593,159 @@ impl Accounts {
     }
 }
 
+// ---- the blocks' record (`pool-blocks.dat`) ---------------------------------------------------------------------------------
+
+/// The latest blocks kept in the record.
+pub const MAX_RECENT_BLOCKS: usize = 20;
+
+/// What became of a block the pool found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockStatus {
+    InChain,
+    LostRace,
+    Refused,
+    /// The node could not be asked.
+    NotHandedOver,
+}
+
+impl BlockStatus {
+    /// As the stats file says it.
+    pub fn text(self) -> &'static str {
+        match self {
+            BlockStatus::InChain => "in chain",
+            BlockStatus::LostRace => "lost a race",
+            BlockStatus::Refused => "refused",
+            BlockStatus::NotHandedOver => "not handed over",
+        }
+    }
+    fn code(self) -> u8 {
+        match self {
+            BlockStatus::InChain => 0,
+            BlockStatus::LostRace => 1,
+            BlockStatus::Refused => 2,
+            BlockStatus::NotHandedOver => 3,
+        }
+    }
+    fn from_code(c: u8) -> Option<BlockStatus> {
+        Some(match c {
+            0 => BlockStatus::InChain,
+            1 => BlockStatus::LostRace,
+            2 => BlockStatus::Refused,
+            3 => BlockStatus::NotHandedOver,
+            _ => return None,
+        })
+    }
+}
+
+/// A block the pool found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FoundBlock {
+    pub height: u64,
+    /// When it was found, seconds since 1970.
+    pub time: u64,
+    pub reward: u64,
+    pub status: BlockStatus,
+}
+
+/// The pool's blocks, counted over its whole life and the latest listed: what the stats file shows. Kept in a file of its
+/// own (`pool-blocks.dat`, next to the books), so the books' file (`pool-state.dat`) keeps its format and an older
+/// `tenero-pool` can still open it. Losing it loses only these counts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BlockLog {
+    pub found: u64,
+    pub in_chain: u64,
+    pub lost: u64,
+    pub refused: u64,
+    /// The newest first, at most [`MAX_RECENT_BLOCKS`].
+    pub recent: VecDeque<FoundBlock>,
+}
+
+impl BlockLog {
+    /// A record for a pool that has none yet: the books already count the blocks that made it into the chain (each was
+    /// credited to the miners), so those are not lost; what was lost or refused before is not known.
+    pub fn from_books(accounts: &Accounts) -> BlockLog {
+        BlockLog {
+            found: accounts.blocks_found,
+            in_chain: accounts.blocks_found,
+            ..BlockLog::default()
+        }
+    }
+
+    pub fn record(&mut self, b: FoundBlock) {
+        self.found += 1;
+        match b.status {
+            BlockStatus::InChain => self.in_chain += 1,
+            BlockStatus::LostRace => self.lost += 1,
+            BlockStatus::Refused => self.refused += 1,
+            BlockStatus::NotHandedOver => {}
+        }
+        self.recent.push_front(b);
+        self.recent.truncate(MAX_RECENT_BLOCKS);
+    }
+
+    const MAGIC: &'static [u8] = b"tenero pool blocks v1\n";
+
+    /// The record as bytes: a header, the counts, the latest blocks, and a SHA-256 of all of it.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, EncodeError> {
+        let mut w = Writer::new();
+        w.raw(Self::MAGIC);
+        for n in [self.found, self.in_chain, self.lost, self.refused] {
+            w.u64(n);
+        }
+        w.count(self.recent.len(), 0, MAX_RECENT_BLOCKS)?;
+        for b in &self.recent {
+            w.u64(b.height);
+            w.u64(b.time);
+            w.u64(b.reward);
+            w.raw(&[b.status.code()]);
+        }
+        let mut bytes = w.into_bytes();
+        let sum = sha256(&[&bytes]);
+        bytes.extend_from_slice(&sum);
+        Ok(bytes)
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<BlockLog, String> {
+        let bad = |e: DecodeError| e.as_str().to_string();
+        if data.len() < 32 + Self::MAGIC.len() {
+            return Err("too short".into());
+        }
+        let (body, sum) = data.split_at(data.len() - 32);
+        if sha256(&[body]) != sum {
+            return Err("the checksum does not match".into());
+        }
+        let mut r = Reader::new(body);
+        if r.take(Self::MAGIC.len()).map_err(bad)? != Self::MAGIC {
+            return Err("not a pool blocks file".into());
+        }
+        let mut l = BlockLog {
+            found: r.u64().map_err(bad)?,
+            in_chain: r.u64().map_err(bad)?,
+            lost: r.u64().map_err(bad)?,
+            refused: r.u64().map_err(bad)?,
+            recent: VecDeque::new(),
+        };
+        let n = r.count(0, MAX_RECENT_BLOCKS).map_err(bad)?;
+        for _ in 0..n {
+            let (height, time, reward) = (
+                r.u64().map_err(bad)?,
+                r.u64().map_err(bad)?,
+                r.u64().map_err(bad)?,
+            );
+            let status = BlockStatus::from_code(r.take(1).map_err(bad)?[0])
+                .ok_or("a block status that does not exist")?;
+            l.recent.push_back(FoundBlock {
+                height,
+                time,
+                reward,
+                status,
+            });
+        }
+        r.finish().map_err(bad)?;
+        Ok(l)
+    }
+}
+
 /// One percent of a block's reward, in the unit the pool's fee is kept in: parts per million of the reward. So 0.5 % is 5,000 and
 /// the smallest step is 0.0001 % (one part in a million). Whole percents were the only fee the first version could take.
 pub const FEE_ONE_PERCENT: u64 = 10_000;

@@ -46,7 +46,7 @@ use crate::pool::{
 };
 use crate::pool_core::{
     first_nonce_of, nonce_in_prefix, share_target, work_of, AccountError, Accounts, AddrId,
-    Prefixes, VarDiff,
+    BlockLog, BlockStatus, FoundBlock, Prefixes, VarDiff,
 };
 use crate::pool_net::{self, read_message, write_message};
 use crate::remote_miner::check_template;
@@ -385,23 +385,17 @@ pub struct Pool {
     /// [`STATS_WINDOW_SECS`] (when, whose, their work), and the latest blocks found.
     online: Mutex<HashMap<AddrId, usize>>,
     recent_work: Mutex<VecDeque<(u64, AddrId, u64)>>,
-    recent_blocks: Mutex<VecDeque<FoundBlock>>,
+    /// The blocks found, over the pool's whole life (kept in `pool-blocks.dat`, next to the books).
+    blocks: Mutex<BlockLog>,
 }
 
 /// The shares the estimated hash rates are worked out from: the last ten minutes.
 pub const STATS_WINDOW_SECS: u64 = 600;
 /// The most shares remembered for that (256 miners at 600 a minute for ten minutes, and some).
 const MAX_RECENT_WORK: usize = 2_000_000;
-/// The latest blocks listed.
-const MAX_RECENT_BLOCKS: usize = 20;
-
-/// A block the pool found, for the stats file.
-#[derive(Clone, Debug)]
-struct FoundBlock {
-    height: u64,
-    time: u64,
-    reward: u64,
-    status: &'static str,
+/// The blocks' record, beside the books' file.
+fn blocks_path(state_path: &std::path::Path) -> PathBuf {
+    state_path.with_file_name("pool-blocks.dat")
 }
 
 /// Lower-case hexadecimal.
@@ -453,6 +447,20 @@ impl Pool {
         log: Log,
     ) -> Arc<Pool> {
         let prefixes = Prefixes::for_miners(cfg.max_miners);
+        // the blocks' record: as saved, or (none yet, or damaged) the blocks the books already count
+        let blocks = match state_path.as_deref().map(blocks_path) {
+            Some(p) => match std::fs::read(&p) {
+                Ok(bytes) => BlockLog::from_bytes(&bytes).unwrap_or_else(|e| {
+                    log(&format!(
+                        "the blocks' record {} is not valid ({e}): it starts again from the books' count",
+                        p.display()
+                    ));
+                    BlockLog::from_books(&accounts)
+                }),
+                Err(_) => BlockLog::from_books(&accounts),
+            },
+            None => BlockLog::from_books(&accounts),
+        };
         let start_id = system_now() << 20;
         Arc::new(Pool {
             cfg,
@@ -478,7 +486,7 @@ impl Pool {
             stats: PoolStats::default(),
             online: Mutex::new(HashMap::new()),
             recent_work: Mutex::new(VecDeque::new()),
-            recent_blocks: Mutex::new(VecDeque::new()),
+            blocks: Mutex::new(blocks),
         })
     }
 
@@ -883,19 +891,28 @@ impl Pool {
     fn found_block(&self, job: &JobRecord, header: BlockHeader, need: u128) -> BlockOutcome {
         let outcome = self.hand_in_block(job, header, need);
         let status = match &outcome {
-            BlockOutcome::InChain => "in chain",
-            BlockOutcome::LostRace => "lost a race",
-            BlockOutcome::Refused(_) => "refused",
-            BlockOutcome::NodeError(_) => "not handed over",
+            BlockOutcome::InChain => BlockStatus::InChain,
+            BlockOutcome::LostRace => BlockStatus::LostRace,
+            BlockOutcome::Refused(_) => BlockStatus::Refused,
+            BlockOutcome::NodeError(_) => BlockStatus::NotHandedOver,
         };
-        if let Ok(mut b) = self.recent_blocks.lock() {
-            b.push_front(FoundBlock {
+        let record = self.blocks.lock().ok().and_then(|mut b| {
+            b.record(FoundBlock {
                 height: job.height,
                 time: self.now(),
                 reward: job.reward,
                 status,
             });
-            b.truncate(MAX_RECENT_BLOCKS);
+            b.to_bytes().ok()
+        });
+        if let (Some(bytes), Some(path)) = (record, &self.state_path) {
+            let path = blocks_path(path);
+            if let Err(e) = tenero_net::transport::write_atomic(&path, &bytes) {
+                self.log(&format!(
+                    "cannot save the blocks' record to {}: {e}",
+                    path.display()
+                ));
+            }
         }
         outcome
     }
@@ -951,20 +968,20 @@ impl Pool {
                 json_f64(win as f64 * 100.0 / window_total)
             ));
         }
-        let blocks: Vec<String> = self
-            .recent_blocks
-            .lock()
-            .map(|b| {
-                b.iter()
-                    .map(|f| {
-                        format!(
-                            "{{\"height\":{},\"time\":{},\"reward\":{},\"status\":\"{}\"}}",
-                            f.height, f.time, f.reward, f.status
-                        )
-                    })
-                    .collect()
+        let log = self.blocks.lock().map(|b| b.clone()).unwrap_or_default();
+        let blocks: Vec<String> = log
+            .recent
+            .iter()
+            .map(|f| {
+                format!(
+                    "{{\"height\":{},\"time\":{},\"reward\":{},\"status\":\"{}\"}}",
+                    f.height,
+                    f.time,
+                    f.reward,
+                    f.status.text()
+                )
             })
-            .unwrap_or_default();
+            .collect();
         let height = self.current_job().map_or("null".to_string(), |j| {
             j.height.saturating_sub(1).to_string()
         });
@@ -994,13 +1011,13 @@ impl Pool {
             self.sessions_now(),
             online.len(),
             rate(total_work),
-            st.shares_accepted.load(Ordering::Relaxed),
+            a.shares_accepted,
             st.shares_stale.load(Ordering::Relaxed),
             refused,
-            st.blocks_found.load(Ordering::Relaxed),
-            st.blocks_in_chain.load(Ordering::Relaxed),
-            st.blocks_lost_race.load(Ordering::Relaxed),
-            st.blocks_refused.load(Ordering::Relaxed),
+            log.found,
+            log.in_chain,
+            log.lost,
+            log.refused,
             a.pending().len(),
             u64::try_from(a.total_balances()).unwrap_or(u64::MAX),
             a.total_paid,

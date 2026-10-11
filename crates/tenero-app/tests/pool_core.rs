@@ -492,3 +492,40 @@ fn a_half_percent_fee_comes_off_a_block_and_a_part_per_million_rounds_in_the_min
     let c = a.block_found(3, [3; 32], 999_999, 1, 30);
     assert_eq!(c.iter().map(|x| x.1).sum::<u64>(), 999_999);
 }
+
+/// The blocks' record (`pool-blocks.dat`): counted by what became of each block, the latest 20 kept newest first, read back
+/// exactly, a damaged file refused; and a pool with no record starts from the blocks its books already credited.
+#[test]
+fn the_blocks_record_counts_keeps_the_latest_and_survives_a_round_trip() {
+    let mut l = BlockLog::default();
+    for h in 0..25u64 {
+        let status = match h % 4 {
+            0 => BlockStatus::InChain,
+            1 => BlockStatus::LostRace,
+            2 => BlockStatus::Refused,
+            _ => BlockStatus::NotHandedOver,
+        };
+        l.record(FoundBlock {
+            height: 100 + h,
+            time: 1_700_000_000 + h,
+            reward: 2_000_000_000,
+            status,
+        });
+    }
+    assert_eq!((l.found, l.in_chain, l.lost, l.refused), (25, 7, 6, 6));
+    assert_eq!(l.recent.len(), MAX_RECENT_BLOCKS);
+    assert_eq!(l.recent[0].height, 124, "the newest first");
+    let bytes = l.to_bytes().unwrap();
+    assert_eq!(BlockLog::from_bytes(&bytes).unwrap(), l);
+    for i in [0, bytes.len() / 2, bytes.len() - 1] {
+        let mut bad = bytes.clone();
+        bad[i] ^= 1;
+        assert!(BlockLog::from_bytes(&bad).is_err(), "byte {i}");
+    }
+    assert!(BlockLog::from_bytes(b"short").is_err());
+    let mut books = Accounts::new();
+    books.blocks_found = 42;
+    let seeded = BlockLog::from_books(&books);
+    assert_eq!((seeded.found, seeded.in_chain, seeded.lost), (42, 42, 0));
+    assert!(seeded.recent.is_empty());
+}
