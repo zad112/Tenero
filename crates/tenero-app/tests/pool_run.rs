@@ -239,6 +239,36 @@ fn a_miner_works_for_a_pool_over_a_real_socket_and_shares_and_a_block_are_counte
         );
         thread::sleep(Duration::from_millis(50));
     }
+    // the public stats file, while the miner is connected: valid JSON, the miner under the SHA-256 of its address (and
+    // its address nowhere in the file), its shares, an estimated hash rate, the block it found
+    let text = rig.pool().stats_json();
+    let j: serde_json::Value = serde_json::from_str(&text).expect("the stats file is JSON");
+    let me = address(7).to_text();
+    assert!(!text.contains(&me), "the file lists an address");
+    let key: String = tenero_core::hash::sha256(&[me.as_bytes()])
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let m = &j["miners"][&key];
+    assert_eq!(m["online"], 1, "{text}");
+    assert!(m["shares_recent"].as_u64().unwrap() >= 6, "{text}");
+    assert!(m["hashrate_estimate"].as_f64().unwrap() > 0.0, "{text}");
+    assert!(
+        (m["window_percent"].as_f64().unwrap() - 100.0).abs() < 0.01,
+        "the only miner has all the window: {text}"
+    );
+    assert_eq!(j["network"], "test");
+    assert_eq!(j["pool"]["miners_online"], 1);
+    assert!(j["pool"]["blocks_found"].as_u64().unwrap() >= 1);
+    assert!(
+        j["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["status"] == "in chain"),
+        "{text}"
+    );
+    assert_eq!(j["pool_key"].as_str().unwrap().len(), 64);
     shutdown.store(true, Ordering::SeqCst);
     let pm = t.join().unwrap();
     // both sides agree
@@ -879,4 +909,18 @@ fn the_built_in_pool_is_the_authors_gamma_pool_with_its_key_and_no_other_network
         assert!(!sa.ip().is_loopback() && !sa.ip().is_unspecified(), "{sa}");
         assert_eq!(sa.port(), pool_net::DEFAULT_PORT);
     }
+}
+
+/// The stats file stays JSON whatever the pool calls itself (quotes, a backslash, a line break), and with no miner it lists
+/// none and no blocks.
+#[test]
+fn the_stats_file_is_json_whatever_the_pool_is_called() {
+    let name = "the \"best\" pool \\ of all\nsecond line";
+    let rig = start(|c| c.name = name.to_string());
+    let j: serde_json::Value = serde_json::from_str(&rig.pool().stats_json()).expect("JSON");
+    assert_eq!(j["name"], name);
+    assert_eq!(j["format"], 1);
+    assert_eq!(j["miners"], serde_json::json!({}));
+    assert_eq!(j["blocks"], serde_json::json!([]));
+    assert_eq!(j["pool"]["hashrate_estimate"].as_f64(), Some(0.0));
 }

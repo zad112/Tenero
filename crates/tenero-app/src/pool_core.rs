@@ -311,6 +311,26 @@ impl Accounts {
         self.window_sum
     }
 
+    /// Every miner's work in the PPLNS window (what the next block would be shared by).
+    pub fn window_by_address(&self) -> HashMap<AddrId, u128> {
+        let mut m = HashMap::new();
+        for (id, w) in &self.window {
+            *m.entry(*id).or_insert(0u128) += u128::from(*w);
+        }
+        m
+    }
+
+    /// Every miner's credit in blocks still maturing.
+    pub fn maturing_by_address(&self) -> HashMap<AddrId, u64> {
+        let mut m = HashMap::new();
+        for b in &self.pending {
+            for (id, amount) in &b.credits {
+                *m.entry(*id).or_insert(0u64) += *amount;
+            }
+        }
+        m
+    }
+
     /// An accepted share worth `weight` (see [`work_of`]); the window keeps the newest shares that add up to `need` work, plus the one
     /// that crosses it.
     pub fn add_share(&mut self, id: AddrId, weight: u64, need: u128) {

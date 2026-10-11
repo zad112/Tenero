@@ -39,6 +39,8 @@ tenero-pool: a mining pool (EXPERIMENTAL, UNAUDITED; nothing on any network it s
   --window N            the PPLNS window, as a multiple of a block's work (default 2)
   --config FILE         settings as `key = value` lines (the names above, without the dashes); the command line wins
   --log-level L         error, warn, info, debug (default info)    --log-file FILE   also log to this file
+  --stats-file FILE     write the pool's public numbers here as JSON every 30 s (for a web page: miners online, estimated hash rates,
+                        the latest blocks, what each miner is owed and paid, keyed by the SHA-256 of its address; docs/RUNNING_A_POOL.md)
 
 The pool needs a node of its own on this machine (a tenerod on the same network, mining nothing). It holds no proof-of-work dataset of its own: it asks
 its node to check every share's mix, so it needs little memory itself. The reward of every block goes to the pool's wallet; the pool pays its miners from it.";
@@ -61,6 +63,7 @@ struct Args {
     window: u64,
     level: Level,
     log_file: Option<PathBuf>,
+    stats_file: Option<PathBuf>,
 }
 
 /// Settings from the command line and a `--config` file, as `(name, value)` pairs.
@@ -121,6 +124,7 @@ fn parse() -> Result<Args, String> {
         window: 2,
         level: Level::Info,
         log_file: None,
+        stats_file: None,
     };
     for (k, v) in pairs()? {
         let num = |what: &str| {
@@ -162,6 +166,7 @@ fn parse() -> Result<Args, String> {
                 a.level = Level::parse(&v).ok_or_else(|| format!("log-level: `{v}` is not error, warn, info or debug"))?
             }
             "log-file" | "log_file" => a.log_file = Some(PathBuf::from(&v)),
+            "stats-file" | "stats_file" => a.stats_file = Some(PathBuf::from(&v)),
             other => return Err(format!("unknown setting `{other}`")),
         }
     }
@@ -175,6 +180,15 @@ fn read_passphrase(path: &Path) -> Result<String, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     Ok(text.trim_end_matches(['\r', '\n']).to_string())
+}
+
+/// Writes the stats file whole: a reader (the web server, or a copy to it) sees the old file or the new one, never half.
+fn write_stats(path: &std::path::Path, json: &str) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, path)
 }
 
 fn main() {
@@ -399,10 +413,22 @@ fn main() {
             }
         });
     }
-    // the status line, until the program is told to stop
+    // the status line, and the stats file, until the program is told to stop
     let mut last = Instant::now();
+    let mut last_stats: Option<Instant> = None;
     while !shutdown.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(200));
+        if let Some(path) = &args.stats_file {
+            if last_stats.is_none_or(|t| t.elapsed() >= Duration::from_secs(30)) {
+                last_stats = Some(Instant::now());
+                if let Err(e) = write_stats(path, &pool.stats_json()) {
+                    log.warn(&format!(
+                        "could not write the stats file {}: {e}",
+                        path.display()
+                    ));
+                }
+            }
+        }
         if last.elapsed() >= Duration::from_secs(60) {
             last = Instant::now();
             let st = &pool.stats;

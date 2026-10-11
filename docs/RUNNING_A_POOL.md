@@ -152,6 +152,24 @@ A seed is a public node that must stay up. A pool beside it must not take its ro
 * **The wallet file** is saved after every payout that sent anything (the reservations are in it).
 * **If the node is down** the pool says so and tries again; no jobs are handed out and shares for the old jobs are stale.
 
+## The stats file (for a web page)
+
+`stats-file = PATH` makes the pool write its public numbers to `PATH` as JSON every 30 seconds (replaced whole each time, so a
+reader never sees half a file). Nothing listens for it: a web server serves the file, or a timer copies it to one. What is in it
+(`"format": 1`):
+
+* the pool's terms: `network`, `name`, `pool_key`, `fee_percent`, `min_payout` and `payout_every`, `next_payout`; the chain's `height`;
+* `pool`: miners and addresses online, the **estimated** hash rate (attempts a second: the work of the accepted shares of the last
+  `window_secs`, 600, over that time), shares accepted, stale and refused, blocks found, in the chain, lost and refused, blocks
+  maturing, what is owed and what has been paid in all, payout rounds;
+* `blocks`: the latest 20 blocks the pool found (height, time, reward, status);
+* `miners`: for every miner with anything to show, **keyed by the SHA-256 of its address as text** (hexadecimal), its connections
+  online, estimated hash rate, shares of the last ten minutes, last share, share of the PPLNS window (percent), and what is
+  maturing, owed and paid, in units (`units_per_coin`, 100,000,000).
+
+**The file lists no address**: a page finds a miner by hashing the address a person types. Anyone who already knows an address
+can still look it up, as on any public pool, and confirm it mines here. Hash rates are estimates from shares, not measurements.
+
 ## Limits and defaults
 
 256 miners at once, 4 connections from one address, 10 s to finish the handshake, 5 minutes of silence closes a connection, 600 shares a minute for one connection, and 20 bad shares in a row ban the address for 10 minutes. All are settings or constants in `pool_server.rs`; **none has been measured**.
@@ -161,4 +179,4 @@ A seed is a public node that must stay up. A pool beside it must not take its ro
 * **Job declaration** (a miner building its own blocks): not supported; the pool offers no capability beyond version 1.
 * **Payment proofs for a miner**: a miner sees its payments as ordinary received coins (the sender is the pool's wallet).
 * **Anything about keeping the miners' addresses private**: the pool knows each miner's address and its internet address.
-* **A web page, an API or a payout history for miners**: only the log and `payments.log`.
+* **An API or a payout history for miners**: the log, `payments.log`, and the stats file above (for a page).

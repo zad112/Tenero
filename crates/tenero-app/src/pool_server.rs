@@ -381,6 +381,57 @@ pub struct Pool {
     now: Arc<dyn Fn() -> u64 + Send + Sync>,
     log: Log,
     pub stats: PoolStats,
+    /// For the public stats file (`stats_json`): connections per address now, the accepted shares of the last
+    /// [`STATS_WINDOW_SECS`] (when, whose, their work), and the latest blocks found.
+    online: Mutex<HashMap<AddrId, usize>>,
+    recent_work: Mutex<VecDeque<(u64, AddrId, u64)>>,
+    recent_blocks: Mutex<VecDeque<FoundBlock>>,
+}
+
+/// The shares the estimated hash rates are worked out from: the last ten minutes.
+pub const STATS_WINDOW_SECS: u64 = 600;
+/// The most shares remembered for that (256 miners at 600 a minute for ten minutes, and some).
+const MAX_RECENT_WORK: usize = 2_000_000;
+/// The latest blocks listed.
+const MAX_RECENT_BLOCKS: usize = 20;
+
+/// A block the pool found, for the stats file.
+#[derive(Clone, Debug)]
+struct FoundBlock {
+    height: u64,
+    time: u64,
+    reward: u64,
+    status: &'static str,
+}
+
+/// Lower-case hexadecimal.
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// A JSON string: quoted, with `"`, `\` and control characters escaped.
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// A JSON number from a float (two decimals; never `NaN` or infinite, which JSON has no form for).
+fn json_f64(x: f64) -> String {
+    if x.is_finite() {
+        format!("{x:.2}")
+    } else {
+        "0".to_string()
+    }
 }
 
 fn system_now() -> u64 {
@@ -425,6 +476,9 @@ impl Pool {
             now: Arc::new(system_now),
             log,
             stats: PoolStats::default(),
+            online: Mutex::new(HashMap::new()),
+            recent_work: Mutex::new(VecDeque::new()),
+            recent_blocks: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -583,6 +637,9 @@ impl Pool {
         let vardiff = VarDiff::new(self.cfg.initial_ratio, now);
         let target = share_target(&block_target, vardiff.ratio);
         let id = self.next_session.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut o) = self.online.lock() {
+            *o.entry(address_id).or_insert(0) += 1;
+        }
         let session = Session {
             id,
             ip,
@@ -627,6 +684,14 @@ impl Pool {
     pub fn close_session(&self, s: &Session) {
         if let Ok(mut p) = self.prefixes.lock() {
             p.give_back(s.prefix);
+        }
+        if let Ok(mut o) = self.online.lock() {
+            if let Some(n) = o.get_mut(&s.address_id) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    o.remove(&s.address_id);
+                }
+            }
         }
     }
 
@@ -792,6 +857,15 @@ impl Pool {
         let need = u128::from(self.cfg.window_factor) * u128::from(work_of(&job.block_target));
         self.stats.shares_accepted.fetch_add(1, Ordering::Relaxed);
         self.with_accounts(|a| a.add_share(s.address_id, weight, need));
+        if let Ok(mut r) = self.recent_work.lock() {
+            r.push_back((now, s.address_id, weight));
+            while r.len() > MAX_RECENT_WORK
+                || r.front()
+                    .is_some_and(|(t, _, _)| now.saturating_sub(*t) > STATS_WINDOW_SECS)
+            {
+                r.pop_front();
+            }
+        }
         let mut outcome = ShareOutcome {
             accepted: true,
             reason: R_ACCEPTED,
@@ -807,6 +881,137 @@ impl Pool {
 
     /// The share is a block: hands it to the node, and if it is in the chain, fixes who is owed what for it.
     fn found_block(&self, job: &JobRecord, header: BlockHeader, need: u128) -> BlockOutcome {
+        let outcome = self.hand_in_block(job, header, need);
+        let status = match &outcome {
+            BlockOutcome::InChain => "in chain",
+            BlockOutcome::LostRace => "lost a race",
+            BlockOutcome::Refused(_) => "refused",
+            BlockOutcome::NodeError(_) => "not handed over",
+        };
+        if let Ok(mut b) = self.recent_blocks.lock() {
+            b.push_front(FoundBlock {
+                height: job.height,
+                time: self.now(),
+                reward: job.reward,
+                status,
+            });
+            b.truncate(MAX_RECENT_BLOCKS);
+        }
+        outcome
+    }
+
+    /// The public stats file (`docs/RUNNING_A_POOL.md`, "The stats file"): the pool's numbers, its latest blocks, and each
+    /// miner's numbers keyed by the SHA-256 (hexadecimal) of its address as text, so the file lists nobody's address and a
+    /// page finds a miner by hashing the address it is given. Hash rates are ESTIMATES: the work of the accepted shares of
+    /// the last [`STATS_WINDOW_SECS`], over that time.
+    pub fn stats_json(&self) -> String {
+        let now = self.now();
+        let st = &self.stats;
+        let a = self.accounts();
+        let window = a.window_by_address();
+        let maturing = a.maturing_by_address();
+        let online = self.online.lock().map(|o| o.clone()).unwrap_or_default();
+        let mut work: HashMap<AddrId, (u128, u64, u64)> = HashMap::new();
+        let mut total_work = 0u128;
+        if let Ok(r) = self.recent_work.lock() {
+            for (t, id, w) in r
+                .iter()
+                .filter(|(t, _, _)| now.saturating_sub(*t) <= STATS_WINDOW_SECS)
+            {
+                let e = work.entry(*id).or_insert((0, 0, 0));
+                e.0 += u128::from(*w);
+                e.1 += 1;
+                e.2 = e.2.max(*t);
+                total_work += u128::from(*w);
+            }
+        }
+        let rate = |w: u128| json_f64(w as f64 / STATS_WINDOW_SECS as f64);
+        let window_total = a.window_work().max(1) as f64;
+        let mut miners = Vec::new();
+        for i in 0..a.addresses() {
+            let id = i as AddrId;
+            let (owed, paid) = (a.balance(id), a.paid(id));
+            let mat = maturing.get(&id).copied().unwrap_or(0);
+            let win = window.get(&id).copied().unwrap_or(0);
+            let on = online.get(&id).copied().unwrap_or(0);
+            let (w, shares, last) = work.get(&id).copied().unwrap_or((0, 0, 0));
+            if owed == 0 && paid == 0 && mat == 0 && win == 0 && on == 0 && shares == 0 {
+                continue;
+            }
+            let Some(addr) = a.address(id) else { continue };
+            let key = hex(&tenero_core::hash::sha256(&[addr.to_text().as_bytes()]));
+            let last = if last == 0 {
+                "null".to_string()
+            } else {
+                last.to_string()
+            };
+            miners.push(format!(
+                "\"{key}\":{{\"online\":{on},\"hashrate_estimate\":{},\"shares_recent\":{shares},\"last_share\":{last},\"window_percent\":{},\"maturing\":{mat},\"owed\":{owed},\"paid\":{paid}}}",
+                rate(w),
+                json_f64(win as f64 * 100.0 / window_total)
+            ));
+        }
+        let blocks: Vec<String> = self
+            .recent_blocks
+            .lock()
+            .map(|b| {
+                b.iter()
+                    .map(|f| {
+                        format!(
+                            "{{\"height\":{},\"time\":{},\"reward\":{},\"status\":\"{}\"}}",
+                            f.height, f.time, f.reward, f.status
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let height = self.current_job().map_or("null".to_string(), |j| {
+            j.height.saturating_sub(1).to_string()
+        });
+        let refused = st.shares_low.load(Ordering::Relaxed)
+            + st.shares_bad_mix.load(Ordering::Relaxed)
+            + st.shares_unknown_job.load(Ordering::Relaxed);
+        format!(
+            concat!(
+                "{{\"format\":1,\"ok\":true,\"updated\":{},\"network\":{},\"name\":{},\"pool_key\":\"{}\",",
+                "\"units_per_coin\":100000000,\"fee_percent\":{},\"min_payout\":{},\"payout_every\":{},\"next_payout\":{},",
+                "\"height\":{},\"window_secs\":{},",
+                "\"pool\":{{\"miners_online\":{},\"addresses_online\":{},\"hashrate_estimate\":{},\"shares_accepted\":{},",
+                "\"shares_stale\":{},\"shares_refused\":{},\"blocks_found\":{},\"blocks_in_chain\":{},\"blocks_lost\":{},",
+                "\"blocks_refused\":{},\"blocks_maturing\":{},\"owed_total\":{},\"paid_total\":{},\"payout_rounds\":{}}},",
+                "\"blocks\":[{}],\"miners\":{{{}}}}}"
+            ),
+            now,
+            json_str(&self.cfg.network),
+            json_str(&self.cfg.name),
+            hex(&self.public_key()),
+            json_str(&crate::pool_core::fee_percent_text(self.cfg.fee_ppm)),
+            self.cfg.min_payout,
+            self.cfg.payout_interval,
+            a.next_payout,
+            height,
+            STATS_WINDOW_SECS,
+            self.sessions_now(),
+            online.len(),
+            rate(total_work),
+            st.shares_accepted.load(Ordering::Relaxed),
+            st.shares_stale.load(Ordering::Relaxed),
+            refused,
+            st.blocks_found.load(Ordering::Relaxed),
+            st.blocks_in_chain.load(Ordering::Relaxed),
+            st.blocks_lost_race.load(Ordering::Relaxed),
+            st.blocks_refused.load(Ordering::Relaxed),
+            a.pending().len(),
+            u64::try_from(a.total_balances()).unwrap_or(u64::MAX),
+            a.total_paid,
+            st.payout_rounds.load(Ordering::Relaxed),
+            blocks.join(","),
+            miners.join(","),
+        )
+    }
+
+    /// [`Pool::found_block`]'s work: hands the block to the node and books what it said.
+    fn hand_in_block(&self, job: &JobRecord, header: BlockHeader, need: u128) -> BlockOutcome {
         self.stats.blocks_found.fetch_add(1, Ordering::Relaxed);
         let block_id = ids::block_id(&header, self.pow.kind());
         let reward = job.reward;
