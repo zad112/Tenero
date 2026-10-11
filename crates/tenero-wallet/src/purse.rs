@@ -53,7 +53,11 @@ const SEED_ONLY_PURSE_VERSION: u16 = 5;
 pub const MAX_SENT_RECORDS: usize = 20_000;
 /// The most saved payment requests a purse keeps.
 pub const MAX_REQUESTS: usize = 1_000;
-const MAX_SPENDS: usize = 64;
+/// The most coins one sent-payment record may name: as many as the wallet file's reservations (`file.rs`), far above what
+/// one transaction can spend (`max_inputs_for`, about 95 on `gamma` today). It was 64, a limit from version 2's input limit:
+/// a combine or a payment of more coins was sent, and then the purse could never be saved again ("count out of range",
+/// seen by the owner on `gamma`, 2026-10-10). Raising it changes no file: an old purse reads as before.
+const MAX_SPENDS: usize = 4_096;
 const MAX_WALLET_STATE: usize = 256 * 1024 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1375,6 +1379,26 @@ mod tests {
         let mut spender = Purse::from_view_key(&key, Network::Test).unwrap();
         spender.accounts[0].wallet = Wallet::from_seed(&[3; 32], Network::Test, 4);
         assert!(Purse::from_state_bytes(&spender.state_bytes().unwrap()).is_err());
+    }
+
+    /// A record of a transaction of as many coins as one can spend (a combine of 95 on `gamma`) is saved and read back:
+    /// with the old limit of 64 the purse could not be saved at all once one was sent.
+    #[test]
+    fn a_record_of_the_biggest_transaction_is_saved_and_read_back() {
+        let most = (1..=32)
+            .map(|layers| crate::wallet::max_inputs_for(2, layers))
+            .max()
+            .unwrap();
+        assert!(most > 64 && most <= MAX_SPENDS, "{most}");
+        let mut p = Purse::from_seed(&[3; 32], Network::Test, 4);
+        let mut big = record(true);
+        big.spends = (0..most).map(|i| [i as u8; 32]).collect();
+        p.sent.push(big);
+        let back = Purse::from_state_bytes(&p.state_bytes().unwrap()).unwrap();
+        assert_eq!(back.sent, p.sent);
+        // and past the limit it is still refused, not written
+        p.sent[0].spends = vec![[0; 32]; MAX_SPENDS + 1];
+        assert!(p.state_bytes().is_err());
     }
 
     #[test]
