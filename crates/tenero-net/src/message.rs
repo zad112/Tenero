@@ -3,8 +3,9 @@
 
 use tenero_core::v3::{Block, BlockHeader, Coinbase, Transaction};
 
-/// Version 2: the `gamma` network (version 3 blocks, and compact blocks).
-pub const PROTOCOL_VERSION: u32 = 2;
+/// Version 3: Dandelion++ (`stem_tx`, `docs/DANDELION_PLAN.md`). Version 2 was the `gamma` network of 0.3.0-gamma.1
+/// (version 3 blocks, and compact blocks); a peer of another version is dropped.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// The ceilings the wire format enforces (`docs/WIRE_PROTOCOL.md` section 2). The engine's own [`Limits`] may be
 /// lower, never higher.
@@ -155,6 +156,8 @@ pub enum Message {
     Addrs {
         addrs: Vec<PeerAddr>,
     },
+    /// A transaction in its Dandelion++ stem: passed on to ONE peer, unasked, and not announced (`docs/DANDELION_PLAN.md`).
+    StemTx(Box<Transaction>),
 }
 
 impl Message {
@@ -173,6 +176,7 @@ impl Message {
             Message::NotFound { .. } => "not_found",
             Message::NewBlock { .. } => "new_block",
             Message::NewTx { .. } => "new_tx",
+            Message::StemTx(_) => "stem_tx",
             Message::GetTxs { .. } => "get_txs",
             Message::Txs { .. } => "txs",
             Message::GetCompact { .. } => "get_compact",

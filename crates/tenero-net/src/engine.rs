@@ -29,6 +29,7 @@ use crate::addrbook::{
     group_of, host_of, host_with_port, is_unspecified, peer_addr_to_string, string_to_peer_addr,
     AddrBook, AddrBookConfig, BanList,
 };
+use crate::dandelion::{Dandelion, DandelionConfig, StemEntry};
 use crate::message::{Hello, Limits, Message, PeerAddr, PROTOCOL_VERSION};
 
 /// A handle for one connection, chosen by the transport.
@@ -103,6 +104,8 @@ pub struct AssumeValid {
 #[derive(Clone, Debug)]
 pub struct EngineConfig {
     pub limits: Limits,
+    /// Dandelion++ for transactions (`docs/DANDELION_PLAN.md`).
+    pub dandelion: DandelionConfig,
     /// A peer whose score reaches this is disconnected and banned.
     pub ban_threshold: u32,
     pub ban_ms: u64,
@@ -229,6 +232,7 @@ impl Default for EngineConfig {
     fn default() -> EngineConfig {
         EngineConfig {
             limits: Limits::default(),
+            dandelion: DandelionConfig::default(),
             ban_threshold: 100,
             ban_ms: 24 * 3600 * 1000,
             max_peers: 128,
@@ -532,6 +536,8 @@ pub struct Engine<'a> {
     /// RETURNED, which can be much later (applying a batch of blocks takes a while), so their timeout clocks are restarted at
     /// the next event (see `restamp`).
     stamp_fresh: Option<u64>,
+    /// Dandelion++: the epoch, the routes and the stem pool.
+    dand: Dandelion,
     boot: Boot,
     /// The address of the feeler connection in progress, if any (one at a time), and when the last one was started.
     feeler: Option<String>,
@@ -571,6 +577,7 @@ pub struct Engine<'a> {
 impl<'a> Engine<'a> {
     pub fn new(node: Node<'a>, cfg: EngineConfig) -> Engine<'a> {
         let mut book = AddrBook::new(cfg.addrbook.clone());
+        let dand = Dandelion::new(cfg.dandelion.clone());
         for seed in &cfg.seeds {
             book.add(seed, 0, "seed", 0);
         }
@@ -586,6 +593,7 @@ impl<'a> Engine<'a> {
             anchors: Vec::new(),
             tip_seen: None,
             stamp_fresh: None,
+            dand,
             boot: Boot::NotStarted,
             feeler: None,
             last_feeler: None,
@@ -729,12 +737,7 @@ impl<'a> Engine<'a> {
                     self.announce_tip(None, &mut out);
                 }
             }
-            Event::LocalTx(t) => {
-                if let Ok(AddOutcome::Added { id, .. }) = self.node.submit_tx_at(t, self.now / 1000)
-                {
-                    self.announce_tx(id, &mut out);
-                }
-            }
+            Event::LocalTx(t) => self.on_local_tx(t, &mut out),
         }
         out
     }
@@ -863,6 +866,8 @@ impl<'a> Engine<'a> {
 
     /// Forgets everything that waited on `peer`, and looks for another way to get it.
     fn cleanup_peer(&mut self, peer: PeerId, out: &mut Vec<Action>) {
+        let candidates = self.stem_candidates();
+        self.dand.peer_gone(peer, &candidates);
         if self.syncing.as_ref().is_some_and(|s| s.peer == peer) {
             self.syncing = None;
         }
@@ -1262,6 +1267,7 @@ impl<'a> Engine<'a> {
                     self.on_txs(peer, txs, out);
                 }
             }
+            Message::StemTx(t) => self.on_stem_tx(peer, *t, out),
         }
     }
 
@@ -3025,6 +3031,11 @@ impl<'a> Engine<'a> {
                 }
                 p.known_txs.insert(id);
             }
+            // in its stem here and now announced by someone: it is public, so it joins the pool (no need to fetch it)
+            if let Some(e) = self.dand.pool.remove(&id) {
+                self.fluff(e.tx, out);
+                continue;
+            }
             // while syncing, a new transaction is judged against a chain far behind the sender's, so it would look
             // invalid and its honest sender would be blamed: none is fetched until the sync ends
             if self.syncing.is_none()
@@ -3111,10 +3122,149 @@ impl<'a> Engine<'a> {
         }
     }
 
+    // ---- Dandelion++ (`docs/DANDELION_PLAN.md`) ----------------------------------------------------
+
+    /// Whether a transaction is held here in its Dandelion++ stem (checked, kept, not yet announced).
+    pub fn holds_stem(&self, id: &[u8; 32]) -> bool {
+        self.dand.pool.contains_key(id)
+    }
+
+    /// How many transactions are held in their stem.
+    pub fn stem_count(&self) -> usize {
+        self.dand.pool.len()
+    }
+
+    /// The peers that may be stem peers: ready peers WE dialled (not feelers, not address-only), so an attacker cannot
+    /// make itself one by connecting to us. One place, so a rule for Tor peers is one change.
+    fn stem_candidates(&self) -> Vec<PeerId> {
+        self.peers
+            .iter()
+            .filter(|(_, p)| !p.inbound && p.hello.is_some() && !p.feeler && !p.addr_only)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Into the pool, and announced to every peer that does not know it: the fluff.
+    fn fluff(&mut self, tx: Transaction, out: &mut Vec<Action>) {
+        if let Ok(AddOutcome::Added { id, .. }) = self.node.submit_tx_at(tx, self.now / 1000) {
+            self.announce_tx(id, out);
+        }
+    }
+
+    /// A transaction from this node's own wallet. Refused as the pool would refuse it; otherwise sent on its stem.
+    fn on_local_tx(&mut self, tx: Transaction, out: &mut Vec<Action>) {
+        if !self.dand.cfg.enabled {
+            self.fluff(tx, out);
+            return;
+        }
+        let Ok(id) = tx_id(&tx) else { return };
+        if self.dand.pool.contains_key(&id)
+            || self.dand.conflicts(&tx)
+            || self.node.check_pool_tx(&tx).is_err()
+        {
+            return;
+        }
+        self.route_own(tx, out);
+    }
+
+    /// Where this node's own transactions go: always on a stem (whatever the node's role), so the first announcement
+    /// comes from somewhere else. The one place the Tor work changes (to send them over a Tor peer instead).
+    fn route_own(&mut self, tx: Transaction, out: &mut Vec<Action>) {
+        self.stem(None, tx, out);
+    }
+
+    /// A checked transaction in its stem, from `from` (`None`: our own): passed to this epoch's stem peer for `from` and
+    /// held with an embargo, or fluffed (a diffuser, no stem peer, or a full stem pool).
+    fn stem(&mut self, from: Option<PeerId>, tx: Transaction, out: &mut Vec<Action>) {
+        let Ok(id) = tx_id(&tx) else { return };
+        if self.dand.pool.len() >= self.dand.cfg.max_stem_txs {
+            self.fluff(tx, out);
+            return;
+        }
+        let candidates = self.stem_candidates();
+        self.dand.refresh(self.now, &candidates);
+        if from.is_some() && self.dand.is_diffuser() {
+            self.fluff(tx, out);
+            return;
+        }
+        match self.dand.route(from) {
+            Some(to) => {
+                let embargo_at = self.dand.embargo_at(self.now, &id);
+                self.dand.pool.insert(
+                    id,
+                    StemEntry {
+                        tx: tx.clone(),
+                        embargo_at,
+                    },
+                );
+                self.send(to, Message::StemTx(Box::new(tx)), out);
+            }
+            None => self.fluff(tx, out),
+        }
+    }
+
+    /// A peer passed us a transaction in its stem.
+    fn on_stem_tx(&mut self, peer: PeerId, tx: Transaction, out: &mut Vec<Action>) {
+        // while syncing it would be judged against a chain far behind (see `on_new_tx`): dropped, not judged; its
+        // embargo elsewhere fluffs it
+        if self.syncing.is_some() {
+            return;
+        }
+        let Ok(id) = tx_id(&tx) else {
+            self.penalize(peer, 50, "a transaction that does not encode", out);
+            return;
+        };
+        if let Some(p) = self.peers.get_mut(&peer) {
+            if p.known_txs.len() > 4096 {
+                p.known_txs.clear();
+            }
+            p.known_txs.insert(id);
+        }
+        // known, just mined, already in a stem here (a loop: the embargo will see to it), or refused before
+        if self.node.pool().contains(&id)
+            || self.node.pool().recently_mined(&id)
+            || self.dand.pool.contains_key(&id)
+            || self.rejected_txs.contains(&id)
+            || self.dand.conflicts(&tx)
+        {
+            return;
+        }
+        match self.node.check_pool_tx(&tx) {
+            Ok(()) => {}
+            // spends what the chain here has spent: not held against the peer (see `on_txs`)
+            Err(PoolError::Invalid(BlockError::KeyImageSpent { .. })) => {
+                if self.rejected_txs.len() > 8192 {
+                    self.rejected_txs.clear();
+                }
+                self.rejected_txs.insert(id);
+                return;
+            }
+            Err(PoolError::Invalid(_)) | Err(PoolError::TooLarge { .. }) => {
+                if self.rejected_txs.len() > 8192 {
+                    self.rejected_txs.clear();
+                }
+                self.rejected_txs.insert(id);
+                self.penalize(peer, 20, "an invalid transaction", out);
+                return;
+            }
+            // in conflict with the pool, or built on a block this node does not have yet: not the peer's fault
+            Err(_) => return,
+        }
+        if !self.dand.cfg.enabled {
+            self.fluff(tx, out);
+            return;
+        }
+        self.stem(Some(peer), tx, out);
+    }
+
     // ---- time -------------------------------------------------------------------------------------
 
     fn on_tick(&mut self, out: &mut Vec<Action>) {
         let now = self.now;
+        // Dandelion++: a stem transaction nobody announced in time is fluffed here (its stem was lost, or is slow)
+        for tx in self.dand.take_expired(now) {
+            self.fluff(tx, out);
+        }
         // handshake, keepalive
         let mut drop: Vec<(PeerId, &'static str)> = Vec::new();
         let mut ping: Vec<PeerId> = Vec::new();

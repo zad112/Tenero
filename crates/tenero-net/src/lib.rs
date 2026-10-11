@@ -10,6 +10,7 @@
 pub mod addrbook;
 pub mod anchors;
 pub mod budget;
+pub mod dandelion;
 pub mod engine;
 pub mod message;
 pub mod noise;
@@ -17,6 +18,7 @@ pub mod sim;
 pub mod transport;
 pub mod wire;
 
+pub use dandelion::DandelionConfig;
 pub use engine::{Action, AssumeValid, Engine, EngineConfig, Event, PeerId, Stats};
 pub use message::{CompactBlock, Hello, Limits, Message, PROTOCOL_VERSION};
 pub use wire::{

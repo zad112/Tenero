@@ -595,9 +595,10 @@ impl Hooks for ControlHook {
             let _ = reply.try_send(r);
             self.answered += 1;
         }
-        // the transactions handed over at the last poll: did the pool keep them?
+        // the transactions handed over at the last poll: did the node keep them? (in its pool, or, with Dandelion++, held
+        // in their stem: checked and sent on, and announced to everyone a little later, `docs/DANDELION_PLAN.md`)
         for (id, reply) in std::mem::take(&mut self.pending) {
-            let r = if engine.node().pool().contains(&id) {
+            let r = if engine.node().pool().contains(&id) || engine.holds_stem(&id) {
                 Response::TxAccepted { id }
             } else {
                 err("the node did not keep the transaction (its pool refused it)")

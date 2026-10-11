@@ -41,7 +41,7 @@ The old Python miner, wallet and command line (`miner.py`, `cli.py`, `gpu_test.b
 - `docs/CONSENSUS.md` the rules, in enough detail to build another implementation from
 - `docs/KNOWN_ISSUES.md` verified flaws not to carry over; `docs/ARCHITECTURE.md` the parts;
   `docs/REWRITE_PLAN.md` the proposed plan and the open decisions; `docs/M8_PLAN.md` the proposed plan for
-  the node, network, miner and wallet; `docs/THREAT_MODEL.md` what can go wrong and what defends it (M9, first version, by the author, not an audit); `docs/EMERGENCY_PLAN.md` what happens when a rule is wrong (a draft; the owner's decisions are marked); `docs/SEED_POLICY.md` how a new node picks its first peers and how many seed operators are needed (measured in a simulation, with its limits); `docs/M10_M11_PLAN.md` the proposed plan for the usable program (CLI, miner
+  the node, network, miner and wallet; `docs/THREAT_MODEL.md` what can go wrong and what defends it (M9, first version, by the author, not an audit); `docs/EMERGENCY_PLAN.md` what happens when a rule is wrong (a draft; the owner's decisions are marked); `docs/DANDELION_PLAN.md` Dandelion++ for transactions (protocol version 3: a clean switch from 0.3.0-gamma.1's version 2; simulated with a spy on every node); `docs/SEED_POLICY.md` how a new node picks its first peers and how many seed operators are needed (measured in a simulation, with its limits); `docs/M10_M11_PLAN.md` the proposed plan for the usable program (CLI, miner
   reporting, wallet GUI) and the first test release on a fresh chain
 - `docs/FCMP_CARROT_PLAN.md` the plan for 0.3.0-gamma.1: FCMP++ and Carrot from genesis on a new network, `gamma` (owner's decisions 2026-10-08)
 - `docs/WIRE_PROTOCOL.md` the DRAFT byte encoding of the peer-to-peer messages;

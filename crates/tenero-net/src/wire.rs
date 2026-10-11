@@ -167,6 +167,7 @@ const GET_COMPACT: u8 = 17;
 const COMPACT: u8 = 18;
 const GET_BLOCK_TXS: u8 = 19;
 const BLOCK_TXS: u8 = 20;
+const STEM_TX: u8 = 21;
 
 /// A block header on the wire: version 2, previous id 32, timestamp 8, transaction root 32, nonce 8, mix 64.
 const HEADER_SIZE: usize = 2 + 32 + 8 + 32 + 8 + 64;
@@ -179,7 +180,7 @@ fn cap_of(kind: u8) -> Option<usize> {
         GET_BLOCK_IDS => 1 + 4 + MAX_LOCATOR * 32,
         BLOCK_IDS => 1 + 8 + 4 + MAX_IDS * 32,
         GET_BLOCKS => 1 + 4 + MAX_BLOCKS * 32,
-        BLOCKS | TXS | BLOCK_TXS => MAX_FRAME,
+        BLOCKS | TXS | BLOCK_TXS | STEM_TX => MAX_FRAME,
         GET_COMPACT => 1 + 32,
         COMPACT => 1 + HEADER_SIZE + COINBASE_MAX + 4 + MAX_BLOCK_TXS * 32,
         GET_BLOCK_TXS => 1 + 32 + 4 + MAX_BLOCK_TXS * 4,
@@ -216,6 +217,7 @@ fn kind_of(msg: &Message) -> u8 {
         Message::Compact(_) => COMPACT,
         Message::GetBlockTxs { .. } => GET_BLOCK_TXS,
         Message::BlockTxs { .. } => BLOCK_TXS,
+        Message::StemTx(_) => STEM_TX,
     }
 }
 
@@ -282,6 +284,7 @@ pub fn encode(msg: &Message) -> Result<Vec<u8>, WireError> {
                 t.write(&mut w)?;
             }
         }
+        Message::StemTx(t) => t.write(&mut w)?,
         Message::GetAddrs => {}
         Message::Addrs { addrs } => {
             w.count(addrs.len(), 0, MAX_ADDRS)?;
@@ -447,6 +450,7 @@ fn decode_body(kind: u8, body: &[u8]) -> Result<Message, WireError> {
             }
             Message::Txs { txs }
         }
+        STEM_TX => Message::StemTx(Box::new(Transaction::read(&mut r)?)),
         GET_COMPACT => Message::GetCompact { id: r.array()? },
         COMPACT => Message::Compact(Box::new(CompactBlock {
             header: BlockHeader::read(&mut r)?,

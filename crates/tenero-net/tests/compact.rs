@@ -97,7 +97,16 @@ fn a_new_block_whose_transactions_every_node_has_is_relayed_without_sending_one_
 #[test]
 fn a_node_that_lacks_some_transactions_fetches_only_those_by_index() {
     let rigs = SimRig::rigs("compact-miss", 2);
-    let mut sim = Sim::new(&rigs, T0, SimConfig::default(), EngineConfig::default());
+    // Dandelion++ off: the three "private" transactions must be in node 0's pool at once (on a stem cut by the split they
+    // would wait for their embargo, and node 1 would then fetch them before the block, which is not what this tests)
+    let cfg = EngineConfig {
+        dandelion: tenero_net::DandelionConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        ..EngineConfig::default()
+    };
+    let mut sim = Sim::new(&rigs, T0, SimConfig::default(), cfg);
     sim.connect(0, 1);
     ready(&mut sim);
     // two transactions both nodes have, then a split, and three only node 0 has

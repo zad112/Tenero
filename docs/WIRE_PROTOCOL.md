@@ -1,6 +1,6 @@
-# The peer-to-peer wire protocol, version 2 (a DRAFT; version 1 was M8.2, M8.3a and M8.3; version 2 is the `gamma` network's, G4)
+# The peer-to-peer wire protocol, version 3 (a DRAFT; version 1 was M8.2, M8.3a and M8.3; version 2 the `gamma` network's of 0.3.0-gamma.1, G4; version 3 adds Dandelion++)
 
-Status: **draft, 2026-09-30 (version 2: 2026-10-08), unreviewed.** This is how the messages of `crates/tenero-net` (`Message`) become
+Status: **draft, 2026-09-30 (version 2: 2026-10-08; version 3: 2026-10-11), unreviewed.** This is how the messages of `crates/tenero-net` (`Message`) become
 bytes. It reuses the version 2 codec of `CONSENSUS_V2.md` section 4: fixed-width little-endian integers, no
 varints, strict decoding, and `u32` counts checked **before** any element is read or any memory is reserved. The
 independent Python reference is `reference/tools/make_vectors_wire.py`, which makes `tests/vectors/v3_wire.json`; the Rust
@@ -43,8 +43,8 @@ frame  = length u32      the number of bytes that follow: 1 (the kind) + the bod
 
 Caps on `length`: `hello` 125, `ping` and `pong` 9, `get_addrs` 1, `addrs` 2605, `new_block` 73, `get_block_ids` and `get_blocks` 1029,
 `not_found`, `new_tx` and `get_txs` 2053, `get_headers` 1029, `headers` 73013, `block_ids` 16013, `get_compact` 33,
-`compact` 263,897 (the header, the largest coinbase of 1,602 bytes, 8192 ids), `get_block_txs` 32,805, and **`blocks`, `txs` and
-`block_txs` 16,777,216 (16 MiB)**. The
+`compact` 263,897 (the header, the largest coinbase of 1,602 bytes, 8192 ids), `get_block_txs` 32,805, and **`blocks`, `txs`,
+`block_txs` and `stem_tx` 16,777,216 (16 MiB)**. The
 engine's own limits (`Limits`, configurable) may be lower than these; the wire caps are the ceiling a decoder
 never exceeds. What a count of zero *means* (an empty locator is a protocol violation, for example) is the
 engine's rule, not the codec's.
@@ -74,6 +74,11 @@ engine's rule, not the codec's.
 | 18 | `compact` | the block's header (146 bytes), its coinbase (the coinbase wire form of `CONSENSUS_V2.md` 4), `count` u32, then `count` transaction ids (32 each), in the block's order |
 | 19 | `get_block_txs` | `block_id` 32, `count` u32, then `count` indexes (u32 each) into that block's transactions |
 | 20 | `block_txs` | `block_id` 32, `count` u32, then `count` transactions (the full wire form of `CONSENSUS_V2.md` 15.2) |
+| 21 | `stem_tx` | one transaction (the full wire form of `CONSENSUS_V2.md` 15.2), nothing else: a transaction in its Dandelion++ stem, pushed unasked to ONE peer and not announced (**version 3**, `docs/DANDELION_PLAN.md`) |
+
+**Version 3 (Dandelion++, 2026-10-11).** `hello`'s `version` is 3, and a peer of any other version is dropped (the owner's
+decision: a clean switch, so nodes of 0.3.0-gamma.1 cannot connect to version 3 nodes). The one new message is `stem_tx`. A
+`txs` is still only the answer to a `get_txs`, and a transaction in a node's stem is never served to `get_txs`.
 
 A header does not carry its own id: the receiver computes it from the header. A pruned node keeps every header, so
 it can serve `headers` for its whole chain even where it can no longer serve `blocks`.

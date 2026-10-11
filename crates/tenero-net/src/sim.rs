@@ -221,6 +221,8 @@ pub struct Hostile {
     pub node: usize,
     /// What the node has sent it, in order.
     pub inbox: Vec<Message>,
+    /// When each message of `inbox` arrived (the simulation's clock, ms).
+    pub inbox_at: Vec<u64>,
     /// The node cut the connection (or refused it).
     pub disconnected: bool,
     peer_at_node: Option<PeerId>,
@@ -575,6 +577,7 @@ impl<'a> Sim<'a> {
             addr: addr.to_string(),
             node,
             inbox: Vec::new(),
+            inbox_at: Vec::new(),
             disconnected: false,
             peer_at_node: None,
             peer_here: 0,
@@ -592,6 +595,7 @@ impl<'a> Sim<'a> {
             addr: addr.to_string(),
             node: usize::MAX,
             inbox: Vec::new(),
+            inbox_at: Vec::new(),
             disconnected: true,
             peer_at_node: None,
             peer_here: 0,
@@ -780,7 +784,10 @@ impl<'a> Sim<'a> {
                         let out = self.engines[i].handle(self.now_ms, Event::Message { peer, msg });
                         self.process(End::Node(i), out);
                     }
-                    End::Hostile(h) => self.hostiles[h].inbox.push(msg),
+                    End::Hostile(h) => {
+                        self.hostiles[h].inbox.push(msg);
+                        self.hostiles[h].inbox_at.push(self.now_ms);
+                    }
                 }
             }
             Ev::Disc { to, peer } => {
