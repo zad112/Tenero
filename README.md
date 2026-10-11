@@ -17,15 +17,15 @@ Inspired by Monero's design ideas; not affiliated with or endorsed by the Monero
 
 **Testers can join the Discord server: <https://discord.gg/QzfqaGDVcm>.** It is for questions, bug reports and hardware numbers. Nothing said there is an official notice: the only place a "stop mining" notice is posted is the pinned [issue #1](https://github.com/zad112/Tenero/issues/1), and only the author can post there. Only download the programs from this repository's [Releases](../../releases) page, whatever a link on Discord says.
 
-## Where it stands (2026-10-08)
+## Where it stands (2026-10-11)
 
 | | |
 |---|---|
-| **Built** | a node (pruned by default), a miner (GPU and CPU), a command-line wallet, a wallet app with a window, a block explorer, a seed checker, a network protocol with an encrypted channel, **a mining pool** (`tenero-pool`, with a miner mode and an app option that need no node, and a checker for pools), and **the `gamma` network: FCMP++ and Carrot from block 0** (version 0.3.0) |
-| **Tested** | about 1,170 automated tests (1,151 passing and 37 skipped in the last full run, 2026-10-08, on the author's PC; the skipped ones need the author's GPU or are long runs started by hand), the Rust code checked bit for bit against an independent Python reference and, for Carrot and FCMP++, against Monero's own C++ results and test proofs |
-| **Run on `gamma`** | **launched 2026-10-09** with `v0.3.0-gamma.1`: two seeds and the pool on the author's two servers, checked from outside at launch (both seeds answered on the `gamma` chain; the pool passed 13 of 15 protocol checks, the other 2 need a real share). **Nothing had been mined at launch**: every number about `gamma` on this page is from tests on the author's PC or worked out from the rules, not seen on the real network |
+| **Built** | a node (pruned by default), a miner (GPU and CPU), a command-line wallet, a wallet app with a window, a block explorer, a seed checker, a network protocol with an encrypted channel, **a mining pool** (`tenero-pool`, with a miner mode and an app option that need no node, and a checker for pools), **the `gamma` network: FCMP++ and Carrot from block 0** (version 0.3.0), and since version 0.4.0 **Dandelion++** for payments, optional **Tor**, a **1% miner fee** and a contributed **AMD** miner for Linux |
+| **Tested** | about 1,170 automated tests when last counted (1,151 passing and 37 skipped in a full run on 2026-10-08, on the author's PC; the skipped ones need the author's GPU or are long runs started by hand; more have been added since), the Rust code checked bit for bit against an independent Python reference and, for Carrot and FCMP++, against Monero's own C++ results and test proofs. The GPU checks passed on the `v0.4.0-gamma.1` commit on the author's RTX 5070 Ti (16 of 16, and 20 of 20 for mining). **The AMD miner has not been run by anyone in this version** |
+| **Run on `gamma`** | **launched 2026-10-09** with `v0.3.0-gamma.1`, and **about 2,920 blocks long on 2026-10-11**, mined alone and through the pool. Two seeds and the pool run on the author's two servers, **upgraded to `v0.4.0-gamma.1` on 2026-10-11** and checked from outside the same day (both seeds answered on the `gamma` chain; the pool passed 13 of 15 protocol checks, and the other 2 need the 4 GiB dataset). **Both seeds can also be reached as `.onion` services through Tor (since 2026-10-11):** from the author's PC a node allowed to use only Tor, given only one `.onion` seed, synced the whole chain (0 to 2,923 in 13 minutes 45 seconds). Numbers on this page are marked as measured, seen on `gamma`, or worked out from the rules |
 | **Reviewed by anyone else** | **no.** There has been no independent cryptographic, security or hardware review. Parts of the FCMP++ libraries have been audited for Monero; how this project uses them has not |
-| **Released** | **the latest is `v0.3.0-gamma.1`** (the `gamma` network); before it, `v0.2.0-beta.1` to `beta.4` (the `beta` network, 2026-10-07) and `v0.1.0-alpha.1` to `alpha.4` (the `alpha` network, 2026-10-05 and 06), all on the [Releases](../../releases) page. **They are TEST releases**: "released" means published for people to try, not finished, reviewed or safe; see [Get it](#get-it) |
+| **Released** | **the latest is `v0.4.0-gamma.1`** (2026-10-11, the same `gamma` chain with a new network protocol: 0.3.0 programs can no longer connect); before it, `v0.3.0-gamma.1` (2026-10-09, the `gamma` launch), `v0.2.0-beta.1` to `beta.4` (the `beta` network, 2026-10-07) and `v0.1.0-alpha.1` to `alpha.4` (the `alpha` network, 2026-10-05 and 06), all on the [Releases](../../releases) page. **They are TEST releases**: "released" means published for people to try, not finished, reviewed or safe; see [Get it](#get-it) |
 | **Planned** | **The author plans to launch a permanent main network on 1 November 2026**: a chain the author does not intend to reset, built on the `gamma` rules. **That is an intention, not a promise: the date can move, and a launch would not make the software finished, reviewed or safe.** Everything above stays true until then and after it: the program is unaudited and written by one person, and the network's seeds are run by one person. A main network existing does not change that, so put nothing into it that you cannot lose |
 
 What is known to be wrong or missing is written down, including what nobody has fixed: [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) and [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
@@ -71,6 +71,7 @@ reproduces Monero's C++ results bit for bit in the tests. **What that does not m
   project's Carrot, its curve-tree bookkeeping and the glue around them are not audited at all.
 * **A small crowd at the start.** A spend hides among the outputs that exist: on a new chain that is none at first, then about one more a block, almost all of them block rewards of a few miners.
   **The first spends on `gamma` hide among very few people**, and timing still leaks. The wallet does not warn about this yet.
+* **Where you connect from is a separate matter.** Since 0.4.0 every node passes a new payment along a short random path of peers before it is announced to all (**Dandelion++**, Monero's design), so the first announcement does not come from the sender; in a simulation, a spy on every node named the sender of 6 payments in 24 with it, 23 in 24 without. **Not measured on `gamma`**, and with few nodes, mostly connected through the author's two seeds, the seeds still see a lot. **Tor** is optional: with a Tor program running, the node can send your payments through Tor first, or make every connection through Tor so no peer learns your IP address ([`docs/TOR_PLAN.md`](docs/TOR_PLAN.md)). Tenero contains no Tor code: Tor is a separate program you install.
 * **Signatures and payment proofs are our own.** Neither Monero nor the Carrot specification defines them yet, so this project composed them from textbook parts
   ([`docs/WALLET_PROOFS.md`](docs/WALLET_PROOFS.md)). **Nobody has reviewed them.** The program says so wherever it offers them.
 
@@ -100,8 +101,8 @@ for, and a special-purpose chip would need the same memory to compete. **That is
 
 ### The programs and how they talk
 
-* **`tenerod`**, the node: keeps the chain, relays blocks and payments, checks everything. It is **pruned by default** (it keeps the proofs of the last 5,500 blocks only, so its disk grows slowly; the setting `prune_keep = 0` keeps everything, as seeds and the explorer do). Peers talk over an encrypted channel (the Noise protocol, through the `snow` library, which has not had a formal audit).
-* **`tenero-miner`** and the miner built into the node: GPU (NVIDIA, through CUDA), CPU, and a SHA-256 backend that only the `test` network uses. `tenero-miner --pool` works for a **mining pool** with no node at all.
+* **`tenerod`**, the node: keeps the chain, relays blocks and payments, checks everything. It passes payments on by **Dandelion++** and can use **Tor** (an outside Tor program: `.onion` peers, payments sent through Tor, or every connection through Tor). It is **pruned by default** (it keeps the proofs of the last 5,500 blocks only, so its disk grows slowly; the setting `prune_keep = 0` keeps everything, as seeds and the explorer do). Peers talk over an encrypted channel (the Noise protocol, through the `snow` library, which has not had a formal audit).
+* **`tenero-miner`** and the miner built into the node: GPU (NVIDIA, through CUDA; AMD on Linux in a separate package, contributed and untested here), CPU, and a SHA-256 backend that only the `test` network uses. `tenero-miner --pool` works for a **mining pool** with no node at all.
 * **`tenero-pool`** is a mining pool (PPLNS accounts, payouts from its own wallet) and **`tenero-poolcheck`** checks any pool against the written protocol ([`docs/POOL_PROTOCOL.md`](docs/POOL_PROTOCOL.md), [`docs/RUNNING_A_POOL.md`](docs/RUNNING_A_POOL.md)).
 * **`tenero-wallet`**, the command-line wallet, and **`tenero-wallet-gui`**, the wallet app: a window with several wallets and accounts, a 24-word seed phrase, sending with three fee levels, receiving
   with a QR code, subaddresses, message signatures and payment proofs (**our own construction, unreviewed**), and view-only wallets (made from a view key: they see and cannot spend or sign). It starts and stops the node and the miner itself, and has a tick box, off by default, to let other nodes connect to yours (see [The `gamma` network](#the-gamma-network-and-its-pool)). Its Mining tab can mine alone or for a pool, and its Send tab splits large payments and combines pieces.
@@ -111,8 +112,9 @@ for, and a special-purpose chip would need the same memory to compete. **That is
 
 ## Get it
 
-**The latest release, `v0.3.0-gamma.1`, is on the [Releases](../../releases) page.** It runs the new `gamma` network (and the `dev` and `test` networks for testing); **it does
-not run `beta` or `alpha`**, which are both closed (`beta` closed when `gamma` launched, 2026-10-09), and nothing moves from `beta` to `gamma`. Each release is a Windows zip and a Linux tar.gz with a `SHA256SUMS`
+**The latest release, `v0.4.0-gamma.1`, is on the [Releases](../../releases) page.** It runs the `gamma` network (and the `dev` and `test` networks for testing). **Everyone on
+`gamma` must use it:** it speaks network protocol version 3, and a `v0.3.0-gamma.1` node finds no peers any more (the chain, the coins and the wallet files carry over). **It does
+not run `beta` or `alpha`**, which are both closed (`beta` closed when `gamma` launched, 2026-10-09), and nothing moves from `beta` to `gamma`. Each release is a Windows zip and a Linux tar.gz (and, since 0.4.0, a Linux AMD tar.gz) with a `SHA256SUMS`
 file. **It is a test release and says so in its notes and this page: "released" means published for people to try, not finished, audited or safe, and the network may be
 reset.** How it is made and checked is in [`docs/RELEASING.md`](docs/RELEASING.md). The files are **not code-signed** (Windows SmartScreen will warn), and the Linux build has
 been run by hand **only as a node and a pool** (in WSL2 and on rented servers; the Linux wallet app and GPU miner have not been run). Prefer to build it yourself? The next
@@ -147,7 +149,7 @@ is claimed. AMD on Windows, and other non-NVIDIA cards, are still open for anyon
 
 ## The `gamma` network, and its pool
 
-**`gamma` is the network of `v0.3.0-gamma.1`**: a fresh chain (label "tenero gamma network 1", chain id
+**`gamma` is the network launched with `v0.3.0-gamma.1` on 2026-10-09** (and run with `v0.4.0-gamma.1` since 2026-10-11): a fresh chain (label "tenero gamma network 1", chain id
 `bd366b37dc59f25d5d2e15aecd1d5c14810b5c20643f2c0f90384db9ee4c28c4`) with no premine, FCMP++ and Carrot from block 0, the gathered proof of work from block 0, a starting
 target of 2^237 (about 524,000 attempts a block), control port 38352 and peer port 38353. Its addresses start `TENg`. **It is a test network: it can be reset.**
 
@@ -155,6 +157,10 @@ target of 2^237 (about 524,000 attempts a block), control port 38352 and peer po
   operator could show a new node a false chain. The plan wants several independent operators ([`docs/SEED_POLICY.md`](docs/SEED_POLICY.md)). You can add your own
   (`--seed ip:port`, see [`docs/RUNNING.md`](docs/RUNNING.md)) or drop the built-in ones (`no_builtin_seeds`). A node that holds three outbound peers that are not seeds leaves
   its seed.
+* **The same two seeds as `.onion` addresses, for a node that uses Tor** (since 2026-10-11): `p56vt5wui4cujc6fsj3vkak3hxsfjzyqnyhl27saf5hxsvsv6wr4buqd.onion:38353`
+  (the server `195.26.244.245`) and `7nsdn57rc7rjjhdtf6pksmkmnwybtec7eurj3cyt2y3jzxxqxeulunad.onion:38353` (`194.238.27.60`). **They are not built into `v0.4.0-gamma.1`:** add
+  them as `seed = ...` lines with a Tor `proxy` ([`docs/RUNNING.md`](docs/RUNNING.md), "Tor"). The next release is planned to carry them, used only when Tor is turned on. They
+  are the same two machines and the same operator, so they add a way in, not an independent seed.
 * **GPU or nothing:** one GPU at about 43,000 attempts a second (one RTX 5070 Ti, measured) needs roughly 12 seconds for 524,000 attempts (arithmetic, not a measurement of
   the network). A 6-thread CPU managed 164 attempts a second on the first design (the gathered attempt on a CPU was not measured): **CPU mining of `gamma` is impractical** at
   the start. The difficulty adjusts, so these change as miners come and go.
@@ -162,7 +168,7 @@ target of 2^237 (about 524,000 attempts a block), control port 38352 and peer po
   address and internet address. A miner needs **no node** to mine for a pool (a node is still needed to see and spend what the pool pays). The miner pins the pool's public
   key, so a person between them is refused. **One pool is built in: the author's test pool on `gamma`** (`195.26.244.245:38335`): PPLNS, pays once an hour every miner owed at
   least 0.1 coins, no fee. **It is one computer run by one person.** The app mines alone unless you choose a pool.
-* **The miner's fee (from the release after 0.3.0-gamma.1).** On `gamma`, the miner's NVIDIA (`gpu`) and AMD (`amd`) backends mine
+* **The miner's fee (since `v0.4.0-gamma.1`).** On `gamma`, the miner's NVIDIA (`gpu`) and AMD (`amd`) backends mine
   **1% of the time** (one minute in every hundred) for the author of that backend: the NVIDIA one for the project's author, the AMD one for
   its contributor. The CPU backend has none. It is shown on the miner's screen and in the app, a block found in a fee minute is shown as the
   fee's, and it cannot be turned off (the code is open). Addresses and details: [`docs/RUNNING.md`](docs/RUNNING.md), "The mining fee".
@@ -171,12 +177,12 @@ target of 2^237 (about 524,000 attempts a block), control port 38352 and peer po
   [`docs/TESTING.md`](docs/TESTING.md).
 * **If something goes wrong,** the only place a "stop mining" notice is posted is the pinned issue, [issue #1](https://github.com/zad112/Tenero/issues/1), and only the author
   can post there. The plan behind it, and what is not yet rehearsed, is [`docs/EMERGENCY_PLAN.md`](docs/EMERGENCY_PLAN.md).
-* The release notes are [`docs/releases/v0.3.0-gamma.1.md`](docs/releases/v0.3.0-gamma.1.md): read them before running anything.
+* The release notes are [`docs/releases/v0.4.0-gamma.1.md`](docs/releases/v0.4.0-gamma.1.md) (and, for the launch, [`v0.3.0-gamma.1.md`](docs/releases/v0.3.0-gamma.1.md)): read them before running anything.
 
 ## The older networks: `beta` and `alpha`
 
 `beta` (2026-10-07, chain id `577cc63d…641b`, ports 38342 and 38343) and `alpha` (2026-10-05, control port 38332) ran ring signatures and an *interim* output scheme that was
-**not Carrot and gave no Monero-style privacy**. **The 0.3.0 programs do not run them, and both are closed:** `alpha` has had no seed since 2026-10-07, and `beta` closed on
+**not Carrot and gave no Monero-style privacy**. **The 0.3.0 and later programs do not run them, and both are closed:** `alpha` has had no seed since 2026-10-07, and `beta` closed on
 2026-10-09, when `gamma` launched on the same two servers (both `beta` seeds and the `beta` pool stopped; the pool owed nothing at the end, after 109 blocks in the chain and
 3,605.17 coins paid). The 0.1.0 and 0.2.0 programs have no seed to start from, and nothing on them moves to `gamma`. What happened on them, measured, is in their release notes
 ([`docs/releases/`](docs/releases/)): on `alpha`, a chain past block 689 mined by the author's GPU and at least one other miner; on `beta`, a seed, a pool and one payout seen.
@@ -191,7 +197,8 @@ tokens, and none of this is an investment.** Nobody has to give, and the project
 ## What is next (no dates are promised)
 
 The author wants an **independent review** of the cryptography (this project's Carrot and signatures first) and of the proof of work before anything could carry value, and a
-**longer public test** on `gamma`. Then: a remote wallet for computers without the memory for a node, and Tor for wallets and seeds. None of these has a date.
+**longer public test** on `gamma`. Then: the seeds' `.onion` addresses built into the program for nodes that use Tor, a remote wallet for computers without the memory for a node,
+and more seeds run by people other than the author. None of these has a date.
 
 ## The Python reference
 
@@ -204,6 +211,7 @@ not a program to run. The old Python miner, wallet and command line are on the [
 
 * Rules: [`docs/CONSENSUS.md`](docs/CONSENSUS.md) (the proof of work and the Python reference's data model) and [`docs/CONSENSUS_V2.md`](docs/CONSENSUS_V2.md) (the Rust program's data model, version 3 in section 15)
 * FCMP++ and Carrot: [`docs/FCMP_CARROT_PLAN.md`](docs/FCMP_CARROT_PLAN.md) (the plan, the decisions and the risks), [`docs/WALLET_PROOFS.md`](docs/WALLET_PROOFS.md) (signatures and payment proofs: our own)
+* Network privacy: [`docs/DANDELION_PLAN.md`](docs/DANDELION_PLAN.md), [`docs/TOR_PLAN.md`](docs/TOR_PLAN.md)
 * Using it: [`docs/RUNNING.md`](docs/RUNNING.md), [`docs/TESTING.md`](docs/TESTING.md), [`docs/TESTNET.md`](docs/TESTNET.md) (a private test network on one machine)
 * What can go wrong: [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md), [`docs/EMERGENCY_PLAN.md`](docs/EMERGENCY_PLAN.md), [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 * Pools: [`docs/POOL_PROTOCOL.md`](docs/POOL_PROTOCOL.md), [`docs/RUNNING_A_POOL.md`](docs/RUNNING_A_POOL.md), [`docs/REMOTE_MINING_PLAN.md`](docs/REMOTE_MINING_PLAN.md)
