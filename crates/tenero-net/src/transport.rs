@@ -45,6 +45,8 @@ use crate::noise::{
     handshake_initiator, handshake_responder, prologue, NodeKey, SecureReader, SecureWriter,
     Secured,
 };
+use crate::onion::{is_onion, ONION_INBOUND};
+use crate::socks::{self, isolation_name};
 use crate::wire::{encode, FrameDecoder};
 
 /// Where log lines go.
@@ -65,6 +67,18 @@ pub fn stderr_logger() -> Logger {
 pub struct NetConfig {
     /// Accept connections here (`None`: only dial out).
     pub listen: Option<SocketAddr>,
+    /// Tor's SOCKS5 port (`docs/TOR_PLAN.md`): `.onion` peers are dialled through it (each connection with its own SOCKS
+    /// username, so its own Tor circuit); and every peer is, with `tor_only`. `None`: no Tor, and a `.onion` address
+    /// cannot be dialled.
+    pub proxy: Option<SocketAddr>,
+    /// Every outbound connection through `proxy`, IP addresses too (through a Tor exit). Needs `proxy`.
+    pub tor_only: bool,
+    /// Where Tor hands over the connections made to this node's `.onion` service (`HiddenServicePort ... 127.0.0.1:PORT`).
+    /// They all come from 127.0.0.1, so each is named on its own (`onion::ONION_INBOUND` and a number): one is never banned,
+    /// or limited, for another.
+    pub onion_listen: Option<SocketAddr>,
+    /// A dial through Tor may take this long (a circuit to an onion service can take tens of seconds).
+    pub proxy_timeout: Duration,
     /// Our long-term Noise key.
     pub key: NodeKey,
     /// The chain we are on: part of the handshake, so a node on another chain never gets as far as the protocol.
@@ -101,6 +115,10 @@ impl NetConfig {
     pub fn new(key: NodeKey, chain_id: [u8; 32]) -> NetConfig {
         NetConfig {
             listen: None,
+            proxy: None,
+            tor_only: false,
+            onion_listen: None,
+            proxy_timeout: Duration::from_secs(60),
             key,
             chain_id,
             handshake_timeout: Duration::from_secs(10),
@@ -305,6 +323,7 @@ impl Drop for Conn {
 pub struct Net {
     cfg: NetConfig,
     listener: Option<TcpListener>,
+    onion_listener: Option<TcpListener>,
     local: Option<SocketAddr>,
     counters: Arc<Counters>,
     gate: Arc<Gate>,
@@ -320,10 +339,15 @@ impl Net {
             }
             None => (None, None),
         };
+        let onion_listener = match cfg.onion_listen {
+            Some(addr) => Some(TcpListener::bind(addr)?),
+            None => None,
+        };
         let gate = Gate::new(cfg.memory.clone());
         Ok(Net {
             cfg,
             listener,
+            onion_listener,
             local,
             counters: Arc::new(Counters::default()),
             gate,
@@ -333,6 +357,13 @@ impl Net {
     /// The address actually listened on (useful when the port was 0).
     pub fn local_addr(&self) -> Option<SocketAddr> {
         self.local
+    }
+
+    /// The address the `.onion` service's listener is bound to (useful when the port was 0).
+    pub fn onion_local_addr(&self) -> Option<SocketAddr> {
+        self.onion_listener
+            .as_ref()
+            .and_then(|l| l.local_addr().ok())
     }
 
     pub fn counters(&self) -> Arc<Counters> {
@@ -355,6 +386,7 @@ impl Net {
         let Net {
             cfg,
             listener,
+            onion_listener,
             counters,
             ..
         } = self;
@@ -381,22 +413,30 @@ impl Net {
             }
         }
 
-        if let Some(listener) = listener {
+        let pending = Arc::new(Pending {
+            total: AtomicUsize::new(0),
+            per_host: Mutex::new(HashMap::new()),
+            max_total: cfg.max_pending_handshakes,
+            max_host: cfg.max_pending_per_host,
+        });
+        for (listener, onion) in [(listener, false), (onion_listener, true)] {
+            let Some(listener) = listener else { continue };
             listener.set_nonblocking(true)?;
             let acceptor = Acceptor {
                 listener,
+                onion,
+                onion_count: Arc::new(AtomicU64::new(0)),
                 key: cfg.key.clone(),
                 prologue: pro.clone(),
-                timeout: cfg.handshake_timeout,
+                timeout: if onion {
+                    cfg.handshake_timeout.max(Duration::from_secs(30))
+                } else {
+                    cfg.handshake_timeout
+                },
                 tx: tx.clone(),
                 shutdown: Arc::clone(&shutdown),
                 banned: Arc::clone(&banned),
-                pending: Arc::new(Pending {
-                    total: AtomicUsize::new(0),
-                    per_host: Mutex::new(HashMap::new()),
-                    max_total: cfg.max_pending_handshakes,
-                    max_host: cfg.max_pending_per_host,
-                }),
+                pending: Arc::clone(&pending),
                 counters: Arc::clone(&counters),
                 log: log.clone(),
             };
@@ -426,6 +466,9 @@ impl Net {
 
 struct Acceptor {
     listener: TcpListener,
+    /// The `.onion` service's listener: every peer is named on its own (see `NetConfig::onion_listen`).
+    onion: bool,
+    onion_count: Arc<AtomicU64>,
     key: NodeKey,
     prologue: Vec<u8>,
     timeout: Duration,
@@ -454,7 +497,14 @@ impl Acceptor {
     }
 
     fn on_accept(&self, stream: TcpStream, peer: SocketAddr) {
-        let addr = peer.to_string();
+        let addr = if self.onion {
+            format!(
+                "{ONION_INBOUND}{}",
+                self.onion_count.fetch_add(1, Ordering::Relaxed) + 1
+            )
+        } else {
+            peer.to_string()
+        };
         let host = host_of(&addr).to_string();
         let now = now_ms();
         let is_banned = self
@@ -791,8 +841,23 @@ impl Loop<'_> {
     fn dial(&self, addr: String) {
         self.counters.dials.fetch_add(1, Ordering::Relaxed);
         let (tx, key, pro) = (self.tx.clone(), self.cfg.key.clone(), self.pro.clone());
-        let (connect_timeout, handshake_timeout) =
-            (self.cfg.connect_timeout, self.cfg.handshake_timeout);
+        // through Tor: every `.onion` address, and everything in `tor_only` mode (`docs/TOR_PLAN.md`)
+        let via = if is_onion(&addr) || self.cfg.tor_only {
+            Some(self.cfg.proxy)
+        } else {
+            None
+        };
+        let isolation = isolation_name(
+            self.counters.dials.load(Ordering::Relaxed),
+            u64::from_le_bytes(key.public()[..8].try_into().expect("8 bytes")),
+        );
+        let (connect_timeout, handshake_timeout) = match via {
+            Some(_) => (
+                self.cfg.proxy_timeout,
+                self.cfg.handshake_timeout.max(Duration::from_secs(30)),
+            ),
+            None => (self.cfg.connect_timeout, self.cfg.handshake_timeout),
+        };
         thread::spawn(move || {
             let fail = |why: String| {
                 let _ = tx.send(Ev::DialFailed {
@@ -800,13 +865,28 @@ impl Loop<'_> {
                     why,
                 });
             };
-            let sock: SocketAddr = match addr.parse() {
-                Ok(s) => s,
-                Err(_) => return fail("not an ip:port address".into()),
-            };
-            let stream = match TcpStream::connect_timeout(&sock, connect_timeout) {
-                Ok(s) => s,
-                Err(e) => return fail(e.to_string()),
+            let stream = match via {
+                Some(None) => {
+                    return fail(
+                        "a .onion address, or tor_only, needs a Tor proxy (`proxy`)".into(),
+                    )
+                }
+                Some(Some(proxy)) => {
+                    match socks::connect(proxy, &addr, &isolation, connect_timeout) {
+                        Ok(s) => s,
+                        Err(e) => return fail(e.to_string()),
+                    }
+                }
+                None => {
+                    let sock: SocketAddr = match addr.parse() {
+                        Ok(s) => s,
+                        Err(_) => return fail("not an ip:port address".into()),
+                    };
+                    match TcpStream::connect_timeout(&sock, connect_timeout) {
+                        Ok(s) => s,
+                        Err(e) => return fail(e.to_string()),
+                    }
+                }
             };
             let _ = stream.set_nodelay(true);
             let mut d = Deadline {

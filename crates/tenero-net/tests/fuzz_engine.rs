@@ -378,11 +378,7 @@ fn build(spec: &MsgSpec) -> Message {
         MsgSpec::Addrs(a) => Message::Addrs {
             addrs: a
                 .iter()
-                .map(|(ip, port, t)| PeerAddr {
-                    ip: *ip,
-                    port: *port,
-                    last_seen: *t,
-                })
+                .map(|(ip, port, t)| PeerAddr::ip(*ip, *port, *t))
                 .collect(),
         },
     }
@@ -846,11 +842,7 @@ fn answer(req: &Message, flaw: Flaw) -> Vec<Message> {
         }
         Message::GetAddrs => Message::Addrs {
             addrs: (0..5u8)
-                .map(|i| PeerAddr {
-                    ip: ipv4_mapped(sim_addr(i as usize + 20)),
-                    port: 18331,
-                    last_seen: T0,
-                })
+                .map(|i| PeerAddr::ip(ipv4_mapped(sim_addr(i as usize + 20)), 18331, T0))
                 .collect(),
         },
         Message::Ping(n) => Message::Pong(*n),

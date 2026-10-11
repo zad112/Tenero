@@ -647,3 +647,45 @@ fn the_miner_service_limits_must_be_at_least_one() {
         assert!(e.contains("at least 1"), "{e}");
     }
 }
+
+/// Tor (`docs/TOR_PLAN.md`): a proxy, `tor_only` (which hides the IP address, so refuses a public `listen` or an IP
+/// `advertise`), an onion service, and `.onion` seeds and pinned peers (only with a proxy).
+#[test]
+fn tor_settings_are_checked() {
+    const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:38353";
+    let base = "network = gamma\ndata = d\n";
+    let c = ok(base);
+    assert!(
+        c.proxy.is_none() && !c.tor_only && c.onion_listen.is_none() && c.advertise_onion.is_none()
+    );
+    let c = ok(&format!(
+        "{base}proxy = 127.0.0.1:9050\ntor_only = yes\nonion_listen = 127.0.0.1:38363\nadvertise_onion = {}\nseed = {ONION}\ntrusted_peer = {ONION}\n",
+        ONION.to_ascii_uppercase().replace(".ONION", ".onion")
+    ));
+    assert_eq!(c.proxy, Some("127.0.0.1:9050".parse().unwrap()));
+    assert!(c.tor_only);
+    // written as the program writes onion addresses (lower case)
+    assert_eq!(c.advertise_onion.as_deref(), Some(ONION));
+    assert!(c.seeds.iter().any(|s| s == ONION));
+    assert_eq!(c.trusted_peers, vec![ONION.to_string()]);
+    // tor_only needs a proxy, and hides the IP address
+    assert!(err(&format!("{base}tor_only = yes\n")).contains("needs `proxy`"));
+    assert!(err(&format!(
+        "{base}proxy = 127.0.0.1:9050\ntor_only = yes\nlisten = 0.0.0.0:38353\n"
+    ))
+    .contains("does not listen on a public one"));
+    assert!(err(&format!(
+        "{base}proxy = 127.0.0.1:9050\ntor_only = yes\nlisten = 127.0.0.1:38353\nadvertise = 1.2.3.4:38353\n"
+    ))
+    .contains("does not advertise one"));
+    // an onion seed needs a proxy; a wrong one is refused
+    assert!(err(&format!("{base}seed = {ONION}\n")).contains("needs `proxy`"));
+    assert!(err(&format!(
+        "{base}proxy = 127.0.0.1:9050\nseed = abc.onion:1\n"
+    ))
+    .contains("not a version 3 onion address"));
+    // the onion service: loopback only, and an address to advertise needs it
+    assert!(err(&format!("{base}onion_listen = 0.0.0.0:38363\n")).contains("loopback"));
+    assert!(err(&format!("{base}advertise_onion = {ONION}\n")).contains("no onion service"));
+    assert!(err(&format!("{base}proxy = nine\n")).contains("not ip:port"));
+}

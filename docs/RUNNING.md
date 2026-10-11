@@ -354,8 +354,67 @@ minutes from a scheduler to build that record. On the test network (`--private y
 protection is a mostly-honest list of independent operators, and a program cannot check who runs a seed. It is one moment's look at a seed unless
 you keep a history. Measured on 2026-10-02 against the 8 nodes of the heavy test network (run 4): all 8 up, one tip, 6 to 9 ms each.
 
+## Tor (hiding this computer's IP address from its peers)
+
+**What it does and does not do** (`docs/TOR_PLAN.md`): Tor hides **where you connect from**: peers then see a Tor relay,
+not your IP address. It does not hide **what you pay**: that is the wallet's (unaudited) privacy. Tor is slower (a
+connection can take tens of seconds), and on `gamma` there are few `.onion` peers yet. Since protocol version 3 every node
+also uses Dandelion++ (`docs/DANDELION_PLAN.md`), with or without Tor.
+
+**1. Get Tor** (a separate program; Tenero contains no Tor code). Either:
+* the **Tor Browser** (torproject.org): while it is open, its SOCKS port is `127.0.0.1:9150`; or
+* the **Tor Expert Bundle** for Windows (torproject.org, "Download Tor", the Expert Bundle): unpack it and run
+  `tor\tor.exe` in a window; its SOCKS port is `127.0.0.1:9050`. On Linux, `sudo apt install tor` (port 9050).
+
+**2. Tell the node.** In the wallet app: Settings, "Tor": type the SOCKS port (`127.0.0.1:9150` or `127.0.0.1:9050`), and tick
+**"Every connection through Tor"** if peers must never learn your IP address (others then cannot connect to your node).
+In a settings file for `tenerod`:
+
+```
+proxy = 127.0.0.1:9050     # .onion peers through Tor; other peers directly
+tor_only = yes             # every connection through Tor (no public listen, no IP advertise)
+seed = xxxx.onion:38353    # a seed reached by its .onion address (needs proxy)
+```
+
+With `proxy` alone the node still connects **directly** to every peer that is not `.onion` (they see your IP), but it
+sends **your own transactions to a `.onion` peer first** when it has one. With `tor_only` nothing goes directly. The pool
+miner takes `--proxy 127.0.0.1:9050` (the wallet app passes it on), and a pool may then be a `.onion` address.
+
+**3. A `.onion` address for your node** (for a seed or an always-on node, so others can reach it through Tor). In Tor's
+configuration (`torrc`; `/etc/tor/torrc` on Linux), then restart Tor:
+
+```
+HiddenServiceDir /var/lib/tor/tenero-gamma/
+HiddenServicePort 38353 127.0.0.1:38363
+```
+
+Tor makes the address and writes it to `/var/lib/tor/tenero-gamma/hostname`. Then in the node's settings:
+
+```
+onion_listen = 127.0.0.1:38363          # where Tor hands the connections over (loopback only)
+advertise_onion = xxxx.onion:38353      # the hostname file's address, and the service's port
+proxy = 127.0.0.1:9050                  # so the node can also dial .onion peers
+```
+
+The node tells its `.onion` address only to peers that came through Tor, and its IP address (`advertise`) only to the
+others, so nobody is told that the two are the same node. Peers that come through the onion service all arrive from
+127.0.0.1: each is treated as its own host, and none can be banned for long (it can come back over another circuit), so
+keep `max_inbound` sensible. **Keep `/var/lib/tor/tenero-gamma/` private and backed up**: its key IS the address.
+
+**For the `gamma` seed on the owner's server** (Ubuntu; the owner runs these, nothing here has access):
+
+```bash
+sudo apt install tor
+printf 'HiddenServiceDir /var/lib/tor/tenero-gamma/\nHiddenServicePort 38353 127.0.0.1:38363\n' | sudo tee -a /etc/tor/torrc
+sudo systemctl restart tor
+sudo cat /var/lib/tor/tenero-gamma/hostname
+```
+
+then add `onion_listen = 127.0.0.1:38363`, `advertise_onion = <that hostname>:38353` and `proxy = 127.0.0.1:9050` to the
+seed's settings and restart the seed. Its `.onion` address can then go into the program's built-in seeds in a release.
+
 ## Not done yet
 * **A Windows service or an installer** (a server's systemd units are in `docs/RUNNING_A_SEED.md` and `docs/RUNNING_A_POOL.md`). Run it in a window, or under a scheduler you trust.
-* **Tor or I2P,** and any encryption of the control interface (it never leaves the machine).
+* **I2P,** and any encryption of the control interface (it never leaves the machine). Tor: see above. The program has no `.onion` seed built in yet.
 * **A remote wallet** (a wallet on someone else's node) for a computer without the memory for a node.
 * **A warning while the crowd is small:** the first spends on `gamma` hide among very few outputs, and the wallet does not say so yet.

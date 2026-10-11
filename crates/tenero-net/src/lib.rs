@@ -14,7 +14,9 @@ pub mod dandelion;
 pub mod engine;
 pub mod message;
 pub mod noise;
+pub mod onion;
 pub mod sim;
+pub mod socks;
 pub mod transport;
 pub mod wire;
 

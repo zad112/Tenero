@@ -164,7 +164,14 @@ pub fn node_args(s: &Settings) -> Vec<OsString> {
     for seed in &s.seeds {
         push("seed", seed.into());
     }
-    if let Some(p) = s.inbound_port {
+    if let Some(p) = &s.tor_proxy {
+        push("proxy", p.into());
+    }
+    // with every connection through Tor the node listens on no public address and tells nobody its IP
+    let tor_only = s.tor_only && s.tor_proxy.is_some();
+    if tor_only {
+        push("tor_only", "yes".into());
+    } else if let Some(p) = s.inbound_port {
         // accept others on the port, and tell every peer "reach me on this port, at the address you see me at": no IP to configure, so a home
         // connection whose address changes needs nothing (each new connection tells the peer the new address)
         push("listen", format!("0.0.0.0:{p}").into());
@@ -208,6 +215,10 @@ pub fn miner_args(s: &Settings, address: &str, status_file: &Path) -> Vec<OsStri
             push("network", s.network.name().into());
             if !s.pool_worker.is_empty() {
                 push("worker", s.pool_worker.clone().into());
+            }
+            // the pool through Tor too, when Tor is set (`docs/TOR_PLAN.md`)
+            if let Some(p) = &s.tor_proxy {
+                push("proxy", p.into());
             }
         }
     }

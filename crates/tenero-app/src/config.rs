@@ -183,6 +183,17 @@ pub struct Config {
     /// port (nobody could dial it). Needs `listen` (a node that is not listening cannot be reached).
     pub advertise: Option<String>,
     pub seeds: Vec<String>,
+    /// Tor's SOCKS5 port (`docs/TOR_PLAN.md`; the Tor Expert Bundle listens on 127.0.0.1:9050, the Tor Browser on
+    /// 127.0.0.1:9150): `.onion` peers are dialled through it, and with `tor_only` every peer.
+    pub proxy: Option<SocketAddr>,
+    /// Every connection through Tor: no public `listen`, no IP `advertise`; peers never learn this node's IP address.
+    pub tor_only: bool,
+    /// Where Tor hands over connections made to this node's `.onion` service (a loopback address; Tor's
+    /// `HiddenServicePort 38353 127.0.0.1:38363` hands them to `127.0.0.1:38363`).
+    pub onion_listen: Option<SocketAddr>,
+    /// This node's `.onion` address (`xxxx.onion:PORT`, Tor's `hostname` file and the service's port): told to peers that
+    /// came through Tor, never to the others.
+    pub advertise_onion: Option<String>,
     /// Peers pinned by the operator (`ip:port`, got out of band): always dialled, whenever not connected.
     pub trusted_peers: Vec<String>,
     pub peer_target: usize,
@@ -233,6 +244,11 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+/// A version 3 onion address as the program writes it (lower case), or `None` if `s` is not one.
+fn canonical_onion(s: &str) -> Option<String> {
+    tenero_net::onion::parse_onion(s).map(|(o, port)| tenero_net::onion::onion_addr(&o, port))
+}
+
 fn bad(key: &str, why: impl std::fmt::Display) -> ConfigError {
     ConfigError(format!("setting `{key}`: {why}"))
 }
@@ -244,6 +260,10 @@ const KEYS: &[&str] = &[
     "advertise",
     "seed",
     "no_builtin_seeds",
+    "proxy",
+    "tor_only",
+    "onion_listen",
+    "advertise_onion",
     "trusted_peer",
     "peers",
     "max_inbound",
@@ -475,25 +495,102 @@ impl Raw {
                 "`miner_max` and `miner_rate` must be at least 1 (leave `miner_listen` unset to turn the service off)",
             ));
         }
-        let configured_seeds = self.0.get("seed").cloned().unwrap_or_default();
-        for s in &configured_seeds {
-            if s.parse::<SocketAddr>().is_err() {
-                return Err(bad("seed", format!("`{s}` is not ip:port")));
-            }
+        // Tor (`docs/TOR_PLAN.md`)
+        let proxy = match self.one("proxy") {
+            Some(v) => Some(v.parse::<SocketAddr>().map_err(|_| {
+                bad(
+                    "proxy",
+                    format!("`{v}` is not ip:port (Tor's SOCKS port, such as 127.0.0.1:9050)"),
+                )
+            })?),
+            None => None,
+        };
+        let tor_only = self.flag("tor_only", false)?;
+        if tor_only && proxy.is_none() {
+            return Err(bad(
+                "tor_only",
+                "needs `proxy` (Tor's SOCKS port, such as 127.0.0.1:9050)",
+            ));
         }
+        if tor_only && listen.is_some_and(|l| !l.ip().is_loopback()) {
+            return Err(bad(
+                "tor_only",
+                "a node that hides its IP address does not listen on a public one: leave `listen` unset (or loopback), and use `onion_listen` to be reachable through Tor",
+            ));
+        }
+        if tor_only && advertise.is_some() {
+            return Err(bad(
+                "tor_only",
+                "a node that hides its IP address does not advertise one: leave `advertise` unset (use `advertise_onion`)",
+            ));
+        }
+        let onion_listen = match self.one("onion_listen") {
+            Some(v) => {
+                let a = v
+                    .parse::<SocketAddr>()
+                    .map_err(|_| bad("onion_listen", format!("`{v}` is not ip:port")))?;
+                if !a.ip().is_loopback() {
+                    return Err(bad("onion_listen", "must be a loopback address (127.0.0.1): only Tor on this machine connects to it"));
+                }
+                Some(a)
+            }
+            None => None,
+        };
+        let advertise_onion = match self.one("advertise_onion") {
+            Some(v) => Some(canonical_onion(v).ok_or_else(|| {
+                bad(
+                    "advertise_onion",
+                    format!(
+                        "`{v}` is not a version 3 onion address (56 characters, then .onion:PORT)"
+                    ),
+                )
+            })?),
+            None => None,
+        };
+        if advertise_onion.is_some() && onion_listen.is_none() {
+            return Err(bad("advertise_onion", "tells peers this node's .onion address, but the node has no onion service (set `onion_listen` too)"));
+        }
+        let peer_addr = |key: &str, s: &str| -> Result<String, ConfigError> {
+            if tenero_net::onion::is_onion(s) {
+                if proxy.is_none() {
+                    return Err(bad(
+                        key,
+                        format!("`{s}` is a .onion address: it needs `proxy` (Tor)"),
+                    ));
+                }
+                return canonical_onion(s)
+                    .ok_or_else(|| bad(key, format!("`{s}` is not a version 3 onion address")));
+            }
+            match s.parse::<SocketAddr>() {
+                Ok(sa) if sa.port() != 0 => Ok(s.to_string()),
+                _ => Err(bad(
+                    key,
+                    format!("`{s}` is not ip:port (or a .onion address)"),
+                )),
+            }
+        };
+        let configured_seeds = self
+            .0
+            .get("seed")
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|s| peer_addr("seed", s))
+            .collect::<Result<Vec<String>, ConfigError>>()?;
         // the program's own seeds for this network, then the operator's (`no_builtin_seeds yes` for a private network of one's own)
         let seeds = effective_seeds(
             network.builtin_seeds(),
             &configured_seeds,
             !self.flag("no_builtin_seeds", false)?,
         );
-        let trusted_peers = self.0.get("trusted_peer").cloned().unwrap_or_default();
-        for s in &trusted_peers {
-            match s.parse::<SocketAddr>() {
-                Ok(sa) if sa.port() != 0 => {}
-                _ => return Err(bad("trusted_peer", format!("`{s}` is not ip:port"))),
-            }
-        }
+        let trusted_peers = self
+            .0
+            .get("trusted_peer")
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|s| peer_addr("trusted_peer", s))
+            .collect::<Result<Vec<String>, ConfigError>>()?;
         if trusted_peers.len() > MAX_TRUSTED_PEERS {
             return Err(bad(
                 "trusted_peer",
@@ -623,6 +720,10 @@ impl Raw {
             listen,
             advertise,
             seeds,
+            proxy,
+            tor_only,
+            onion_listen,
+            advertise_onion,
             trusted_peers,
             peer_target,
             max_inbound,

@@ -72,7 +72,7 @@ struct Conn {
 
 impl Conn {
     fn open(o: &Options) -> Result<Conn, String> {
-        let (r, w) = pool_net::connect(o.addr, o.pin.as_ref())?;
+        let (r, w) = pool_net::connect(&o.addr.to_string(), o.pin.as_ref(), None)?;
         Ok(Conn { r, w, wait: o.wait })
     }
     fn send(&mut self, m: &MinerMessage) -> Result<(), String> {

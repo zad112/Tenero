@@ -58,7 +58,7 @@ first announcement then comes from a node some hops away, not from the one that 
 * **A peer that sees a stem transaction knows it is new.** That is the design: the anonymity comes from not knowing how
   far along the stem it is.
 
-## With Tor (planned for the same release)
+## With Tor (built for the same release: `docs/TOR_PLAN.md`)
 
 Dandelion++ does not care how a peer is reached: a stem peer is a peer by its connection, not its address, so an outbound
 peer reached through Tor is a stem peer like any other, and an inbound one (which arrives from 127.0.0.1) is mapped by its

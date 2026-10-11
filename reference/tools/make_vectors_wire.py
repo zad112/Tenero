@@ -36,6 +36,7 @@ MAX_TXS = 64
 MAX_NOT_FOUND = 64
 MAX_ADDRS = 100
 MAX_HEADERS = 500
+ONION_LEN = 35   # a version 3 onion address: public key 32, checksum 2, version 1 (docs/TOR_PLAN.md)
 HEADER_SIZE = 2 + 32 + 8 + 32 + 8 + 64
 # a block's transactions are at most MAX_BLOCK_TXS: a compact block lists their ids, a request their indexes
 MAX_BLOCK_TXS = v3.MAX_BLOCK_TXS
@@ -62,7 +63,9 @@ CAPS = {
     "get_txs": 1 + 4 + MAX_TXS * 32,
     "txs": MAX_FRAME,
     "get_addrs": 1,
-    "addrs": 1 + 4 + MAX_ADDRS * 26,
+    # version 3: each address is its type (1 an IP address, 2 a version 3 onion address), its host, port and last seen;
+    # the largest is an onion address, 1 + 35 + 2 + 8
+    "addrs": 1 + 4 + MAX_ADDRS * (1 + ONION_LEN + 2 + 8),
     "get_headers": 1 + 4 + MAX_LOCATOR * 32,
     "headers": 1 + 8 + 4 + MAX_HEADERS * HEADER_SIZE,
     "get_compact": 1 + 32,
@@ -77,7 +80,7 @@ MAX_COUNT = {"get_block_ids": MAX_LOCATOR, "block_ids": MAX_IDS, "get_blocks": M
              "addrs": MAX_ADDRS, "get_headers": MAX_LOCATOR, "headers": MAX_HEADERS,
              "compact": MAX_BLOCK_TXS, "get_block_txs": MAX_BLOCK_TXS, "block_txs": MAX_BLOCK_TXS}
 
-ERRORS = ("short frame", "empty frame", "unknown kind", "frame too large", "trailing bytes",
+ERRORS = ("short frame", "empty frame", "unknown kind", "frame too large", "trailing bytes", "unknown address type",
           "count out of range", "short read", "length over maximum")
 
 
@@ -121,7 +124,8 @@ def enc_body(m):
         return b""
     if k == "addrs":
         return struct.pack("<I", len(m["addrs"])) + b"".join(
-            ids_hex([a["ip"]], 16) + struct.pack("<HQ", a["port"], a["last_seen"]) for a in m["addrs"])
+            (b"\x02" + ids_hex([a["onion"]], ONION_LEN) if "onion" in a else b"\x01" + ids_hex([a["ip"]], 16))
+            + struct.pack("<HQ", a["port"], a["last_seen"]) for a in m["addrs"])
     if k == "new_block":
         return ids_hex([m["id"]]) + struct.pack("<Q", m["height"]) + ids_hex([m["cumulative_work"]])
     if k == "get_compact":
@@ -283,9 +287,15 @@ def decode_body(kind, body):
     elif kind == "addrs":
         m["addrs"] = []
         for _ in range(r.count(kind)):
-            ip = r.take(16).hex()
+            t = r.take(1)[0]
+            if t == 1:
+                host = {"ip": r.take(16).hex()}
+            elif t == 2:
+                host = {"onion": r.take(ONION_LEN).hex()}
+            else:
+                raise WireError("unknown address type")
             port = struct.unpack("<H", r.take(2))[0]
-            m["addrs"].append({"ip": ip, "port": port, "last_seen": r.u64()})
+            m["addrs"].append({**host, "port": port, "last_seen": r.u64()})
     elif kind == "new_block":
         m.update(id=r.h32(), height=r.u64(), cumulative_work=r.h32())
     r.finish()
@@ -388,8 +398,17 @@ def valid_messages():
         ("addresses at the cap of 100", {"kind": "addrs", "addrs": [
             {"ip": "00" * 10 + "ffff" + f"0a00{i // 256:02x}{i % 256:02x}", "port": 8000 + i, "last_seen": 1_700_000_000 + i}
             for i in range(100)]}),
+        ("an onion address and an IP address", {"kind": "addrs", "addrs": [
+            {"onion": ONION_TOR, "port": 38353, "last_seen": 1_700_000_000},
+            {"ip": "00" * 10 + "ffff" + "c0000201", "port": 38353, "last_seen": 1_700_000_001}]}),
+        ("onion addresses at the cap of 100 (the largest addrs)", {"kind": "addrs", "addrs": [
+            {"onion": h(f"onion{i}", 34) + "03", "port": 1 + i, "last_seen": 2 ** 64 - 1 - i} for i in range(100)]}),
     ]
     return out
+
+
+# a real version 3 onion address (the Tor Project's), as its 35 bytes: what `2gzyxa5i...wid.onion` decodes to
+ONION_TOR = __import__("base64").b32decode("2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid".upper()).hex()
 
 
 def valid_cases():
@@ -456,6 +475,10 @@ def invalid_cases():
         bad("a valid ping cut one byte short", ping[:-1], "short frame"),
         bad("a valid handshake cut in the middle", hello[:60], "short frame"),
         bad("a valid ping and one more byte", ping + b"\x00", "trailing bytes"),
+        bad("an address of type 3", u32(1 + 4 + 1 + 26) + b"\x0e" + u32(1) + b"\x03" + b"\x00" * 26, "unknown address type"),
+        bad("an address of type 0", u32(1 + 4 + 1 + 26) + b"\x0e" + u32(1) + b"\x00" + b"\x00" * 26, "unknown address type"),
+        bad("an onion address cut short", u32(1 + 4 + 1 + 20) + b"\x0e" + u32(1) + b"\x02" + b"\x00" * 20, "short read"),
+        bad("addresses one byte over the cap, header only", u32(1 + 4 + 100 * 46 + 1) + b"\x0e", "frame too large"),
         bad("a valid ping and a whole second ping", ping + ping, "trailing bytes"),
         bad("a handshake whose body is one byte short", u32(1 + 123) + b"\x01" + hello[5:5 + 123], "short read"),
         bad("a ping whose body is 4 bytes", u32(1 + 4) + b"\x02" + b"\x00" * 4, "short read"),
@@ -496,8 +519,9 @@ def invalid_cases():
             "trailing bytes"),
         bad("a request for addresses with a body", u32(2) + b"\x0d" + b"\x00", "frame too large"),
         bad("addresses claiming 101", u32(1 + 4) + b"\x0e" + u32(101), "count out of range"),
-        bad("addresses claiming 2 and holding one", u32(1 + 4 + 26) + b"\x0e" + u32(2) + b"\x00" * 26, "short read"),
-        bad("addresses claiming 1 and holding 27 bytes", u32(1 + 4 + 27) + b"\x0e" + u32(1) + b"\x00" * 27,
+        bad("addresses claiming 2 and holding one", u32(1 + 4 + 27) + b"\x0e" + u32(2) + b"\x01" + b"\x00" * 26,
+            "short read"),
+        bad("addresses claiming 1 and holding 28 bytes", u32(1 + 4 + 28) + b"\x0e" + u32(1) + b"\x01" + b"\x00" * 27,
             "trailing bytes"),
         bad("headers claiming 501", u32(1 + 8 + 4) + b"\x10" + struct.pack("<Q", 1) + u32(501), "count out of range"),
         bad("a header locator claiming 33 ids", u32(1 + 4) + b"\x0f" + u32(33), "count out of range"),

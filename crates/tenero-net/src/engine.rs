@@ -31,6 +31,7 @@ use crate::addrbook::{
 };
 use crate::dandelion::{Dandelion, DandelionConfig, StemEntry};
 use crate::message::{Hello, Limits, Message, PeerAddr, PROTOCOL_VERSION};
+use crate::onion::{is_onion, ONION_INBOUND};
 
 /// A handle for one connection, chosen by the transport.
 pub type PeerId = u64;
@@ -162,6 +163,12 @@ pub struct EngineConfig {
     pub seeds: Vec<String>,
     /// Our own public address, if we have one: announced once to each peer, never dialled.
     pub advertise: Option<String>,
+    /// Our own `.onion` address, if we have a Tor onion service (`docs/TOR_PLAN.md`): announced instead of `advertise` on a
+    /// connection through Tor, and NEVER on a direct one (that would link the two addresses). Never dialled.
+    pub advertise_onion: Option<String>,
+    /// Every connection goes through Tor (the transport sees to that): `advertise` is not used, and the node's own
+    /// transactions take the Dandelion++ stem (through Tor anyway).
+    pub tor_only: bool,
     pub addrbook: AddrBookConfig,
     /// When full, this many extra inbound connections are still accepted, only to be told addresses and sent
     /// away (so a busy seed node still helps newcomers find peers).
@@ -258,6 +265,8 @@ impl Default for EngineConfig {
             max_outbound_per_group: 2,
             seeds: Vec::new(),
             advertise: None,
+            advertise_onion: None,
+            tor_only: false,
             addrbook: AddrBookConfig::default(),
             max_addr_only: 16,
             assume_valid: None,
@@ -1100,7 +1109,16 @@ impl<'a> Engine<'a> {
             }
             self.send(peer, Message::GetAddrs, out);
         }
-        if let Some(own) = self.cfg.advertise.clone() {
+        // which of our addresses this peer may hear: the `.onion` one only through Tor, the IP one only directly
+        let via_tor = self.peers.get(&peer).is_some_and(|p| self.via_tor(&p.addr));
+        let own = if via_tor {
+            self.cfg.advertise_onion.clone()
+        } else if self.cfg.tor_only {
+            None
+        } else {
+            self.cfg.advertise.clone()
+        };
+        if let Some(own) = own {
             if let Some(a) = string_to_peer_addr(&own, self.secs()) {
                 self.send(peer, Message::Addrs { addrs: vec![a] }, out);
             }
@@ -1598,8 +1616,11 @@ impl<'a> Engine<'a> {
             };
             // a peer may announce only the host it connected from (so it cannot send us to someone else); on a PRIVATE network (`accept_private`: a test
             // network on one machine) the machine dials out from 127.0.0.1 whatever it listens on, so there any address it announces is taken
+            // an onion address cannot be checked against where the peer connected from; dialling a wrong one costs nobody
+            // but us (Tor refuses it, or it is not there), so a peer's own `.onion` address is taken when we can dial one
             let host_ok = own.as_deref().map(host_of) == Some(host_of(&peer_addr))
-                || (self.cfg.addrbook.accept_private && own.is_some());
+                || (self.cfg.addrbook.accept_private && own.is_some())
+                || (self.cfg.addrbook.accept_onion && own.as_deref().is_some_and(is_onion));
             if host_ok {
                 if let Some(p) = self.peers.get_mut(&peer) {
                     p.self_announced = true;
@@ -1684,7 +1705,7 @@ impl<'a> Engine<'a> {
             *groups.entry(group_of(a)).or_default() += 1;
         }
         let per_group = self.cfg.max_outbound_per_group;
-        let own = self.cfg.advertise.clone();
+        let own = self.own_addrs();
         let selfs = &self.self_addrs;
         let bans = &self.bans;
         let connecting = &self.connecting;
@@ -1693,7 +1714,7 @@ impl<'a> Engine<'a> {
             hosts.contains(&host_of(a))
                 || connecting.contains_key(a)
                 || bans.is_banned(a, now)
-                || own.as_deref() == Some(a)
+                || own.iter().any(|o| o == a)
                 || selfs.contains(a)
                 // enough peers of our own: a seed is not dialled again (it is when we hold fewer)
                 || (leaving_seeds && !seeds_only && seed_list.iter().any(|s| s == a))
@@ -1847,7 +1868,7 @@ impl<'a> Engine<'a> {
             return;
         }
         let hosts: HashSet<String> = self.peers.values().map(|p| host_of(&p.addr)).collect();
-        let own = self.cfg.advertise.clone();
+        let own = self.own_addrs();
         let selfs = &self.self_addrs;
         let bans = &self.bans;
         let connecting = &self.connecting;
@@ -1855,7 +1876,7 @@ impl<'a> Engine<'a> {
             hosts.contains(&host_of(a))
                 || connecting.contains_key(a)
                 || bans.is_banned(a, now)
-                || own.as_deref() == Some(a)
+                || own.iter().any(|o| o == a)
                 || selfs.contains(a)
         };
         let Some(addr) = self.book.untried_candidate(now, &skip) else {
@@ -2095,7 +2116,7 @@ impl<'a> Engine<'a> {
             .map(|p| group_of(&p.addr))
             .collect();
         used_groups.extend(self.ordinary_dials().map(|a| group_of(a)));
-        let own = self.cfg.advertise.clone();
+        let own = self.own_addrs();
         let selfs = &self.self_addrs;
         let bans = &self.bans;
         let connecting = &self.connecting;
@@ -2103,7 +2124,7 @@ impl<'a> Engine<'a> {
             hosts.contains(&host_of(a))
                 || connecting.contains_key(a)
                 || bans.is_banned(a, now)
-                || own.as_deref() == Some(a)
+                || own.iter().any(|o| o == a)
                 || selfs.contains(a)
         };
         // a group that already has an outbound peer counts as full: only new groups
@@ -2139,7 +2160,7 @@ impl<'a> Engine<'a> {
                 || hosts.contains(&host_of(&a))
                 || self.connecting.contains_key(&a)
                 || self.bans.is_banned(&a, now)
-                || self.cfg.advertise.as_deref() == Some(a.as_str())
+                || self.own_addrs().contains(&a)
             {
                 continue;
             }
@@ -2173,7 +2194,7 @@ impl<'a> Engine<'a> {
             let skip = hosts.contains(&host_of(&a))
                 || self.connecting.contains_key(&a)
                 || self.bans.is_banned(&a, now)
-                || self.cfg.advertise.as_deref() == Some(a.as_str())
+                || self.own_addrs().contains(&a)
                 || !chosen_hosts.insert(host_of(&a));
             if skip {
                 continue;
@@ -3124,6 +3145,22 @@ impl<'a> Engine<'a> {
 
     // ---- Dandelion++ (`docs/DANDELION_PLAN.md`) ----------------------------------------------------
 
+    /// Our own addresses (never dialled).
+    fn own_addrs(&self) -> Vec<String> {
+        self.cfg
+            .advertise
+            .iter()
+            .chain(&self.cfg.advertise_onion)
+            .cloned()
+            .collect()
+    }
+
+    /// Whether the connection to a peer at `addr` goes through Tor: every one in `tor_only` mode, else one to a `.onion`
+    /// address or one that came in through our `.onion` service.
+    fn via_tor(&self, addr: &str) -> bool {
+        self.cfg.tor_only || is_onion(addr) || addr.starts_with(ONION_INBOUND)
+    }
+
     /// Whether a transaction is held here in its Dandelion++ stem (checked, kept, not yet announced).
     pub fn holds_stem(&self, id: &[u8; 32]) -> bool {
         self.dand.pool.contains_key(id)
@@ -3167,9 +3204,37 @@ impl<'a> Engine<'a> {
         self.route_own(tx, out);
     }
 
-    /// Where this node's own transactions go: always on a stem (whatever the node's role), so the first announcement
-    /// comes from somewhere else. The one place the Tor work changes (to send them over a Tor peer instead).
+    /// Where this node's own transactions go. With a peer reached through Tor (and not every connection through Tor): to
+    /// one of those, as a stem (it leaves this node through Tor, and Dandelion++ covers it from there; Monero does the same,
+    /// `docs/TOR_PLAN.md`). Otherwise on this node's Dandelion++ stem (whatever its role), so the first announcement comes
+    /// from somewhere else.
     fn route_own(&mut self, tx: Transaction, out: &mut Vec<Action>) {
+        if !self.cfg.tor_only {
+            let tor: Vec<PeerId> = self
+                .peers
+                .iter()
+                .filter(|(_, p)| {
+                    p.hello.is_some() && !p.feeler && !p.addr_only && self.via_tor(&p.addr)
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            if let (false, Ok(id)) = (tor.is_empty(), tx_id(&tx)) {
+                if self.dand.pool.len() < self.dand.cfg.max_stem_txs {
+                    let key = u64::from_le_bytes(id[..8].try_into().expect("8 bytes"));
+                    let to = tor[self.dand.pick(b"own over tor", key, tor.len())];
+                    let embargo_at = self.dand.embargo_at(self.now, &id);
+                    self.dand.pool.insert(
+                        id,
+                        StemEntry {
+                            tx: tx.clone(),
+                            embargo_at,
+                        },
+                    );
+                    self.send(to, Message::StemTx(Box::new(tx)), out);
+                    return;
+                }
+            }
+        }
         self.stem(None, tx, out);
     }
 

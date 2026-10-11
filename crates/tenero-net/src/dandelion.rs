@@ -116,6 +116,11 @@ impl Dandelion {
         }
     }
 
+    /// A number in `0..n` (`n` positive) for `what` and `key`, this epoch: for a choice the engine makes itself.
+    pub fn pick(&self, what: &[u8], key: u64, n: usize) -> usize {
+        (self.draw(what, &key.to_le_bytes()) % n as u64) as usize
+    }
+
     pub fn is_diffuser(&self) -> bool {
         self.diffuser
     }

@@ -73,11 +73,7 @@ fn peer_addr(a: &str, last_seen: u64) -> PeerAddr {
     let std::net::IpAddr::V4(v4) = sa.ip() else {
         unreachable!()
     };
-    PeerAddr {
-        ip: v4.to_ipv6_mapped().octets(),
-        port: sa.port(),
-        last_seen,
-    }
+    PeerAddr::ip(v4.to_ipv6_mapped().octets(), sa.port(), last_seen)
 }
 
 enum Ev {

@@ -12,8 +12,8 @@ use tenero_core::v3::{
 };
 
 use crate::message::{
-    CompactBlock, Hello, Message, PeerAddr, MAX_ADDRS, MAX_BLOCKS, MAX_BLOCK_TXS, MAX_HEADERS,
-    MAX_IDS, MAX_LOCATOR, MAX_NOT_FOUND, MAX_TXS,
+    CompactBlock, Hello, Message, PeerAddr, PeerHost, MAX_ADDRS, MAX_BLOCKS, MAX_BLOCK_TXS,
+    MAX_HEADERS, MAX_IDS, MAX_LOCATOR, MAX_NOT_FOUND, MAX_TXS,
 };
 
 /// The most a frame's `length` may ever be (blocks and transactions lists).
@@ -102,6 +102,8 @@ pub enum WireError {
     },
     /// Bytes after the frame.
     TrailingBytes,
+    /// An address in `addrs` of a type that is neither an IP address (1) nor an onion address (2).
+    UnknownAddressType(u8),
     /// A body that does not decode: a count out of range, a short read, leftover bytes, or a block or
     /// transaction that fails its own strict decoder.
     Decode(DecodeError),
@@ -118,6 +120,7 @@ impl WireError {
             WireError::UnknownKind(_) => "unknown kind",
             WireError::FrameTooLarge { .. } => "frame too large",
             WireError::TrailingBytes => "trailing bytes",
+            WireError::UnknownAddressType(_) => "unknown address type",
             WireError::Decode(e) => e.as_str(),
             WireError::Encode(_) => "encode",
         }
@@ -169,6 +172,12 @@ const GET_BLOCK_TXS: u8 = 19;
 const BLOCK_TXS: u8 = 20;
 const STEM_TX: u8 = 21;
 
+/// An address in `addrs` (version 3): its type (1 an IP address, 2 a version 3 onion address), its host, port, last seen.
+const ADDR_IP: u8 = 1;
+const ADDR_ONION: u8 = 2;
+/// The largest: an onion address, 1 + 35 + 2 + 8.
+const ADDR_MAX: usize = 1 + crate::onion::ONION_LEN + 2 + 8;
+
 /// A block header on the wire: version 2, previous id 32, timestamp 8, transaction root 32, nonce 8, mix 64.
 const HEADER_SIZE: usize = 2 + 32 + 8 + 32 + 8 + 64;
 
@@ -188,7 +197,7 @@ fn cap_of(kind: u8) -> Option<usize> {
         NEW_BLOCK => 1 + 32 + 8 + 32,
         NEW_TX | GET_TXS => 1 + 4 + MAX_TXS * 32,
         GET_ADDRS => 1,
-        ADDRS => 1 + 4 + MAX_ADDRS * 26,
+        ADDRS => 1 + 4 + MAX_ADDRS * ADDR_MAX,
         GET_HEADERS => 1 + 4 + MAX_LOCATOR * 32,
         HEADERS => 1 + 8 + 4 + MAX_HEADERS * HEADER_SIZE,
         _ => return None,
@@ -289,7 +298,16 @@ pub fn encode(msg: &Message) -> Result<Vec<u8>, WireError> {
         Message::Addrs { addrs } => {
             w.count(addrs.len(), 0, MAX_ADDRS)?;
             for a in addrs {
-                w.raw(&a.ip);
+                match &a.host {
+                    PeerHost::Ip(ip) => {
+                        w.raw(&[ADDR_IP]);
+                        w.raw(ip);
+                    }
+                    PeerHost::Onion(o) => {
+                        w.raw(&[ADDR_ONION]);
+                        w.raw(o);
+                    }
+                }
                 w.u16(a.port);
                 w.u64(a.last_seen);
             }
@@ -480,8 +498,13 @@ fn decode_body(kind: u8, body: &[u8]) -> Result<Message, WireError> {
             let n = r.count(0, MAX_ADDRS)?;
             let mut addrs = Vec::with_capacity(n);
             for _ in 0..n {
+                let host = match r.take(1)?[0] {
+                    ADDR_IP => PeerHost::Ip(r.array()?),
+                    ADDR_ONION => PeerHost::Onion(r.array()?),
+                    other => return Err(WireError::UnknownAddressType(other)),
+                };
                 addrs.push(PeerAddr {
-                    ip: r.array()?,
+                    host,
                     port: r.u16()?,
                     last_seen: r.u64()?,
                 });

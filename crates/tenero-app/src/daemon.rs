@@ -924,10 +924,16 @@ pub fn run(
     let mut ecfg = EngineConfig {
         addrbook: AddrBookConfig {
             accept_private: cfg.allow_private_peers,
+            // a `.onion` address is kept only by a node that can dial one
+            accept_onion: cfg.proxy.is_some(),
             ..AddrBookConfig::default()
         },
         seeds: cfg.seeds.clone(),
         advertise: cfg.advertise.clone(),
+        advertise_onion: cfg.advertise_onion.clone(),
+        tor_only: cfg.tor_only,
+        // a dial through Tor can take tens of seconds (the transport gives it 60)
+        connect_timeout_ms: if cfg.proxy.is_some() { 70_000 } else { 10_000 },
         addr_answer_ttl_ms: address_answer_ttl_ms(cfg.allow_private_peers),
         trusted: cfg.trusted_peers.clone(),
         peer_target: cfg.peer_target,
@@ -956,6 +962,29 @@ pub fn run(
 
     let mut ncfg = NetConfig::new(key, store.chain_id());
     ncfg.listen = cfg.listen;
+    ncfg.proxy = cfg.proxy;
+    ncfg.tor_only = cfg.tor_only;
+    ncfg.onion_listen = cfg.onion_listen;
+    if let Some(p) = cfg.proxy {
+        log.info(&format!(
+            "Tor: {} through the SOCKS proxy at {p}{}",
+            if cfg.tor_only {
+                "EVERY connection"
+            } else {
+                ".onion peers"
+            },
+            if cfg.tor_only {
+                " (tor_only: peers do not learn this node's IP address)"
+            } else {
+                "; other peers directly"
+            }
+        ));
+    }
+    if let (Some(l), Some(a)) = (cfg.onion_listen, &cfg.advertise_onion) {
+        log.info(&format!(
+            "Tor: this node's onion service {a} is handed over at {l}"
+        ));
+    }
     ncfg.state_path = Some(cfg.data.join("peers.dat"));
     ncfg.hook_tick = Duration::from_millis(10);
     let nl = Arc::clone(&log);

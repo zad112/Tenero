@@ -6,7 +6,7 @@ use serde_json::Value;
 use tenero_core::v3::{Block, BlockHeader, Coinbase, Transaction, Wire};
 use tenero_core::vectors::{hex, load};
 use tenero_net::message::{
-    CompactBlock, PeerAddr, MAX_ADDRS, MAX_BLOCKS, MAX_BLOCK_TXS, MAX_HEADERS, MAX_IDS,
+    CompactBlock, PeerAddr, PeerHost, MAX_ADDRS, MAX_BLOCKS, MAX_BLOCK_TXS, MAX_HEADERS, MAX_IDS,
     MAX_LOCATOR, MAX_NOT_FOUND, MAX_TXS,
 };
 use tenero_net::{
@@ -87,7 +87,14 @@ fn message(m: &Value) -> Message {
                 .unwrap()
                 .iter()
                 .map(|a| PeerAddr {
-                    ip: hex(a["ip"].as_str().unwrap()).unwrap().try_into().unwrap(),
+                    host: match a.get("onion") {
+                        Some(o) => {
+                            PeerHost::Onion(hex(o.as_str().unwrap()).unwrap().try_into().unwrap())
+                        }
+                        None => PeerHost::Ip(
+                            hex(a["ip"].as_str().unwrap()).unwrap().try_into().unwrap(),
+                        ),
+                    },
                     port: a["port"].as_u64().unwrap() as u16,
                     last_seen: a["last_seen"].as_u64().unwrap(),
                 })
@@ -383,14 +390,7 @@ fn the_encoder_refuses_what_a_decoder_would_refuse() {
         (
             "addrs",
             Message::Addrs {
-                addrs: vec![
-                    PeerAddr {
-                        ip: [0; 16],
-                        port: 1,
-                        last_seen: 1
-                    };
-                    MAX_ADDRS + 1
-                ],
+                addrs: vec![PeerAddr::ip([0; 16], 1, 1); MAX_ADDRS + 1],
             },
         ),
     ] {
