@@ -4,7 +4,7 @@ use std::process::Command;
 
 /// The chips the AMD backend is compiled for unless `TENERO_HIP_ARCH` says otherwise (see `main`).
 const DEFAULT_ARCHS: &[&str] = &[
-    "gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1150", "gfx1151", "gfx1200", "gfx1201",
+    "gfx1100", "gfx1101", "gfx1102", "gfx1150", "gfx1151", "gfx1200", "gfx1201",
 ];
 
 fn main() {
@@ -60,7 +60,7 @@ fn main() {
     });
     // AMD's GPU code runs only on the chip it was compiled for (no later chip can take it, unlike NVIDIA's PTX), so the
     // backend is compiled for every chip it supports, one code object each in the same file: RDNA3 (gfx11: RX 7000 series
-    // gfx1100/1101/1102, the Radeon 700M laptop chips gfx1103, Strix gfx1150/1151) and RDNA4 (gfx12: RX 9000 series
+    // gfx1100/1101/1102, Strix gfx1150/1151; not the Radeon 780M/760M laptop chips, gfx1103, which rocWMMA does not support) and RDNA4 (gfx12: RX 9000 series
     // gfx1200/1201). `TENERO_HIP_ARCH` (a comma-separated list) builds for others. The kernel is told the list, so a card that
     // is not on it is refused at the start with a message, not by a failure in the middle.
     let archs = env::var("TENERO_HIP_ARCH").unwrap_or_else(|_| DEFAULT_ARCHS.join(","));
