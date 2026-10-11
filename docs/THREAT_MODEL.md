@@ -110,7 +110,7 @@ These come from the tests; none of it is audited.
 | D1 | A passive observer reads the traffic | Noise XX, ChaCha20-Poly1305 | **Mitigated** (library unaudited) |
 | D2 | A man in the middle | encryption alone does not authenticate peers: nothing pins a key to a node, so a MITM running both handshakes is **not detected** | **Accepted for peer-to-peer** (a public network has no way to know who an honest peer is); **Open** for a wallet using a *remote* node over the network (not supported yet) and for any future seed-node authentication |
 | D3 | Replay, reorder, or drop within a stream | counters per chunk | **Mitigated** |
-| D4 | Traffic analysis; who talks to whom; which node first announced a transaction | none | **Out of scope for now** (P4: Dandelion++, Tor, I2P are not built) |
+| D4 | Traffic analysis; who talks to whom; which node first announced a transaction | **Dandelion++** (protocol version 3, 2026-10-11, `docs/DANDELION_PLAN.md`): a new transaction goes along a random stem of outbound peers before it is announced. Simulated, a spy connected to all 12 nodes named the origin of 23 of 24 transactions without it and 6 of 24 with it (`crates/tenero-net/tests/dandelion.rs`) | **Partly.** On a network of about ten nodes whose outbound peers are mostly the two seeds, the seed operator still learns a lot; no Tor or I2P yet; a fluff is announced with no random delay |
 | D5 | A node on another chain or version | the prologue fails the handshake; a version and network id in the handshake planned (M10.4) | **Mitigated** (chain id and version); the human-readable refusal message is M10 |
 
 ### E. The chain as a system (consensus-level attacks)
@@ -218,7 +218,7 @@ privacy of Monero**, for these reasons:
 
 * **The output scheme is an interim one**, with no Janus protection and a different (unreviewed) key derivation; it is not Carrot.
 * **The anonymity set is a ring of 16 and the chain is tiny**: with few outputs on a young chain, decoys are easy to rule out by age and amount patterns.
-* **Network privacy is absent**: a transaction is relayed from where it was made; a node can see the IP that first sent it (no Dandelion++, no Tor, no I2P).
+* **Network privacy is thin**: Dandelion++ (protocol version 3) hides which node made a transaction from a peer that only watches announcements, but on a network of about ten nodes, mostly connected through the two seeds, the seeds' operator still learns a lot; there is no Tor or I2P yet (D4).
 * **Timing and fingerprinting**: coin selection, ring construction and fees follow patterns an observer could learn (H7).
 * **A node knows its wallet**: the wallet and node today trust each other on one machine; a remote node would learn the wallet's real outputs (H6).
 * **Logs and the diagnostics bundle** can contain addresses and IPs unless scrubbed (M10.4 requires scrubbing).

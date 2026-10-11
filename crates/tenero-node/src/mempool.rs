@@ -230,19 +230,24 @@ impl Mempool {
         self.add_at(validator, tx, 0)
     }
 
-    /// [`Mempool::add`], recording `now` (Unix seconds) as the time it arrived.
-    pub fn add_at(
-        &mut self,
+    /// Whether `tx` would be taken now, judged exactly as [`Mempool::add`] judges it (known already, invalid at the tip, too
+    /// heavy, in conflict), but kept nowhere and with no room made: what a Dandelion++ stem transaction is checked by
+    /// before it is passed on (it is held apart from the pool until it is announced). Whether the pool has ROOM is not
+    /// asked: a stem transaction does not take any.
+    pub fn check(&self, validator: &Validator<'_>, tx: &Transaction) -> Result<(), PoolError> {
+        self.judge(validator, tx).map(|_| ())
+    }
+
+    fn judge(
+        &self,
         validator: &Validator<'_>,
-        tx: Transaction,
-        now: u64,
-    ) -> Result<AddOutcome, PoolError> {
-        let id =
-            tx_id(&tx).map_err(|e| PoolError::Invalid(BlockError::Malformed(e.to_string())))?;
+        tx: &Transaction,
+    ) -> Result<(TxId, tenero_chain::PoolTx), PoolError> {
+        let id = tx_id(tx).map_err(|e| PoolError::Invalid(BlockError::Malformed(e.to_string())))?;
         if self.entries.contains_key(&id) {
             return Err(PoolError::AlreadyKnown);
         }
-        let info = validator.check_pool_tx(&tx).map_err(|e| match e {
+        let info = validator.check_pool_tx(tx).map_err(|e| match e {
             BlockError::BadReference {
                 reference_height, ..
             } if validator
@@ -268,6 +273,17 @@ impl Mempool {
                 });
             }
         }
+        Ok((id, info))
+    }
+
+    /// [`Mempool::add`], recording `now` (Unix seconds) as the time it arrived.
+    pub fn add_at(
+        &mut self,
+        validator: &Validator<'_>,
+        tx: Transaction,
+        now: u64,
+    ) -> Result<AddOutcome, PoolError> {
+        let (id, info) = self.judge(validator, &tx)?;
         // make room: push out the lowest fee rates, but only for a strictly better one
         let mut evicted = Vec::new();
         if self.bytes + info.size > self.cfg.max_bytes {

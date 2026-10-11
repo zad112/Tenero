@@ -50,7 +50,8 @@ def test_the_frame_caps_are_the_ones_the_document_states():
     stated = {"hello": 125, "ping": 9, "pong": 9, "new_block": 73, "get_block_ids": 1029, "get_blocks": 1029,
               "not_found": 2053, "new_tx": 2053, "get_txs": 2053, "block_ids": 16013, "blocks": 16_777_216,
               "txs": 16_777_216, "get_addrs": 1, "addrs": 2605, "get_headers": 1029, "headers": 73013,
-              "get_compact": 33, "compact": 263_897, "get_block_txs": 32_805, "block_txs": 16_777_216}
+              "get_compact": 33, "compact": 263_897, "get_block_txs": 32_805, "block_txs": 16_777_216,
+              "stem_tx": 16_777_216}
     assert w.CAPS == stated
     # the document's own numbers agree with the table above
     for number in ("125", "1029", "2053", "16013", "16,777,216", "2605", "73013", "263,897", "32,805"):

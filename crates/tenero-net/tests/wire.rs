@@ -125,6 +125,9 @@ fn message(m: &Value) -> Message {
                 .map(|t| Transaction::from_bytes(&hex(t.as_str().unwrap()).unwrap()).unwrap())
                 .collect(),
         },
+        "stem_tx" => Message::StemTx(Box::new(
+            Transaction::from_bytes(&hex(m["tx"].as_str().unwrap()).unwrap()).unwrap(),
+        )),
         other => panic!("unknown kind {other} in the vector file"),
     }
 }
@@ -481,11 +484,11 @@ fn random_bytes_never_panic_the_decoders() {
 }
 
 #[test]
-fn every_kind_byte_but_one_to_twenty_is_unknown() {
+fn every_kind_byte_but_one_to_twenty_one_is_unknown() {
     for kind in 0u8..=255 {
         let frame = [1u8, 0, 0, 0, kind];
         let r = decode_frame(&frame);
-        if (1..=20).contains(&kind) {
+        if (1..=21).contains(&kind) {
             assert!(!matches!(r, Err(WireError::UnknownKind(_))), "kind {kind}");
         } else {
             assert_eq!(r, Err(WireError::UnknownKind(kind)));

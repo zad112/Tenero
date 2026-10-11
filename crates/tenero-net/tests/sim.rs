@@ -167,6 +167,18 @@ fn a_peer_on_another_chain_is_dropped_and_banned_a_wrong_version_only_dropped() 
     assert!(sim.hostiles[h2].disconnected);
     let now = sim.now_ms();
     assert!(!sim.engines[0].is_banned("old-version", now));
+
+    // a node of 0.3.0-gamma.1 (protocol version 2, before Dandelion++) is dropped too, and not banned: it can upgrade
+    assert_eq!(PROTOCOL_VERSION, 3);
+    let h3 = sim.add_hostile(0, "gamma-1");
+    let Message::Hello(mut hello) = hello_for(&rigs[0], 0, zero_work()) else {
+        unreachable!()
+    };
+    hello.version = 2;
+    sim.hostile_send(h3, Message::Hello(hello));
+    sim.run_for(2 * SEC);
+    assert!(sim.hostiles[h3].disconnected);
+    assert!(!sim.engines[0].is_banned("gamma-1", sim.now_ms()));
 }
 
 #[test]
@@ -628,8 +640,11 @@ fn a_transaction_spreads_and_is_dropped_from_every_pool_when_mined() {
             "node {n} still holds it"
         );
     }
-    // the transaction crossed each link at most once as an id, and its body was fetched once per node
-    assert_eq!(sim.sent_by_kind["txs"], 5);
+    // its body reached each of the other five nodes once: on its Dandelion++ stem (`stem_tx`, at least the first hop,
+    // since the origin stems its own) or fetched after the fluff (`txs`); a node on the stem does not fetch it again
+    let stem = sim.sent_by_kind.get("stem_tx").copied().unwrap_or(0);
+    assert!(stem >= 1, "the origin stems its own transaction");
+    assert_eq!(sim.sent_by_kind["txs"] + stem.min(5), 5, "{stem} stem hops");
 }
 
 // ---- sync ---------------------------------------------------------------------------------------

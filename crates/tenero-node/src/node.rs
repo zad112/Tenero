@@ -224,6 +224,12 @@ impl<'a> Node<'a> {
         self.pool.add_at(&v, tx, now)
     }
 
+    /// Whether a transaction would be taken into the pool now, judged as [`Node::submit_tx_at`] judges it, with nothing
+    /// kept (`Mempool::check`): how a Dandelion++ stem transaction is checked before it is passed on.
+    pub fn check_pool_tx(&self, tx: &Transaction) -> Result<(), PoolError> {
+        self.pool.check(&self.validator(), tx)
+    }
+
     /// Whether a loose transaction would be taken now, and if not why not (nothing changes). A wallet's node link
     /// uses it to say no with a reason before the transaction is handed over.
     pub fn check_tx(&self, tx: &Transaction) -> Result<(), String> {

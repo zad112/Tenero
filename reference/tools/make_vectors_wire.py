@@ -26,7 +26,7 @@ import make_vectors_v3 as v3  # noqa: E402  (the data-model reference)
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the repository (the tools live in reference/tools)
 VECTOR_DIR = os.path.join(ROOT, "tests", "vectors")
 NAME = "v3_wire"
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3   # version 3: Dandelion++ (stem_tx, docs/DANDELION_PLAN.md)
 
 MAX_FRAME = 16 * 1024 * 1024
 MAX_LOCATOR = 32
@@ -45,7 +45,7 @@ COINBASE_MAX = 2 + 8 + 4 + v3.MAX_COINBASE_OUTPUTS * 91 + 4 + v3.MAX_EXTRA
 KINDS = {1: "hello", 2: "ping", 3: "pong", 4: "get_block_ids", 5: "block_ids", 6: "get_blocks",
          7: "blocks", 8: "not_found", 9: "new_block", 10: "new_tx", 11: "get_txs", 12: "txs",
          13: "get_addrs", 14: "addrs", 15: "get_headers", 16: "headers",
-         17: "get_compact", 18: "compact", 19: "get_block_txs", 20: "block_txs"}
+         17: "get_compact", 18: "compact", 19: "get_block_txs", 20: "block_txs", 21: "stem_tx"}
 BY_NAME = {v: k for k, v in KINDS.items()}
 
 # the largest allowed value of `length` (kind byte + body), per kind
@@ -69,6 +69,7 @@ CAPS = {
     "compact": 1 + HEADER_SIZE + COINBASE_MAX + 4 + MAX_BLOCK_TXS * 32,
     "get_block_txs": 1 + 32 + 4 + MAX_BLOCK_TXS * 4,
     "block_txs": MAX_FRAME,
+    "stem_tx": MAX_FRAME,
 }
 # the largest allowed count in a list, per kind
 MAX_COUNT = {"get_block_ids": MAX_LOCATOR, "block_ids": MAX_IDS, "get_blocks": MAX_BLOCKS, "blocks": MAX_BLOCKS,
@@ -133,6 +134,8 @@ def enc_body(m):
             struct.pack("<I", i) for i in m["indexes"])
     if k == "block_txs":
         return ids_hex([m["block_id"]]) + struct.pack("<I", len(m["txs"])) + b"".join(bytes.fromhex(x) for x in m["txs"])
+    if k == "stem_tx":
+        return bytes.fromhex(m["tx"])
     raise AssertionError(k)
 
 
@@ -273,6 +276,8 @@ def decode_body(kind, body):
     elif kind == "block_txs":
         m["block_id"] = r.h32()
         m["txs"] = [inner(v3.dec_tx, r)[0] for _ in range(r.count(kind))]
+    elif kind == "stem_tx":
+        m["tx"] = inner(v3.dec_tx, r)[0]
     elif kind == "get_addrs":
         pass
     elif kind == "addrs":
@@ -373,6 +378,8 @@ def valid_messages():
                                     "txs": [tx_hex("bt0"), tx_hex("bt1", n_in=3, n_out=4)]}),
         ("none of a block's transactions", {"kind": "block_txs", "block_id": h("blk"), "txs": []}),
         ("no transactions", {"kind": "txs", "txs": []}),
+        ("a transaction in its stem", {"kind": "stem_tx", "tx": tx_hex("stem", n_in=2, n_out=2)}),
+        ("a bigger one in its stem", {"kind": "stem_tx", "tx": tx_hex("stem2", n_in=5, n_out=16)}),
         ("a request for addresses", {"kind": "get_addrs"}),
         ("two addresses", {"kind": "addrs", "addrs": [
             {"ip": "00" * 10 + "ffff" + "0a000102", "port": 8333, "last_seen": 1_700_000_000},
@@ -429,7 +436,7 @@ def invalid_cases():
         bad("a length of zero", u32(0) + b"\x02", "empty frame"),
         bad("a length of zero and nothing else", u32(0), "empty frame"),
         bad("kind 0", u32(9) + b"\x00" + b"\x00" * 8, "unknown kind"),
-        bad("kind 21", u32(9) + b"\x15" + b"\x00" * 8, "unknown kind"),
+        bad("kind 22", u32(9) + b"\x16" + b"\x00" * 8, "unknown kind"),
         bad("kind 255", u32(1) + b"\xff", "unknown kind"),
         bad("an unknown kind is reported before a too-large length", u32(0xFFFFFFFF) + b"\x00", "unknown kind"),
         bad("a ping declaring one byte too many", u32(10) + b"\x02" + b"\x00" * 9, "frame too large"),
@@ -438,6 +445,14 @@ def invalid_cases():
         bad("block ids one byte over the cap, header only", u32(16014) + b"\x05", "frame too large"),
         bad("a block list over 16 MiB, header only", u32(MAX_FRAME + 1) + b"\x07", "frame too large"),
         bad("a transaction list over 16 MiB, header only", u32(MAX_FRAME + 1) + b"\x0c", "frame too large"),
+        bad("a stem transaction over 16 MiB, header only", u32(MAX_FRAME + 1) + b"\x15", "frame too large"),
+        bad("a stem transaction with no transaction", u32(1) + b"\x15", "short read"),
+        bad("a stem transaction and a byte more",
+            (lambda body: u32(1 + len(body)) + b"\x15" + body)(v3.enc_tx(v3.sample_tx("stemx")) + b"\x00"),
+            "trailing bytes"),
+        bad("a stem transaction with 17 outputs",
+            (lambda body: u32(1 + len(body)) + b"\x15" + body)(bytes.fromhex(tx_with_17_outputs())),
+            "count out of range"),
         bad("a valid ping cut one byte short", ping[:-1], "short frame"),
         bad("a valid handshake cut in the middle", hello[:60], "short frame"),
         bad("a valid ping and one more byte", ping + b"\x00", "trailing bytes"),

@@ -937,6 +937,8 @@ pub fn run(
         nonce: u64::from_le_bytes(pk[..8].try_into().expect("8 bytes")) | 1,
         ..EngineConfig::default()
     };
+    // Dandelion++ draws every choice (its role, its stem peers, its timers) from a secret made new at each start
+    rand_core::RngCore::fill_bytes(&mut OsRng, &mut ecfg.dandelion.secret);
     if !cfg.trusted_peers.is_empty() {
         log.info(&format!(
             "pinned peers (always dialled): {}",

@@ -115,8 +115,10 @@ The answer to request `k` has kind `k | 0x80`. Any request may instead be answer
   must treat it as an error.
 * `submit_tx`: the node first checks the transaction against the tip as a mempool would (and says why not if it fails,
   or that it already has it); if it passes it is handed to the node's engine, which keeps it and tells the peers, and the
-  answer comes at the next look, once the pool has been seen to keep it. **"Accepted" means in this node's pool, not in a
-  block.**
+  answer comes at the next look, once the pool has been seen to keep it. **"Accepted" means this node kept it, not that it
+  is in a block.** With Dandelion++ (protocol version 3, `docs/DANDELION_PLAN.md`) a node's own transaction is first held in
+  its stem: sent to one peer and not yet in this node's pool, so `mempool` does not list it for a while (seconds to a few
+  minutes, until it is announced); it is accepted all the same.
 
 * `block_template` is how a miner in another process gets work (`tenero-miner`, `docs/RUNNING.md`). The node builds the
   block exactly as its own miner would (the pool's best transactions within the weight asked for and the block limit, and a
