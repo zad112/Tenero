@@ -7,7 +7,7 @@
 //! writes neither to a log or to a screen except when the person asks to see the words.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rand_core::OsRng;
@@ -16,8 +16,8 @@ use tenero_app::control::NodeInfo;
 use tenero_app::miner_report::MinerReport;
 use tenero_wallet::amount::parse_coins;
 use tenero_wallet::{
-    Address, Balance, Built, ChainView, FeeLevel, FileError, KdfParams, Purse, PurseError, Rules,
-    ScanBlock, SpendPaths,
+    Address, Balance, Built, ChainView, FeeLevel, FileError, KdfParams, OwnPlan, Purse, PurseError,
+    Rules, ScanBlock, SpendPaths,
 };
 use zeroize::Zeroizing;
 
@@ -35,6 +35,44 @@ const POLL_EVERY: Duration = Duration::from_secs(2);
 const MINER_STALE_SECS: u64 = 5;
 /// How long a node that was just started may take to answer before it is called failed.
 const NODE_START_PATIENCE: Duration = Duration::from_secs(90);
+/// The most proofs made at once when a combine has several transactions (each proof is one thread: the FCMP++ prover has
+/// none of its own). Half the machine's threads, at most this, so the node, the miner and the window keep theirs.
+const MAX_PROOF_THREADS: usize = 4;
+/// About how long the proofs of one coin take to make, for the estimate shown before a combine (measured on the owner's
+/// machine, one thread, a tree of 3 layers: 38 coins in 38 s, `docs/BENCHMARKS.md`). An estimate, said as one.
+const PROOF_SECS_PER_COIN: f64 = 1.0;
+
+/// How many proofs to make at once on this machine.
+pub fn proof_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, MAX_PROOF_THREADS))
+}
+
+/// The ESTIMATED time to make transactions of these coin counts on `threads` threads, one transaction to a thread, taken in
+/// order (as `Wallet::build_own` takes them).
+pub fn proof_estimate_secs(coins: &[usize], threads: usize) -> u64 {
+    let mut busy = vec![0.0f64; threads.max(1)];
+    for &n in coins {
+        let free = busy
+            .iter_mut()
+            .min_by(|a, b| a.total_cmp(b))
+            .expect("at least one thread");
+        *free += n as f64 * PROOF_SECS_PER_COIN;
+    }
+    busy.into_iter().fold(0.0, f64::max).ceil() as u64
+}
+
+/// What the worker is doing, where the window can read it while the worker is busy (a combine's proofs take minutes, and no
+/// snapshot comes until they are done): set by the backend around each command, its progress by the command itself.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Work {
+    pub what: &'static str,
+    pub since: Instant,
+    /// Transactions made so far, out of `total` (0 of 0 when the work has no steps to count).
+    pub done: usize,
+    pub total: usize,
+}
+
+pub type WorkState = Arc<Mutex<Option<Work>>>;
 
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
@@ -94,8 +132,10 @@ enum PreparedKind {
 struct Prepared {
     account: usize,
     kind: PreparedKind,
-    /// One transaction, or several that spend different coins.
+    /// One transaction, or several that spend different coins (none yet when `plan` is there).
     txs: Vec<Built>,
+    /// A combine worked out but not made: its transactions are made when the person says yes.
+    plan: Option<OwnPlan>,
     /// The payments that could not be made now.
     unsent: Vec<(Address, u64)>,
     level: FeeLevel,
@@ -134,6 +174,8 @@ pub struct Core {
     last_tip: Option<u64>,
     /// The node's data being copied to another folder, if it is.
     move_job: Option<MoveJob>,
+    /// Shared with the window (see [`Work`]).
+    work: WorkState,
 }
 
 /// A move of the node's data running on a thread of its own (a chain can be many gigabytes: the window must stay alive), polled by `tick`.
@@ -212,6 +254,7 @@ impl Core {
             last_refresh: None,
             last_tip: None,
             move_job: None,
+            work: WorkState::default(),
         };
         c.refresh_wallets();
         // a node an earlier run (or the owner) left going is picked up, not started a second time
@@ -268,25 +311,47 @@ impl Core {
             },
             node: self.node_view.clone(),
             miner: self.miner_view.clone(),
-            prepared: self.prepared.as_ref().map(|p| Quote {
-                account: p.account,
-                to: match &p.kind {
-                    PreparedKind::Pay { to_text } => to_text.clone(),
-                    PreparedKind::Own { .. } => String::new(),
-                },
-                amount: p.txs.iter().map(|t| t.amount).sum(),
-                fee: p.txs.iter().map(|t| t.fee).sum(),
-                change: p.txs.iter().map(|t| t.change).sum(),
-                level: p.level,
-                note: p.note.clone(),
-                transactions: p.txs.len(),
-                coins: p.txs.iter().map(|t| t.tx.prefix.inputs.len()).sum(),
-                unsent_payments: p.unsent.len(),
-                unsent_total: p.unsent.iter().map(|(_, v)| *v).sum(),
-                own: match &p.kind {
-                    PreparedKind::Own { what } => Some(what.clone()),
-                    PreparedKind::Pay { .. } => None,
-                },
+            prepared: self.prepared.as_ref().map(|p| {
+                let (amount, fee, change, transactions, coins) = match &p.plan {
+                    Some(plan) => (
+                        plan.amount(),
+                        plan.fee(),
+                        0,
+                        plan.groups.len(),
+                        plan.coins(),
+                    ),
+                    None => (
+                        p.txs.iter().map(|t| t.amount).sum(),
+                        p.txs.iter().map(|t| t.fee).sum(),
+                        p.txs.iter().map(|t| t.change).sum(),
+                        p.txs.len(),
+                        p.txs.iter().map(|t| t.tx.prefix.inputs.len()).sum(),
+                    ),
+                };
+                Quote {
+                    account: p.account,
+                    to: match &p.kind {
+                        PreparedKind::Pay { to_text } => to_text.clone(),
+                        PreparedKind::Own { .. } => String::new(),
+                    },
+                    amount,
+                    fee,
+                    change,
+                    level: p.level,
+                    note: p.note.clone(),
+                    transactions,
+                    coins,
+                    unsent_payments: p.unsent.len(),
+                    unsent_total: p.unsent.iter().map(|(_, v)| *v).sum(),
+                    own: match &p.kind {
+                        PreparedKind::Own { what } => Some(what.clone()),
+                        PreparedKind::Pay { .. } => None,
+                    },
+                    proof_secs: p.plan.as_ref().map(|plan| {
+                        let coins: Vec<usize> = plan.groups.iter().map(Vec::len).collect();
+                        proof_estimate_secs(&coins, proof_threads())
+                    }),
+                }
             }),
             busy: None,
             moving: self.move_job.as_ref().map(|j| MoveView {
@@ -880,6 +945,7 @@ impl Core {
                 to_text: addr.to_text(),
             },
             txs: plan.txs,
+            plan: None,
             unsent: plan.unsent,
             level,
             note: note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()),
@@ -887,7 +953,8 @@ impl Core {
         Ok(())
     }
 
-    /// Prepares combining an account's own coins (see `Cmd::PrepareCombine`).
+    /// Prepares combining an account's own coins (see `Cmd::PrepareCombine`): worked out only, in a moment. The proofs (about
+    /// a second a coin) are made when the person says yes, so they see the cost and the wait first.
     fn prepare_combine(
         &mut self,
         account: usize,
@@ -898,21 +965,18 @@ impl Core {
         self.ready_to_pay()?;
         let node = self.node.as_ref().expect("checked");
         let purse = self.purse.as_mut().ok_or("the wallet is locked")?;
-        let txs = match coins {
-            Some(n) => vec![purse
-                .build_combine(account, node, &mut OsRng, n, level)
-                .map_err(purse_err)?],
-            None => purse
-                .build_sweep(account, node, &mut OsRng, None, level)
-                .map_err(purse_err)?,
-        };
-        let n: usize = txs.iter().map(|t| t.tx.prefix.inputs.len()).sum();
+        let plan = match coins {
+            Some(n) => purse.plan_combine(account, node, n, level),
+            None => purse.plan_sweep(account, node, None, level),
+        }
+        .map_err(purse_err)?;
         self.prepared = Some(Prepared {
             account,
             kind: PreparedKind::Own {
-                what: format!("Combined {n} pieces"),
+                what: format!("Combined {} pieces", plan.coins()),
             },
-            txs,
+            txs: Vec::new(),
+            plan: Some(plan),
             unsent: Vec::new(),
             level,
             note: None,
@@ -920,13 +984,46 @@ impl Core {
         Ok(())
     }
 
+    /// The window's view of what the worker is doing (the backend shares it: see [`Work`]).
+    pub fn work_state(&self) -> WorkState {
+        self.work.clone()
+    }
+
+    /// Uses `w` for [`Work`] from now on (the backend's, which the window reads).
+    pub fn set_work_state(&mut self, w: WorkState) {
+        self.work = w;
+    }
+
     fn send_prepared(&mut self, events: &mut Vec<Event>) -> Result<(), String> {
-        let p = self
+        let mut p = self
             .prepared
             .take()
             .ok_or("there is no payment waiting to be sent")?;
         // the screen said "not final" while out of date; a payment built a while ago is rebuilt rather than sent stale
         self.ready_to_pay()?;
+        if let Some(plan) = p.plan.take() {
+            // a combine worked out before the yes: its proofs are made now, several at once, the window told how far
+            let node = self.node.as_ref().expect("checked");
+            let purse = self.purse.as_mut().ok_or("the wallet is locked")?;
+            let work = self.work.clone();
+            let progress = move |done: usize, total: usize| {
+                if let Some(w) = work.lock().ok().as_mut().and_then(|w| w.as_mut()) {
+                    w.what = "Making the proofs";
+                    w.done = done;
+                    w.total = total;
+                }
+            };
+            p.txs = purse
+                .build_own(
+                    p.account,
+                    node,
+                    &mut OsRng,
+                    &plan,
+                    proof_threads(),
+                    &progress,
+                )
+                .map_err(purse_err)?;
+        }
         let mut node = self.node.take().ok_or("the node is not running")?;
         let result = {
             let purse = self.purse.as_mut().ok_or("the wallet is locked")?;

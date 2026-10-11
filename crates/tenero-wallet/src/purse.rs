@@ -35,7 +35,7 @@ use crate::chain::{ChainView, Submitter};
 use crate::file::{open, seal, FileError, KdfParams, MAGIC_PURSE};
 use crate::request::{check_text, PaymentRequest, MAX_LABEL as MAX_REQUEST_LABEL, MAX_MESSAGE};
 use crate::wallet::{
-    Balance, BatchSent, Built, FeeLevel, Plan, SyncReport, ViewTier, Wallet, WalletError,
+    Balance, BatchSent, Built, FeeLevel, OwnPlan, Plan, SyncReport, ViewTier, Wallet, WalletError,
 };
 
 /// The most accounts one purse holds.
@@ -626,6 +626,54 @@ impl Purse {
             .get_mut(index)
             .ok_or(PurseError::NoSuchAccount(index))?;
         Ok(a.wallet.build_combine(chain, rng, count, level)?)
+    }
+
+    /// What [`Purse::build_sweep`] would make, without making it (`Wallet::plan_sweep`): no proofs.
+    pub fn plan_sweep(
+        &mut self,
+        index: usize,
+        chain: &impl ChainView,
+        to: Option<&Address>,
+        level: FeeLevel,
+    ) -> Result<OwnPlan, PurseError> {
+        let a = self
+            .accounts
+            .get_mut(index)
+            .ok_or(PurseError::NoSuchAccount(index))?;
+        Ok(a.wallet.plan_sweep(chain, to, level)?)
+    }
+
+    /// What [`Purse::build_combine`] would make, without making it (`Wallet::plan_combine`): no proofs.
+    pub fn plan_combine(
+        &mut self,
+        index: usize,
+        chain: &impl ChainView,
+        count: usize,
+        level: FeeLevel,
+    ) -> Result<OwnPlan, PurseError> {
+        let a = self
+            .accounts
+            .get_mut(index)
+            .ok_or(PurseError::NoSuchAccount(index))?;
+        Ok(a.wallet.plan_combine(chain, count, level)?)
+    }
+
+    /// Makes the transactions of a plan of an account's (`Wallet::build_own`: up to `threads` proofs at once, `progress(done,
+    /// total)` as each is finished). Nothing is sent, nothing is reserved.
+    pub fn build_own(
+        &mut self,
+        index: usize,
+        chain: &impl ChainView,
+        rng: &mut (impl RngCore + CryptoRng + Send),
+        plan: &OwnPlan,
+        threads: usize,
+        progress: &(dyn Fn(usize, usize) + Sync),
+    ) -> Result<Vec<Built>, PurseError> {
+        let a = self
+            .accounts
+            .get_mut(index)
+            .ok_or(PurseError::NoSuchAccount(index))?;
+        Ok(a.wallet.build_own(chain, rng, plan, threads, progress)?)
     }
 
     /// Sends transactions that move an account's own coins (a sweep or a combine): reserves the coins and records each as a payment to `to` marked

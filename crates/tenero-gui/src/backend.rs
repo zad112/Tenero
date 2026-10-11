@@ -4,11 +4,11 @@ use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tenero_wallet::KdfParams;
 
-use crate::core::Core;
+use crate::core::{Core, Work, WorkState};
 use crate::settings::Settings;
 use crate::view::{Cmd, Event};
 
@@ -17,6 +17,7 @@ pub struct Backend {
     rx: Receiver<Event>,
     join: Option<JoinHandle<()>>,
     registry: crate::core::Registry,
+    work: WorkState,
 }
 
 impl Backend {
@@ -32,13 +33,31 @@ impl Backend {
         let app_dir = app_dir.to_path_buf();
         let registry = crate::core::Registry::default();
         let worker_registry = registry.clone();
+        let work = WorkState::default();
+        let worker_work = work.clone();
         let join = std::thread::spawn(move || {
             let mut core = Core::with_registry(&app_dir, settings, kdf, worker_registry);
+            core.set_work_state(worker_work.clone());
             let _ = ev_tx.send(Event::Snapshot(Box::new(core.snapshot())));
             notify();
+            let set = |w: Option<Work>| {
+                if let Ok(mut g) = worker_work.lock() {
+                    *g = w;
+                }
+            };
             loop {
                 let events = match cmd_rx.recv_timeout(Duration::from_millis(500)) {
-                    Ok(cmd) => core.handle(cmd),
+                    Ok(cmd) => {
+                        set(Some(Work {
+                            what: cmd.doing(),
+                            since: Instant::now(),
+                            done: 0,
+                            total: 0,
+                        }));
+                        let events = core.handle(cmd);
+                        set(None);
+                        events
+                    }
                     Err(RecvTimeoutError::Timeout) => core.tick(),
                     // the window is gone without saying Quit: end cleanly all the same
                     Err(RecvTimeoutError::Disconnected) => core.handle(Cmd::Quit),
@@ -61,7 +80,13 @@ impl Backend {
             rx,
             join: Some(join),
             registry,
+            work,
         }
+    }
+
+    /// What the worker is busy with, if it is handling a command (it can be for minutes: a combine's proofs).
+    pub fn work(&self) -> Option<Work> {
+        self.work.lock().ok().and_then(|w| w.clone())
     }
 
     /// A backend with no worker behind it: commands go nowhere and nothing comes back. For drawing the window in a test.
@@ -74,6 +99,7 @@ impl Backend {
                 rx,
                 join: None,
                 registry: Default::default(),
+                work: Default::default(),
             },
             ev_tx,
             cmd_rx,

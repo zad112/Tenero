@@ -1410,10 +1410,24 @@ impl App {
                 });
             }
         });
+        self.work_line(ui);
+    }
+
+    /// What the worker is busy with, while the window waits for it: a combine's proofs can take minutes, and no snapshot
+    /// comes until they are done.
+    fn work_line(&self, ui: &mut egui::Ui) {
+        if self.send.working.is_none() {
+            return;
+        }
+        if let Some(w) = self.backend.work() {
+            ui.label(RichText::new(work_text(&w)).small().color(AMBER));
+        }
     }
 
     fn review(&mut self, ui: &mut egui::Ui, d: &WalletData, q: &Quote) {
         if let Some(what) = &q.own {
+            // worked out before its proofs are made: the fee is worked out again as they are, so it is "about"
+            let about = if q.proof_secs.is_some() { "about " } else { "" };
             ui.heading("Check the combine");
             ui.label("Nothing has been sent yet. This moves your own pieces into fewer, larger ones: nobody is paid.");
             ui.add_space(6.0);
@@ -1431,30 +1445,41 @@ impl App {
                     ui.label(q.transactions.to_string());
                     ui.end_row();
                     ui.label(format!("Fee ({})", q.level.name()));
-                    ui.label(text::coins(q.fee));
+                    ui.label(format!("{about}{}", text::coins(q.fee)));
                     ui.end_row();
                     ui.label("The account keeps");
-                    ui.label(RichText::new(text::coins(q.amount)).strong());
+                    ui.label(RichText::new(format!("{about}{}", text::coins(q.amount))).strong());
                     ui.end_row();
+                    if let Some(secs) = q.proof_secs {
+                        ui.label("Making the proofs");
+                        ui.label(format!("about {} (an estimate)", text::duration(secs)));
+                        ui.end_row();
+                    }
                 });
             ui.add_space(4.0);
+            if q.proof_secs.is_some() {
+                ui.label(
+                    RichText::new("The proofs are made when you press Combine: about a second for each piece, several transactions at once. The wallet is busy until they are done, and then they are sent.")
+                        .small()
+                        .color(GREY),
+                );
+            }
             ui.colored_label(
                 AMBER,
                 "The new pieces can be spent after about 10 blocks. Until then the balance still counts them, but they are not spendable.",
             );
             ui.add_space(6.0);
+            let idle = self.send.working.is_none();
             ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(self.send.working.is_none(), egui::Button::new("Combine"))
-                    .clicked()
-                {
+                if ui.add_enabled(idle, egui::Button::new("Combine")).clicked() {
                     self.send.working = Some(Instant::now());
                     self.backend.send(Cmd::SendPrepared);
                 }
-                if ui.button("Back").clicked() {
+                if ui.add_enabled(idle, egui::Button::new("Back")).clicked() {
                     self.backend.send(Cmd::CancelPrepared);
                 }
             });
+            self.work_line(ui);
             return;
         }
         ui.heading("Check the payment");
@@ -3113,11 +3138,14 @@ impl App {
             self.backend.emergency_stop(&self.snap.settings);
             std::process::exit(0);
         }
-        // a request that has had no answer for two minutes does not keep the buttons off for ever
+        // a request that has had no answer for two minutes does not keep the buttons off for ever; but while the worker is
+        // still handling a command (a combine's proofs take minutes) it is busy, not lost: turning the buttons back on then
+        // only queued more work behind it
         if self
             .send
             .working
             .is_some_and(|t| t.elapsed() > Duration::from_secs(120))
+            && self.backend.work().is_none()
         {
             self.send.working = None;
             self.send.error =
@@ -3167,5 +3195,18 @@ impl App {
         self.phrase_window(&ctx);
         self.prompts(&ctx);
         self.proof_windows(&ctx);
+    }
+}
+
+/// What the worker is doing, as the window says it: `Making the proofs: 3 of 11 transactions made (4 min 10 s so far)`.
+pub fn work_text(w: &crate::core::Work) -> String {
+    let so_far = text::duration(w.since.elapsed().as_secs());
+    if w.total > 0 {
+        format!(
+            "{}: {} of {} transactions made ({so_far} so far)",
+            w.what, w.done, w.total
+        )
+    } else {
+        format!("{}… ({so_far} so far)", w.what)
     }
 }

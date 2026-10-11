@@ -7,6 +7,8 @@
 //! proof hides the spent output among every output in the curve tree.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use curve25519_dalek::scalar::Scalar;
 use rand_core::{CryptoRng, RngCore};
@@ -27,7 +29,7 @@ use tenero_crypto::fcmp::{self, OutputSecret, Spend};
 use zeroize::Zeroizing;
 
 use crate::address::{carrot_master, Address, Kind, Network};
-use crate::chain::{is_mature, ChainView, Rules, Submitter};
+use crate::chain::{is_mature, ChainView, Rules, SpendPaths, Submitter};
 
 /// How many scanned block ids the wallet remembers to notice a reorganisation. A reorganisation deeper than
 /// this makes the wallet rescan from its birth height.
@@ -107,6 +109,9 @@ pub enum WalletError {
     },
     /// There is nothing worth combining: fewer than two coins, or coins worth less than the fee they would add.
     NothingToCombine,
+    /// A combine worked out earlier ([`OwnPlan`]) names coins that are no longer spendable (spent, reserved, or taken out by
+    /// a reorganisation): it must be worked out again.
+    PlanStale,
     /// The recipient address cannot be paid this way (another network; a subaddress or an integrated address for a block
     /// reward; two integrated addresses in one transaction).
     BadAddress,
@@ -140,6 +145,10 @@ impl std::fmt::Display for WalletError {
             WalletError::NothingToCombine => write!(
                 f,
                 "there are no pieces worth combining (a piece worth less than the fee it adds is left alone)"
+            ),
+            WalletError::PlanStale => write!(
+                f,
+                "some of the pieces this was worked out with can no longer be spent (the chain moved on): prepare it again"
             ),
             WalletError::BadAddress => write!(f, "that address cannot be paid this way"),
             WalletError::ViewOnly => write!(
@@ -265,6 +274,37 @@ pub struct TxQuote {
     /// Its exact size in bytes, proofs included.
     pub size: u64,
     pub fee: u64,
+}
+
+/// A combining of a wallet's own coins, worked out WITHOUT being made: which coins go in each transaction and what each
+/// would cost, but no proofs (about a second a coin to make) and no request to the node for spend paths. What
+/// [`Wallet::plan_sweep`] and [`Wallet::plan_combine`] give and [`Wallet::build_own`] makes, so a person can see the cost
+/// and the wait before deciding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnPlan {
+    /// Where every transaction pays: this wallet's own address, or the destination of a sweep.
+    pub to: Address,
+    pub level: FeeLevel,
+    /// The coins of each transaction, by key image.
+    pub groups: Vec<Vec<[u8; 32]>>,
+    /// Each transaction's size and fee, as worked out now (the build works the fee out again: a tree that gains a layer in
+    /// between makes the transaction slightly bigger).
+    pub quotes: Vec<TxQuote>,
+    /// What the coins of each transaction hold.
+    pub totals: Vec<u64>,
+}
+
+impl OwnPlan {
+    pub fn coins(&self) -> usize {
+        self.groups.iter().map(Vec::len).sum()
+    }
+    pub fn fee(&self) -> u64 {
+        self.quotes.iter().map(|q| q.fee).sum()
+    }
+    /// What arrives at `to`: the coins less the fees.
+    pub fn amount(&self) -> u64 {
+        self.totals.iter().sum::<u64>() - self.fee()
+    }
 }
 
 /// A transaction on the chain that spends coins of this wallet, as scanning finds it: what a wallet that did not send it
@@ -1211,17 +1251,23 @@ impl Wallet {
         mut chosen: Vec<Owned>,
         dests: &[(Address, u64)],
     ) -> Result<Built, WalletError> {
+        self.access.full().ok_or(WalletError::ViewOnly)?;
+        let paths = paths_for(chain, &mut chosen)?;
+        self.assemble_with(rng, rules, level, chosen, paths, dests)
+    }
+
+    /// [`Wallet::assemble`] once the coins' paths are known (`chosen` in key-image order, as [`paths_for`] leaves it). It
+    /// needs no node, so several can be made at once.
+    fn assemble_with(
+        &self,
+        rng: &mut (impl RngCore + CryptoRng + Send),
+        rules: &Rules,
+        level: FeeLevel,
+        chosen: Vec<Owned>,
+        paths: SpendPaths,
+        dests: &[(Address, u64)],
+    ) -> Result<Built, WalletError> {
         let account = self.access.full().ok_or(WalletError::ViewOnly)?;
-        // key images strictly ascending: the rules' one canonical order; the first is the input context's
-        chosen.sort_by_key(|o| o.key_image);
-        let paths = chain
-            .spend_paths(&chosen.iter().map(|o| o.global_index).collect::<Vec<_>>())
-            .map_err(chain_err)?;
-        if paths.paths.len() != chosen.len() {
-            return Err(WalletError::Chain(
-                "the node answered about a different number of outputs than were asked".into(),
-            ));
-        }
         let layers = usize::from(paths.tree.n_layers);
         let n_outputs = dests.len() + 1;
         let size = transaction_size(chosen.len(), n_outputs, layers);
@@ -1546,7 +1592,7 @@ impl Wallet {
     /// fit, each group paid to `to` (this wallet's own address when it is `None`) in one output. For a wallet that has been
     /// paid in many small amounts (a miner's block rewards), this is what makes them one coin. Coins that are alone in their
     /// group are left alone when the destination is this wallet. Nothing is sent and nothing is reserved. **The result of a
-    /// combine cannot be spent for 10 blocks.**
+    /// combine cannot be spent for 10 blocks.** ([`Wallet::plan_sweep`], then [`Wallet::build_own`] on one thread.)
     pub fn build_sweep(
         &mut self,
         chain: &impl ChainView,
@@ -1554,27 +1600,8 @@ impl Wallet {
         to: Option<&Address>,
         level: FeeLevel,
     ) -> Result<Vec<Built>, WalletError> {
-        let rules = chain.rules().map_err(chain_err)?;
-        let mut coins = self.spendable(chain, &rules)?;
-        let dest = to.copied().unwrap_or_else(|| self.address());
-        if dest.network != self.network {
-            return Err(WalletError::BadAddress);
-        }
-        let limit = max_inputs_for(2, rules.tree_layers);
-        let per_input = per_input_fee(&rules, level)?;
-        coins.retain(|o| o.amount > per_input);
-        coins.sort_by_key(|o| o.amount);
-        let mut out = Vec::new();
-        for group in coins.chunks(limit) {
-            if to.is_none() && group.len() < 2 {
-                continue;
-            }
-            out.push(self.consolidate(chain, rng, &rules, group.to_vec(), dest, level)?);
-        }
-        if out.is_empty() {
-            return Err(WalletError::NothingToCombine);
-        }
-        Ok(out)
+        let plan = self.plan_sweep(chain, to, level)?;
+        self.build_own(chain, rng, &plan, 1, &|_, _| {})
     }
 
     /// Combines `count` coins (the smallest ones that are worth more than the fee they add) into one coin of this wallet:
@@ -1586,6 +1613,46 @@ impl Wallet {
         count: usize,
         level: FeeLevel,
     ) -> Result<Built, WalletError> {
+        let plan = self.plan_combine(chain, count, level)?;
+        let mut built = self.build_own(chain, rng, &plan, 1, &|_, _| {})?;
+        Ok(built.remove(0))
+    }
+
+    /// What [`Wallet::build_sweep`] would make, worked out without making it (no proofs, no spend paths): the same coins in
+    /// the same groups, each transaction's size and fee.
+    pub fn plan_sweep(
+        &mut self,
+        chain: &impl ChainView,
+        to: Option<&Address>,
+        level: FeeLevel,
+    ) -> Result<OwnPlan, WalletError> {
+        let rules = chain.rules().map_err(chain_err)?;
+        let mut coins = self.spendable(chain, &rules)?;
+        let dest = to.copied().unwrap_or_else(|| self.address());
+        if dest.network != self.network {
+            return Err(WalletError::BadAddress);
+        }
+        let limit = max_inputs_for(2, rules.tree_layers);
+        let per_input = per_input_fee(&rules, level)?;
+        coins.retain(|o| o.amount > per_input);
+        coins.sort_by_key(|o| o.amount);
+        let groups: Vec<&[Owned]> = coins
+            .chunks(limit)
+            .filter(|g| to.is_some() || g.len() >= 2)
+            .collect();
+        if groups.is_empty() {
+            return Err(WalletError::NothingToCombine);
+        }
+        own_plan(&rules, level, dest, &groups)
+    }
+
+    /// What [`Wallet::build_combine`] would make, worked out without making it.
+    pub fn plan_combine(
+        &mut self,
+        chain: &impl ChainView,
+        count: usize,
+        level: FeeLevel,
+    ) -> Result<OwnPlan, WalletError> {
         let rules = chain.rules().map_err(chain_err)?;
         let limit = max_inputs_for(2, rules.tree_layers);
         if count > limit {
@@ -1601,34 +1668,115 @@ impl Wallet {
         if coins.len() < count {
             return Err(WalletError::NothingToCombine);
         }
-        coins.truncate(count);
         let dest = self.address();
-        self.consolidate(chain, rng, &rules, coins, dest, level)
+        own_plan(&rules, level, dest, &[&coins[..count]])
     }
 
-    /// One transaction that spends exactly `coins` and pays everything but the fee to `dest`.
-    fn consolidate(
-        &self,
+    /// Makes the transactions of an [`OwnPlan`]: each spends exactly its group's coins and pays everything but the fee to
+    /// the plan's destination. The spend paths are asked for one transaction after another; the proofs (about a second a
+    /// coin, each on one thread: the FCMP++ prover has no threads of its own) are made on up to `threads` threads at once,
+    /// one transaction to a thread. With more than one thread, each thread draws its randomness from the operating system
+    /// (`OsRng`) rather than from `rng`. `progress(done, total)` is called before the first and as each transaction is
+    /// finished. Every proof is verified before this returns. Nothing is sent and nothing is reserved. A plan whose coins
+    /// are no longer all spendable is refused ([`WalletError::PlanStale`]).
+    pub fn build_own(
+        &mut self,
         chain: &impl ChainView,
         rng: &mut (impl RngCore + CryptoRng + Send),
+        plan: &OwnPlan,
+        threads: usize,
+        progress: &(dyn Fn(usize, usize) + Sync),
+    ) -> Result<Vec<Built>, WalletError> {
+        if plan.to.network != self.network {
+            return Err(WalletError::BadAddress);
+        }
+        let rules = chain.rules().map_err(chain_err)?;
+        let coins = self.spendable(chain, &rules)?;
+        let by_image: HashMap<[u8; 32], &Owned> = coins.iter().map(|o| (o.key_image, o)).collect();
+        let mut jobs = Vec::with_capacity(plan.groups.len());
+        for group in &plan.groups {
+            let mut chosen = group
+                .iter()
+                .map(|k| by_image.get(k).map(|o| (*o).clone()))
+                .collect::<Option<Vec<Owned>>>()
+                .ok_or(WalletError::PlanStale)?;
+            let total: u64 = chosen.iter().map(|o| o.amount).sum();
+            // the fee of exactly this transaction (the tree may grow a layer before the paths are read: then the change,
+            // not the payment, absorbs the difference, and a combine with no change left fails rather than overpays)
+            let fee = fee_for_size(
+                &rules,
+                plan.level,
+                transaction_size(chosen.len(), 2, rules.tree_layers) as u64,
+            )?;
+            let amount = total
+                .checked_sub(fee)
+                .filter(|a| *a > 0)
+                .ok_or(WalletError::NothingToCombine)?;
+            let paths = paths_for(chain, &mut chosen)?;
+            jobs.push(OwnJob {
+                chosen,
+                paths,
+                amount,
+            });
+        }
+        let total = jobs.len();
+        progress(0, total);
+        let me: &Wallet = self;
+        let threads = threads.clamp(1, total.max(1));
+        if threads == 1 {
+            let mut out = Vec::with_capacity(total);
+            for (i, job) in jobs.into_iter().enumerate() {
+                out.push(me.make_own(&mut *rng, &rules, plan, job)?);
+                progress(i + 1, total);
+            }
+            return Ok(out);
+        }
+        // one transaction to a thread at a time, taken in order, so a transaction never waits on one after it
+        let queue = Mutex::new(jobs.into_iter().enumerate());
+        let results: Mutex<Vec<Option<Result<Built, WalletError>>>> =
+            Mutex::new((0..total).map(|_| None).collect());
+        let done = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..threads {
+                s.spawn(|| loop {
+                    let Some((i, job)) = queue.lock().expect("not poisoned").next() else {
+                        break;
+                    };
+                    let r = me.make_own(&mut rand_core::OsRng, &rules, plan, job);
+                    let failed = r.is_err();
+                    results.lock().expect("not poisoned")[i] = Some(r);
+                    progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
+                    if failed {
+                        // the rest would be thrown away: take no more
+                        queue.lock().expect("not poisoned").by_ref().for_each(drop);
+                    }
+                });
+            }
+        });
+        let mut out = Vec::with_capacity(total);
+        for r in results.into_inner().expect("not poisoned") {
+            // the work is taken in order, so one never made comes after one that failed, whose error is returned first
+            out.push(r.expect("made, or after one that failed")?);
+        }
+        Ok(out)
+    }
+
+    /// One transaction of [`Wallet::build_own`], its paths known.
+    fn make_own(
+        &self,
+        rng: &mut (impl RngCore + CryptoRng + Send),
         rules: &Rules,
-        coins: Vec<Owned>,
-        dest: Address,
-        level: FeeLevel,
+        plan: &OwnPlan,
+        job: OwnJob,
     ) -> Result<Built, WalletError> {
-        let total: u64 = coins.iter().map(|o| o.amount).sum();
-        // the fee of exactly this transaction (the tree may grow a layer before the paths are read: then the change, not
-        // the payment, absorbs the difference, and a combine with no change left fails rather than overpays)
-        let fee = fee_for_size(
+        self.assemble_with(
+            rng,
             rules,
-            level,
-            transaction_size(coins.len(), 2, rules.tree_layers) as u64,
-        )?;
-        let amount = total
-            .checked_sub(fee)
-            .filter(|a| *a > 0)
-            .ok_or(WalletError::NothingToCombine)?;
-        self.assemble(chain, rng, rules, level, coins, &[(dest, amount)])
+            plan.level,
+            job.chosen,
+            job.paths,
+            &[(plan.to, job.amount)],
+        )
     }
 
     /// Hands the transactions of a batch to the node one after another and reserves the coins of each. It stops at the first
@@ -1712,6 +1860,62 @@ impl Wallet {
                 needed: u64::MAX,
             })
     }
+}
+
+/// One transaction of a [`Wallet::build_own`]: its coins (in key-image order), their paths, and what it pays.
+struct OwnJob {
+    chosen: Vec<Owned>,
+    paths: SpendPaths,
+    amount: u64,
+}
+
+/// Sorts `chosen` into key-image order (the rules' one canonical order; the first is the input context's) and asks the node
+/// for their spend paths, all in the tree of one block.
+fn paths_for(chain: &impl ChainView, chosen: &mut [Owned]) -> Result<SpendPaths, WalletError> {
+    chosen.sort_by_key(|o| o.key_image);
+    let paths = chain
+        .spend_paths(&chosen.iter().map(|o| o.global_index).collect::<Vec<_>>())
+        .map_err(chain_err)?;
+    if paths.paths.len() != chosen.len() {
+        return Err(WalletError::Chain(
+            "the node answered about a different number of outputs than were asked".into(),
+        ));
+    }
+    Ok(paths)
+}
+
+/// An [`OwnPlan`] of these groups of coins, each paid to `to` less its fee. A group worth no more than its fee is refused
+/// ([`WalletError::NothingToCombine`]), as building it would be.
+fn own_plan(
+    rules: &Rules,
+    level: FeeLevel,
+    to: Address,
+    groups: &[&[Owned]],
+) -> Result<OwnPlan, WalletError> {
+    let mut plan = OwnPlan {
+        to,
+        level,
+        groups: Vec::new(),
+        quotes: Vec::new(),
+        totals: Vec::new(),
+    };
+    for g in groups {
+        let size = transaction_size(g.len(), 2, rules.tree_layers) as u64;
+        let fee = fee_for_size(rules, level, size)?;
+        let total: u64 = g.iter().map(|o| o.amount).sum();
+        if total <= fee {
+            return Err(WalletError::NothingToCombine);
+        }
+        plan.groups.push(g.iter().map(|o| o.key_image).collect());
+        plan.quotes.push(TxQuote {
+            inputs: g.len(),
+            outputs: 2,
+            size,
+            fee,
+        });
+        plan.totals.push(total);
+    }
+    Ok(plan)
 }
 
 /// The fee for a transaction of `size` bytes at a fee level: the level's share of the minimum the next block needs, and

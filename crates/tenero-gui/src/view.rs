@@ -164,6 +164,9 @@ pub struct Quote {
     pub unsent_total: u64,
     /// `Some(what)` when this is not a payment but a combining of the account's own coins (`to` is empty then).
     pub own: Option<String>,
+    /// Worked out, not yet made: the proofs are made after the yes, and this is how long that is ESTIMATED to take, in
+    /// seconds (`None` when they are made already). The fee is then worked out again as the transactions are made.
+    pub proof_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -323,6 +326,26 @@ pub enum Cmd {
     CancelMove,
     /// Stop what this window started and end.
     Quit,
+}
+
+impl Cmd {
+    /// What the worker is doing while it handles this command, for the window to say while it waits.
+    pub fn doing(&self) -> &'static str {
+        match self {
+            Cmd::EstimateFees { .. } => "Working out the fee",
+            Cmd::PreparePayment { .. } => "Making the payment's proofs",
+            Cmd::PrepareCombine { .. } => "Working out the combine",
+            Cmd::SendPrepared => "Making the proofs and sending",
+            Cmd::MakeProof(_) | Cmd::CheckProof { .. } | Cmd::CheckKey { .. } => {
+                "Working on the proof"
+            }
+            Cmd::CreateWallet { .. } | Cmd::RestoreWallet { .. } | Cmd::RestoreViewOnly { .. } => {
+                "Making the wallet"
+            }
+            Cmd::Unlock { .. } => "Opening the wallet",
+            _ => "Working",
+        }
+    }
 }
 
 pub enum Event {
