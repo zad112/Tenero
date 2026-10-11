@@ -491,6 +491,111 @@ fn a_miner_in_another_process_mines_blocks_the_node_accepts_and_the_wallet_can_s
     let _ = OsRng;
 }
 
+#[test]
+fn in_the_fee_s_minute_the_blocks_pay_the_fee_s_address_and_the_screen_says_so() {
+    use tenero_miner::fee::{FeeSchedule, MiningFee};
+    let rig = Rig::new("fee");
+    let mut engine = rig.engine();
+    let (handle, mut hook) = start(
+        "127.0.0.1:0".parse().unwrap(),
+        COOKIE,
+        Arc::new(AtomicBool::new(false)),
+        meta(),
+    )
+    .unwrap();
+    let addr = handle.addr;
+    let fee_wallet = Wallet::from_seed(&[2; 32], Network::Test, 0);
+    // the miner's clock for the fee: in the fee's minute until the test moves it on
+    let clock = Arc::new(AtomicU64::new(10));
+    let mut fee = MiningFee::new(
+        fee_wallet.address(),
+        "the backend's author",
+        FeeSchedule {
+            cycle: Duration::from_secs(6000),
+            slice: Duration::from_secs(60),
+            first: Duration::ZERO,
+        },
+    )
+    .unwrap();
+    let c2 = Arc::clone(&clock);
+    fee.elapsed = Arc::new(move || Duration::from_secs(c2.load(Ordering::SeqCst)));
+    let (cfg, events) = cfg_events();
+    let stop = Arc::new(AtomicBool::new(false));
+    let now = (T0 + 60 * 500) * 1000;
+    let (stats, tip) = thread::scope(|s| {
+        let stop2 = Arc::clone(&stop);
+        let t = s.spawn(move || {
+            let mut rm = sha_miner(RemoteMinerConfig {
+                now_secs: Arc::new(|| T0 + 60 * 500),
+                fee: Some(fee),
+                ..cfg
+            });
+            rm.run(
+                || RemoteNode::connect(addr, &COOKIE),
+                &stop2,
+                Duration::from_millis(5),
+            )
+            .unwrap();
+            rm.stats
+        });
+        let mut serve_until = |height: u64, engine: &mut Engine<'_>| {
+            let end = Instant::now() + Duration::from_secs(60);
+            while engine.node().tip().unwrap().0 < height {
+                assert!(Instant::now() < end, "too slow");
+                for ev in hook.poll(engine, now) {
+                    engine.handle(now, ev);
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        };
+        serve_until(5, &mut engine);
+        // the fee's minute is over
+        clock.store(120, Ordering::SeqCst);
+        let h = engine.node().tip().unwrap().0;
+        serve_until(h + 5, &mut engine);
+        for _ in 0..50 {
+            for ev in hook.poll(&mut engine, now) {
+                engine.handle(now, ev);
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        stop.store(true, Ordering::SeqCst);
+        let end = Instant::now() + Duration::from_secs(10);
+        while !t.is_finished() && Instant::now() < end {
+            for ev in hook.poll(&mut engine, now) {
+                engine.handle(now, ev);
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        (t.join().unwrap(), engine.node().tip().unwrap())
+    });
+    let mut mine = Wallet::from_seed(&[1; 32], Network::Test, 0);
+    mine.sync(engine.node()).unwrap();
+    let mut theirs = Wallet::from_seed(&[2; 32], Network::Test, 0);
+    theirs.sync(engine.node()).unwrap();
+    let (n_mine, n_fee) = (mine.owned().len() as u64, theirs.owned().len() as u64);
+    // every block pays one of the two; the first ones the fee's, the later ones the miner's
+    assert_eq!(n_mine + n_fee, tip.0, "{stats:?}");
+    assert!(n_fee >= 4, "{n_fee} fee blocks of {}", tip.0);
+    assert!(n_mine >= 4, "{n_mine} own blocks of {}", tip.0);
+    assert_eq!(stats.fee_blocks, n_fee, "{stats:?}");
+    let ev = events.lock().unwrap();
+    assert!(
+        matches!(ev.iter().find(|e| matches!(e, MinerEvent::FeeStarted { .. })), Some(MinerEvent::FeeStarted { to }) if to == "the backend's author")
+    );
+    assert!(ev.iter().any(|e| matches!(e, MinerEvent::FeeEnded)));
+    let fee_blocks = ev
+        .iter()
+        .filter(|e| matches!(e, MinerEvent::FeeBlockInChain { .. }))
+        .count() as u64;
+    let own_blocks = ev
+        .iter()
+        .filter(|e| matches!(e, MinerEvent::InChain { .. }))
+        .count() as u64;
+    assert_eq!(fee_blocks, n_fee);
+    assert_eq!(own_blocks, n_mine);
+}
+
 // ------------------------------------------------------------------------------------------------
 // a scripted fake node
 // ------------------------------------------------------------------------------------------------

@@ -13,6 +13,7 @@ pub mod daemon;
 pub mod log;
 pub mod miner_report;
 pub mod miner_service;
+pub mod mining_fee;
 pub mod pool;
 pub mod pool_check;
 pub mod pool_core;

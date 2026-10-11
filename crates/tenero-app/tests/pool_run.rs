@@ -277,6 +277,110 @@ fn a_miner_works_for_a_pool_over_a_real_socket_and_shares_and_a_block_are_counte
         .any(|e| matches!(e, tenero_miner::MinerEvent::ShareAccepted { .. })));
 }
 
+/// A fee for the pool miner whose clock (seconds since the start) the test sets: its minute is 0 to 60 s.
+fn fee_to(address: Address) -> (tenero_miner::fee::MiningFee, Arc<AtomicU64>) {
+    use tenero_miner::fee::{FeeSchedule, MiningFee};
+    let clock = Arc::new(AtomicU64::new(10));
+    let mut fee = MiningFee::new(
+        address,
+        "the backend's author",
+        FeeSchedule {
+            cycle: Duration::from_secs(6000),
+            slice: Duration::from_secs(60),
+            first: Duration::ZERO,
+        },
+    )
+    .unwrap();
+    let c = Arc::clone(&clock);
+    fee.elapsed = Arc::new(move || Duration::from_secs(c.load(Ordering::SeqCst)));
+    (fee, clock)
+}
+
+#[test]
+fn in_the_fee_s_minute_a_pool_miner_logs_in_with_the_fee_s_address_and_then_with_its_own_again() {
+    let rig = start(|c| c.shares_per_minute = 1_000_000);
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let mut cfg = PoolMinerConfig::new("test", &address(7).to_text(), "rig7");
+    let (fee, clock) = fee_to(address(8));
+    cfg.fee = Some(fee);
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let e = Arc::clone(&events);
+    cfg.events = Arc::new(move |ev| e.lock().unwrap().push(ev));
+    let mut pm = PoolMiner::new(Miner::spawn(|| Ok(Sha256Backend)), PowKind::Sha256, cfg);
+    let (addr, key) = (rig.handle.addr, rig.key);
+    let s = Arc::clone(&shutdown);
+    let t = thread::spawn(move || {
+        pm.run(|| tenero_app::pool_miner::connect(addr, Some(key)), &s)
+            .unwrap();
+        pm
+    });
+    // in the fee's minute: the work is credited to the fee's address only
+    let end = Instant::now() + Duration::from_secs(60);
+    while rig.pool().stats.shares_accepted.load(Ordering::Relaxed) < 4 {
+        assert!(Instant::now() < end, "too slow");
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(rig.pool().accounts().addresses(), 1);
+    // the minute is over: the miner logs in again, with its own address
+    clock.store(120, Ordering::SeqCst);
+    let end = Instant::now() + Duration::from_secs(60);
+    while rig.pool().accounts().addresses() < 2 {
+        assert!(
+            Instant::now() < end,
+            "the miner did not come back with its own address"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    shutdown.store(true, Ordering::SeqCst);
+    let pm = t.join().unwrap();
+    assert!(pm.stats.connections >= 2, "{:?}", pm.stats);
+    assert_eq!(
+        pm.stats.connections_lost, 0,
+        "a switch is not a lost connection"
+    );
+    let ev = events.lock().unwrap().clone();
+    let fee_started = ev
+        .iter()
+        .position(|e| matches!(e, tenero_miner::MinerEvent::FeeStarted { .. }))
+        .expect("the fee's minute was announced");
+    let fee_ended = ev
+        .iter()
+        .position(|e| matches!(e, tenero_miner::MinerEvent::FeeEnded))
+        .expect("and its end");
+    assert!(fee_started < fee_ended);
+}
+
+#[test]
+fn a_pool_that_will_not_take_the_fee_s_address_gets_the_miner_s_own_for_the_rest_of_the_minute() {
+    let rig = start(|c| c.shares_per_minute = 1_000_000);
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let mut cfg = PoolMinerConfig::new("test", &address(7).to_text(), "rig7");
+    // an address of another network: this test pool refuses it
+    let (fee, _clock) = fee_to(Wallet::from_seed(&[8; 32], Network::Dev, 0).address());
+    cfg.fee = Some(fee);
+    let mut pm = PoolMiner::new(Miner::spawn(|| Ok(Sha256Backend)), PowKind::Sha256, cfg);
+    let (addr, key) = (rig.handle.addr, rig.key);
+    let s = Arc::clone(&shutdown);
+    let t = thread::spawn(move || {
+        pm.run(|| tenero_app::pool_miner::connect(addr, Some(key)), &s)
+            .unwrap();
+        pm
+    });
+    let end = Instant::now() + Duration::from_secs(60);
+    while rig.pool().stats.shares_accepted.load(Ordering::Relaxed) < 4 {
+        assert!(
+            Instant::now() < end,
+            "the miner did not go on with its own address"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    shutdown.store(true, Ordering::SeqCst);
+    let pm = t.join().unwrap();
+    // one refused hello, then the miner's own address for the rest of the minute (not one try after another)
+    assert_eq!(pm.stats.connections, 2, "{:?}", pm.stats);
+    assert_eq!(rig.pool().accounts().addresses(), 1);
+}
+
 #[test]
 fn a_miner_that_was_given_the_pools_key_refuses_a_pool_with_another_and_one_given_none_goes_anyway()
 {

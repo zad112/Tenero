@@ -882,6 +882,16 @@ pub fn miner_event_to_ui(e: &tenero_miner::MinerEvent) -> Option<Event> {
         M::ShareAccepted { .. } | M::ShareRejected { .. } => return None,
         M::PoolConnected { .. } => Event::Connected("the pool".to_string()),
         M::PoolLost { .. } => Event::Lost("the pool".to_string()),
+        M::FeeStarted { to } => Event::Info(format!(
+            "mining fee: the next minute is mined for {to} ({}% of the mining time)",
+            tenero_miner::fee::FEE_PERCENT
+        )),
+        M::FeeEnded => Event::Info("mining fee: done, mining for you again".to_string()),
+        M::FeeBlockInChain { height, reward, .. } => Event::Info(format!(
+            "block {} is in the chain, mined in the fee's minute: its reward of {} goes to the fee's address, not yours",
+            group_digits(*height),
+            format_amount(*reward)
+        )),
     })
 }
 

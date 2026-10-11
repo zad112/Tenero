@@ -74,6 +74,22 @@ impl MinerBackend {
         }
     }
 
+    /// What the miner's fee is for this backend on `network` (`tenero_app::mining_fee`), in a sentence for the Mining tab.
+    pub fn fee_text(self, network: Network) -> String {
+        match tenero_app::mining_fee::FEE_RECIPIENTS
+            .iter()
+            .find(|r| r.network == network.name() && r.backend == self.name())
+        {
+            Some(r) => format!(
+                "Mining fee: {}% of the mining time (one minute in every 100) is mined for {}, to {}. It is part of the miner and cannot be turned off.",
+                tenero_app::mining_fee::FEE_PERCENT,
+                r.who,
+                r.address
+            ),
+            None => format!("Mining fee: none for the {} backend on this network.", self.name()),
+        }
+    }
+
     /// Which backends the network can use (the proof of work differs).
     pub fn for_network(n: Network) -> &'static [MinerBackend] {
         match n {
