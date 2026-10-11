@@ -1,7 +1,7 @@
 name: release
 
 # Builds the release packages (Windows zip, Linux tar.gz, and the Linux AMD tar.gz: each with a SHA-256 file) on GitHub's hosted
-# runners. The AMD package is the Linux one plus the AMD GPU backend (`amd-hip`: RX 7000 series, ROCm 6 needed by the user;
+# runners. The AMD package is the Linux one plus the AMD GPU backend (`amd-hip`: RX 7000 and RX 9000 series, ROCm 7 needed by the user;
 # contributed, and NOT run by CI or the author, who has no AMD card: only built).
 # * A push of a tag `vX.Y.Z...` builds both and creates a DRAFT, pre-release GitHub release with the packages, a combined SHA256SUMS and the notes in
 #   docs/releases/<tag>.md. Nothing is public until the owner edits the notes and presses "Publish". The tag must equal "v" + the version in Cargo.toml.

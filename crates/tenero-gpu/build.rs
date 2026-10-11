@@ -2,6 +2,11 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
+/// The chips the AMD backend is compiled for unless `TENERO_HIP_ARCH` says otherwise (see `main`).
+const DEFAULT_ARCHS: &[&str] = &[
+    "gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1150", "gfx1151", "gfx1200", "gfx1201",
+];
+
 fn main() {
     println!("cargo:rerun-if-env-changed=TENERO_HIPCC");
     println!("cargo:rerun-if-env-changed=TENERO_ROCM");
@@ -53,7 +58,23 @@ fn main() {
             .to_string_lossy()
             .into_owned()
     });
-    let arch = env::var("TENERO_HIP_ARCH").unwrap_or_else(|_| "gfx1100".to_string());
+    // AMD's GPU code runs only on the chip it was compiled for (no later chip can take it, unlike NVIDIA's PTX), so the
+    // backend is compiled for every chip it supports, one code object each in the same file: RDNA3 (gfx11: RX 7000 series
+    // gfx1100/1101/1102, the Radeon 700M laptop chips gfx1103, Strix gfx1150/1151) and RDNA4 (gfx12: RX 9000 series
+    // gfx1200/1201). `TENERO_HIP_ARCH` (a comma-separated list) builds for others. The kernel is told the list, so a card that
+    // is not on it is refused at the start with a message, not by a failure in the middle.
+    let archs = env::var("TENERO_HIP_ARCH").unwrap_or_else(|_| DEFAULT_ARCHS.join(","));
+    let archs: Vec<&str> = archs
+        .split(',')
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .collect();
+    assert!(
+        archs
+            .iter()
+            .all(|a| a.starts_with("gfx11") || a.starts_with("gfx12")),
+        "TENERO_HIP_ARCH: this backend is written for RDNA3 (gfx11) and RDNA4 (gfx12) only: {archs:?}"
+    );
 
     let mut command = Command::new(&hipcc);
     command.args(["-std=c++17", "-O3", "-fPIC", "-c", "kernels/amd_hip.cpp"]);
@@ -62,10 +83,13 @@ fn main() {
             command.arg(format!("-D{name}={}", value.to_string_lossy()));
         }
     }
+    command.arg(format!("-DTENERO_AMD_ARCHS=\"{}\"", archs.join(",")));
+    for arch in &archs {
+        command.arg(format!("--offload-arch={arch}"));
+    }
     let status = command
         .arg("-o")
         .arg(&object)
-        .arg(format!("--offload-arch={arch}"))
         .status()
         .unwrap_or_else(|e| panic!("cannot run {hipcc}: {e}"));
     assert!(status.success(), "HIP kernel compilation failed");

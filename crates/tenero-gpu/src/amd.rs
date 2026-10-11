@@ -1,11 +1,12 @@
-//! AMD RDNA3 backend for matmulhash v2, through HIP and native signed INT8 rocWMMA.
+//! AMD RDNA3 and RDNA4 backend for matmulhash v2, through HIP and native signed INT8 rocWMMA.
 //!
 //! The C++ side owns all device allocations and implements dataset generation, the original
 //! slice attempt, the gathered attempt (what `gamma` and `dev` use from block 0), and the consensus
 //! fold. This wrapper keeps hashing and target comparison in the official Rust implementation.
 //!
 //! **Contributed, and not tested by the project's author** (no AMD card): RDNA3 (gfx11, the RX 7000
-//! series) on Linux with ROCm 6 only. Its bit-for-bit check against the CPU code is
+//! series; written on a gfx1100) and RDNA4 (gfx12, the RX 9000 series, through rocWMMA's own path,
+//! which nobody has run yet) on Linux with ROCm 7 only. Its bit-for-bit check against the CPU code is
 //! `tests/amd_selftest.rs`, which only an AMD card can run.
 
 use std::ffi::{c_char, c_void, CStr};

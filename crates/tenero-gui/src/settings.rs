@@ -34,7 +34,7 @@ pub enum MinerBackend {
     Cpu,
     /// The real proof of work on an NVIDIA GPU.
     Gpu,
-    /// The real proof of work on an AMD GPU (RX 7000 series, Linux, ROCm 6): offered only by a build with the `amd-hip`
+    /// The real proof of work on an AMD GPU (RX 7000 and RX 9000 series, Linux, ROCm 7): offered only by a build with the `amd-hip`
     /// feature (the Linux AMD package), whose miner has the backend. Contributed, not tested by the author.
     Amd,
 }
@@ -58,7 +58,9 @@ impl MinerBackend {
             MinerBackend::Sha256 => "sha256 (test network)",
             MinerBackend::Cpu => "cpu",
             MinerBackend::Gpu => "gpu (NVIDIA)",
-            MinerBackend::Amd => "amd (AMD RX 7000, Linux; contributed, not tested by the author)",
+            MinerBackend::Amd => {
+                "amd (AMD RX 7000 / RX 9000, Linux; contributed, not tested by the author)"
+            }
         }
     }
 
