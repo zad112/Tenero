@@ -261,6 +261,29 @@ nothing in the protocol or the chain makes a pool pay.** The program says so eve
 * A share is checked before it is sent (it must meet the share target); the pool checks every one again. The status shows shares, not blocks: handed in, accepted, too late, refused.
 * The app does the same from the **Mining tab**: "On a pool" (no node needed) or "Alone, on my own node".
 
+### The mining fee (1% of the mining time, `gpu` and `amd` on `gamma`)
+
+From the release after 0.3.0-gamma.1, the project's miner carries a **fee of 1% of its running time**, agreed with the community:
+for **one minute in every hundred**, a miner with the `gpu` (NVIDIA) or `amd` backend works for the author of that backend
+instead of for you. The `cpu` and `sha256` backends have **no fee**, and neither has the `dev` or the `test` network.
+
+| Backend | The fee goes to | Address (`gamma`) |
+|---|---|---|
+| `gpu` (NVIDIA) | the project's author (zad112) | `TENgJhGzz31cRRVv9Xp5BEecw9Kxzf4qGiSCqYBH4JtFMfarVL2VvkbYFCPSGKfss7746sr65PuBqRoNWpShiR1yaNpE7jvrJTb` |
+| `amd` | the AMD backend's author (qcvibes1) | `TENgJhA3h9GDHeXx3PVt7dT7Ef46C1rZ5VJWbohaourDDBNPGji6me2XgrmmXQ66vSgtnDGVkBpGyMR2sXdYcFaAedbkphU1sSL` |
+
+* **How it is taken:** a time share, as in other open miners. On your own node, the block template of the fee's minute pays
+  the fee's address; for a pool, the miner logs in to the pool with the fee's address for that minute, then with yours again.
+  The first fee minute falls at a random point in the first 100 minutes, so a miner that is restarted often pays the same
+  share on average. It is fair on average, not block by block: a small miner may find no block in its fee minutes, or find one there.
+* **It is shown, never hidden:** the miner's banner and log say what the fee is and to whom, the screen says when a fee minute
+  begins and ends, and a block found in one is shown as the fee's ("its reward goes to the fee's address, not yours") and not
+  counted as yours. The app shows it on the Mining tab and in Settings. The same applies to the node's own miner (`mine = gpu`).
+* **It is fixed:** there is no setting to turn it off. The code is open (`crates/tenero-miner/src/fee.rs`, the addresses in
+  `crates/tenero-app/src/mining_fee.rs`), and anyone may build a miner without it.
+* If a pool refuses the fee's address (a pool may limit the connections per address), that minute is mined for you instead.
+* At a main-net, its own addresses replace these. Consensus is not touched: a fee block is an ordinary block.
+
 **The pool itself** is `tenero-pool` (`docs/RUNNING_A_POOL.md`), and `tenero-poolcheck --pool HOST:PORT --network NET --pool-key HEX` checks any pool against the protocol
 (`docs/POOL_PROTOCOL.md`).
 

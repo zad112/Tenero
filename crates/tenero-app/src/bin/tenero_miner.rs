@@ -425,6 +425,15 @@ fn main() {
                     ),
                 },
                 format!("  pays to  {}", args.address),
+                if tenero_app::mining_fee::FEE_BACKENDS.contains(&args.backend.as_str()) {
+                    format!(
+                        "  fee      {}% of the mining time goes to the {} backend's author, on a network that has a fee (gamma)",
+                        tenero_miner::fee::FEE_PERCENT,
+                        args.backend
+                    )
+                } else {
+                    format!("  fee      none (the {} backend has no fee)", args.backend)
+                },
             ];
             if let Some(f) = &args.log_file {
                 d.push(format!("  log      {} (full detail)", f.display()));
@@ -517,6 +526,18 @@ fn main() {
         ));
         log.warn("the block rewards of a pool go to the POOL, which pays you by its own rules: nothing makes it pay. To keep the rewards, mine on your own node.");
     }
+    // the miner's fee (`mining_fee.rs`): fixed, and said before mining starts
+    let fee = match tenero_app::mining_fee::fee_for(network, &args.backend) {
+        Ok(f) => f,
+        Err(e) => {
+            log.error(&e);
+            std::process::exit(2);
+        }
+    };
+    log.info(&format!(
+        "mining fee: {}",
+        tenero_app::mining_fee::fee_line(fee.as_ref(), network)
+    ));
     let epoch = network.epoch_blocks();
     let miner = match args.backend.as_str() {
         "sha256" => Miner::spawn(|| Ok(Sha256Backend)),
@@ -581,76 +602,80 @@ fn main() {
     // what the status thread reads, whichever way this miner works: the backend's counters, and (connected, syncing, height)
     type View = Arc<dyn Fn() -> (bool, bool, u64) + Send + Sync>;
     type Runner = Box<dyn FnOnce(&AtomicBool) -> (Result<(), String>, String)>;
-    let (counters, view, runner): (Arc<tenero_miner::Counters>, View, Runner) =
-        if let Some(target) = pool_target {
-            let mut pcfg = PoolMinerConfig::new(network.name(), &args.address, &args.worker);
-            let l2 = Arc::clone(&l);
-            pcfg.log = Arc::new(move |line| l2.info(&format!("miner: {line}")));
-            pcfg.events = cfg_events;
-            let mut pm = PoolMiner::new(miner, pow, pcfg);
-            let progress = pm.progress();
-            let view: View = Arc::new(move || {
-                (
-                    progress.connected.load(Ordering::Relaxed),
-                    false,
-                    progress.height.load(Ordering::Relaxed),
-                )
-            });
-            let counters = pm.counters();
-            let (addr, pin) = (target.addr, target.pin);
-            let runner: Runner = Box::new(move |shutdown| {
-                let result = pm.run(|| tenero_app::pool_miner::connect(addr, pin), shutdown);
-                let s = pm.stats;
-                (
-                    result,
-                    format!(
-                        "stopped: {} shares sent, {} accepted, {} stale, {} refused",
-                        s.shares_sent, s.shares_accepted, s.shares_stale, s.shares_rejected
-                    ),
-                )
-            });
-            (counters, view, runner)
-        } else {
-            let cfg = RemoteMinerConfig {
-                min_block_interval: Duration::from_secs(args.pace),
-                log: Arc::new(move |line| l.info(&format!("miner: {line}"))),
-                events: cfg_events,
-                ..RemoteMinerConfig::default()
-            };
-            let mut rm = RemoteMiner::new(miner, payout, pow, cfg);
-            let progress = rm.progress();
-            let view: View = Arc::new(move || {
-                (
-                    progress.connected.load(Ordering::Relaxed),
-                    progress.syncing.load(Ordering::Relaxed),
-                    progress.height.load(Ordering::Relaxed),
-                )
-            });
-            let counters = rm.counters();
-            // a node on another computer limits how often it is asked (120 requests a minute by default): once a second
-            let poll = if args.node.is_some() {
-                Duration::from_secs(1)
-            } else {
-                Duration::from_millis(200)
-            };
-            let (node, key, data, control) = (args.node, args.key, args.data.clone(), args.control);
-            let runner: Runner = Box::new(move |shutdown| {
-                let connect = move || match node {
-                    Some(n) => RemoteNode::connect_miner_service(n, key.as_ref()),
-                    None => connect_to(&data, control),
-                };
-                let result = rm.run(connect, shutdown, poll);
-                let s = rm.stats;
-                (
-                    result,
-                    format!(
-                        "stopped: found {} blocks (in chain {}, lost a race {}, refused {})",
-                        s.blocks_found, s.blocks_accepted, s.blocks_lost_race, s.blocks_refused
-                    ),
-                )
-            });
-            (counters, view, runner)
+    let (counters, view, runner): (Arc<tenero_miner::Counters>, View, Runner) = if let Some(
+        target,
+    ) = pool_target
+    {
+        let mut pcfg = PoolMinerConfig::new(network.name(), &args.address, &args.worker);
+        let l2 = Arc::clone(&l);
+        pcfg.log = Arc::new(move |line| l2.info(&format!("miner: {line}")));
+        pcfg.events = cfg_events;
+        pcfg.fee = fee;
+        let mut pm = PoolMiner::new(miner, pow, pcfg);
+        let progress = pm.progress();
+        let view: View = Arc::new(move || {
+            (
+                progress.connected.load(Ordering::Relaxed),
+                false,
+                progress.height.load(Ordering::Relaxed),
+            )
+        });
+        let counters = pm.counters();
+        let (addr, pin) = (target.addr, target.pin);
+        let runner: Runner = Box::new(move |shutdown| {
+            let result = pm.run(|| tenero_app::pool_miner::connect(addr, pin), shutdown);
+            let s = pm.stats;
+            (
+                result,
+                format!(
+                    "stopped: {} shares sent, {} accepted, {} stale, {} refused",
+                    s.shares_sent, s.shares_accepted, s.shares_stale, s.shares_rejected
+                ),
+            )
+        });
+        (counters, view, runner)
+    } else {
+        let cfg = RemoteMinerConfig {
+            min_block_interval: Duration::from_secs(args.pace),
+            log: Arc::new(move |line| l.info(&format!("miner: {line}"))),
+            events: cfg_events,
+            fee,
+            ..RemoteMinerConfig::default()
         };
+        let mut rm = RemoteMiner::new(miner, payout, pow, cfg);
+        let progress = rm.progress();
+        let view: View = Arc::new(move || {
+            (
+                progress.connected.load(Ordering::Relaxed),
+                progress.syncing.load(Ordering::Relaxed),
+                progress.height.load(Ordering::Relaxed),
+            )
+        });
+        let counters = rm.counters();
+        // a node on another computer limits how often it is asked (120 requests a minute by default): once a second
+        let poll = if args.node.is_some() {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_millis(200)
+        };
+        let (node, key, data, control) = (args.node, args.key, args.data.clone(), args.control);
+        let runner: Runner = Box::new(move |shutdown| {
+            let connect = move || match node {
+                Some(n) => RemoteNode::connect_miner_service(n, key.as_ref()),
+                None => connect_to(&data, control),
+            };
+            let result = rm.run(connect, shutdown, poll);
+            let s = rm.stats;
+            (
+                    result,
+                    format!(
+                        "stopped: found {} blocks (in chain {}, of them for the mining fee {}; lost a race {}, refused {})",
+                        s.blocks_found, s.blocks_accepted, s.fee_blocks, s.blocks_lost_race, s.blocks_refused
+                    ),
+                )
+        });
+        (counters, view, runner)
+    };
     // the status, from a thread of its own (the miner is busy in `run`): the screen once a second, and a line of the log now and then
     {
         let tally = Arc::clone(&tally);

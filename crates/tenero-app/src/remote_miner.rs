@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use tenero_core::u256::U256;
 use tenero_core::v2::ids::PowKind;
 use tenero_core::v3::ids;
+use tenero_miner::fee::MiningFee;
 use tenero_miner::{
     meets_target, Counters, EventSink, Job, Miner, MinerEvent, Msg, Solution, WalletPayout,
 };
@@ -112,6 +113,8 @@ pub struct RemoteMinerConfig {
     pub now_secs: Arc<dyn Fn() -> u64 + Send + Sync>,
     /// How long to wait when the node says to slow down (its rate limit, or "busy"): the connection and the job are kept.
     pub slow_down_pause: Duration,
+    /// The miner's fee (`tenero_miner::fee`): during its minutes the template is asked for the fee's address. None by default.
+    pub fee: Option<MiningFee>,
 }
 
 /// Whether a node's error answer means "too many requests" or "busy" (not a lost connection, and not a refused block).
@@ -136,6 +139,7 @@ impl Default for RemoteMinerConfig {
             events: Arc::new(|_| {}),
             now_secs: Arc::new(system_now),
             slow_down_pause: Duration::from_secs(5),
+            fee: None,
         }
     }
 }
@@ -170,6 +174,8 @@ pub struct RemoteStats {
     pub paused_syncing: u64,
     /// Times the connection to the node was lost.
     pub connections_lost: u64,
+    /// Of the blocks in the chain, those found in the fee's minutes (their reward is the fee's).
+    pub fee_blocks: u64,
 }
 
 struct Current {
@@ -180,6 +186,8 @@ struct Current {
     tip: [u8; 32],
     target: U256,
     started: Instant,
+    /// Mined for the fee (the template pays the fee's address).
+    fee: bool,
 }
 
 pub struct RemoteMiner {
@@ -196,6 +204,8 @@ pub struct RemoteMiner {
     /// Whether the node was last seen syncing (mining paused), and whether the loss of the node has been reported.
     paused: bool,
     reported_down: bool,
+    /// Whether the fee's minute was on at the last look (to say when it begins and ends).
+    fee_on: bool,
     progress: Arc<NodeProgress>,
     pub stats: RemoteStats,
 }
@@ -221,6 +231,7 @@ impl RemoteMiner {
             failed: None,
             paused: false,
             reported_down: false,
+            fee_on: false,
             progress: Arc::new(NodeProgress::default()),
             stats: RemoteStats::default(),
         }
@@ -304,6 +315,18 @@ impl RemoteMiner {
             }
         }
         match verdict {
+            BlockVerdict::InChain(_) if cur.fee => {
+                self.stats.blocks_accepted += 1;
+                self.stats.fee_blocks += 1;
+                self.log(&format!(
+                    "block {height} is in the chain: it was mined in the fee's minute, so its reward goes to the fee's address"
+                ));
+                self.event(MinerEvent::FeeBlockInChain {
+                    height,
+                    reward,
+                    work: tenero_miner::rate::work_of(&cur.target),
+                });
+            }
             BlockVerdict::InChain(_) => {
                 self.stats.blocks_accepted += 1;
                 self.log(&format!("block {height} is in the chain"));
@@ -387,16 +410,24 @@ impl RemoteMiner {
         {
             return Ok(()); // pacing: not yet
         }
+        let fee_now = self.fee_turn();
         let stale = match &self.current {
             None => true,
-            Some(c) => c.tip != info.tip_id || c.started.elapsed() >= self.cfg.refresh_every,
+            Some(c) => {
+                c.tip != info.tip_id
+                    || c.started.elapsed() >= self.cfg.refresh_every
+                    || c.fee != fee_now
+            }
         };
         if !stale {
             return Ok(());
         }
         self.miner.cancel();
         let height = info.height + 1;
-        let to = *self.payout.address();
+        let to = match (&self.cfg.fee, fee_now) {
+            (Some(f), true) => f.address,
+            _ => *self.payout.address(),
+        };
         let t = node.block_template(&to, self.cfg.max_weight)?;
         self.stats.templates += 1;
         if t.height != height || t.coinbase.height != height || t.header.prev_id != info.tip_id {
@@ -440,8 +471,32 @@ impl RemoteMiner {
             template: t,
             tip,
             started: Instant::now(),
+            fee: fee_now,
         });
         Ok(())
+    }
+
+    /// Whether the next job is the fee's, and the event when that changes.
+    fn fee_turn(&mut self) -> bool {
+        let Some(fee) = &self.cfg.fee else {
+            return false;
+        };
+        let now = fee.due();
+        if now != self.fee_on {
+            self.fee_on = now;
+            if now {
+                let to = fee.to.clone();
+                self.log(&format!(
+                    "the mining fee's minute has begun: the next blocks pay {to} ({})",
+                    fee.address_text()
+                ));
+                self.event(MinerEvent::FeeStarted { to });
+            } else {
+                self.log("the mining fee's minute has ended: the blocks pay your address again");
+                self.event(MinerEvent::FeeEnded);
+            }
+        }
+        now
     }
 
     /// Mines until `shutdown` is set or the backend fails, reconnecting to the node (with `connect`) whenever the

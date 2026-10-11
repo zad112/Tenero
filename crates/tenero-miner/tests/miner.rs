@@ -149,6 +149,80 @@ fn idle() -> (Idle, Arc<Mutex<Vec<u64>>>, Arc<AtomicU64>) {
 // ---- the SHA-256 test chain, end to end ---------------------------------------------------------------------
 
 #[test]
+fn in_the_fee_s_minute_the_node_s_own_miner_pays_the_fee_s_address_and_says_so() {
+    use tenero_miner::fee::{FeeSchedule, MiningFee};
+    use tenero_wallet::{Network, Wallet};
+    let rig = SimRig::rigs("mn-fee", 1);
+    let mut engine = sha_engine(&rig[0]);
+    let lines = Lines::new();
+    let seconds = Arc::new(AtomicU64::new(10));
+    let mut fee = MiningFee::new(
+        Wallet::from_seed(&[2; 32], Network::Test, 0).address(),
+        "the backend's author",
+        FeeSchedule {
+            cycle: Duration::from_secs(6000),
+            slice: Duration::from_secs(60),
+            first: Duration::ZERO,
+        },
+    )
+    .unwrap();
+    let s = Arc::clone(&seconds);
+    fee.elapsed = Arc::new(move || Duration::from_secs(s.load(Ordering::SeqCst)));
+    let mut hook = hook_with(
+        || Ok(Sha256Backend),
+        MinerConfig {
+            fee: Some(fee),
+            ..lines.cfg()
+        },
+    );
+    let mut clock = START_MS;
+    assert!(drive(
+        &mut engine,
+        &mut hook,
+        &mut clock,
+        |e| height(e) >= 4,
+        Duration::from_secs(30)
+    ));
+    seconds.store(120, Ordering::SeqCst);
+    assert!(drive(
+        &mut engine,
+        &mut hook,
+        &mut clock,
+        |e| height(e) >= 9,
+        Duration::from_secs(30)
+    ));
+    // the last block's verdict
+    drive(
+        &mut engine,
+        &mut hook,
+        &mut clock,
+        |_| false,
+        Duration::from_millis(100),
+    );
+    let mut theirs = Wallet::from_seed(&[2; 32], Network::Test, 0);
+    theirs.sync(engine.node()).unwrap();
+    let n_fee = theirs.owned().len() as u64;
+    assert!(
+        (4..9).contains(&n_fee),
+        "{n_fee} of {}: {}",
+        height(&engine),
+        lines.dump()
+    );
+    assert_eq!(hook.stats.fee_blocks, n_fee, "{:?}", hook.stats);
+    let ev = lines.events();
+    let fee_events = ev
+        .iter()
+        .filter(|e| matches!(e, MinerEvent::FeeBlockInChain { .. }))
+        .count() as u64;
+    assert_eq!(fee_events, n_fee);
+    assert!(ev
+        .iter()
+        .any(|e| matches!(e, MinerEvent::FeeStarted { to } if to == "the backend's author")));
+    assert!(ev.iter().any(|e| matches!(e, MinerEvent::FeeEnded)));
+    assert!(lines.contains("the mining fee's minute has begun"));
+}
+
+#[test]
 fn the_miner_mines_blocks_its_own_node_accepts_one_after_another() {
     let rig = SimRig::rigs("mn-sha", 1);
     let mut engine = sha_engine(&rig[0]);

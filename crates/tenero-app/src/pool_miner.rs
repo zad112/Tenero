@@ -20,6 +20,7 @@ use tenero_core::u256::U256;
 use tenero_core::v2::ids::PowKind;
 use tenero_core::v3::ids;
 use tenero_core::v3::{BlockHeader, VERSION};
+use tenero_miner::fee::MiningFee;
 use tenero_miner::{meets_target, Counters, EventSink, Job as MineJob, Miner, MinerEvent, Msg};
 
 use crate::pool::{Hello, HelloOk, Job, MinerMessage, PoolMessage};
@@ -43,6 +44,8 @@ pub struct PoolMinerConfig {
     pub events: EventSink,
     pub now_secs: Arc<dyn Fn() -> u64 + Send + Sync>,
     pub ping_every: Duration,
+    /// The miner's fee (`tenero_miner::fee`): during its minutes the miner logs in with the fee's address. None by default.
+    pub fee: Option<MiningFee>,
 }
 
 fn system_now() -> u64 {
@@ -62,6 +65,7 @@ impl PoolMinerConfig {
             events: Arc::new(|_| {}),
             now_secs: Arc::new(system_now),
             ping_every: Duration::from_secs(30),
+            fee: None,
         }
     }
 }
@@ -102,6 +106,8 @@ struct Current {
 struct Session {
     hello: HelloOk,
     share_target: U256,
+    /// Logged in with the fee's address.
+    fee: bool,
 }
 
 pub struct PoolMiner {
@@ -114,6 +120,10 @@ pub struct PoolMiner {
     progress: Arc<PoolProgress>,
     failed: Option<String>,
     told_reward_goes_to_pool: bool,
+    /// Whether the fee's minute was on at the last look, and whether the rest of this minute is skipped (the pool would not
+    /// take the fee's address, or the connection was lost in it: the work then pays the user).
+    fee_on: bool,
+    fee_skipped: bool,
 }
 
 impl PoolMiner {
@@ -128,7 +138,35 @@ impl PoolMiner {
             progress: Arc::new(PoolProgress::default()),
             failed: None,
             told_reward_goes_to_pool: false,
+            fee_on: false,
+            fee_skipped: false,
         }
+    }
+
+    /// Whether the miner should be logged in with the fee's address now, and the event when that changes.
+    fn fee_turn(&mut self) -> bool {
+        let Some(fee) = &self.cfg.fee else {
+            return false;
+        };
+        let due = fee.due();
+        if !due {
+            self.fee_skipped = false;
+        }
+        let now = due && !self.fee_skipped;
+        if now != self.fee_on {
+            self.fee_on = now;
+            let (to, address) = (fee.to.clone(), fee.address_text());
+            if now {
+                self.log(&format!(
+                    "the mining fee's minute has begun: the shares go to the pool for {to} ({address})"
+                ));
+                self.event(MinerEvent::FeeStarted { to });
+            } else {
+                self.log("the mining fee's minute has ended: the shares are yours again");
+                self.event(MinerEvent::FeeEnded);
+            }
+        }
+        now
     }
 
     pub fn counters(&self) -> Arc<Counters> {
@@ -160,14 +198,20 @@ impl PoolMiner {
                 self.miner.cancel();
                 return Err(format!("the mining backend failed: {why}"));
             }
+            let fee = self.fee_turn();
             match connect() {
                 Ok((r, w)) => {
                     self.stats.connections += 1;
                     backoff = Duration::from_millis(500);
                     reported_down = false;
-                    match self.session(r, w, shutdown) {
+                    match self.session(r, w, shutdown, fee) {
                         Ok(()) => {}
                         Err(e) => {
+                            if fee {
+                                // never retried in the same minute: the rest of it is the user's
+                                self.fee_skipped = true;
+                                self.log(&format!("the fee's minute is skipped: {e}"));
+                            }
                             self.stats.connections_lost += 1;
                             self.log(&format!("lost the pool: {e}"));
                             self.event(MinerEvent::PoolLost { why: e });
@@ -195,13 +239,17 @@ impl PoolMiner {
         Ok(())
     }
 
-    fn hello(&self) -> MinerMessage {
+    fn hello(&self, fee: bool) -> MinerMessage {
+        let address = match (&self.cfg.fee, fee) {
+            (Some(f), true) => f.address_text(),
+            _ => self.cfg.address.clone(),
+        };
         MinerMessage::Hello(Hello {
             min_version: 1,
             max_version: 1,
             capabilities: 0,
             network: self.cfg.network.clone(),
-            address: self.cfg.address.clone(),
+            address,
             worker: self.cfg.worker.chars().take(32).collect(),
             agent: format!("tenero-miner {}", crate::daemon::VERSION),
         })
@@ -212,12 +260,13 @@ impl PoolMiner {
         mut r: ReadHalf,
         mut w: WriteHalf,
         shutdown: &AtomicBool,
+        fee: bool,
     ) -> Result<(), String> {
         let send = |w: &mut WriteHalf, m: &MinerMessage| -> Result<(), String> {
             let body = m.to_body().map_err(|e| e.to_string())?;
             write_message(w, &body).map_err(|e| e.to_string())
         };
-        send(&mut w, &self.hello())?;
+        send(&mut w, &self.hello(fee))?;
         // the answer to the hello: a hello_ok, or an error that says why not
         r.set_timeout(Some(Duration::from_secs(10)))
             .map_err(|e| e.to_string())?;
@@ -252,6 +301,7 @@ impl PoolMiner {
         let mut sess = Session {
             hello: ok,
             share_target,
+            fee,
         };
 
         // a thread that turns what the pool says into messages for the loop below
@@ -288,6 +338,10 @@ impl PoolMiner {
         let mut rejected_logged = 0u32;
         loop {
             if shutdown.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            // the fee's minute began or ended: log in again with the other address
+            if self.fee_turn() != sess.fee {
                 return Ok(());
             }
             // what the backend thread has found

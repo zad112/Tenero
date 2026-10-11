@@ -162,6 +162,10 @@ target of 2^237 (about 524,000 attempts a block), control port 38352 and peer po
   address and internet address. A miner needs **no node** to mine for a pool (a node is still needed to see and spend what the pool pays). The miner pins the pool's public
   key, so a person between them is refused. **One pool is built in: the author's test pool on `gamma`** (`195.26.244.245:38335`): PPLNS, pays once an hour every miner owed at
   least 0.1 coins, no fee. **It is one computer run by one person.** The app mines alone unless you choose a pool.
+* **The miner's fee (from the release after 0.3.0-gamma.1).** On `gamma`, the miner's NVIDIA (`gpu`) and AMD (`amd`) backends mine
+  **1% of the time** (one minute in every hundred) for the author of that backend: the NVIDIA one for the project's author, the AMD one for
+  its contributor. The CPU backend has none. It is shown on the miner's screen and in the app, a block found in a fee minute is shown as the
+  fee's, and it cannot be turned off (the code is open). Addresses and details: [`docs/RUNNING.md`](docs/RUNNING.md), "The mining fee".
 * **Letting others connect to you** (the wallet app's Settings, "Let other nodes connect to me", off by default) lets your node serve blocks to others, so they do not all rely
   on the seeds. **It needs a TCP port forwarded on your router and allowed in your firewall, it lets strangers connect to your computer, and the software is unaudited.** See
   [`docs/TESTING.md`](docs/TESTING.md).
