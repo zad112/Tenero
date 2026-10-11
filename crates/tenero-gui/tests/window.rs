@@ -280,6 +280,7 @@ fn quote() -> Quote {
         unsent_payments: 0,
         unsent_total: 0,
         own: None,
+        proof_secs: None,
     }
 }
 
@@ -292,6 +293,7 @@ fn combine_quote() -> Quote {
         transactions: 1,
         coins: 12,
         own: Some("Combined 12 pieces".into()),
+        proof_secs: Some(12),
         ..quote()
     }
 }
@@ -617,6 +619,10 @@ fn the_confirmation_screen_of_a_combine_says_nobody_is_paid_and_a_split_payment_
         "The account keeps",
         "Combine",
         "Back",
+        // worked out before its proofs: the wait is said, as an estimate, and the fee is "about"
+        "Making the proofs",
+        "about 12 s (an estimate)",
+        "about 0.00602669 TNR",
     ] {
         assert!(t.contains(needle), "`{needle}` missing:\n{t}");
     }
@@ -1517,4 +1523,26 @@ fn a_payment_out_the_wallet_did_not_record_is_listed_without_a_recipient() {
         !t.contains("Prove payment"),
         "nothing to prove it with: {t}"
     );
+}
+
+/// What the window says while the worker is busy: how far a combine's proofs are, or only what it is doing.
+#[test]
+fn the_work_in_progress_says_how_far_it_is() {
+    let w = tenero_gui::core::Work {
+        what: "Making the proofs",
+        since: std::time::Instant::now() - std::time::Duration::from_secs(250),
+        done: 3,
+        total: 11,
+    };
+    let t = tenero_gui::ui::work_text(&w);
+    assert!(
+        t.starts_with("Making the proofs: 3 of 11 transactions made (4 min 1"),
+        "{t}"
+    );
+    let t = tenero_gui::ui::work_text(&tenero_gui::core::Work {
+        total: 0,
+        done: 0,
+        ..w
+    });
+    assert!(t.starts_with("Making the proofs… (4 min"), "{t}");
 }

@@ -19,7 +19,7 @@ use tenero_store::Store;
 use tenero_wallet::wallet::RECENT_BLOCKS;
 use tenero_wallet::{
     coinbase_payout, max_inputs_for, transaction_size, Address, ChainView, FeeLevel, FileError,
-    KdfParams, Kind, Network, Submitter, Wallet, WalletError, MAX_RECIPIENTS,
+    KdfParams, Kind, Network, OwnPlan, Submitter, Wallet, WalletError, MAX_RECIPIENTS,
 };
 
 const T0: u64 = 1_700_000_000;
@@ -414,6 +414,77 @@ fn a_sweep_makes_many_coins_one() {
     );
 }
 
+/// A combine is worked out first (no proofs: what the wallet app shows before the person decides) and made afterwards, its
+/// transactions on several threads at once. The plan's fee is the fee built; the transactions made on two threads spend
+/// exactly their groups' coins and pass a node with real proofs; and a plan whose coins are gone is refused.
+#[test]
+fn a_combine_is_worked_out_first_and_made_on_several_threads() {
+    let rig = Rig::new("ownplan");
+    let (mut node, mut alice, _) = funded(&rig);
+    let before = alice.balance(&node).unwrap().spendable;
+
+    let plan = alice.plan_combine(&node, 4, FeeLevel::Low).unwrap();
+    assert_eq!((plan.groups.len(), plan.coins()), (1, 4));
+    let one = alice
+        .build_own(&node, &mut OsRng, &plan, 1, &|_, _| {})
+        .unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].fee, plan.fee());
+    assert_eq!(one[0].amount, plan.amount());
+    assert_eq!(one[0].tx.prefix.inputs.len(), 4);
+
+    // the five spendable coins in two transactions (2 and 3 coins), made on two threads
+    let sweep = alice.plan_sweep(&node, None, FeeLevel::Low).unwrap();
+    assert_eq!(sweep.coins(), 5);
+    let coins = sweep.groups[0].clone();
+    let split = OwnPlan {
+        groups: vec![coins[..2].to_vec(), coins[2..].to_vec()],
+        ..sweep.clone()
+    };
+    let seen = std::sync::Mutex::new(Vec::new());
+    let built = alice
+        .build_own(&node, &mut OsRng, &split, 2, &|d, t| {
+            seen.lock().unwrap().push((d, t))
+        })
+        .unwrap();
+    assert_eq!(built.len(), 2);
+    for (b, group) in built.iter().zip(&split.groups) {
+        let mut want = group.clone();
+        want.sort();
+        assert_eq!(
+            b.spends, want,
+            "each transaction spends its own group's coins"
+        );
+        assert_eq!(b.parts[0].to, alice.address());
+    }
+    let mut seen = seen.into_inner().unwrap();
+    seen.sort();
+    assert_eq!(seen, vec![(0, 2), (1, 2), (2, 2)]);
+    assert_eq!(alice.send_batch(&mut node, &built).sent, 2);
+    mine(&mut node, &alice.address(), 0);
+    alice.sync(&node).unwrap();
+    let fees: u64 = built.iter().map(|b| b.fee).sum();
+    let combined: u64 = alice
+        .owned()
+        .iter()
+        .filter(|o| {
+            built
+                .iter()
+                .any(|b| b.parts[0].onetime == o.onetime_address)
+        })
+        .map(|o| o.amount)
+        .sum();
+    assert_eq!(combined, before - fees);
+
+    // the coins of the plan are spent now
+    assert_eq!(
+        alice
+            .build_own(&node, &mut OsRng, &split, 2, &|_, _| {})
+            .unwrap_err(),
+        WalletError::PlanStale
+    );
+}
+
 #[test]
 fn bad_requests_are_refused_before_anything_is_built() {
     let rig = Rig::new("bad");
@@ -726,4 +797,37 @@ fn saving_to_a_place_that_does_not_exist_is_an_error_not_a_panic() {
 fn _a_node_is_a_chain_and_a_submitter(n: &mut Node<'_>) {
     fn both<T: ChainView + Submitter>(_: &mut T) {}
     both(n);
+}
+
+/// How long a combine of four transactions of ten coins takes on one thread and on four (`Wallet::build_own`), on this
+/// machine, release build: `cargo test --release -p tenero-wallet --test pay -- --ignored --nocapture time_a_combine`.
+/// A tree of 2 layers (a test chain of a few hundred outputs); `docs/BENCHMARKS.md` keeps the numbers.
+#[test]
+#[ignore]
+fn time_a_combine_on_one_thread_and_on_several() {
+    let rig = Rig::new("owntime");
+    let mut node = rig.node();
+    let mut alice = wallet(1);
+    // 40 spendable rewards: a reward is spendable 60 blocks after its block
+    mine_n(&mut node, &alice.address(), 100);
+    alice.sync(&node).unwrap();
+    let sweep = alice.plan_sweep(&node, None, FeeLevel::Low).unwrap();
+    let coins = sweep.groups.concat();
+    assert!(coins.len() >= 40, "{}", coins.len());
+    let plan = OwnPlan {
+        groups: coins[..40].chunks(10).map(<[_]>::to_vec).collect(),
+        ..sweep
+    };
+    let layers = node.rules().unwrap().tree_layers;
+    for threads in [1, 2, 4] {
+        let start = std::time::Instant::now();
+        let built = alice
+            .build_own(&node, &mut OsRng, &plan, threads, &|_, _| {})
+            .unwrap();
+        assert_eq!(built.len(), 4);
+        println!(
+            "4 transactions of 10 coins, {layers} layers, {threads} thread(s): {:.1?}",
+            start.elapsed()
+        );
+    }
 }

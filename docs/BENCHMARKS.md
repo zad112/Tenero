@@ -344,7 +344,25 @@ of 20 is about 50 coins and 35 to 45 s (the owner saw about 40 s, 2026-10-08). T
 makes these proofs (it worked the payment out in full and threw it away, so the wait came twice); it says before Review
 how many coins a payment spends. Combining coins beforehand moves the wait to a time of the owner's choosing.
 
-The upstream crate proves on one thread; nothing here was parallelised. **Proof sizes** are exact, not measured
+**A combine of several transactions, on several threads** (measured 2026-10-10, the owner's machine, release build, while
+the owner's GPU miner and wallet app were running; `cargo test --release -p tenero-wallet --test pay -- --ignored --nocapture
+time_a_combine`; four transactions of 10 coins, a tree of 2 layers, each proof verified after it was made):
+
+| threads | time | speed-up |
+|---|---|---|
+| 1 | 33.2 s | |
+| 2 | 17.7 s | 1.9x |
+| 4 | 8.8 s | 3.8x |
+
+One proof is still one thread (the upstream crate's), so one transaction is no faster; `Wallet::build_own` makes the
+transactions of a combine one to a thread at once. The wallet app uses half the machine's threads, at most 4. Why it
+matters: a miner's 1,000 rewards are about 11 transactions of about 95 coins, roughly 18 minutes of proofs on one thread
+(the owner's "Combine all" on `gamma`, 2026-10-10, which the app made before showing anything and gave up waiting on
+after two minutes) and about 5 minutes on four (ESTIMATED from the table above, not measured at that size). The app now
+shows the combine, its fee and the estimated wait before any proof is made, and makes them after the yes, saying how far
+it has got.
+
+The upstream crate proves on one thread. **Proof sizes** are exact, not measured
 (`FcmpPlusPlus::proof_size`; `--test upstream_fcmp_pp -- --ignored print_proof_sizes`): the most inputs whose FCMP++ proof alone fits
 today's `MAX_PROOF` of 64 KiB is 126 at 1 layer, 69 at 4, 48 at 7 and 31 at 12, before the pseudo-outputs and the range proof
 also take their room. The version 3 limits are set from this in G4.

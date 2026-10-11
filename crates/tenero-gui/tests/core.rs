@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tenero_app::config::Network;
-use tenero_gui::core::Core;
+use tenero_gui::core::{proof_estimate_secs, Core, Work};
 use tenero_gui::settings::{MinerBackend, Settings};
 use tenero_gui::view::*;
 use tenero_wallet::{EntryKind, FeeLevel, KdfParams, SentStatus, ViewTier};
@@ -1439,6 +1439,19 @@ fn payment_requests_are_made_kept_in_the_wallet_file_and_removed() {
 // combining coins, through the same screen logic
 // ---------------------------------------------------------------------------------------------------------------
 
+/// The wait said before a combine: a second a coin, one transaction to a thread, taken in order.
+#[test]
+fn the_wait_for_a_combine_is_estimated_one_transaction_to_a_thread() {
+    assert_eq!(proof_estimate_secs(&[], 4), 0);
+    assert_eq!(proof_estimate_secs(&[3], 4), 3);
+    // a miner's thousand rewards: eleven transactions of 95
+    assert_eq!(proof_estimate_secs(&[95; 11], 1), 1045);
+    assert_eq!(proof_estimate_secs(&[95; 11], 4), 3 * 95);
+    assert_eq!(proof_estimate_secs(&[95, 95, 10], 2), 105);
+    // no threads is one thread
+    assert_eq!(proof_estimate_secs(&[5, 5], 0), 10);
+}
+
 #[test]
 fn combining_coins_is_previewed_cancelled_sent_and_never_shown_as_money_received() {
     let rig = Rig::new("combine", 18491);
@@ -1502,6 +1515,8 @@ fn combining_coins_is_previewed_cancelled_sent_and_never_shown_as_money_received
     let q = c.snapshot().prepared.expect("a combine waits for a yes");
     assert_eq!((q.transactions, q.coins), (1, 3));
     assert!(q.own.is_some() && q.to.is_empty());
+    // worked out, not made: the proofs come after the yes, and the wait is said first (an estimate)
+    assert_eq!(q.proof_secs, Some(3));
     assert!(q.fee > 0 && q.amount > 0);
     assert_eq!((q.unsent_payments, q.unsent_total), (0, 0));
     assert!(unlocked(&c)
@@ -1521,8 +1536,19 @@ fn combining_coins_is_previewed_cancelled_sent_and_never_shown_as_money_received
     let q = c.snapshot().prepared.expect("a combine waits for a yes");
     assert!(q.coins >= 3 && q.own.is_some(), "{} coins", q.coins);
     let (coins, fee) = (q.coins, q.fee);
+    assert!(q.proof_secs.is_some());
+    // the proofs are made at the yes, and how far they are is told where the window can read it while it waits
+    let work = c.work_state();
+    *work.lock().unwrap() = Some(Work {
+        what: "Making the proofs and sending",
+        since: Instant::now(),
+        done: 0,
+        total: 0,
+    });
     let ev = c.handle(Cmd::SendPrepared);
     assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
+    let w = work.lock().unwrap().clone().unwrap();
+    assert_eq!((w.what, w.done, w.total), ("Making the proofs", 1, 1));
     assert!(ev
         .iter()
         .any(|e| matches!(e, Event::Sent { transactions: 1, fee: f, .. } if *f == fee)));
