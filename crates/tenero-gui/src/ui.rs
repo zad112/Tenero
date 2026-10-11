@@ -55,6 +55,12 @@ impl Tab {
         (Tab::Settings, "Settings"),
         (Tab::About, "About"),
     ];
+
+    /// Whether the tab has a scroll area of its own (and so is not put inside the page's: nested, the inner one would
+    /// not take the mouse wheel).
+    fn scrolls_itself(self) -> bool {
+        matches!(self, Tab::History | Tab::Settings)
+    }
 }
 
 struct Toast {
@@ -1782,6 +1788,28 @@ impl App {
         );
     }
 
+    /// The open tab's page (inside the page's scroll area, unless the tab scrolls itself: `Tab::scrolls_itself`).
+    fn tab_body(&mut self, ui: &mut egui::Ui) {
+        match self.tab {
+            Tab::Node => self.node_tab(ui),
+            Tab::Settings => self.settings_tab(ui),
+            Tab::About => self.about_tab(ui),
+            Tab::Prove => self.prove_tab(ui),
+            tab => {
+                if self.gate(ui) {
+                    match tab {
+                        Tab::Wallet => self.wallet_tab(ui),
+                        Tab::Send => self.send_tab(ui),
+                        Tab::Receive => self.receive_tab(ui),
+                        Tab::History => self.history_tab(ui),
+                        Tab::Mining => self.mining_tab(ui),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
     fn history_tab(&mut self, ui: &mut egui::Ui) {
         let Some(d) = self.wallet().cloned() else {
             return;
@@ -3177,26 +3205,15 @@ impl App {
             }
         });
         egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| match self.tab {
-                    Tab::Node => self.node_tab(ui),
-                    Tab::Settings => self.settings_tab(ui),
-                    Tab::About => self.about_tab(ui),
-                    Tab::Prove => self.prove_tab(ui),
-                    tab => {
-                        if self.gate(ui) {
-                            match tab {
-                                Tab::Wallet => self.wallet_tab(ui),
-                                Tab::Send => self.send_tab(ui),
-                                Tab::Receive => self.receive_tab(ui),
-                                Tab::History => self.history_tab(ui),
-                                Tab::Mining => self.mining_tab(ui),
-                                _ => {}
-                            }
-                        }
-                    }
-                });
+            // a tab with a scroll area of its own (History's list, Settings) is not put inside the page's: in two nested
+            // vertical scroll areas the outer one takes the mouse wheel, and the inner list could not be scrolled
+            if self.tab.scrolls_itself() {
+                self.tab_body(ui);
+            } else {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.tab_body(ui));
+            }
         });
         self.phrase_window(&ctx);
         self.prompts(&ctx);
