@@ -44,8 +44,8 @@ tenero-miner: mines for a Tenero node in another process (EXPERIMENTAL, UNAUDITE
   --network NET      with --pool: the network the pool serves (gamma, dev or test; default: the address's), so that a pool of
                      another network is refused
   --worker NAME      with --pool: a name for this machine, shown to the pool (default: the computer's name, at most 32 characters)
-  --backend B        sha256 (the test network), cpu or gpu (NVIDIA) for gamma's and dev's matmulhash, or amd (an AMD RX 7000
-                     series card on Linux with ROCm 6: only in the Linux AMD package; contributed, not tested by the author)
+  --backend B        sha256 (the test network), cpu or gpu (NVIDIA) for gamma's and dev's matmulhash, or amd (an AMD RX 7000 or 9000
+                     series card on Linux with ROCm 7: only in the Linux AMD package; contributed, not tested by the author)
   --cores N          CPU threads for the cpu backend, 1 to 6 (default 6)
   --gpu-device N     which GPU (default 0)       --gpu-batch N|auto   attempts per batch (default 128; auto measures at start-up)
   --pace SECS        wait this long after a block is found before the next job (default 0)

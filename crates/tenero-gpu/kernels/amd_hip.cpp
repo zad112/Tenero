@@ -1,8 +1,9 @@
 // AMD HIP/rocWMMA implementation of Tenero matmulhash v2.
 //
 // The consensus operations are the same as matmulhash.cu and gather.cu.  The multiply is native
-// signed INT8 WMMA on RDNA3 (gfx1100): one 128-thread workgroup computes all 64 rows and 64
-// columns in its tile, so every gathered 8 KiB dataset column is read exactly once per attempt.
+// signed INT8 WMMA on RDNA3 (gfx11; written and tuned on a gfx1100) and RDNA4 (gfx12, through
+// rocWMMA's own path: see TENERO_AMD_DEVICE_RDNA4): one 128-thread workgroup computes all 64 rows
+// and 64 columns in its tile, so every gathered 8 KiB dataset column is read exactly once per attempt.
 
 #include <hip/hip_runtime.h>
 #include <rocwmma/rocwmma.hpp>
@@ -98,10 +99,21 @@ constexpr uint32_t PREFETCH_DISTANCE = TENERO_AMD_PREFETCH_DISTANCE;
 constexpr bool PREFETCH_A = TENERO_AMD_PREFETCH_A != 0;
 constexpr bool FUSE_FOLD = TENERO_AMD_FUSE_FOLD != 0;
 constexpr bool LDS_DOUBLE_BUFFER = TENERO_AMD_LDS_DOUBLE_BUFFER != 0;
-constexpr bool DIRECT_B_NATIVE = TENERO_AMD_DIRECT_B_NATIVE != 0;
-constexpr bool DIRECT_AB_NATIVE = TENERO_AMD_DIRECT_AB_NATIVE != 0;
+// RDNA4 (gfx12, the RX 9000 series) has the same 16x16x16 int8 WMMA, but with its own instruction and operand layout. The
+// hand-written fast path (RDNA3's instruction, `__builtin_amdgcn_wmma_i32_16x16x16_iu8_w32`, with the A operand copied into
+// both half-waves, and X stored stage-major for it) is RDNA3's only, so the gfx12 code objects take rocWMMA's own path,
+// whose layout the library handles for each chip. hipcc compiles each chip's device code separately, so these macros are
+// seen only by the device pass of that chip; the HOST code must not use these three switches, and chooses the layout of X
+// at run time from the card's name instead (`arch_is_rdna4`, `HipContext::x_stage_major`).
+#if defined(__GFX12__) || defined(__gfx1200__) || defined(__gfx1201__)
+#define TENERO_AMD_DEVICE_RDNA4 1
+#else
+#define TENERO_AMD_DEVICE_RDNA4 0
+#endif
+constexpr bool DIRECT_B_NATIVE = TENERO_AMD_DIRECT_B_NATIVE != 0 && !TENERO_AMD_DEVICE_RDNA4;
+constexpr bool DIRECT_AB_NATIVE = TENERO_AMD_DIRECT_AB_NATIVE != 0 && !TENERO_AMD_DEVICE_RDNA4;
 constexpr bool GRID_ATTEMPT_X = TENERO_AMD_GRID_ATTEMPT_X != 0;
-constexpr bool X_STAGE_MAJOR = TENERO_AMD_X_STAGE_MAJOR != 0;
+constexpr bool X_STAGE_MAJOR = TENERO_AMD_X_STAGE_MAJOR != 0 && !TENERO_AMD_DEVICE_RDNA4;
 constexpr bool B_NONTEMPORAL = TENERO_AMD_B_NONTEMPORAL != 0;
 constexpr uint32_t PICKS = 3;
 
@@ -137,6 +149,28 @@ inline void set_error(char* out, size_t cap, const char* what, hipError_t e = hi
         std::snprintf(out, cap, "%s: %s", what, hipGetErrorString(e));
     }
 }
+
+// The chips this file was compiled for (build.rs passes the list it gave hipcc). A card whose code object is not in the
+// file could not run the kernels: it is refused before anything is allocated.
+#ifndef TENERO_AMD_ARCHS
+#define TENERO_AMD_ARCHS "gfx1100"
+#endif
+
+// `arch` is the runtime's gcnArchName, which may carry feature suffixes after a colon ("gfx1100:xnack-").
+inline bool arch_was_compiled(const char* arch) {
+    const size_t len = std::strcspn(arch, ":");
+    const char* list = TENERO_AMD_ARCHS;
+    while (*list) {
+        const size_t item = std::strcspn(list, ",");
+        if (item == len && std::strncmp(list, arch, len) == 0) return true;
+        list += item;
+        if (*list == ',') ++list;
+    }
+    return false;
+}
+
+// Whether a card (by the runtime's gcnArchName) is RDNA4: its GEMM kernel reads X row-major (see TENERO_AMD_DEVICE_RDNA4).
+inline bool arch_is_rdna4(const char* arch) { return std::strncmp(arch, "gfx12", 5) == 0; }
 
 #define HIP_OR_RETURN(call, msg)                                \
     do {                                                        \
@@ -1022,6 +1056,8 @@ struct HipContext {
     uint32_t num_blocks = 0;
     char name[256]{};
     char arch[64]{};
+    /// Whether this card's GEMM kernel reads X stage-major (RDNA3's fast path) or row-major (RDNA4): set from `arch`.
+    bool x_stage_major = false;
     hipStream_t stream = nullptr;
     uint32_t* keys = nullptr;
     uint32_t* pick_keys = nullptr;
@@ -1097,11 +1133,17 @@ int tenero_hip_create(uint32_t ordinal, uint32_t batch, uint32_t k, uint32_t nb,
     }
     std::snprintf(ctx->name, sizeof(ctx->name), "%s", prop.name);
     std::snprintf(ctx->arch, sizeof(ctx->arch), "%s", prop.gcnArchName);
-    if (std::strncmp(ctx->arch, "gfx11", 5) != 0) {
-        set_error(error, error_cap, "this AMD backend requires a gfx11 RDNA3/RDNA3.5 GPU");
+    if (!arch_was_compiled(ctx->arch)) {
+        if (error && error_cap > 0) {
+            std::snprintf(error, error_cap,
+                          "this AMD GPU (%s, %s) is not one this miner was built for (%s: the RX 7000 and "
+                          "RX 9000 series, RDNA3 and RDNA4)",
+                          ctx->name, ctx->arch, TENERO_AMD_ARCHS);
+        }
         delete ctx;
         return 1;
     }
+    ctx->x_stage_major = TENERO_AMD_X_STAGE_MAJOR != 0 && !arch_is_rdna4(ctx->arch);
     e = hipStreamCreate(&ctx->stream);
     if (e == hipSuccess) e = hipMalloc(&ctx->keys, uint64_t(batch) * 32);
     if (e == hipSuccess) e = hipMalloc(&ctx->pick_keys, uint64_t(batch) * 32);
@@ -1199,8 +1241,14 @@ int tenero_hip_attempts(void* opaque, const uint8_t* keys, const uint8_t* pick_k
     const uint64_t x_blocks = uint64_t(M) * ctx->k / 64;
     const uint64_t total_x = uint64_t(count) * x_blocks;
     const uint32_t x_grid = uint32_t((total_x + THREADS - 1) / THREADS);
-    hipLaunchKernelGGL((keystream_kernel<X_STAGE_MAJOR>), dim3(x_grid), dim3(THREADS), 0, ctx->stream, ctx->keys,
-                       reinterpret_cast<uint32_t*>(ctx->x), x_blocks, uint64_t(0), total_x);
+    // the layout of X must be the one this card's own code object of the GEMM kernel reads (see RDNA4 above)
+    if (ctx->x_stage_major) {
+        hipLaunchKernelGGL((keystream_kernel<true>), dim3(x_grid), dim3(THREADS), 0, ctx->stream, ctx->keys,
+                           reinterpret_cast<uint32_t*>(ctx->x), x_blocks, uint64_t(0), total_x);
+    } else {
+        hipLaunchKernelGGL((keystream_kernel<false>), dim3(x_grid), dim3(THREADS), 0, ctx->stream, ctx->keys,
+                           reinterpret_cast<uint32_t*>(ctx->x), x_blocks, uint64_t(0), total_x);
+    }
 
     if (gathered) {
         const uint64_t pick_blocks = uint64_t(ctx->nb) / 16;

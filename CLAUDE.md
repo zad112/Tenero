@@ -48,7 +48,7 @@ The old Python miner, wallet and command line (`miner.py`, `cli.py`, `gpu_test.b
   `docs/CONSENSUS_V2.md` the DRAFT design of the rewrite's data model (outputs, serialization, genesis,
   privacy staging); `docs/BENCHMARKS.md` measured CPU and GPU numbers; `crates/` the Rust code
   (`tenero-core` rules and data model, `tenero-store` storage, `tenero-chain` block validation and fork choice, `tenero-node` the node core (mempool), `tenero-net` the protocol engine and network simulator,
-  `tenero-gpu` the GPU engine, with an AMD HIP backend behind the `amd-hip` feature: contributed, Linux/ROCm 6/RX 7000 only, built by `.github/workflows/amd.yml` and the release's Linux AMD package but run by nobody here, its bit-for-bit test `tests/amd_selftest.rs` needs an AMD card, `docs/AMD_MINING.md`). `tenero-net` also has the encrypted channel (`noise.rs`, via `snow`, which has had
+  `tenero-gpu` the GPU engine, with an AMD HIP backend behind the `amd-hip` feature: contributed, Linux/ROCm 7, RDNA3 (RX 7000) and RDNA4 (RX 9000, through rocWMMA's own path; nobody has run it) compiled per chip in `build.rs`, built by `.github/workflows/amd.yml` and the release's Linux AMD package but run by nobody here, its bit-for-bit test `tests/amd_selftest.rs` needs an AMD card, `docs/AMD_MINING.md`). `tenero-net` also has the encrypted channel (`noise.rs`, via `snow`, which has had
   no formal audit: an owner-approved exception to rule 3) and the real-socket transport (`transport.rs`);
   `docs/TESTNET.md` runs a private test network on one machine. `tenero-miner` is the miner (a hook of the node's
   loop; GPU, CPU and SHA-256 test backends): `cargo test --release -p tenero-miner --test gpu_mining -- --ignored

@@ -1,4 +1,4 @@
-//! Tenero mining backend for AMD RDNA3 through HIP (Linux, ROCm 6; contributed, not tested by the
+//! Tenero mining backend for AMD RDNA3 and RDNA4 through HIP (Linux, ROCm 7; contributed, not tested by the
 //! project's author: see `tenero_gpu::amd`). The card's health readings (NVML) are NVIDIA's only.
 
 use std::sync::atomic::Ordering;

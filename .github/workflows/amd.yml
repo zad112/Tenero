@@ -4,7 +4,7 @@ name: amd
 # wallet app's AMD choice) only builds with AMD's ROCm installed, which the other workflows do not have. This checks that it
 # still builds, passes clippy, and that the app offers it as it should. It does NOT run the backend: no hosted runner has an AMD
 # GPU, and the author has none either. Its bit-for-bit test against the CPU code (`crates/tenero-gpu/tests/amd_selftest.rs`)
-# runs only on a real RX 7000 series card. Runs only when something the backend depends on changes.
+# runs only on a real RX 7000 or RX 9000 series card. Runs only when something the backend depends on changes.
 on:
   push:
     branches: [main]

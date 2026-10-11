@@ -65,7 +65,7 @@ fn compare(p: Params, epoch: u64, nonces: &[u64], batch: usize) {
 }
 
 #[test]
-#[ignore = "needs the local AMD RDNA3 GPU"]
+#[ignore = "needs a local AMD RDNA3 or RDNA4 GPU"]
 fn small_dataset_original_and_gathered_are_bit_exact() {
     compare(
         Params {
@@ -81,7 +81,7 @@ fn small_dataset_original_and_gathered_are_bit_exact() {
 }
 
 #[test]
-#[ignore = "needs about 4.5 GiB of RAM and VRAM on the local AMD RDNA3 GPU"]
+#[ignore = "needs about 4.5 GiB of RAM and VRAM on a local AMD RDNA3 or RDNA4 GPU"]
 fn real_parameters_original_and_gathered_are_bit_exact() {
     compare(Params::DEFAULT, 0, &[0, 37, u64::MAX], 3);
 }

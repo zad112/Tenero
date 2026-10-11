@@ -1,5 +1,5 @@
 #!/bin/bash
-# Installs what building the AMD GPU backend needs (the `amd-hip` feature) on a GitHub-hosted Ubuntu 22.04 runner: AMD's HIP
+# Installs what building the AMD GPU backend needs (the `amd-hip` feature) on a GitHub-hosted Ubuntu 22.04 runner (ROCm 7 still ships for it): AMD's HIP
 # compiler (hipcc), its GPU device library (rocm-device-libs), the HIP headers and runtime, and rocWMMA, from AMD's own apt repository, at ONE pinned ROCm version. It is
 # not the whole ROCm SDK (several GiB of maths libraries this backend does not use). Used by release.yml (the Linux AMD package)
 # and amd.yml (the check of AMD changes). No GPU is needed to build; nothing here can RUN the AMD backend.
@@ -8,7 +8,9 @@
 # copies their licence texts into the AMD package; the HIP runtime (libamdhip64) is NOT shipped: users install ROCm themselves.
 set -euo pipefail
 
-ROCM_VERSION="6.2.4"
+# ROCm 7: AMD supports the RX 9000 series (RDNA4) from 7.0.2, and rocWMMA has every chip the backend is built for from 7.2
+# (gfx12 from 6.3, gfx1150 from 7.2). A program built against ROCm 7 needs a ROCm 7 runtime (libamdhip64.so.7) on the user's computer.
+ROCM_VERSION="7.2.1"
 CODENAME="jammy" # Ubuntu 22.04: the runner the release packages are built on (the oldest glibc)
 
 sudo mkdir --parents --mode=0755 /etc/apt/keyrings
