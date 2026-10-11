@@ -25,6 +25,7 @@
 
 #[cfg(feature = "amd-hip")]
 pub mod amd;
+pub mod fee;
 pub mod gpu;
 pub mod gpu_stats;
 pub mod rate;
@@ -580,6 +581,17 @@ pub enum MinerEvent {
     PoolLost {
         why: String,
     },
+    /// The fee's minute has begun: the work now pays `to` (`fee.rs`), or it has ended and the work pays the user again.
+    FeeStarted {
+        to: String,
+    },
+    FeeEnded,
+    /// A block found in the fee's minute is in the chain: its reward goes to the fee's address, NOT to this miner's.
+    FeeBlockInChain {
+        height: u64,
+        reward: u64,
+        work: f64,
+    },
 }
 
 pub type EventSink = Arc<dyn Fn(MinerEvent) + Send + Sync>;
@@ -605,6 +617,8 @@ pub struct MinerConfig {
     pub log: Logger,
     /// Structured events for the screen; nothing by default.
     pub events: EventSink,
+    /// The miner's fee (ee.rs): during its minutes the block template pays the fee's address. None by default.
+    pub fee: Option<fee::MiningFee>,
 }
 
 impl Default for MinerConfig {
@@ -616,6 +630,7 @@ impl Default for MinerConfig {
             min_block_interval: Duration::ZERO,
             log: Arc::new(|_| {}),
             events: Arc::new(|_| {}),
+            fee: None,
         }
     }
 }
@@ -626,6 +641,8 @@ struct Current {
     tip: [u8; 32],
     target: U256,
     started: Instant,
+    /// Mined for the fee (its template pays the fee's address).
+    fee: bool,
 }
 
 /// What the hook has seen, for an operator and for tests.
@@ -638,6 +655,8 @@ pub struct MinerStats {
     pub blocks_lost_race: u64,
     /// Found and then refused by our own node as invalid (a wrong proof of work, or a wrong block).
     pub blocks_rejected: u64,
+    /// Of the blocks in the chain, those found in the fee's minutes (their reward is the fee's).
+    pub fee_blocks: u64,
     /// Solutions a backend returned that did not meet the target, or whose job was no longer current.
     pub bad_solutions: u64,
 }
@@ -651,9 +670,11 @@ pub struct MinerHook<P: PayoutSource> {
     current: Option<Current>,
     next_id: u64,
     awaiting: Option<([u8; 32], u64)>,
-    /// How long the block being waited for took to find, and what it pays.
-    awaiting_info: (f64, u64, f64),
+    /// How long the block being waited for took to find, what it pays, its work, and whether it was mined for the fee.
+    awaiting_info: (f64, u64, f64, bool),
     paused: bool,
+    /// Whether the fee's minute was on at the last poll (to say when it begins and ends).
+    fee_on: bool,
     last_found: Option<Instant>,
     failed: bool,
     pub stats: MinerStats,
@@ -669,8 +690,9 @@ impl<P: PayoutSource> MinerHook<P> {
             current: None,
             next_id: 1,
             awaiting: None,
-            awaiting_info: (0.0, 0, 0.0),
+            awaiting_info: (0.0, 0, 0.0, false),
             paused: false,
+            fee_on: false,
             last_found: None,
             failed: false,
             stats: MinerStats::default(),
@@ -734,6 +756,7 @@ impl<P: PayoutSource> MinerHook<P> {
             cur.started.elapsed().as_secs_f64(),
             block_reward(&block),
             rate::work_of(&cur.target),
+            cur.fee,
         );
         self.last_found = Some(Instant::now());
         events.push(Event::LocalBlock(block));
@@ -748,13 +771,25 @@ impl<P: PayoutSource> Hooks for MinerHook<P> {
         if let Some((id, height)) = self.awaiting.take() {
             if matches!(engine.node().store().height_of(&id), Ok(Some(_))) {
                 self.stats.blocks_accepted += 1;
-                self.log(&format!("block {height} is in the chain"));
-                self.event(MinerEvent::InChain {
-                    height,
-                    secs: self.awaiting_info.0,
-                    reward: self.awaiting_info.1,
-                    work: self.awaiting_info.2,
-                });
+                if self.awaiting_info.3 {
+                    self.stats.fee_blocks += 1;
+                    self.log(&format!(
+                        "block {height} is in the chain: it was mined in the fee's minute, so its reward goes to the fee's address"
+                    ));
+                    self.event(MinerEvent::FeeBlockInChain {
+                        height,
+                        reward: self.awaiting_info.1,
+                        work: self.awaiting_info.2,
+                    });
+                } else {
+                    self.log(&format!("block {height} is in the chain"));
+                    self.event(MinerEvent::InChain {
+                        height,
+                        secs: self.awaiting_info.0,
+                        reward: self.awaiting_info.1,
+                        work: self.awaiting_info.2,
+                    });
+                }
             } else if engine.node().chain().holds_block(&id) {
                 self.stats.blocks_lost_race += 1;
                 self.log(&format!(
@@ -819,9 +854,12 @@ impl<P: PayoutSource> Hooks for MinerHook<P> {
         let Ok((_, tip_id)) = engine.node().tip() else {
             return events;
         };
+        let fee_now = self.fee_turn();
         let stale = match &self.current {
             None => true,
-            Some(c) => c.tip != tip_id || c.started.elapsed() >= self.cfg.refresh_every,
+            Some(c) => {
+                c.tip != tip_id || c.started.elapsed() >= self.cfg.refresh_every || c.fee != fee_now
+            }
         };
         if stale {
             self.miner.cancel();
@@ -829,13 +867,20 @@ impl<P: PayoutSource> Hooks for MinerHook<P> {
                 return events;
             };
             let source = std::cell::RefCell::new(&mut self.payout);
+            let fee_address = self.cfg.fee.as_ref().filter(|_| fee_now).map(|f| f.address);
             let height = next.height;
             let Ok(block) =
                 engine
                     .node()
-                    .block_template(now_ms / 1000, self.cfg.max_weight, &|amount| {
-                        source.borrow_mut().payout(height, amount)
-                    })
+                    .block_template(
+                        now_ms / 1000,
+                        self.cfg.max_weight,
+                        &|amount| match &fee_address {
+                            Some(a) => tenero_wallet::coinbase_payout_random(a, height, amount)
+                                .expect("the fee's address was checked when the fee was made"),
+                            None => source.borrow_mut().payout(height, amount),
+                        },
+                    )
             else {
                 return events;
             };
@@ -856,8 +901,34 @@ impl<P: PayoutSource> Hooks for MinerHook<P> {
                 tip: tip_id,
                 target: next.target,
                 started: Instant::now(),
+                fee: fee_now,
             });
         }
         events
+    }
+}
+
+impl<P: PayoutSource> MinerHook<P> {
+    /// Whether this job is the fee's, and the event when that changes.
+    fn fee_turn(&mut self) -> bool {
+        let Some(fee) = &self.cfg.fee else {
+            return false;
+        };
+        let now = fee.due();
+        if now != self.fee_on {
+            self.fee_on = now;
+            if now {
+                let to = fee.to.clone();
+                self.log(&format!(
+                    "the mining fee's minute has begun: the next blocks pay {to} ({})",
+                    fee.address_text()
+                ));
+                self.event(MinerEvent::FeeStarted { to });
+            } else {
+                self.log("the mining fee's minute has ended: the blocks pay your address again");
+                self.event(MinerEvent::FeeEnded);
+            }
+        }
+        now
     }
 }

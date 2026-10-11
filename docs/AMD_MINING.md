@@ -41,6 +41,10 @@ From the **`tenero-...-linux-x64-amd`** package (the ordinary Linux package has 
 * **The command line:** `tenero-miner ... --backend amd` (with `--gpu-device N` for another card), for a node or for a pool
   (`--pool default --network gamma --address TENg... --backend amd`).
 
+**The mining fee:** as with the NVIDIA backend, 1% of the mining time (one minute in every hundred) on `gamma` is mined for the
+author of the backend, here its contributor, qcvibes1 (`docs/RUNNING.md`, "The mining fee"). It is shown on the screen and in the
+app, and cannot be turned off.
+
 What is different from the NVIDIA backend: `--gpu-batch auto` (measuring the best batch at start) is not offered, and the miner's
 screen shows no temperature, power or clock readings for an AMD card (those come from NVIDIA's NVML).
 

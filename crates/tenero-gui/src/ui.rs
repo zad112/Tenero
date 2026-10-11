@@ -2162,6 +2162,7 @@ impl App {
             MinerBackend::Sha256 => "Test-network mining: a light load on one CPU core.".to_string(),
         };
         ui.colored_label(AMBER, notice);
+        ui.label(s.miner_backend.fee_text(s.network));
         ui.label(format!(
             "Backend: {} (change it in Settings)   ·   rewards go to: {}",
             s.miner_backend.name(),
@@ -2557,6 +2558,11 @@ impl App {
                                 ui.selectable_value(&mut draft.miner_backend, *b, b.label());
                             }
                         });
+                    ui.label(
+                        RichText::new(draft.miner_backend.fee_text(draft.network))
+                            .small()
+                            .color(GREY),
+                    );
                     ui.horizontal(|ui| {
                         ui.label("CPU threads (cpu backend, 1 to 6)");
                         ui.add(egui::DragValue::new(&mut draft.miner_cores).range(1..=6));

@@ -403,3 +403,20 @@ fn the_amd_backend_is_offered_only_where_the_miner_has_it() {
         assert!(Settings::parse(app(), "network = test\nminer_backend = amd\n").is_err());
     }
 }
+
+#[test]
+fn the_mining_tab_names_the_fee_for_gpu_and_amd_on_gamma_and_none_elsewhere() {
+    let gpu = MinerBackend::Gpu.fee_text(Network::Gamma);
+    assert!(gpu.contains("1% of the mining time"), "{gpu}");
+    assert!(
+        gpu.contains("zad112") && gpu.contains("cannot be turned off"),
+        "{gpu}"
+    );
+    let amd = MinerBackend::Amd.fee_text(Network::Gamma);
+    assert!(amd.contains("qcvibes1"), "{amd}");
+    assert_eq!(
+        MinerBackend::Cpu.fee_text(Network::Gamma),
+        "Mining fee: none for the cpu backend on this network."
+    );
+    assert!(MinerBackend::Gpu.fee_text(Network::Dev).contains("none"));
+}

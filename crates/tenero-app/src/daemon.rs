@@ -438,11 +438,19 @@ impl MiningShared {
                     one(&self.refused);
                 }
             }
+            // the fee's block was this machine's work (it counts for the rate) but not its block or its reward
+            MinerEvent::FeeBlockInChain { work, .. } => {
+                if let Ok(mut w) = self.accepted_work.lock() {
+                    *w += *work;
+                }
+            }
             MinerEvent::BackendFailed { .. }
             | MinerEvent::NodeConnected
             | MinerEvent::NodeLost { .. }
             | MinerEvent::PoolConnected { .. }
-            | MinerEvent::PoolLost { .. } => {}
+            | MinerEvent::PoolLost { .. }
+            | MinerEvent::FeeStarted { .. }
+            | MinerEvent::FeeEnded => {}
         }
     }
 
@@ -743,11 +751,23 @@ fn miner_hook(
     let payout = WalletPayout::new(address).ok_or(
         "mine_to: a block reward is paid to a main address only (not a subaddress or an integrated address)",
     )?;
+    // the miner's fee (`mining_fee.rs`): for the GPU backend only, and none on any network until main-net
+    let backend = match cfg.mine {
+        MineMode::Gpu => "gpu",
+        MineMode::Cpu => "cpu",
+        _ => "sha256",
+    };
+    let fee = crate::mining_fee::fee_for(cfg.network, backend)?;
+    log.info(&format!(
+        "miner fee: {}",
+        crate::mining_fee::fee_line(fee.as_ref(), cfg.network)
+    ));
     let l = Arc::clone(log);
     let mcfg = MinerConfig {
         log: Arc::new(move |line| l.info(&format!("miner: {line}"))),
         events: miner_events(log, shared),
         min_block_interval: Duration::from_secs(cfg.mine_pace),
+        fee,
         ..MinerConfig::default()
     };
     // the hook is made here and the meter is told where its counters are, then the hook goes into the node's loop
