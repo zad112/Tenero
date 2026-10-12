@@ -33,10 +33,15 @@ first announcement then comes from a node some hops away, not from the one that 
 * **The stem pool.** A stem transaction is checked as a pool transaction would be (`Node::check_tx`), but it is kept apart
   from the pool: it is not announced, not mined, not listed by the control interface's `mempool`, and **not served** to
   `get_txs` (or a spy could ask every node for it and find who holds it). When it is announced to the node, it moves into
-  the pool at once (no need to fetch it). At most 1,024 are held; past that a new one is fluffed.
+  the pool at once (no need to fetch it). The peers' stems share 1,024 places and 32 MiB, **at most 64 from any one peer**;
+  past that a peer's new one is fluffed. **The node's own have room of their own** (256), which no peer can take: in
+  0.4.0-gamma.1 a pool the peers had filled made the node announce its own transaction itself, which names it as the
+  origin (a tester found it; fixed after it).
 * **Abuse.** A stem transaction that is invalid costs its sender 20 points, as an invalid transaction does today; one that
   spends what the chain has spent costs nothing (it may be valid on the sender's chain). A transaction that conflicts with
-  one already in the stem pool or the pool is ignored.
+  one already in the stem pool or the pool is ignored, and the pool's conflict is looked up **before** the proofs are
+  checked (since 0.4.0-gamma.1's fix: before, a peer could send one conflicting transaction again and again, each costing a
+  full proof check).
 * **Randomness.** Every choice is drawn from SHA-256 of a secret made at start (from the operating system in `tenerod`;
   from the seed in the simulator) with the epoch number and what is being chosen, so a peer cannot predict a node's
   role, its stem peers or its timers from what it sees.
@@ -78,6 +83,6 @@ connection, not its IP. Two things are left open for the Tor work, so the two fi
 | diffuser probability | 20 % | Monero; the paper studies 10 to 20 % |
 | stem peers | 2 outbound | Monero and the paper's "4-regular" graph |
 | embargo | exponential, mean 39 s, at most 4 min | Monero's average |
-| stem pool | 1,024 transactions | ours |
+| stem pool | the peers': 1,024 transactions, 32 MiB, 64 per peer; the node's own: 256 more | ours |
 
 These are to check against Monero's source before a main network; they were taken from memory of it.

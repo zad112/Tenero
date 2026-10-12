@@ -247,6 +247,18 @@ impl Mempool {
         if self.entries.contains_key(&id) {
             return Err(PoolError::AlreadyKnown);
         }
+        // a conflict first: it is a look-up, and the proofs are the dearest check of all. A transaction that spends what the
+        // pool already spends is refused either way (the pool never replaces one), so asking this first changes no answer
+        // but the cost: a peer could otherwise send the same conflicting transaction again and again, each costing a full
+        // proof check
+        for input in &tx.prefix.inputs {
+            if let Some(&with) = self.by_image.get(&input.key_image) {
+                return Err(PoolError::Conflict {
+                    key_image: input.key_image,
+                    with,
+                });
+            }
+        }
         let info = validator.check_pool_tx(tx).map_err(|e| match e {
             BlockError::BadReference {
                 reference_height, ..
@@ -264,14 +276,6 @@ impl Mempool {
                 weight: info.weight,
                 limit: rules::block_limit(info.median),
             });
-        }
-        for input in &tx.prefix.inputs {
-            if let Some(&with) = self.by_image.get(&input.key_image) {
-                return Err(PoolError::Conflict {
-                    key_image: input.key_image,
-                    with,
-                });
-            }
         }
         Ok((id, info))
     }

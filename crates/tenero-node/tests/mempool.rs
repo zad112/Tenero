@@ -414,6 +414,51 @@ fn a_second_spend_of_the_same_key_image_conflicts() {
     assert_eq!(node.pool().len(), 1);
 }
 
+/// Counts the proof checks it is asked for (and passes them all).
+struct CountingProofs(std::sync::atomic::AtomicU64);
+
+impl ProofCheck for CountingProofs {
+    fn check_tx(&self, _ctx: &TxContext<'_>) -> Result<(), String> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    fn checks_proofs(&self) -> bool {
+        true
+    }
+}
+
+/// A transaction in conflict with the pool is refused BEFORE its proofs are checked (the dearest check), whether it is
+/// offered to the pool or checked as a Dandelion++ stem: a peer sending the same conflicting transaction again and again
+/// costs a look-up, not a proof check each time. (Found by a tester in 0.4.0-gamma.1.)
+#[test]
+fn a_conflict_is_refused_before_the_proofs_are_checked() {
+    let rig = Rig::new("conflict-first");
+    let mut net = Net::new("conflict-first-net", 3);
+    let counting = CountingProofs(std::sync::atomic::AtomicU64::new(0));
+    let mut node = rig.node_with(BIG, &counting);
+    grow(&mut net, &mut node, SPENDABLE);
+    let first = net.std_tx(7, 0);
+    node.submit_tx(first.clone()).unwrap();
+    let checked = counting.0.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(checked >= 1, "the first one's proofs were checked");
+    for k in 0..5 {
+        let rival = net.std_tx(7, 10 + k);
+        assert!(matches!(
+            node.check_pool_tx(&rival),
+            Err(PoolError::Conflict { .. })
+        ));
+        assert!(matches!(
+            node.submit_tx(rival),
+            Err(PoolError::Conflict { .. })
+        ));
+    }
+    assert_eq!(
+        counting.0.load(std::sync::atomic::Ordering::SeqCst),
+        checked,
+        "no proof was checked for a conflicting one"
+    );
+}
+
 #[test]
 fn a_block_removes_what_it_confirms_and_what_conflicts_with_it() {
     let rig = Rig::new("connect");

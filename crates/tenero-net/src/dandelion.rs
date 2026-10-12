@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use tenero_core::hash::sha256;
+use tenero_core::v2::codec::Wire;
 use tenero_core::v3::Transaction;
 
 use crate::engine::PeerId;
@@ -27,8 +28,15 @@ pub struct DandelionConfig {
     /// The embargo: a stem transaction not announced to the node within this (exponential, this mean) is fluffed by it.
     pub embargo_mean_ms: u64,
     pub embargo_max_ms: u64,
-    /// The most transactions held in the stem pool; past it a new one is fluffed.
+    /// The most transactions from peers held in the stem pool; past it a new one is fluffed.
     pub max_stem_txs: usize,
+    /// The most bytes those may hold together (a transaction may be large: the count alone does not bound the memory).
+    pub max_stem_bytes: u64,
+    /// The most stem transactions held from any ONE peer: a peer cannot fill the pool and push the others' out.
+    pub max_stem_per_peer: usize,
+    /// Room kept for this node's OWN transactions, apart from the peers' share: a pool the peers filled must never make
+    /// this node announce its own transaction itself (that would show the world where it came from).
+    pub max_own_stem_txs: usize,
     /// The secret every choice is drawn from. `tenerod` makes it from the operating system at start.
     pub secret: [u8; 32],
 }
@@ -43,6 +51,9 @@ impl Default for DandelionConfig {
             embargo_mean_ms: 39_000,
             embargo_max_ms: 4 * 60 * 1000,
             max_stem_txs: 1024,
+            max_stem_bytes: 32 * 1024 * 1024,
+            max_stem_per_peer: 64,
+            max_own_stem_txs: 256,
             secret: [0x5d; 32],
         }
     }
@@ -53,6 +64,17 @@ pub struct StemEntry {
     pub tx: Transaction,
     /// When the node fluffs it itself if nobody has announced it (the engine's clock, ms).
     pub embargo_at: u64,
+    /// The peer it came from (`None`: this node's own), for the quotas.
+    pub from: Option<PeerId>,
+    /// Its encoded size in bytes ([`stem_size`]).
+    pub size: u64,
+}
+
+/// A transaction's encoded size (prefix and proofs), as the stem pool counts it; `None` if it does not encode.
+pub fn stem_size(tx: &Transaction) -> Option<u64> {
+    let prefix = tx.prefix.to_bytes().ok()?.len() as u64;
+    let prunable = tx.prunable.to_bytes().ok()?.len() as u64;
+    Some(prefix + prunable)
 }
 
 /// What a node knows of its Dandelion++ state.
@@ -178,6 +200,33 @@ impl Dandelion {
         now + delay.min(self.cfg.embargo_max_ms)
     }
 
+    /// Whether the stem pool may take one more transaction of `size` bytes from `from` (`None`: this node's own). The
+    /// peers share `max_stem_txs` and `max_stem_bytes`, each at most `max_stem_per_peer` of them; this node's own have room
+    /// of their own (`max_own_stem_txs`), which no peer can take.
+    pub fn has_room(&self, from: Option<PeerId>, size: u64) -> bool {
+        let (mut own, mut peers, mut bytes, mut this_peer) = (0usize, 0usize, 0u64, 0usize);
+        for e in self.pool.values() {
+            match e.from {
+                None => own += 1,
+                Some(p) => {
+                    peers += 1;
+                    bytes += e.size;
+                    if Some(p) == from {
+                        this_peer += 1;
+                    }
+                }
+            }
+        }
+        match from {
+            None => own < self.cfg.max_own_stem_txs,
+            Some(_) => {
+                peers < self.cfg.max_stem_txs
+                    && bytes.saturating_add(size) <= self.cfg.max_stem_bytes
+                    && this_peer < self.cfg.max_stem_per_peer
+            }
+        }
+    }
+
     /// Whether a transaction spending any of these key images is already held in the stem pool.
     pub fn conflicts(&self, tx: &Transaction) -> bool {
         self.pool.values().any(|e| {
@@ -294,6 +343,60 @@ mod tests {
             id[..8].copy_from_slice(&i.to_le_bytes());
             x.embargo_at(0, &id) <= 240_000
         }));
+    }
+
+    fn entry(from: Option<PeerId>, size: u64) -> StemEntry {
+        use tenero_core::v3::{Prunable, TxPrefix, VERSION};
+        StemEntry {
+            tx: Transaction {
+                prefix: TxPrefix {
+                    version: VERSION,
+                    inputs: vec![],
+                    outputs: vec![],
+                    ephemeral_pubkeys: vec![],
+                    fee: 0,
+                    encrypted_payment_id: [0; 8],
+                },
+                prunable: Prunable {
+                    reference_height: 0,
+                    proof_data: vec![],
+                },
+            },
+            embargo_at: 0,
+            from,
+            size,
+        }
+    }
+
+    #[test]
+    fn the_stem_pool_shares_its_room_among_peers_and_keeps_room_for_the_nodes_own() {
+        let mut x = Dandelion::new(DandelionConfig {
+            max_stem_txs: 4,
+            max_stem_bytes: 1000,
+            max_stem_per_peer: 2,
+            max_own_stem_txs: 1,
+            ..DandelionConfig::default()
+        });
+        let put = |x: &mut Dandelion, n: u8, from: Option<PeerId>, size: u64| {
+            x.pool.insert([n; 32], entry(from, size));
+        };
+        // one peer: at most two
+        put(&mut x, 1, Some(10), 100);
+        put(&mut x, 2, Some(10), 100);
+        assert!(!x.has_room(Some(10), 100));
+        assert!(x.has_room(Some(11), 100));
+        // the peers' share full (four): no peer gets in, the node's own still does
+        put(&mut x, 3, Some(11), 100);
+        put(&mut x, 4, Some(12), 100);
+        assert!(!x.has_room(Some(13), 100));
+        assert!(x.has_room(None, 100_000), "the node's own room is its own");
+        // and the node's own room is bounded too
+        put(&mut x, 5, None, 100);
+        assert!(!x.has_room(None, 100));
+        // the bytes: 400 held, so 600 more fit and 601 do not
+        x.pool.remove(&[4; 32]);
+        assert!(x.has_room(Some(13), 700));
+        assert!(!x.has_room(Some(13), 701));
     }
 
     #[test]

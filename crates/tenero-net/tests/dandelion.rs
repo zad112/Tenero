@@ -288,3 +288,40 @@ fn a_stem_transaction_is_not_served_and_an_invalid_one_costs_its_sender() {
     sim.run_for(200);
     assert!(score(&sim) > before, "{:?} then {:?}", before, score(&sim));
 }
+
+/// Peers that fill the stem pool cannot make a node announce its OWN transaction itself (that would name it as the
+/// origin): the node's own have room of their own, so it still goes on a stem. A peer's next one is fluffed, as before.
+/// (Found by a tester in 0.4.0-gamma.1, where a full pool of 1,024 made the node announce its own.)
+#[test]
+fn a_stem_pool_the_peers_filled_still_takes_the_nodes_own_transaction() {
+    let rigs = SimRig::rigs("own-room", 3);
+    let mut engine = cfg(true, 0, 9);
+    engine.dandelion.max_stem_txs = 2;
+    let mut sim = Sim::new(&rigs, T0, SimConfig::default(), engine);
+    sim.connect(1, 2);
+    sim.connect(0, 1);
+    sim.run_for(5 * SEC);
+    ready_for_spends(&mut sim);
+    // a peer fills node 1's stem pool with two stems of its own
+    let spy = sim.add_hostile(1, "99.9.0.1:8333");
+    sim.hostile_send(spy, hello(&rigs[1]));
+    sim.run_for(SEC);
+    for k in 0..2 {
+        let t = make_tx(&sim, 1, 500 + k);
+        sim.hostile_send(spy, Message::StemTx(Box::new(t)));
+    }
+    sim.run_for(SEC);
+    assert_eq!(sim.engines[1].stem_count(), 2, "the peers' share is full");
+    // node 1's own: held in its stem, not announced
+    let t = make_tx(&sim, 1, 600);
+    let id = tx_id(&t).unwrap();
+    let announced = |s: &Sim<'_>| s.engines[1].stats.sent.get("new_tx").copied().unwrap_or(0);
+    let before = announced(&sim);
+    sim.submit_tx(1, t);
+    assert!(
+        sim.engines[1].holds_stem(&id),
+        "its own still goes on a stem"
+    );
+    assert!(!sim.engines[1].node().pool().contains(&id));
+    assert_eq!(announced(&sim), before, "and is not announced by it");
+}

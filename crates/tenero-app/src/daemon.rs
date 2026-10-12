@@ -945,6 +945,15 @@ pub fn run(
     };
     // Dandelion++ draws every choice (its role, its stem peers, its timers) from a secret made new at each start
     rand_core::RngCore::fill_bytes(&mut OsRng, &mut ecfg.dandelion.secret);
+    // the nonce shown on connections through Tor: random at each start and unrelated to the other one (which is taken from
+    // the long-term key), so a peer who meets this node through Tor and directly cannot match the two (the transport shows
+    // a separate key there too, `NetConfig::tor_key`)
+    ecfg.tor_nonce = loop {
+        let n = rand_core::RngCore::next_u64(&mut OsRng) | 1;
+        if n != ecfg.nonce {
+            break n;
+        }
+    };
     if !cfg.trusted_peers.is_empty() {
         log.info(&format!(
             "pinned peers (always dialled): {}",

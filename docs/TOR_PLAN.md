@@ -26,7 +26,17 @@ hop still sees it). Tor hides the IP address from the peers: they see a Tor exit
   listen as a `.onion` service.)
 * **The node's own transactions** go to a `.onion` peer first when it has one (`Engine::route_own`, Monero does the same):
   they leave the node through Tor, and Dandelion++ covers the relaying on the open network from there. With no `.onion`
-  peer they take the Dandelion++ stem as before (through Tor anyway in `tor_only` mode).
+  peer they take the Dandelion++ stem as before (through Tor anyway in `tor_only` mode). **Only a peer the node dialled**
+  is used: relayed stems go only to outbound peers, so a stem sent to a peer that came in through the node's `.onion`
+  service could only be the node's own, and that peer would know (a tester found this in 0.4.0-gamma.1; fixed after it).
+* **A separate identity through Tor** (fixed after 0.4.0-gamma.1, where a tester found the two linked): the Noise static key
+  is shown to the other side in every handshake, and `hello` carries a nonce, so one key and one nonce on both kinds of
+  connection would let anyone who connects to the `.onion` address and to the IP address see that they are one node. So
+  every connection through Tor (dialled through the proxy, or in through the `.onion` service) shows **another key and
+  another nonce**, both made new at each start (`NetConfig::tor_key`, `EngineConfig::tor_nonce`). The checks that use the
+  nonce (a connection to ourselves, two links to one peer) compare a link only with links of its own kind: otherwise each
+  would be a question anyone could ask ("does it hang up if I send its direct nonce over Tor?"). The price: a `tor_only`
+  dial that reaches the node's own IP address is not recognised as itself by its nonce.
 * **A `.onion` service** (`onion_listen = 127.0.0.1:38363`, and `advertise = xxxxx.onion:38353`): Tor forwards the
   service's port to this local address, and peers that reach the node through its `.onion` address arrive there. They all
   come from `127.0.0.1`, so the node does not hold one against another: each is its own host for limits and bans (a ban

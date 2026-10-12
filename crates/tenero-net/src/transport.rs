@@ -79,8 +79,12 @@ pub struct NetConfig {
     pub onion_listen: Option<SocketAddr>,
     /// A dial through Tor may take this long (a circuit to an onion service can take tens of seconds).
     pub proxy_timeout: Duration,
-    /// Our long-term Noise key.
+    /// Our long-term Noise key, for connections NOT through Tor.
     pub key: NodeKey,
+    /// The Noise key for every connection through Tor (dialled through `proxy`, or come in through `onion_listen`): a
+    /// different one, so that a peer who meets this node both ways cannot tell it is one node (the static key is shown to
+    /// the other side in the handshake). Made new at each start by `NetConfig::new`, so it is not kept between runs either.
+    pub tor_key: NodeKey,
     /// The chain we are on: part of the handshake, so a node on another chain never gets as far as the protocol.
     pub chain_id: [u8; 32],
     /// The whole handshake, from the first byte to the last, must finish within this.
@@ -120,6 +124,7 @@ impl NetConfig {
             onion_listen: None,
             proxy_timeout: Duration::from_secs(60),
             key,
+            tor_key: NodeKey::generate(),
             chain_id,
             handshake_timeout: Duration::from_secs(10),
             connect_timeout: Duration::from_secs(10),
@@ -426,7 +431,12 @@ impl Net {
                 listener,
                 onion,
                 onion_count: Arc::new(AtomicU64::new(0)),
-                key: cfg.key.clone(),
+                // the `.onion` service shows the Tor key, never the one the IP address shows
+                key: if onion {
+                    cfg.tor_key.clone()
+                } else {
+                    cfg.key.clone()
+                },
                 prologue: pro.clone(),
                 timeout: if onion {
                     cfg.handshake_timeout.max(Duration::from_secs(30))
@@ -840,13 +850,19 @@ impl Loop<'_> {
 
     fn dial(&self, addr: String) {
         self.counters.dials.fetch_add(1, Ordering::Relaxed);
-        let (tx, key, pro) = (self.tx.clone(), self.cfg.key.clone(), self.pro.clone());
         // through Tor: every `.onion` address, and everything in `tor_only` mode (`docs/TOR_PLAN.md`)
         let via = if is_onion(&addr) || self.cfg.tor_only {
             Some(self.cfg.proxy)
         } else {
             None
         };
+        // a dial through Tor shows the Tor key (see `NetConfig::tor_key`)
+        let key = if via.is_some() {
+            self.cfg.tor_key.clone()
+        } else {
+            self.cfg.key.clone()
+        };
+        let (tx, pro) = (self.tx.clone(), self.pro.clone());
         let isolation = isolation_name(
             self.counters.dials.load(Ordering::Relaxed),
             u64::from_le_bytes(key.public()[..8].try_into().expect("8 bytes")),
