@@ -29,7 +29,7 @@ use crate::addrbook::{
     group_of, host_of, host_with_port, is_unspecified, peer_addr_to_string, string_to_peer_addr,
     AddrBook, AddrBookConfig, BanList,
 };
-use crate::dandelion::{Dandelion, DandelionConfig, StemEntry};
+use crate::dandelion::{stem_size, Dandelion, DandelionConfig, StemEntry};
 use crate::message::{Hello, Limits, Message, PeerAddr, PROTOCOL_VERSION};
 use crate::onion::{is_onion, ONION_INBOUND};
 
@@ -153,6 +153,10 @@ pub struct EngineConfig {
     /// Random, chosen once per run, sent in `Hello`: it lets a node recognise a connection to itself, or a
     /// second connection to the same peer. 0 turns that off (do not do that on a real network).
     pub nonce: u64,
+    /// The nonce sent instead on every connection through Tor (`Engine::tor_identity`), with the transport's separate Tor
+    /// key: a peer who meets this node through Tor and directly must not be able to tell it is one node. Random and
+    /// different from `nonce` (`tenerod` makes it at each start); 0 uses `nonce` (the simulator, which has no Tor).
+    pub tor_nonce: u64,
     /// At most this many new dials are started in one tick.
     pub max_connect_per_tick: usize,
     /// A dial unanswered this long counts as failed.
@@ -260,6 +264,7 @@ impl Default for EngineConfig {
             outbound_target: 8,
             peer_target: 50,
             nonce: 0,
+            tor_nonce: 0,
             max_connect_per_tick: 8,
             connect_timeout_ms: 10_000,
             max_outbound_per_group: 2,
@@ -811,7 +816,8 @@ impl<'a> Engine<'a> {
         (h, i.block_id, U256::from_be_bytes(&i.cumulative_work))
     }
 
-    fn our_hello(&self) -> Hello {
+    /// Our `Hello` for `peer`: with the Tor nonce if the connection goes through Tor (see `EngineConfig::tor_nonce`).
+    fn our_hello(&self, peer: PeerId) -> Hello {
         let (h, i) = self.node.store().tip().expect("the store has a tip");
         Hello {
             version: PROTOCOL_VERSION,
@@ -820,7 +826,29 @@ impl<'a> Engine<'a> {
             cumulative_work: i.cumulative_work,
             tip_id: i.block_id,
             pruned_below: self.node.store().pruned_below().unwrap_or(0),
-            nonce: self.cfg.nonce,
+            nonce: self.nonce_for(peer),
+        }
+    }
+
+    /// Whether the connection to `peer` goes through Tor, judged exactly as the transport chooses its key: an inbound
+    /// one through our `.onion` service, an outbound one to a `.onion` address or in `tor_only` mode. (An inbound one on
+    /// the IP listener is direct even in `tor_only` mode, and shows the direct identity.)
+    fn tor_identity(&self, peer: PeerId) -> bool {
+        self.peers.get(&peer).is_some_and(|p| {
+            if p.inbound {
+                p.addr.starts_with(ONION_INBOUND)
+            } else {
+                self.cfg.tor_only || is_onion(&p.addr)
+            }
+        })
+    }
+
+    /// The nonce this node shows `peer`: the Tor one on a connection through Tor, the other one otherwise.
+    fn nonce_for(&self, peer: PeerId) -> u64 {
+        if self.cfg.tor_nonce != 0 && self.tor_identity(peer) {
+            self.cfg.tor_nonce
+        } else {
+            self.cfg.nonce
         }
     }
 
@@ -1001,7 +1029,7 @@ impl<'a> Engine<'a> {
                 feeler,
             },
         );
-        let hello = self.our_hello();
+        let hello = self.our_hello(peer);
         self.send(peer, Message::Hello(hello), out);
     }
 
@@ -1036,11 +1064,20 @@ impl<'a> Engine<'a> {
     /// another connection shows the same nonce, it is a second link to the same node. Either way exactly one
     /// link survives, and BOTH ends choose the same one: the link dialled by the node with the smaller nonce
     /// (the first one, if both were dialled by the same side). Returns whether `peer` is still connected.
+    ///
+    /// **Only within one identity** (`tor_identity`): a link through Tor is compared with our Tor nonce and with other
+    /// links through Tor, a direct link with the rest. Otherwise each check is a question anyone could ask: send our
+    /// direct nonce over the onion service and see whether we hang up ("ourselves"), or give the same nonce to a direct
+    /// link and an onion link and see which one we drop ("duplicate") — either answer would tie the `.onion` address to
+    /// the IP address. The price: a dial that reaches ourselves across the two (a `tor_only` dial to our own IP address)
+    /// is not recognised by its nonce.
     fn resolve_duplicate(&mut self, peer: PeerId, nonce: u64, out: &mut Vec<Action>) -> bool {
-        let ours = self.cfg.nonce;
+        // the nonce this node showed on THIS link (the Tor one or the other)
+        let ours = self.nonce_for(peer);
         if ours == 0 || nonce == 0 {
             return true;
         }
+        let tor = self.tor_identity(peer);
         if nonce == ours {
             // a link WE dialled that reached ourselves: that address is us (an inbound one carries an arbitrary port, so says nothing)
             if let Some(p) = self.peers.get(&peer).filter(|p| !p.inbound) {
@@ -1052,15 +1089,20 @@ impl<'a> Engine<'a> {
         let other = self
             .peers
             .iter()
-            .find(|(id, p)| **id != peer && p.hello.as_ref().is_some_and(|h| h.nonce == nonce))
+            .find(|(id, p)| {
+                **id != peer
+                    && p.hello.as_ref().is_some_and(|h| h.nonce == nonce)
+                    && self.tor_identity(**id) == tor
+            })
             .map(|(id, p)| (*id, p.inbound));
         let Some((other_id, other_inbound)) = other else {
             return true;
         };
         let new_inbound = self.peers.get(&peer).is_some_and(|p| p.inbound);
-        // the nonce of whoever dialled each link
-        let dialler = |inbound: bool| if inbound { nonce } else { ours };
-        let keep_new = dialler(new_inbound) < dialler(other_inbound);
+        let ours_other = self.nonce_for(other_id);
+        // the nonce of whoever dialled each link (ours as shown on that link)
+        let dialler = |inbound: bool, our_nonce: u64| if inbound { nonce } else { our_nonce };
+        let keep_new = dialler(new_inbound, ours) < dialler(other_inbound, ours_other);
         if keep_new {
             self.drop_peer(other_id, "duplicate connection", false, out);
             true
@@ -3213,13 +3255,19 @@ impl<'a> Engine<'a> {
             let tor: Vec<PeerId> = self
                 .peers
                 .iter()
+                // outbound only: relayed stems go only to peers WE dialled (`stem_candidates`), so a stem sent to a peer
+                // that came in through our `.onion` service could only be our own, and that peer would know it
                 .filter(|(_, p)| {
-                    p.hello.is_some() && !p.feeler && !p.addr_only && self.via_tor(&p.addr)
+                    !p.inbound
+                        && p.hello.is_some()
+                        && !p.feeler
+                        && !p.addr_only
+                        && self.via_tor(&p.addr)
                 })
                 .map(|(id, _)| *id)
                 .collect();
-            if let (false, Ok(id)) = (tor.is_empty(), tx_id(&tx)) {
-                if self.dand.pool.len() < self.dand.cfg.max_stem_txs {
+            if let (false, Ok(id), Some(size)) = (tor.is_empty(), tx_id(&tx), stem_size(&tx)) {
+                if self.dand.has_room(None, size) {
                     let key = u64::from_le_bytes(id[..8].try_into().expect("8 bytes"));
                     let to = tor[self.dand.pick(b"own over tor", key, tor.len())];
                     let embargo_at = self.dand.embargo_at(self.now, &id);
@@ -3228,6 +3276,8 @@ impl<'a> Engine<'a> {
                         StemEntry {
                             tx: tx.clone(),
                             embargo_at,
+                            from: None,
+                            size,
                         },
                     );
                     self.send(to, Message::StemTx(Box::new(tx)), out);
@@ -3239,10 +3289,13 @@ impl<'a> Engine<'a> {
     }
 
     /// A checked transaction in its stem, from `from` (`None`: our own): passed to this epoch's stem peer for `from` and
-    /// held with an embargo, or fluffed (a diffuser, no stem peer, or a full stem pool).
+    /// held with an embargo, or fluffed (a diffuser, no stem peer, or no room in the stem pool for `from`: see
+    /// `Dandelion::has_room`; our own have room of their own, so peers filling the pool cannot make us announce ours).
     fn stem(&mut self, from: Option<PeerId>, tx: Transaction, out: &mut Vec<Action>) {
-        let Ok(id) = tx_id(&tx) else { return };
-        if self.dand.pool.len() >= self.dand.cfg.max_stem_txs {
+        let (Ok(id), Some(size)) = (tx_id(&tx), stem_size(&tx)) else {
+            return;
+        };
+        if !self.dand.has_room(from, size) {
             self.fluff(tx, out);
             return;
         }
@@ -3260,6 +3313,8 @@ impl<'a> Engine<'a> {
                     StemEntry {
                         tx: tx.clone(),
                         embargo_at,
+                        from,
+                        size,
                     },
                 );
                 self.send(to, Message::StemTx(Box::new(tx)), out);

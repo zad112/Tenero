@@ -398,3 +398,167 @@ fn a_node_never_links_its_ip_and_onion_addresses() {
         "{t:?}"
     );
 }
+
+/// A transaction valid at `node`'s tip (its proof is junk: the simulator does not check proofs), spending key image `n`.
+fn junk_tx(sim: &Sim<'_>, node: usize, n: u8) -> tenero_core::v3::Transaction {
+    use tenero_core::hash::sha256;
+    use tenero_core::v3::rules;
+    use tenero_core::v3::*;
+    use tenero_tree::hash_to_point;
+    let next = sim.engines[node].node().next_block().unwrap();
+    let pt = |tag: &[u8], k: u8| hash_to_point(sha256(&[tag, &[n, k]]));
+    let out = |k: u8| Output {
+        onetime_address: pt(b"addr", k),
+        amount_commitment: pt(b"commit", k),
+        amount_enc: [k; 8],
+        view_tag: [k; 3],
+        anchor_enc: [k; 16],
+    };
+    let mut outputs = vec![out(1), out(2)];
+    outputs.sort_by_key(|o| o.onetime_address);
+    let mut t = Transaction {
+        prefix: TxPrefix {
+            version: VERSION,
+            inputs: vec![Input {
+                key_image: pt(b"key image", 0),
+            }],
+            outputs,
+            ephemeral_pubkeys: vec![pt(b"eph", 0)],
+            fee: 0,
+            encrypted_payment_id: [0; 8],
+        },
+        prunable: Prunable {
+            reference_height: next.height - 1,
+            proof_data: vec![7; 200],
+        },
+    };
+    let size = t.to_bytes().unwrap().len() as u64;
+    t.prefix.fee = rules::min_fee(size, next.reward, next.median).unwrap();
+    t
+}
+
+fn hello_with(rig: &SimRig, nonce: u64) -> tenero_net::Message {
+    tenero_net::Message::Hello(tenero_net::Hello {
+        version: tenero_net::PROTOCOL_VERSION,
+        chain_id: rig.store.chain_id(),
+        tip_height: 0,
+        cumulative_work: [0; 32],
+        tip_id: [9; 32],
+        pruned_below: 0,
+        nonce,
+    })
+}
+
+/// A peer that came in through the node's `.onion` service never gets the node's own transaction as a stem (relayed
+/// stems go only to peers the node dialled, so one sent to it could only be the node's own, and it would know): the own
+/// transaction goes on the ordinary stem instead. (Found by a tester in 0.4.0-gamma.1, where it went to that peer.)
+#[test]
+fn a_peer_that_came_in_through_the_onion_service_never_gets_the_nodes_own_transaction() {
+    use tenero_core::v3::ids::tx_id;
+    let rigs = SimRig::rigs("tor-own-in", 2);
+    let mut sim = Sim::new(&rigs, T0, SimConfig::default(), EngineConfig::default());
+    sim.connect(0, 1);
+    sim.run_for(3000);
+    while sim.tip(0).0 < 61 {
+        sim.mine(0, None);
+        assert!(sim.run_until(60_000, |s| s.all_agree()));
+        sim.run_for(61_000);
+    }
+    let spy = sim.add_hostile(0, "onion-in:7");
+    sim.hostile_send(spy, hello_with(&rigs[0], 0));
+    sim.run_for(500);
+    let t = junk_tx(&sim, 0, 1);
+    let id = tx_id(&t).unwrap();
+    let stems = |s: &Sim<'_>| {
+        s.engines[1]
+            .stats
+            .received
+            .get("stem_tx")
+            .copied()
+            .unwrap_or(0)
+    };
+    let before = stems(&sim);
+    sim.submit_tx(0, t);
+    sim.run_for(300);
+    assert!(
+        !sim.hostiles[spy]
+            .inbox
+            .iter()
+            .any(|m| matches!(m, tenero_net::Message::StemTx(_))),
+        "the onion peer got a stem"
+    );
+    assert_eq!(stems(&sim), before + 1, "it went on the ordinary stem");
+    assert!(sim.engines[0].holds_stem(&id));
+}
+
+/// The node shows one nonce on direct connections and another through Tor, and neither of its checks on nonces can be
+/// used to tie the two together: our direct nonce sent over the onion service is not "ourselves", and the same nonce on
+/// a direct link and an onion link is not a "duplicate" (either answer, a hang-up, would link them). Within one identity
+/// both checks still work.
+#[test]
+fn a_node_shows_another_nonce_through_tor_and_never_matches_across_the_two() {
+    use tenero_net::Message;
+    let rigs = SimRig::rigs("tor-nonce", 1);
+    let cfg = EngineConfig {
+        nonce: 111,
+        tor_nonce: 222,
+        ..EngineConfig::default()
+    };
+    let mut sim = Sim::new(&rigs, T0, SimConfig::default(), cfg);
+    let nonce_shown = |sim: &Sim<'_>, h: usize| {
+        sim.hostiles[h].inbox.iter().find_map(|m| match m {
+            Message::Hello(h) => Some(h.nonce),
+            _ => None,
+        })
+    };
+    // what each identity shows
+    let direct = sim.add_hostile(0, "99.1.0.1:5000");
+    let onion = sim.add_hostile(0, "onion-in:1");
+    sim.hostile_send(direct, hello_with(&rigs[0], 5));
+    sim.hostile_send(onion, hello_with(&rigs[0], 6));
+    sim.run_for(500);
+    assert_eq!(nonce_shown(&sim, direct), Some(111));
+    assert_eq!(nonce_shown(&sim, onion), Some(222));
+    // our DIRECT nonce over the onion service, our TOR nonce directly: neither is taken for ourselves
+    let a = sim.add_hostile(0, "onion-in:2");
+    let b = sim.add_hostile(0, "99.1.0.2:5000");
+    sim.hostile_send(a, hello_with(&rigs[0], 111));
+    sim.hostile_send(b, hello_with(&rigs[0], 222));
+    // the same nonce on a direct link and an onion link: not a duplicate
+    let c = sim.add_hostile(0, "99.1.0.3:5000");
+    let d = sim.add_hostile(0, "onion-in:3");
+    sim.hostile_send(c, hello_with(&rigs[0], 77));
+    sim.hostile_send(d, hello_with(&rigs[0], 77));
+    sim.run_for(500);
+    for h in [direct, onion, a, b, c, d] {
+        assert!(!sim.hostiles[h].disconnected, "peer {h} was dropped");
+    }
+    // within one identity the checks still work: our Tor nonce over the onion service is ourselves, and a second
+    // onion link with nonce 77 is a duplicate
+    let e = sim.add_hostile(0, "onion-in:4");
+    let f = sim.add_hostile(0, "onion-in:5");
+    sim.hostile_send(e, hello_with(&rigs[0], 222));
+    sim.hostile_send(f, hello_with(&rigs[0], 6));
+    sim.run_for(500);
+    assert!(
+        sim.hostiles[e].disconnected,
+        "our own Tor nonce is ourselves"
+    );
+    assert!(
+        sim.hostiles[f].disconnected || sim.hostiles[onion].disconnected,
+        "two onion links with one nonce: one of them goes"
+    );
+}
+
+/// The transport shows a different Noise key through Tor than directly, and a new one at each start.
+#[test]
+fn the_tor_key_is_not_the_direct_key_and_is_new_at_each_start() {
+    let key = NodeKey::generate();
+    let (a, b) = (
+        NetConfig::new(key.clone(), [1; 32]),
+        NetConfig::new(key, [1; 32]),
+    );
+    assert_ne!(a.tor_key.public(), a.key.public());
+    assert_ne!(a.tor_key.public(), b.tor_key.public());
+    assert_eq!(a.key.public(), b.key.public());
+}
