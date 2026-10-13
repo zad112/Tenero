@@ -3198,6 +3198,15 @@ impl App {
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.drain();
+        // while the worker is busy (a combine's proofs: minutes, no snapshot), the node's status it reads on the side keeps
+        // the height moving on the screen
+        if self.backend.work().is_some() {
+            if let (Some(live), NodeView::Running { info, .. }) =
+                (self.backend.live_node(), &mut self.snap.node)
+            {
+                *info = live;
+            }
+        }
         // closing: ask the worker to stop what this window started, and close when it says it has
         if ctx.input(|i| i.viewport().close_requested()) && !self.closing {
             self.closing = true;

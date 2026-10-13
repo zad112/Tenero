@@ -1599,7 +1599,37 @@ fn combining_coins_is_previewed_cancelled_sent_and_never_shown_as_money_received
         done: 0,
         total: 0,
     });
+    // and while they are made, the node's status keeps being read on the side for the window (`LiveNode`): an observer
+    // sees it filled during the work and empty after
+    let live = c.live_node_state();
+    let watching = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let observer = {
+        let (live, watching) = (live.clone(), std::sync::Arc::clone(&watching));
+        std::thread::spawn(move || {
+            let mut seen = None;
+            while watching.load(std::sync::atomic::Ordering::SeqCst) {
+                if let Some(i) = live.lock().unwrap().clone() {
+                    seen = Some(i);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            seen
+        })
+    };
+    let height_before = match c.snapshot().node {
+        NodeView::Running { info, .. } => info.height,
+        other => panic!("{other:?}"),
+    };
     let ev = c.handle(Cmd::SendPrepared);
+    watching.store(false, std::sync::atomic::Ordering::SeqCst);
+    let seen = observer.join().unwrap();
+    let seen = seen.expect("the node's status was read while the proofs were made");
+    assert_eq!(seen.network, "test");
+    assert!(seen.height >= height_before);
+    assert!(
+        live.lock().unwrap().is_none(),
+        "and forgotten once they are done"
+    );
     assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
     let w = work.lock().unwrap().clone().unwrap();
     assert_eq!((w.what, w.done, w.total), ("Making the proofs", 1, 1));

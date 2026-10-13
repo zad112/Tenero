@@ -74,6 +74,38 @@ pub struct Work {
 
 pub type WorkState = Arc<Mutex<Option<Work>>>;
 
+/// The node's status as read WHILE the worker is busy with a long command (a combine's proofs take minutes, and the worker's
+/// own look at the node waits until they are done): the window shows it instead of its last snapshot's, so the height does not
+/// stand still. Filled by [`watch_node`]; only meaningful while there is [`Work`].
+pub type LiveNode = Arc<Mutex<Option<NodeInfo>>>;
+
+/// Reads the node's status every [`POLL_EVERY`] on a connection of its own into `live`, until `stop` is set. A thread of its
+/// own that nobody waits for: a busy node may take a minute to answer, and the work it watches must not wait for that.
+fn watch_node(settings: Settings, live: LiveNode, stop: Arc<std::sync::atomic::AtomicBool>) {
+    use std::sync::atomic::Ordering;
+    std::thread::spawn(move || {
+        let mut conn: Option<tenero_app::client::RemoteNode> = None;
+        while !stop.load(Ordering::SeqCst) {
+            if conn.is_none() {
+                conn = procs::reach_node(&settings);
+            }
+            match conn.as_ref().map(|n| n.info()) {
+                Some(Ok(info)) if !stop.load(Ordering::SeqCst) => {
+                    if let Ok(mut l) = live.lock() {
+                        *l = Some(info);
+                    }
+                }
+                Some(Err(_)) => conn = None,
+                _ => {}
+            }
+            let end = Instant::now() + POLL_EVERY;
+            while Instant::now() < end && !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    });
+}
+
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -176,6 +208,7 @@ pub struct Core {
     move_job: Option<MoveJob>,
     /// Shared with the window (see [`Work`]).
     work: WorkState,
+    live_node: LiveNode,
 }
 
 /// A move of the node's data running on a thread of its own (a chain can be many gigabytes: the window must stay alive), polled by `tick`.
@@ -255,6 +288,7 @@ impl Core {
             last_tip: None,
             move_job: None,
             work: WorkState::default(),
+            live_node: LiveNode::default(),
         };
         c.refresh_wallets();
         // a node an earlier run (or the owner) left going is picked up, not started a second time
@@ -994,6 +1028,16 @@ impl Core {
         self.work = w;
     }
 
+    /// The node's status read during long work ([`LiveNode`]), shared with the window.
+    pub fn live_node_state(&self) -> LiveNode {
+        self.live_node.clone()
+    }
+
+    /// Uses `l` for [`LiveNode`] from now on (the backend's, which the window reads).
+    pub fn set_live_node_state(&mut self, l: LiveNode) {
+        self.live_node = l;
+    }
+
     fn send_prepared(&mut self, events: &mut Vec<Event>) -> Result<(), String> {
         let mut p = self
             .prepared
@@ -1013,16 +1057,26 @@ impl Core {
                     w.total = total;
                 }
             };
-            p.txs = purse
-                .build_own(
-                    p.account,
-                    node,
-                    &mut OsRng,
-                    &plan,
-                    proof_threads(),
-                    &progress,
-                )
-                .map_err(purse_err)?;
+            // the node's height keeps moving on the screen while the proofs are made (`LiveNode`)
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            watch_node(
+                self.settings.clone(),
+                self.live_node.clone(),
+                Arc::clone(&stop),
+            );
+            let built = purse.build_own(
+                p.account,
+                node,
+                &mut OsRng,
+                &plan,
+                proof_threads(),
+                &progress,
+            );
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Ok(mut l) = self.live_node.lock() {
+                *l = None;
+            }
+            p.txs = built.map_err(purse_err)?;
         }
         let mut node = self.node.take().ok_or("the node is not running")?;
         let result = {
