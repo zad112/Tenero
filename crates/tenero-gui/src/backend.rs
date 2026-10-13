@@ -8,9 +8,10 @@ use std::time::{Duration, Instant};
 
 use tenero_wallet::KdfParams;
 
-use crate::core::{Core, Work, WorkState};
+use crate::core::{Core, LiveNode, Work, WorkState};
 use crate::settings::Settings;
 use crate::view::{Cmd, Event, Snapshot};
+use tenero_app::control::NodeInfo;
 
 /// The window has gone (nothing will read what is sent any more).
 #[derive(Debug)]
@@ -81,6 +82,7 @@ pub struct Backend {
     join: Option<JoinHandle<()>>,
     registry: crate::core::Registry,
     work: WorkState,
+    live: LiveNode,
 }
 
 impl Backend {
@@ -98,9 +100,12 @@ impl Backend {
         let worker_registry = registry.clone();
         let work = WorkState::default();
         let worker_work = work.clone();
+        let live = LiveNode::default();
+        let worker_live = live.clone();
         let join = std::thread::spawn(move || {
             let mut core = Core::with_registry(&app_dir, settings, kdf, worker_registry);
             core.set_work_state(worker_work.clone());
+            core.set_live_node_state(worker_live);
             let _ = ev_tx.send(Event::Snapshot(Box::new(core.snapshot())));
             notify();
             let set = |w: Option<Work>| {
@@ -144,7 +149,13 @@ impl Backend {
             join: Some(join),
             registry,
             work,
+            live,
         }
+    }
+
+    /// The node's status read while the worker is busy with a long command ([`LiveNode`]), if any.
+    pub fn live_node(&self) -> Option<NodeInfo> {
+        self.live.lock().ok().and_then(|l| l.clone())
     }
 
     /// What the worker is busy with, if it is handling a command (it can be for minutes: a combine's proofs).
@@ -163,6 +174,7 @@ impl Backend {
                 join: None,
                 registry: Default::default(),
                 work: Default::default(),
+                live: Default::default(),
             },
             ev_tx,
             cmd_rx,
