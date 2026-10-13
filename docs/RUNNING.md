@@ -413,6 +413,11 @@ sudo cat /var/lib/tor/tenero-gamma/hostname
 then add `onion_listen = 127.0.0.1:38363`, `advertise_onion = <that hostname>:38353` and `proxy = 127.0.0.1:9050` to the
 seed's settings and restart the seed. Its `.onion` address can then go into the program's built-in seeds in a release.
 
+**The `gamma` seeds' `.onion` addresses are built in** (from the release after 0.4.1-gamma.1; `GAMMA_ONION_SEEDS` in
+`crates/tenero-app/src/config.rs`): a node with a `proxy` starts from them as well as from the IP seeds, and one with
+`tor_only` from them alone, so its first connections never leave Tor through an exit. A node without a proxy does not use
+or list them. `no_builtin_seeds = yes` turns them off with the others.
+
 ## Not done yet
 * **A Windows service or an installer** (a server's systemd units are in `docs/RUNNING_A_SEED.md` and `docs/RUNNING_A_POOL.md`). Run it in a window, or under a scheduler you trust.
 * **I2P,** and any encryption of the control interface (it never leaves the machine). Tor: see above. The program has no `.onion` seed built in yet.

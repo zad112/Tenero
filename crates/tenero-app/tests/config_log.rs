@@ -689,3 +689,43 @@ fn tor_settings_are_checked() {
     assert!(err(&format!("{base}advertise_onion = {ONION}\n")).contains("no onion service"));
     assert!(err(&format!("{base}proxy = nine\n")).contains("not ip:port"));
 }
+
+/// The seeds' `.onion` addresses are built in, and used ONLY with Tor: a node without a proxy does not even list them; with
+/// a proxy it has them and the IP seeds; with `tor_only` only them (its first connections stay inside Tor).
+#[test]
+fn the_onion_seeds_are_used_only_with_tor_and_alone_with_tor_only() {
+    use tenero_app::config::GAMMA_ONION_SEEDS;
+    let base = "network = gamma\ndata = d\n";
+    // the same two servers as the IP seeds, version 3 onion addresses, on the peer port
+    assert_eq!(GAMMA_ONION_SEEDS.len(), 2);
+    for s in GAMMA_ONION_SEEDS {
+        assert!(
+            tenero_net::onion::parse_onion(s).is_some_and(|(_, port)| port == 38353),
+            "{s}"
+        );
+    }
+    // no Tor: the IP seeds only
+    let c = ok(base);
+    assert_eq!(c.seeds, GAMMA_SEEDS.to_vec());
+    assert!(!c.seeds.iter().any(|s| s.contains(".onion")));
+    // a proxy: both
+    let c = ok(&format!("{base}proxy = 127.0.0.1:9050\n"));
+    let both: Vec<String> = GAMMA_SEEDS
+        .iter()
+        .chain(GAMMA_ONION_SEEDS)
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(c.seeds, both);
+    // tor_only: the .onion ones only
+    let c = ok(&format!("{base}proxy = 127.0.0.1:9050\ntor_only = yes\n"));
+    assert_eq!(c.seeds, GAMMA_ONION_SEEDS.to_vec());
+    // and no_builtin_seeds turns them off too
+    let c = ok(&format!(
+        "{base}proxy = 127.0.0.1:9050\nno_builtin_seeds = yes\nseed = 203.0.113.9:1\n"
+    ));
+    assert_eq!(c.seeds, ["203.0.113.9:1"]);
+    // the private networks have none either way
+    assert!(ok("network = test\ndata = d\nproxy = 127.0.0.1:9050\n")
+        .seeds
+        .is_empty());
+}

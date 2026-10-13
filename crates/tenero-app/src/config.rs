@@ -119,12 +119,42 @@ pub enum MineMode {
 /// C1): two servers are two machines, not two independent operators. An experiment, not a launched network.
 pub const GAMMA_SEEDS: &[&str] = &["195.26.244.245:38353", "194.238.27.60:38353"];
 
+/// The same two seeds as `.onion` services (since 2026-10-11; `docs/TOR_PLAN.md`): `p56vt5...` is 195.26.244.245, `7nsdn57...`
+/// is 194.238.27.60. **Used only by a node that has a Tor `proxy`** (a node without Tor could not dial them, and has no
+/// business listing them); with `tor_only` they REPLACE the IP seeds, so even the first connections stay inside Tor rather
+/// than leaving it through an exit. The same operator as [`GAMMA_SEEDS`]: two more addresses, not two more operators.
+pub const GAMMA_ONION_SEEDS: &[&str] = &[
+    "p56vt5wui4cujc6fsj3vkak3hxsfjzyqnyhl27saf5hxsvsv6wr4buqd.onion:38353",
+    "7nsdn57rc7rjjhdtf6pksmkmnwybtec7eurj3cyt2y3jzxxqxeulunad.onion:38353",
+];
+
 impl Network {
     /// The seeds built into the program for this network (none for the private `test` and `dev` networks).
     pub fn builtin_seeds(self) -> &'static [&'static str] {
         match self {
             Network::Gamma => GAMMA_SEEDS,
             Network::Test | Network::Dev => &[],
+        }
+    }
+
+    /// The `.onion` seeds built into the program for this network ([`GAMMA_ONION_SEEDS`]).
+    pub fn builtin_onion_seeds(self) -> &'static [&'static str] {
+        match self {
+            Network::Gamma => GAMMA_ONION_SEEDS,
+            Network::Test | Network::Dev => &[],
+        }
+    }
+
+    /// The built-in seeds a node uses, by how it reaches the network: without Tor the IP seeds only; with a Tor `proxy`
+    /// the IP seeds and the `.onion` ones; with `tor_only` the `.onion` ones only.
+    pub fn builtin_seeds_for(self, proxy: bool, tor_only: bool) -> Vec<&'static str> {
+        let (ip, onion) = (self.builtin_seeds(), self.builtin_onion_seeds());
+        if tor_only {
+            onion.to_vec()
+        } else if proxy {
+            ip.iter().chain(onion).copied().collect()
+        } else {
+            ip.to_vec()
         }
     }
 }
@@ -578,8 +608,9 @@ impl Raw {
             .map(|s| peer_addr("seed", s))
             .collect::<Result<Vec<String>, ConfigError>>()?;
         // the program's own seeds for this network, then the operator's (`no_builtin_seeds yes` for a private network of one's own)
+        // (the `.onion` ones only with a Tor proxy, and only them with tor_only: `Network::builtin_seeds_for`)
         let seeds = effective_seeds(
-            network.builtin_seeds(),
+            &network.builtin_seeds_for(proxy.is_some(), tor_only),
             &configured_seeds,
             !self.flag("no_builtin_seeds", false)?,
         );

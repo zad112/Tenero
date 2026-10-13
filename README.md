@@ -158,8 +158,8 @@ target of 2^237 (about 524,000 attempts a block), control port 38352 and peer po
   (`--seed ip:port`, see [`docs/RUNNING.md`](docs/RUNNING.md)) or drop the built-in ones (`no_builtin_seeds`). A node that holds three outbound peers that are not seeds leaves
   its seed.
 * **The same two seeds as `.onion` addresses, for a node that uses Tor** (since 2026-10-11): `p56vt5wui4cujc6fsj3vkak3hxsfjzyqnyhl27saf5hxsvsv6wr4buqd.onion:38353`
-  (the server `195.26.244.245`) and `7nsdn57rc7rjjhdtf6pksmkmnwybtec7eurj3cyt2y3jzxxqxeulunad.onion:38353` (`194.238.27.60`). **They are not built into the programs (`v0.4.1-gamma.1` neither):** add
-  them as `seed = ...` lines with a Tor `proxy` ([`docs/RUNNING.md`](docs/RUNNING.md), "Tor"). A later release is planned to carry them, used only when Tor is turned on. They
+  (the server `195.26.244.245`) and `7nsdn57rc7rjjhdtf6pksmkmnwybtec7eurj3cyt2y3jzxxqxeulunad.onion:38353` (`194.238.27.60`). **Built into the programs from the release after `v0.4.1-gamma.1`, used only when Tor is turned on** (with "Every connection through Tor", in place of the IP seeds);
+  with `v0.4.1-gamma.1` or earlier, add them as `seed = ...` lines with a Tor `proxy` ([`docs/RUNNING.md`](docs/RUNNING.md), "Tor"). They
   are the same two machines and the same operator, so they add a way in, not an independent seed.
 * **GPU or nothing:** one GPU at about 43,000 attempts a second (one RTX 5070 Ti, measured) needs roughly 12 seconds for 524,000 attempts (arithmetic, not a measurement of
   the network). A 6-thread CPU managed 164 attempts a second on the first design (the gathered attempt on a CPU was not measured): **CPU mining of `gamma` is impractical** at
@@ -197,7 +197,7 @@ tokens, and none of this is an investment.** Nobody has to give, and the project
 ## What is next (no dates are promised)
 
 The author wants an **independent review** of the cryptography (this project's Carrot and signatures first) and of the proof of work before anything could carry value, and a
-**longer public test** on `gamma`. Then: the seeds' `.onion` addresses built into the program for nodes that use Tor, a remote wallet for computers without the memory for a node,
+**longer public test** on `gamma`. Then: a remote wallet for computers without the memory for a node,
 and more seeds run by people other than the author. None of these has a date.
 
 ## The Python reference
