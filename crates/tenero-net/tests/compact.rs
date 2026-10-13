@@ -104,6 +104,8 @@ fn a_node_that_lacks_some_transactions_fetches_only_those_by_index() {
             enabled: false,
             ..Default::default()
         },
+        // nor told of node 0's pool when they meet again after the split (it would fetch them before the block)
+        push_pool: false,
         ..EngineConfig::default()
     };
     let mut sim = Sim::new(&rigs, T0, SimConfig::default(), cfg);
