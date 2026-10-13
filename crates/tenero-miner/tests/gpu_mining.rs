@@ -234,10 +234,31 @@ fn how_many_attempts_per_second_the_gpu_backend_does_at_each_batch_size() {
             })
         })
         .unwrap();
-    eprintln!("{:>7} {:>14}", "batch", "attempts/s");
-    for batch in [32usize, 64, 128, 256] {
+    // `gamma` and `dev` mine the GATHERED attempt from block 0 (CONSENSUS.md 8.3): that is the number that matters. The first
+    // design is measured too, for comparison (up to 0.4.1 this test measured only it, about 77k on the owner's card against
+    // the miner's real ~44k on gamma)
+    eprintln!("{:>22} {:>7} {:>14}", "design", "batch", "attempts/s");
+    for (design, gather_from) in [("gathered (gamma, dev)", 0u64), ("first design", u64::MAX)] {
+        for batch in [128usize, 256, 512] {
+            measure(&block, params, design, gather_from, batch, seconds);
+        }
+    }
+    eprintln!();
+    eprintln!("Paste everything from '=== GPU backend speed' down.");
+}
+
+/// Mines `block`'s header for `seconds` at a target never met, after 5 s to build the dataset and warm up, and prints the rate.
+fn measure(
+    block: &tenero_core::v3::Block,
+    params: Params,
+    design: &str,
+    gather_from: u64,
+    batch: usize,
+    seconds: u64,
+) {
+    {
         let mut backend = match GpuBackend::new(0, params, 100, batch) {
-            Ok(b) => b,
+            Ok(b) => b.gathered_from(gather_from),
             Err(e) => panic!("cannot start the GPU backend: {e}"),
         };
         eprintln!("  device: {}", backend.device_name());
@@ -261,11 +282,10 @@ fn how_many_attempts_per_second_the_gpu_backend_does_at_each_batch_size() {
         stale.store(true, Ordering::SeqCst);
         assert_eq!(t.join().unwrap().unwrap(), None);
         eprintln!(
-            "{:>7} {:>14.0}",
+            "{:>22} {:>7} {:>14.0}",
+            design,
             batch,
             (a1 - a0) as f64 / t1.duration_since(t0).as_secs_f64()
         );
     }
-    eprintln!();
-    eprintln!("Paste everything from '=== GPU backend speed' down.");
 }
