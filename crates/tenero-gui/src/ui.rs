@@ -424,6 +424,7 @@ impl App {
                 NodeView::Stopped => ("Node: stopped".to_string(), GREY),
                 NodeView::Starting => ("Node: starting…".to_string(), AMBER),
                 NodeView::Stopping => ("Node: stopping…".to_string(), AMBER),
+                NodeView::NotAnswering => ("Node: busy, not answering for now…".to_string(), AMBER),
                 NodeView::Failed { why, .. } => (format!("Node: {why}"), RED),
                 NodeView::Running { info, .. } if info.syncing => (
                     format!("Node: catching up (height {})", group_digits(info.height)),
@@ -1971,6 +1972,12 @@ impl App {
                     "The node is stopping (it finishes writing its files first; up to a minute)…",
                 );
             }
+            NodeView::NotAnswering => {
+                ui.colored_label(
+                    AMBER,
+                    "The node is running but not answering for now: it is probably busy (checking the proofs of a big payment or combine can take it a minute). It is left alone; the window keeps asking.",
+                );
+            }
             NodeView::Failed { why, output } => {
                 ui.colored_label(RED, why);
                 if !output.is_empty() {
@@ -2048,7 +2055,7 @@ impl App {
             {
                 self.backend.send(Cmd::StartNode);
             }
-            let can_stop = matches!(node, NodeView::Running { .. });
+            let can_stop = matches!(node, NodeView::Running { .. } | NodeView::NotAnswering);
             if ui
                 .add_enabled(can_stop, egui::Button::new("Stop the node"))
                 .clicked()
