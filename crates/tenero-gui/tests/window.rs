@@ -34,7 +34,7 @@ fn texts(shapes: &[egui::epaint::ClippedShape]) -> String {
 struct Rig {
     ctx: egui::Context,
     app: App,
-    events: std::sync::mpsc::Sender<Event>,
+    events: tenero_gui::backend::Outbox,
     commands: std::sync::mpsc::Receiver<Cmd>,
 }
 
