@@ -540,9 +540,10 @@ impl ControlHook {
                     .rev()
                     .find(|t| t.tx_root == header.tx_root && t.prev_id == header.prev_id)
                 else {
-                    return Outcome::Reply(err(
-                        &format!("no template of this node has that header's transactions (the tip moved, or it is too old): {}", crate::control::STALE_WORK),
-                    ));
+                    return Outcome::Reply(err(format!(
+                        "no template of this node has that header's transactions (the tip moved, or it is too old): {}",
+                        crate::control::STALE_WORK
+                    )));
                 };
                 // the transactions come from the pool; one that has left it (another block took it) makes the work stale
                 let mut transactions = Vec::with_capacity(t.tx_ids.len());
@@ -550,7 +551,7 @@ impl ControlHook {
                     match node.pool().get(id) {
                         Some(tx) => transactions.push(tx.clone()),
                         None => {
-                            return Outcome::Reply(err(&format!(
+                            return Outcome::Reply(err(format!(
                                 "a transaction of that template has left the pool: {}",
                                 crate::control::STALE_WORK
                             )))
