@@ -1295,12 +1295,24 @@ impl Core {
                 self.node = procs::reach_node(&self.settings);
             }
         }
+        // our own node, up and answering before: if it does not answer now it is busy, not dead (its process is still there,
+        // checked above). It is left alone, and so is the miner working for it. (Up to 0.4.1 the start-up patience below
+        // was measured from the START, so a node busy for a moment long after it had come up, checking a big combine's
+        // proofs, was killed at once, and the combine's transactions it held were lost with it.)
+        let ours_was_up = self.node_proc.is_some() && self.node_started.is_none();
         match self.node.as_ref().map(|n| n.info()) {
             Some(Ok(info)) => {
+                // it has come up: the start-up patience is over
+                self.node_started = None;
                 self.node_view = NodeView::Running {
                     info,
                     ours: self.node_proc.is_some(),
                 };
+            }
+            Some(Err(_)) if ours_was_up => {
+                // forget the connection (a new one is made next time), keep everything else
+                self.node = None;
+                self.node_view = NodeView::NotAnswering;
             }
             Some(Err(_)) => {
                 // the node went away (or hung): forget the connection and look again next time
@@ -1311,6 +1323,9 @@ impl Core {
                 } else {
                     NodeView::Stopped
                 };
+            }
+            None if ours_was_up => {
+                self.node_view = NodeView::NotAnswering;
             }
             None => {
                 if self.node_proc.is_some() {
@@ -1338,6 +1353,12 @@ impl Core {
                 }
             }
         }
+    }
+
+    /// Forgets the connection to the node, as a failed request does (a test's way of making the next look a new
+    /// connection).
+    pub fn drop_node_connection(&mut self) {
+        self.node = None;
     }
 
     fn node_info(&self) -> Option<&NodeInfo> {
@@ -1618,7 +1639,12 @@ impl Core {
         events.extend(self.poll_move());
         self.poll_node(false);
         self.poll_miner();
-        if self.node.is_none() && self.miner_proc.is_some() {
+        // no node: a miner that works for one has nothing to mine on. A node that is only not answering for now is still
+        // there (and the miner itself copes with a slow node)
+        if self.node.is_none()
+            && self.miner_proc.is_some()
+            && !matches!(self.node_view, NodeView::NotAnswering)
+        {
             self.stop_solo_miner();
         }
         if let Err(e) = self.scan_slice() {

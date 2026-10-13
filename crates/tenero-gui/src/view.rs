@@ -27,6 +27,9 @@ pub enum NodeView {
         ours: bool,
     },
     Stopping,
+    /// It was running and has stopped answering for now (busy: checking a big payment's proofs, say). It is NOT ended for
+    /// it, and a miner that works for it is not stopped: the window keeps asking, and "Stop the node" still works.
+    NotAnswering,
     /// Stopped by itself or never came up: why, and the last lines of what it printed.
     Failed {
         why: String,

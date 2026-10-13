@@ -409,6 +409,60 @@ fn the_node_is_started_found_stopped_cleanly_and_a_second_start_does_nothing() {
     assert!(tenero_gui::procs::reach_node(&rig.settings).is_none());
 }
 
+/// Our own node, up and running, that stops answering for a while (here: every control connection it serves is taken,
+/// as a busy node's are while it checks a big combine's proofs) is shown as "not answering" and LEFT ALONE: not ended,
+/// and back to "running" when it answers again. Up to 0.4.1 the window ended it at once (its start-up patience ran from
+/// the start), and the combine's transactions it held were lost with it (seen by the owner on `gamma`, 2026-10-12).
+#[test]
+fn a_running_node_that_stops_answering_for_a_while_is_left_alone() {
+    let rig = Rig::new("busy", 18479);
+    let mut c = rig.core();
+    assert!(errors(&c.handle(Cmd::StartNode)).is_empty());
+    wait(&mut c, 90, "the node to answer", |s| {
+        matches!(s.node, NodeView::Running { .. })
+    });
+    // the window's connection goes, and then every connection the control interface serves is taken (it closes any
+    // more at once): the window cannot get back in, as when a busy node's connections are all waiting
+    c.drop_node_connection();
+    std::thread::sleep(Duration::from_millis(500));
+    let cookie = tenero_app::client::read_cookie(
+        &rig.settings.data_dir.join(tenero_app::client::COOKIE_FILE),
+    )
+    .unwrap();
+    let mut held = Vec::new();
+    while held.len() < tenero_app::server::MAX_CONNECTIONS {
+        match tenero_app::client::RemoteNode::connect(rig.settings.control, &cookie) {
+            Ok(n) => held.push(n),
+            Err(_) => break,
+        }
+    }
+    assert!(
+        held.len() >= 2,
+        "the test holds the connections: {}",
+        held.len()
+    );
+    assert!(
+        tenero_gui::procs::reach_node(&rig.settings).is_none(),
+        "the node takes no more connections"
+    );
+    wait(&mut c, 30, "not answering", |s| {
+        matches!(s.node, NodeView::NotAnswering)
+    });
+    // a few more looks: still left alone, and still there
+    let end = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < end {
+        c.tick();
+        assert_eq!(c.snapshot().node, NodeView::NotAnswering);
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    drop(held);
+    wait(&mut c, 30, "the node to answer again", |s| {
+        matches!(s.node, NodeView::Running { ours: true, .. })
+    });
+    c.handle(Cmd::StopNode);
+    c.tick();
+}
+
 #[test]
 fn a_node_that_cannot_start_is_reported_with_what_it_said() {
     let mut rig = Rig::new("badnode", 18475);
