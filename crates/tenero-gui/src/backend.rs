@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -10,11 +10,74 @@ use tenero_wallet::KdfParams;
 
 use crate::core::{Core, Work, WorkState};
 use crate::settings::Settings;
-use crate::view::{Cmd, Event};
+use crate::view::{Cmd, Event, Snapshot};
+
+/// The window has gone (nothing will read what is sent any more).
+#[derive(Debug)]
+pub struct WindowGone;
+
+/// How the worker's events reach the window. A [`Snapshot`] is everything the window draws, made again after every change
+/// (about twice a second while a node or a miner runs), so only the LATEST one is worth anything: it is kept in one slot that
+/// each new one overwrites. Everything else (notices, errors, results) is queued in order. Up to 0.4.1 the snapshots were
+/// queued too, and a window that drew nothing for hours (minimized: Windows sends it no frames, so it reads nothing) held
+/// every one: about 20 GB after a night of mining, freed all at once, with a freeze, when the window was shown again.
+#[derive(Clone)]
+pub struct Outbox {
+    tx: Sender<Event>,
+    latest: Arc<Mutex<Option<Box<Snapshot>>>>,
+}
+
+impl Outbox {
+    pub fn send(&self, e: Event) -> Result<(), WindowGone> {
+        match e {
+            Event::Snapshot(s) => {
+                if let Ok(mut slot) = self.latest.lock() {
+                    *slot = Some(s);
+                }
+                Ok(())
+            }
+            e => self.tx.send(e).map_err(|_| WindowGone),
+        }
+    }
+}
+
+/// The window's end of an [`Outbox`].
+pub struct Inbox {
+    rx: Receiver<Event>,
+    latest: Arc<Mutex<Option<Box<Snapshot>>>>,
+}
+
+impl Inbox {
+    /// The next event: the queued ones first, in order, then the latest snapshot (if one came since the last look). A
+    /// snapshot is made after the events of the same change, so it comes after them here too.
+    pub fn try_recv(&self) -> Option<Event> {
+        if let Ok(e) = self.rx.try_recv() {
+            return Some(e);
+        }
+        self.latest
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+            .map(Event::Snapshot)
+    }
+}
+
+/// A new outbox and its inbox.
+pub fn mailbox() -> (Outbox, Inbox) {
+    let (tx, rx) = channel::<Event>();
+    let latest = Arc::new(Mutex::new(None));
+    (
+        Outbox {
+            tx,
+            latest: Arc::clone(&latest),
+        },
+        Inbox { rx, latest },
+    )
+}
 
 pub struct Backend {
     tx: Sender<Cmd>,
-    rx: Receiver<Event>,
+    rx: Inbox,
     join: Option<JoinHandle<()>>,
     registry: crate::core::Registry,
     work: WorkState,
@@ -29,7 +92,7 @@ impl Backend {
         notify: Arc<dyn Fn() + Send + Sync>,
     ) -> Backend {
         let (tx, cmd_rx) = channel::<Cmd>();
-        let (ev_tx, rx) = channel::<Event>();
+        let (ev_tx, rx) = mailbox();
         let app_dir = app_dir.to_path_buf();
         let registry = crate::core::Registry::default();
         let worker_registry = registry.clone();
@@ -90,9 +153,9 @@ impl Backend {
     }
 
     /// A backend with no worker behind it: commands go nowhere and nothing comes back. For drawing the window in a test.
-    pub fn detached() -> (Backend, Sender<Event>, Receiver<Cmd>) {
+    pub fn detached() -> (Backend, Outbox, Receiver<Cmd>) {
         let (tx, cmd_rx) = channel::<Cmd>();
-        let (ev_tx, rx) = channel::<Event>();
+        let (ev_tx, rx) = mailbox();
         (
             Backend {
                 tx,
@@ -134,7 +197,7 @@ impl Backend {
     }
 
     pub fn try_recv(&self) -> Option<Event> {
-        self.rx.try_recv().ok()
+        self.rx.try_recv()
     }
 
     /// Waits for the worker to finish (after `Cmd::Quit`).
