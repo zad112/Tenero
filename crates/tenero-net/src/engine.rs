@@ -3213,6 +3213,29 @@ impl<'a> Engine<'a> {
         self.dand.pool.len()
     }
 
+    /// This node's OWN transactions still in their stem (nobody has announced them yet): into the pool and announced now.
+    /// Called when the node stops cleanly: the stem pool is not saved, so they would be lost with it (seen on `gamma`,
+    /// 2026-10-13: a node stopped during a big combine lost the combine's transactions it still held). This node is then
+    /// the first to announce them, which tells its peers where they came from: the price, chosen over losing them (the
+    /// owner's decision). The announcement is what saves them: the transaction pool is not kept across a restart either.
+    pub fn fluff_own_stems(&mut self, now_ms: u64) -> Vec<Action> {
+        self.now = now_ms;
+        let own: Vec<[u8; 32]> = self
+            .dand
+            .pool
+            .iter()
+            .filter(|(_, e)| e.from.is_none())
+            .map(|(id, _)| *id)
+            .collect();
+        let mut out = Vec::new();
+        for id in own {
+            if let Some(e) = self.dand.pool.remove(&id) {
+                self.fluff(e.tx, &mut out);
+            }
+        }
+        out
+    }
+
     /// The peers that may be stem peers: ready peers WE dialled (not feelers, not address-only), so an attacker cannot
     /// make itself one by connecting to us. One place, so a rule for Tor peers is one change.
     fn stem_candidates(&self) -> Vec<PeerId> {

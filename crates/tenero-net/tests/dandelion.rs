@@ -325,3 +325,43 @@ fn a_stem_pool_the_peers_filled_still_takes_the_nodes_own_transaction() {
     assert!(!sim.engines[1].node().pool().contains(&id));
     assert_eq!(announced(&sim), before, "and is not announced by it");
 }
+
+/// A node that stops cleanly announces its OWN transactions still in their stem first (they would be lost with the stem
+/// pool, which is not saved: seen on `gamma`, 2026-10-13); a peer's stem transaction it holds is left to its embargo.
+#[test]
+fn a_node_that_stops_announces_its_own_stem_transactions_first() {
+    use tenero_net::Action;
+    let rigs = SimRig::rigs("own-on-stop", 3);
+    let mut sim = Sim::new(&rigs, T0, SimConfig::default(), cfg(true, 0, 11));
+    sim.connect(0, 1);
+    sim.connect(1, 2);
+    sim.run_for(5 * SEC);
+    ready_for_spends(&mut sim);
+    // node 1 holds one of its own and one a peer passed it, both in their stem
+    let own = make_tx(&sim, 1, 700);
+    let own_id = tx_id(&own).unwrap();
+    sim.submit_tx(1, own);
+    let spy = sim.add_hostile(1, "99.9.0.2:8333");
+    sim.hostile_send(spy, hello(&rigs[1]));
+    sim.run_for(SEC);
+    let theirs = make_tx(&sim, 1, 701);
+    let their_id = tx_id(&theirs).unwrap();
+    sim.hostile_send(spy, Message::StemTx(Box::new(theirs)));
+    sim.run_for(200);
+    assert!(sim.engines[1].holds_stem(&own_id) && sim.engines[1].holds_stem(&their_id));
+    // the stop
+    let now = (T0 + 10_000) * 1000;
+    let actions = sim.engines[1].fluff_own_stems(now);
+    assert!(
+        sim.engines[1].node().pool().contains(&own_id),
+        "its own: into the pool"
+    );
+    assert!(!sim.engines[1].holds_stem(&own_id));
+    assert!(
+        actions.iter().any(|a| matches!(a, Action::Send { msg: Message::NewTx { ids }, .. } if ids.contains(&own_id))),
+        "and announced"
+    );
+    // the peer's: still in its stem, not announced by this node
+    assert!(sim.engines[1].holds_stem(&their_id));
+    assert!(!sim.engines[1].node().pool().contains(&their_id));
+}

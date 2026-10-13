@@ -465,6 +465,23 @@ impl Net {
             shutdown: Arc::clone(&shutdown),
         };
         lp.event_loop(engine, &rx, hooks);
+        // stopping cleanly: our own transactions still in their stem are announced first (else they are lost with the
+        // stem pool: `Engine::fluff_own_stems`), and the peers are given a moment (at most 3 s) to be sent them
+        if shutdown.load(Ordering::SeqCst) {
+            let actions = engine.fluff_own_stems(now_ms());
+            if !actions.is_empty() {
+                lp.exec(engine, actions);
+                let end = Instant::now() + Duration::from_secs(3);
+                while Instant::now() < end
+                    && lp
+                        .conns
+                        .values()
+                        .any(|c| c.queued.load(Ordering::SeqCst) > 0)
+                {
+                    thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
         // shutting down: close everything and save
         for conn in lp.conns.values() {
             conn.close();
