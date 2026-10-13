@@ -337,7 +337,8 @@ fn a_block_found_on_a_compact_template_goes_back_as_its_header_and_stale_work_is
     });
     for v in [old, unknown] {
         assert!(
-            matches!(&v, BlockVerdict::Refused(why) if why.contains("stale")),
+            // in the words a miner and a pool recognise as a lost race (`control::is_stale_work`)
+            matches!(&v, BlockVerdict::Refused(why) if tenero_app::control::is_stale_work(why)),
             "{v:?}"
         );
     }

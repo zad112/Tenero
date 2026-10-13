@@ -541,7 +541,7 @@ impl ControlHook {
                     .find(|t| t.tx_root == header.tx_root && t.prev_id == header.prev_id)
                 else {
                     return Outcome::Reply(err(
-                        "no template of this node has that header's transactions (the tip moved, or it is too old): the work is stale",
+                        &format!("no template of this node has that header's transactions (the tip moved, or it is too old): {}", crate::control::STALE_WORK),
                     ));
                 };
                 // the transactions come from the pool; one that has left it (another block took it) makes the work stale
@@ -549,9 +549,12 @@ impl ControlHook {
                 for id in &t.tx_ids {
                     match node.pool().get(id) {
                         Some(tx) => transactions.push(tx.clone()),
-                        None => return Outcome::Reply(err(
-                            "a transaction of that template has left the pool: the work is stale",
-                        )),
+                        None => {
+                            return Outcome::Reply(err(&format!(
+                                "a transaction of that template has left the pool: {}",
+                                crate::control::STALE_WORK
+                            )))
+                        }
                     }
                 }
                 let block = tenero_core::v3::Block {
