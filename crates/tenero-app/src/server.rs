@@ -120,13 +120,16 @@ fn same(a: &[u8; 32], b: &[u8; 32]) -> bool {
 }
 
 /// The server's limits (the defaults are the constants above; tests use shorter ones).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone)]
 pub struct ControlConfig {
     pub max_connections: usize,
     pub auth_timeout: Duration,
     pub idle_timeout: Duration,
     /// The most bytes of blocks one `Blocks` answer carries (at least one block is always sent).
     pub blocks_bytes: usize,
+    /// Checks a submitted transaction's proofs on the connection's own thread before the node's loop sees it, so the
+    /// loop's check finds the verdict remembered (`tenero_chain::Precheck`). `None`: the loop checks them, as before.
+    pub precheck: Option<tenero_net::transport::TxPrecheck>,
 }
 
 impl Default for ControlConfig {
@@ -136,6 +139,7 @@ impl Default for ControlConfig {
             auth_timeout: AUTH_TIMEOUT,
             idle_timeout: IDLE_TIMEOUT,
             blocks_bytes: MAX_BLOCKS_BYTES,
+            precheck: None,
         }
     }
 }
@@ -170,6 +174,7 @@ pub fn start_with(
     let stop = Arc::new(AtomicBool::new(false));
     let active = Arc::new(AtomicUsize::new(0));
     let jobs = tx.clone();
+    let blocks_bytes = cfg.blocks_bytes;
     {
         let (stop, active) = (Arc::clone(&stop), Arc::clone(&active));
         thread::spawn(move || {
@@ -184,7 +189,7 @@ pub fn start_with(
                             active.fetch_sub(1, Ordering::SeqCst);
                             continue;
                         }
-                        let (tx, active) = (tx.clone(), Arc::clone(&active));
+                        let (tx, active, cfg) = (tx.clone(), Arc::clone(&active), cfg.clone());
                         thread::spawn(move || {
                             let _ = serve(stream, cookie, &tx, cfg);
                             active.fetch_sub(1, Ordering::SeqCst);
@@ -209,7 +214,7 @@ pub fn start_with(
             rx,
             shutdown,
             meta,
-            blocks_bytes: cfg.blocks_bytes,
+            blocks_bytes,
             pending: Vec::new(),
             pending_blocks: Vec::new(),
             templates: std::collections::VecDeque::new(),
@@ -256,6 +261,12 @@ fn serve(
         let response = match req {
             Request::Auth { .. } => Response::Error("already authenticated".into()),
             req => {
+                // a submitted transaction's proofs are checked HERE, on this connection's thread, before the loop sees
+                // it: the loop's check then finds the verdict remembered (a wallet's big combine stalled the loop for tens
+                // of seconds, 2026-10-13)
+                if let (Request::SubmitTx(t), Some(check)) = (&req, &cfg.precheck) {
+                    check(t);
+                }
                 let (reply, wait) = sync_channel(1);
                 match jobs.try_send(Job { req, reply }) {
                     Ok(()) => match wait.recv_timeout(ANSWER_TIMEOUT) {

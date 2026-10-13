@@ -1761,3 +1761,82 @@ fn a_connection_that_reads_faster_than_its_rate_is_slowed_not_dropped() {
         },
     );
 }
+
+/// The transactions a peer sends (`txs` and `stem_tx`) have their proofs checked AHEAD on the connection's reader thread
+/// (`NetConfig::precheck`), before the loop sees them: the loop's own check then finds the verdict remembered instead of
+/// stalling on it. Whatever it finds, the loop still decides.
+#[test]
+fn a_peers_transactions_are_prechecked_on_its_reader_thread() {
+    use tenero_core::v3::{Input, Output, Prunable, Transaction, TxPrefix};
+    let rigs = SimRig::rigs("tr-precheck", 1);
+    type Seen = Arc<Mutex<Vec<([u8; 32], thread::ThreadId)>>>;
+    let seen: Seen = Arc::default();
+    let s2 = Arc::clone(&seen);
+    let make = |n: u8| {
+        let pt = |k: u8| {
+            tenero_tree::hash_to_point(tenero_core::hash::sha256(&[b"tr-precheck", &[n, k]]))
+        };
+        let mut outputs: Vec<Output> = (1..=2)
+            .map(|k| Output {
+                onetime_address: pt(k),
+                amount_commitment: pt(k + 10),
+                amount_enc: [k; 8],
+                view_tag: [k; 3],
+                anchor_enc: [k; 16],
+            })
+            .collect();
+        outputs.sort_by_key(|o| o.onetime_address);
+        Transaction {
+            prefix: TxPrefix {
+                version: tenero_core::v3::VERSION,
+                inputs: vec![Input { key_image: pt(0) }],
+                outputs,
+                ephemeral_pubkeys: vec![pt(20)],
+                fee: 1,
+                encrypted_payment_id: [0; 8],
+            },
+            prunable: Prunable {
+                reference_height: 0,
+                proof_data: vec![7; 100],
+            },
+        }
+    };
+    let (stem, loose) = (make(1), make(2));
+    let ids = [
+        tenero_core::v3::ids::tx_id(&stem).unwrap(),
+        tenero_core::v3::ids::tx_id(&loose).unwrap(),
+    ];
+    let test_thread = thread::current().id();
+    with_node(
+        &rigs[0],
+        local_cfg(&[]),
+        move |c| {
+            c.precheck = Some(Arc::new(move |t: &Transaction| {
+                let id = tenero_core::v3::ids::tx_id(t).unwrap();
+                s2.lock().unwrap().push((id, thread::current().id()));
+            }))
+        },
+        |h| {
+            let mut c = Client::connect(h.addr).unwrap();
+            c.send(&c.hello());
+            assert!(matches!(
+                c.recv(Duration::from_secs(3)),
+                Some(Message::Hello(_))
+            ));
+            c.send(&Message::StemTx(Box::new(stem.clone())));
+            c.send(&Message::Txs {
+                txs: vec![loose.clone()],
+            });
+            let end = Instant::now() + Duration::from_secs(5);
+            while seen.lock().unwrap().len() < 2 {
+                assert!(Instant::now() < end, "not checked ahead");
+                thread::sleep(Duration::from_millis(20));
+            }
+        },
+    );
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.iter().map(|s| s.0).collect::<Vec<_>>(), ids);
+    // on the connection's reader thread: not the test's, and the same for both (one connection)
+    assert!(seen.iter().all(|s| s.1 != test_thread));
+    assert_eq!(seen[0].1, seen[1].1);
+}

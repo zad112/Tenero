@@ -74,6 +74,12 @@ pub struct Node<'a> {
     pool: Mempool,
 }
 
+/// The proof check [`Node::new`] uses ([`FCMP`]: one per process, with its memory of verdicts). A check made with it on
+/// another thread ahead of the node (`tenero_chain::Precheck`) is remembered for the node's own.
+pub fn proof_check() -> &'static dyn tenero_chain::ProofCheck {
+    &*FCMP
+}
+
 impl<'a> Node<'a> {
     /// A node with the real proof check ([`FCMP`], which remembers the verdicts of the transactions it took into the
     /// mempool, so a block of them is checked almost at once).

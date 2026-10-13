@@ -5,4 +5,4 @@ pub mod mempool;
 pub mod node;
 
 pub use mempool::{AddOutcome, Mempool, MempoolConfig, PoolEntry, PoolError};
-pub use node::{Node, NodeConfig, NodeError, Payout, PoolLoad};
+pub use node::{proof_check, Node, NodeConfig, NodeError, Payout, PoolLoad};

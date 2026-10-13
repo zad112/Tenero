@@ -79,6 +79,9 @@ pub struct NetConfig {
     pub onion_listen: Option<SocketAddr>,
     /// A dial through Tor may take this long (a circuit to an onion service can take tens of seconds).
     pub proxy_timeout: Duration,
+    /// Checks the proofs of the transactions a peer sends on the peer's own reader thread, ahead of the loop (`None`: the
+    /// loop checks them, as before).
+    pub precheck: Option<TxPrecheck>,
     /// Our long-term Noise key, for connections NOT through Tor.
     pub key: NodeKey,
     /// The Noise key for every connection through Tor (dialled through `proxy`, or come in through `onion_listen`): a
@@ -123,6 +126,7 @@ impl NetConfig {
             tor_only: false,
             onion_listen: None,
             proxy_timeout: Duration::from_secs(60),
+            precheck: None,
             key,
             tor_key: NodeKey::generate(),
             chain_id,
@@ -779,6 +783,7 @@ impl Loop<'_> {
                 lane: Lane::new(),
                 closed: Arc::clone(&closed),
                 throttle: Throttle::new(self.cfg.peer_bytes_per_sec, self.cfg.peer_burst_bytes),
+                precheck: self.cfg.precheck.clone(),
             };
             counters.threads.fetch_add(1, Ordering::Relaxed);
             thread::spawn(move || {
@@ -949,7 +954,11 @@ struct ReaderInput {
     lane: Arc<Lane>,
     closed: Arc<AtomicBool>,
     throttle: Throttle,
+    precheck: Option<TxPrecheck>,
 }
+
+/// Checks a transaction's proofs ahead, so that the loop's own check finds the verdict remembered (`tenero_chain::Precheck`).
+pub type TxPrecheck = Arc<dyn Fn(&tenero_core::v3::Transaction) + Send + Sync>;
 
 /// Waits `d`, in short pieces, stopping early if the connection is closed.
 fn wait_unless_closed(d: Duration, closed: &AtomicBool) {
@@ -996,6 +1005,15 @@ fn reader_thread(
                     }
                     match decoder.next_message() {
                         Ok(Some(msg)) => {
+                            // a transaction's proofs are checked HERE, on this connection's own thread, before the loop
+                            // sees it: the loop's check then finds the verdict remembered instead of stalling on it
+                            if let Some(check) = &input.precheck {
+                                match &msg {
+                                    Message::Txs { txs } => txs.iter().for_each(|t| check(t)),
+                                    Message::StemTx(t) => check(t),
+                                    _ => {}
+                                }
+                            }
                             let ticket = reserved.take();
                             if tx.send(Ev::Msg { peer, msg, ticket }).is_err() {
                                 return;

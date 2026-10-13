@@ -615,7 +615,7 @@ pub struct Engine<'a> {
     assembling: HashMap<[u8; 32], Assembly>,
     rejected_txs: HashSet<[u8; 32]>,
     /// Transactions announced while we were syncing, and who announced each: fetched when the sync ends.
-    deferred_txs: HashMap<[u8; 32], PeerId>,
+    deferred_txs: BTreeMap<[u8; 32], PeerId>,
     held: Vec<Block>,
     last_reannounce: u64,
     pub stats: Stats,
@@ -660,7 +660,7 @@ impl<'a> Engine<'a> {
             req_txs: BTreeMap::new(),
             assembling: HashMap::new(),
             rejected_txs: HashSet::new(),
-            deferred_txs: HashMap::new(),
+            deferred_txs: BTreeMap::new(),
             held: Vec::new(),
             last_reannounce: 0,
             stats: Stats::default(),
@@ -1249,7 +1249,8 @@ impl<'a> Engine<'a> {
         if self.syncing.is_some() || self.deferred_txs.is_empty() {
             return;
         }
-        let mut by_peer: HashMap<PeerId, Vec<[u8; 32]>> = HashMap::new();
+        // in a fixed order (the engine's actions must be a function of its events)
+        let mut by_peer: BTreeMap<PeerId, Vec<[u8; 32]>> = BTreeMap::new();
         for (id, peer) in std::mem::take(&mut self.deferred_txs) {
             if self.peers.contains_key(&peer)
                 && !self.node.pool().contains(&id)

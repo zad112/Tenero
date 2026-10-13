@@ -1846,3 +1846,74 @@ fn a_block_the_node_would_not_take_for_being_asked_too_often_is_handed_in_again_
     assert!(rm.stats.slowed_down >= 2, "{:?}", rm.stats);
     assert!(f.count(is_submit) >= 3);
 }
+
+/// A transaction submitted through the control interface has its proofs checked AHEAD, on the connection's own thread,
+/// before the node's loop sees it (`ControlConfig::precheck`): the loop's check then finds the verdict remembered instead of
+/// stalling on it (a wallet's big combine stalled the loop for tens of seconds, 2026-10-13). The answer is the loop's as
+/// before: the pre-check decides nothing.
+#[test]
+fn a_submitted_transaction_is_prechecked_on_the_connections_thread_not_the_loops() {
+    use tenero_app::control::Request;
+    use tenero_core::v3::{Input, Output, Prunable, Transaction, TxPrefix};
+    let rig = Rig::new("precheck");
+    let mut engine = rig.engine();
+    type Seen = Arc<Mutex<Vec<([u8; 32], std::thread::ThreadId)>>>;
+    let seen: Seen = Arc::default();
+    let s2 = Arc::clone(&seen);
+    let cfg = tenero_app::server::ControlConfig {
+        precheck: Some(Arc::new(move |t: &Transaction| {
+            let id = tenero_core::v3::ids::tx_id(t).unwrap();
+            s2.lock().unwrap().push((id, std::thread::current().id()));
+        })),
+        ..tenero_app::server::ControlConfig::default()
+    };
+    let (handle, mut hook) = tenero_app::server::start_with(
+        "127.0.0.1:0".parse().unwrap(),
+        COOKIE,
+        Arc::new(AtomicBool::new(false)),
+        meta(),
+        cfg,
+    )
+    .unwrap();
+    let pt = |n: u8| tenero_tree::hash_to_point(tenero_core::hash::sha256(&[b"precheck", &[n]]));
+    let mut outputs: Vec<Output> = (1..=2)
+        .map(|n| Output {
+            onetime_address: pt(n),
+            amount_commitment: pt(n + 10),
+            amount_enc: [n; 8],
+            view_tag: [n; 3],
+            anchor_enc: [n; 16],
+        })
+        .collect();
+    outputs.sort_by_key(|o| o.onetime_address);
+    let tx = Transaction {
+        prefix: TxPrefix {
+            version: tenero_core::v3::VERSION,
+            inputs: vec![Input { key_image: pt(0) }],
+            outputs,
+            ephemeral_pubkeys: vec![pt(20)],
+            fee: 1,
+            encrypted_payment_id: [0; 8],
+        },
+        prunable: Prunable {
+            reference_height: 0,
+            proof_data: vec![7; 100],
+        },
+    };
+    let id = tenero_core::v3::ids::tx_id(&tx).unwrap();
+    let addr = handle.addr;
+    let loop_thread = std::thread::current().id();
+    let answer = with_client(&mut engine, &mut hook, move || {
+        let node = RemoteNode::connect(addr, &COOKIE).unwrap();
+        node.request(&Request::SubmitTx(tx))
+    });
+    // the loop still decides (this one is refused: it spends nothing real)
+    assert!(answer.is_err(), "{answer:?}");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "checked ahead once");
+    assert_eq!(seen[0].0, id);
+    assert_ne!(
+        seen[0].1, loop_thread,
+        "on the connection's thread, not the loop's"
+    );
+}
