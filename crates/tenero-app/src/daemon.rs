@@ -531,6 +531,9 @@ pub fn sync_rate(samples: &VecDeque<(Instant, u64)>) -> Option<f64> {
 /// Status line, saving the pool, pruning.
 struct Maintenance {
     log: Arc<Logger>,
+    /// The trees the proof pre-check needs, refreshed as the tip moves (`tenero_chain::Precheck`).
+    precheck: Arc<tenero_chain::Precheck>,
+    precheck_tip: Option<[u8; 32]>,
     counters: Arc<Counters>,
     status_every: Duration,
     next_status: Instant,
@@ -603,6 +606,16 @@ impl Maintenance {
 impl Hooks for Maintenance {
     fn poll(&mut self, engine: &mut Engine<'_>, _now_ms: u64) -> Vec<Event> {
         let now = Instant::now();
+        // a new tip: the trees a transaction may now reference (cheap: the newest few are read again)
+        let tip = engine.node().store().tip().ok().map(|(_, i)| i.block_id);
+        if tip.is_some() && tip != self.precheck_tip {
+            self.precheck_tip = tip;
+            if let Err(e) = self.precheck.refresh(engine.node().store()) {
+                self.log.warn(&format!(
+                    "the proof pre-check could not read the trees: {e}"
+                ));
+            }
+        }
         let health = engine.health();
         for (begun, text) in alarm_changes(&mut self.alarms, &health.alarms) {
             if begun {
@@ -969,7 +982,24 @@ pub fn run(
     }
     let mut engine = Engine::new(node, ecfg);
 
+    // proofs of loose transactions are checked ahead, on the thread that received them (a peer's reader, a control
+    // connection), not on the loop: the loop's own check then finds the verdict remembered (`tenero_chain::Precheck`)
+    let precheck = Arc::new(tenero_chain::Precheck::new(
+        store.chain_id(),
+        tenero_node::proof_check(),
+    ));
+    if let Err(e) = precheck.refresh(&store) {
+        log.warn(&format!(
+            "the proof pre-check could not read the trees: {e}"
+        ));
+    }
+    let tx_precheck: tenero_net::transport::TxPrecheck = {
+        let p = Arc::clone(&precheck);
+        Arc::new(move |t| p.check(t))
+    };
+
     let mut ncfg = NetConfig::new(key, store.chain_id());
+    ncfg.precheck = Some(Arc::clone(&tx_precheck));
     ncfg.listen = cfg.listen;
     ncfg.proxy = cfg.proxy;
     ncfg.tor_only = cfg.tor_only;
@@ -1012,8 +1042,17 @@ pub fn run(
         network: cfg.network.name().to_string(),
         version: VERSION.to_string(),
     };
-    let (handle, control) = server::start(cfg.control, cookie, Arc::clone(&shutdown), meta)
-        .map_err(|e| format!("cannot start the control interface on {}: {e}", cfg.control))?;
+    let (handle, control) = server::start_with(
+        cfg.control,
+        cookie,
+        Arc::clone(&shutdown),
+        meta,
+        server::ControlConfig {
+            precheck: Some(Arc::clone(&tx_precheck)),
+            ..server::ControlConfig::default()
+        },
+    )
+    .map_err(|e| format!("cannot start the control interface on {}: {e}", cfg.control))?;
     log.log_event(
         Level::Info,
         &format!(
@@ -1063,6 +1102,8 @@ pub fn run(
         control,
         maintenance: Maintenance {
             log: Arc::clone(&log),
+            precheck: Arc::clone(&precheck),
+            precheck_tip: None,
             counters,
             status_every: Duration::from_secs(cfg.status_every),
             next_status: Instant::now() + Duration::from_secs(2),

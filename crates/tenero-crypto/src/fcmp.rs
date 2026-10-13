@@ -10,7 +10,7 @@
 //! FCMP++ spend-authorisation proofs sign `tenero_core::v3::ids::proof_message`. The FCMP++ crates are **only partly
 //! audited**; the layout, the message and the checks around them are ours and **unaudited**.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Cursor;
 use std::sync::Mutex;
 
@@ -298,7 +298,15 @@ pub const VERIFIED_CAPACITY: usize = 65_536;
 struct Verified {
     set: HashSet<[u8; 32]>,
     order: VecDeque<[u8; 32]>,
+    /// Failed verdicts too (since 0.4.2), by the same key: a proof is checked ahead, off the node's loop, and a FAILED one
+    /// must not then be checked again on the loop (an invalid proof would cost twice, and stall the loop after all). A
+    /// verdict is a pure function of what the key binds, so a failure is as final as a success.
+    rejected: HashMap<[u8; 32], String>,
+    rejected_order: VecDeque<[u8; 32]>,
 }
+
+/// How many failed verdicts are remembered.
+pub const REJECTED_CAPACITY: usize = 8_192;
 
 impl Verified {
     fn insert(&mut self, key: [u8; 32]) {
@@ -307,6 +315,17 @@ impl Verified {
             while self.order.len() > VERIFIED_CAPACITY {
                 if let Some(old) = self.order.pop_front() {
                     self.set.remove(&old);
+                }
+            }
+        }
+    }
+
+    fn reject(&mut self, key: [u8; 32], why: String) {
+        if self.rejected.insert(key, why).is_none() {
+            self.rejected_order.push_back(key);
+            while self.rejected_order.len() > REJECTED_CAPACITY {
+                if let Some(old) = self.rejected_order.pop_front() {
+                    self.rejected.remove(&old);
                 }
             }
         }
@@ -357,6 +376,11 @@ impl FcmpProofs {
         self.lock().set.len()
     }
 
+    /// How many FAILED verdicts are remembered (a single transaction's check only; see `Verified::rejected`).
+    pub fn rejected_remembered(&self) -> usize {
+        self.lock().rejected.len()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Verified> {
         // a panic while holding it leaves only a set of good verdicts: still valid
         self.verified.lock().unwrap_or_else(|p| p.into_inner())
@@ -400,13 +424,30 @@ impl FcmpProofs {
 
 impl ProofCheck for FcmpProofs {
     fn check_tx(&self, ctx: &TxContext<'_>) -> Result<(), String> {
-        if self.known(ctx) {
-            return Ok(());
+        let key = verdict_key(ctx);
+        if let Some(k) = &key {
+            let v = self.lock();
+            if v.set.contains(k) {
+                return Ok(());
+            }
+            if let Some(why) = v.rejected.get(k) {
+                return Err(why.clone());
+            }
         }
         let (root, layers) = root_of(&ctx.tree)?;
-        verify_tx(&ctx.chain_id, ctx.tx, root, layers).map_err(|e| e.to_string())?;
-        self.remember(&[ctx]);
-        Ok(())
+        match verify_tx(&ctx.chain_id, ctx.tx, root, layers) {
+            Ok(()) => {
+                self.remember(&[ctx]);
+                Ok(())
+            }
+            Err(e) => {
+                let why = e.to_string();
+                if let Some(k) = key {
+                    self.lock().reject(k, why.clone());
+                }
+                Err(why)
+            }
+        }
     }
 
     fn check_block(&self, txs: &[TxContext<'_>]) -> Result<(), (usize, String)> {

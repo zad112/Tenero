@@ -396,11 +396,53 @@ fn a_transaction_checked_in_the_mempool_is_not_checked_again_but_a_changed_one_i
     let mut changed = tx.clone();
     let n = changed.prunable.proof_data.len();
     changed.prunable.proof_data[n - 1] ^= 1;
-    assert!(net.validator(&proofs).check_pool_tx(&changed).is_err());
-    assert_eq!(proofs.remembered(), 1, "a failure is never remembered");
+    let first = net.validator(&proofs).check_pool_tx(&changed).unwrap_err();
+    assert_eq!(
+        proofs.remembered(),
+        1,
+        "a failure is never remembered as good"
+    );
+    // it is remembered as a FAILURE (a proof checked ahead, off the node's loop, is not checked again on it), and the
+    // same answer comes back
+    assert_eq!(proofs.rejected_remembered(), 1);
+    assert_eq!(
+        net.validator(&proofs).check_pool_tx(&changed).unwrap_err(),
+        first
+    );
+    assert_eq!(proofs.rejected_remembered(), 1);
 
     // the block's check finds the verdict (no new one is added) and still says the proofs were checked
     let b = net.block(vec![tx]);
     assert!(net.accept(&proofs, &b).proofs_checked);
     assert_eq!(proofs.remembered(), 1);
+}
+
+/// A transaction's proofs checked AHEAD by `tenero_chain::Precheck` (as a peer's reader thread or a control connection does,
+/// off the node's loop) are remembered, so the node's own check of it does not verify them again; a transaction whose
+/// reference tree the pre-check does not know is left alone; and one with a broken proof is remembered as a failure.
+#[test]
+fn proofs_checked_ahead_are_not_checked_again_by_the_node() {
+    let net = ready("precheck");
+    let proofs: &'static FcmpProofs = Box::leak(Box::new(FcmpProofs::new()));
+    let pre = tenero_chain::Precheck::new(net.store.chain_id(), proofs);
+    // before it knows the trees, it does nothing
+    let tx = net.spend(&net.store.chain_id(), 3, 0, 1);
+    pre.check(&tx);
+    assert_eq!(proofs.remembered(), 0);
+    pre.refresh(&net.store).unwrap();
+    assert!(pre.trees() > 0);
+    // ahead: verified and remembered
+    pre.check(&tx);
+    assert_eq!(proofs.remembered(), 1);
+    // the node's check finds it (no second verdict) and accepts it
+    net.validator(proofs).check_pool_tx(&tx).unwrap();
+    assert_eq!(proofs.remembered(), 1);
+    // a broken one: remembered as failed, and the node refuses it with the same reason
+    let mut bad = net.spend(&net.store.chain_id(), 4, 0, 2);
+    let n = bad.prunable.proof_data.len();
+    bad.prunable.proof_data[n - 1] ^= 1;
+    pre.check(&bad);
+    assert_eq!(proofs.rejected_remembered(), 1);
+    assert!(net.validator(proofs).check_pool_tx(&bad).is_err());
+    assert_eq!(proofs.rejected_remembered(), 1);
 }
