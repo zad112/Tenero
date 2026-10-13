@@ -11,6 +11,7 @@ maturities; the tree's layers), `block_template` (the main address's keys and a 
 coinbase output depends on its amount, so the node makes it), the template (the anchor the output was made with), the
 block summary (its weight, not its size) and the pool listing (each transaction's weight). A template is COMPACT (the
 header, the coinbase and the transaction ids), and `submit_header` (21) hands a block found on one back as its header.
+`peers` (22, added 2026-10-13) lists the node's peers for `tenerod peers`.
 
     python reference/tools/make_vectors_control.py --check     do the committed vectors match the reference?
     python reference/tools/make_vectors_control.py --write     regenerate them (a PROTOCOL CHANGE: explain it in the commit
@@ -41,17 +42,19 @@ MAX_PATH_LAYERS = 32
 LEAF_CHUNK = 38          # the curve tree's leaf chunk (FCMP++ LAYER_ONE_LEN): the outputs a path carries
 MAX_CHUNK = 38           # the wider of the tree's two branch widths (38 and 18)
 MAX_MEMPOOL_LIST = 4096
+MAX_PEER_LIST = 1024
+MAX_ADDR = 128
 ANSWER = 0x80
 ERROR = 0xFF
 
 REQUESTS = {"auth": 1, "tip": 2, "block": 3, "key_image_spent": 6, "rules": 7,
             "submit_tx": 8, "info": 9, "stop": 10, "blocks": 11, "block_template": 12, "submit_block": 13,
             "key_images_spent": 14, "check_pow": 16, "headers": 17, "mempool": 18, "chain_stats": 19,
-            "spend_paths": 20, "submit_header": 21}
+            "spend_paths": 20, "submit_header": 21, "peers": 22}
 RESPONSES = {"authed": 1, "tip": 2, "block": 3, "spent": 6, "rules": 7,
              "tx_accepted": 8, "info": 9, "stopping": 10, "blocks": 11, "template": 12, "block_submitted": 13,
              "spent_many": 14, "pow_checked": 16, "headers": 17, "mempool": 18, "chain_stats": 19,
-             "spend_paths": 20, "header_submitted": 21}
+             "spend_paths": 20, "header_submitted": 21, "peers": 22}
 RETIRED = (4, 5, 15)     # output, output_count, outputs: the ring members of version 2
 
 
@@ -162,6 +165,15 @@ def enc_pool_entry(t):
 
 def dec_pool_entry(r):
     return {"id": r.fixed(32), "received": r.u64(), "fee": r.u64(), "size": r.u64(), "weight": r.u64()}
+
+
+def enc_peer(p):
+    return text(p["addr"], MAX_ADDR) + flag(p["inbound"]) + flag(p["tor"]) + u64(p["connected_secs"]) + u64(p["height"])
+
+
+def dec_peer(r):
+    return {"addr": dec_text(r, MAX_ADDR), "inbound": dec_flag(r), "tor": dec_flag(r), "connected_secs": r.u64(),
+            "height": r.u64()}
 
 
 STATS_FIELDS = ("next_reward", "emitted", "max_supply", "tail_reward", "block_time")
@@ -313,6 +325,9 @@ def enc_response(m):
     elif t == "chain_stats":
         body += (u64(m["height"]) + fixed(m["next_target"], 32) + fixed(m["cumulative_work"], 32)
                  + b"".join(u64(m[k]) for k in STATS_FIELDS))
+    elif t == "peers":
+        assert len(m["peers"]) <= MAX_PEER_LIST
+        body += u32(len(m["peers"])) + b"".join(enc_peer(p) for p in m["peers"])
     return body
 
 
@@ -383,6 +398,8 @@ def dec_response(body):
                 m["cumulative_work"] = r.fixed(32)
                 for k in STATS_FIELDS:
                     m[k] = r.u64()
+            elif t == "peers":
+                m["peers"] = [dec_peer(r) for _ in range(r.count(0, MAX_PEER_LIST))]
         else:
             raise ControlError("kind")
     except v3.DecodeError:
@@ -491,6 +508,10 @@ def sample_pool_entry(i, received=1700000123):
             "weight": 1500 + i}
 
 
+def sample_peer(addr, inbound, tor, connected_secs, height):
+    return {"addr": addr, "inbound": inbound, "tor": tor, "connected_secs": connected_secs, "height": height}
+
+
 def chain_stats(**kw):
     m = {"type": "chain_stats", "height": 812, "next_target": "00" * 2 + "3a" + "ff" * 29,
          "cumulative_work": "00" * 28 + "01020304", "next_reward": 2000000000, "emitted": 1624000000000,
@@ -536,6 +557,7 @@ def valid_requests():
         ("the most block summaries at once, from the largest height", {"type": "headers", "from": 2 ** 64 - 1, "count": 64}),
         ("the pool", {"type": "mempool"}),
         ("the chain's numbers", {"type": "chain_stats"}),
+        ("the node's peers", {"type": "peers"}),
     ]
 
 
@@ -600,6 +622,13 @@ def valid_responses():
         ("a pool larger than its list", {"type": "mempool", "total": 9000, "txs": [sample_pool_entry(5)]}),
         ("the chain's numbers", chain_stats()),
         ("the chain's numbers at genesis", chain_stats(height=0, cumulative_work="00" * 32, emitted=0)),
+        ("no peers", {"type": "peers", "peers": []}),
+        ("three peers: out direct, out through Tor, in through the onion service", {"type": "peers", "peers": [
+            sample_peer("203.0.113.9:38353", False, False, 3725, 4766),
+            sample_peer("p56vt5wui4cujc6fsj3vkak3hxsfjzyqnyhl27saf5hxsvsv6wr4buqd.onion:38353", False, True, 61, 4766),
+            sample_peer("onion-in:7", True, True, 0, 0)]}),
+        ("a peer with the longest address and the largest numbers",
+         {"type": "peers", "peers": [sample_peer("a" * MAX_ADDR, True, False, 2 ** 64 - 1, 2 ** 64 - 1)]}),
         ("an error", {"type": "error", "message": "no"}),
         ("an error with accents", {"type": "error", "message": "fée trop basse: пять"}),
         ("the longest error", {"type": "error", "message": "x" * MAX_TEXT}),
@@ -638,12 +667,12 @@ def invalid_cases():
     # nothing, and kinds that do not exist
     for d in ("request", "response"):
         out.append(bad(d, "an empty body", b"", "length"))
-    for k in (0, 22, 0x80, 0x8F, 0xFE):
+    for k in (0, 23, 0x80, 0x8F, 0xFE):
         out.append(bad("request", f"unknown request kind {k}", bytes([k]), "kind"))
     for k in RETIRED:
         out.append(bad("request", f"the retired request kind {k} (version 2's ring members)", bytes([k]) + u64(1), "kind"))
         out.append(bad("response", f"the retired answer kind {k | ANSWER}", bytes([k | ANSWER, 0]), "kind"))
-    for k in (0, 1, 11, 12, 13, 14, 15, 17, 0x96, 0xFE):
+    for k in (0, 1, 11, 12, 13, 14, 15, 17, 0x97, 0xFE):
         out.append(bad("response", f"unknown response kind {k}", bytes([k]), "kind"))
     # every message cut short and with a byte too many
     for note, m in valid_requests():
@@ -731,6 +760,19 @@ def invalid_cases():
                    u8(18 | ANSWER) + u32(5) + u32(2) + enc_pool_entry(sample_pool_entry(0)), "malformed"))
     out.append(bad("response", "mempool: no total", u8(18 | ANSWER), "malformed"))
     out.append(bad("response", "chain_stats: one byte short", enc_response(chain_stats())[:-1], "malformed"))
+    # peers: how many, the flags, the address
+    one = enc_peer(sample_peer("203.0.113.9:1", False, False, 1, 2))
+    out.append(bad("response", "peers: a list over the cap", u8(22 | ANSWER) + u32(MAX_PEER_LIST + 1), "malformed"))
+    out.append(bad("response", "peers: fewer entries than the count", u8(22 | ANSWER) + u32(2) + one, "malformed"))
+    out.append(bad("response", "peers: an inbound flag of 2",
+                   u8(22 | ANSWER) + u32(1) + text("203.0.113.9:1", MAX_ADDR) + bytes([2, 0]) + u64(1) + u64(2), "malformed"))
+    out.append(bad("response", "peers: a Tor flag of 2",
+                   u8(22 | ANSWER) + u32(1) + text("203.0.113.9:1", MAX_ADDR) + bytes([0, 2]) + u64(1) + u64(2), "malformed"))
+    out.append(bad("response", "peers: an address over the cap",
+                   u8(22 | ANSWER) + u32(1) + u32(MAX_ADDR + 1) + b"a" * (MAX_ADDR + 1) + bytes([0, 0]) + u64(1) + u64(2),
+                   "malformed"))
+    out.append(bad("response", "peers: an address that is not UTF-8",
+                   u8(22 | ANSWER) + u32(1) + u32(2) + b"\xff\xfe" + bytes([0, 0]) + u64(1) + u64(2), "malformed"))
     # Blocks: how many
     for count in (0, 65, 65535):
         out.append(bad("request", f"blocks: a count of {count}", u8(11) + u64(1) + u16(count), "malformed"))
@@ -771,7 +813,8 @@ def build():
         "limits": {"max_frame": MAX_FRAME, "max_text": MAX_TEXT, "max_name": MAX_NAME,
                    "max_blocks_per_request": MAX_BLOCKS_PER_REQUEST, "max_key_images": MAX_KEY_IMAGES,
                    "max_spend_paths": MAX_SPEND_PATHS, "max_path_layers": MAX_PATH_LAYERS, "leaf_chunk": LEAF_CHUNK,
-                   "max_chunk": MAX_CHUNK, "max_mempool_list": MAX_MEMPOOL_LIST},
+                   "max_chunk": MAX_CHUNK, "max_mempool_list": MAX_MEMPOOL_LIST,
+                   "max_peer_list": MAX_PEER_LIST, "max_addr": MAX_ADDR},
         "retired": list(RETIRED),
         "kinds": {"requests": REQUESTS, "responses": {k: v | ANSWER for k, v in RESPONSES.items()}, "error": ERROR},
         "valid": valid_cases(),

@@ -120,6 +120,38 @@ pub fn format_duration(secs: u64) -> String {
     }
 }
 
+/// What `tenerod peers` prints: a line per peer (outbound first), its direction, whether it is through Tor, how long it has been
+/// connected and its height, and a summary line. A peer that came in through our onion service shows as `onion-in:N` (Tor hides
+/// where it is).
+pub fn peer_lines(peers: &[crate::control::PeerSummary]) -> Vec<String> {
+    let mut out = Vec::new();
+    let width = peers.iter().map(|p| p.addr.len()).max().unwrap_or(4).max(4);
+    out.push(format!(
+        "{:<width$}  {:<3}  {:<6}  {:>9}  {:>8}",
+        "peer", "dir", "via", "connected", "height"
+    ));
+    for p in peers {
+        out.push(format!(
+            "{:<width$}  {:<3}  {:<6}  {:>9}  {:>8}",
+            p.addr,
+            if p.inbound { "in" } else { "out" },
+            if p.tor { "Tor" } else { "direct" },
+            format_duration(p.connected_secs),
+            group_digits(p.height)
+        ));
+    }
+    let inbound = peers.iter().filter(|p| p.inbound).count();
+    let tor = peers.iter().filter(|p| p.tor).count();
+    out.push(format!(
+        "{} peers: {} out, {} in; {} through Tor",
+        peers.len(),
+        peers.len() - inbound,
+        inbound,
+        tor
+    ));
+    out
+}
+
 /// A size in bytes: `512 B`, `1.5 KiB`, `12.3 MiB`, `4.0 GiB`.
 pub fn format_bytes(b: u64) -> String {
     if b < 1024 {

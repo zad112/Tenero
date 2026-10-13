@@ -69,6 +69,20 @@ pub enum Event {
     LocalTx(Transaction),
 }
 
+/// A connected peer, as an operator sees it ([`Engine::peer_views`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerView {
+    /// `ip:port`, `xxxx.onion:port`, or `onion-in:N` for one that came in through our `.onion` service.
+    pub addr: String,
+    pub inbound: bool,
+    /// The connection goes through Tor (it shows our Tor identity).
+    pub tor: bool,
+    /// How long it has been connected, in milliseconds.
+    pub connected_ms: u64,
+    /// The height it last told us of.
+    pub height: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     Send {
@@ -3206,6 +3220,24 @@ impl<'a> Engine<'a> {
     /// Whether a transaction is held here in its Dandelion++ stem (checked, kept, not yet announced).
     pub fn holds_stem(&self, id: &[u8; 32]) -> bool {
         self.dand.pool.contains_key(id)
+    }
+
+    /// The peers that have said hello (not a feeler or an address-only visit), for an operator (`tenerod peers`).
+    pub fn peer_views(&self) -> Vec<PeerView> {
+        let mut v: Vec<PeerView> = self
+            .peers
+            .iter()
+            .filter(|(_, p)| p.hello.is_some() && !p.feeler && !p.addr_only)
+            .map(|(id, p)| PeerView {
+                addr: p.addr.clone(),
+                inbound: p.inbound,
+                tor: self.tor_identity(*id),
+                connected_ms: self.now.saturating_sub(p.connected_at),
+                height: p.tip_height,
+            })
+            .collect();
+        v.sort_by(|a, b| (a.inbound, &a.addr).cmp(&(b.inbound, &b.addr)));
+        v
     }
 
     /// How many transactions are held in their stem.

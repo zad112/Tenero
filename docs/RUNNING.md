@@ -119,7 +119,13 @@ A node cut off by an attacker who feeds it a valid chain slowly cannot tell from
 **Stopping:** Ctrl-C (or closing the window) shuts the node down cleanly: it closes its connections, saves the peers and
 the side-branch pool, and prints `stopped at height H, tip ID`. A second Ctrl-C ends it at once. From another window:
 `tenerod stop --data DIR` (and `tenerod status --data DIR`); **on `gamma` and `dev` add `--control 127.0.0.1:PORT` (38352 and 28332), because these commands assume the `test` network's port 18332** (measured 2026-10-04: without it they say "cannot reach the node at 127.0.0.1:18332"). If the node is killed instead, what it has saved is at most
-five minutes old (the chain itself is written as each block arrives).
+five minutes old (the chain itself is written as each block arrives). A clean stop first announces this node's own
+transactions that are still in their Dandelion++ stem (they would be lost otherwise: the pool of waiting transactions is not
+kept across a restart), and gives the peers up to 3 s to be sent them.
+
+**Who is it connected to:** `tenerod peers --data DIR` (with `--control` as above) lists the node's peers: the address, `in` or
+`out`, `Tor` or `direct`, how long, and the height each last told of. A peer that came in through this node's onion service is
+shown as `onion-in:N` (Tor hides its address).
 
 **Which build is this:** `tenerod --version` prints the version and the source commit (`-dirty` if the tree had changes); a bug report or an emergency starts with it. The node's log begins with the same line.
 

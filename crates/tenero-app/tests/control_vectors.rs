@@ -229,6 +229,7 @@ fn request(m: &Value) -> Request {
         },
         "mempool" => Request::Mempool,
         "chain_stats" => Request::ChainStats,
+        "peers" => Request::Peers,
         other => panic!("unknown request type {other}"),
     }
 }
@@ -359,6 +360,20 @@ fn response(m: &Value) -> Response {
             tail_reward: u(&m["tail_reward"]),
             block_time: u(&m["block_time"]),
         }),
+        "peers" => Response::Peers(
+            m["peers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| tenero_app::control::PeerSummary {
+                    addr: p["addr"].as_str().unwrap().to_string(),
+                    inbound: p["inbound"].as_bool().unwrap(),
+                    tor: p["tor"].as_bool().unwrap(),
+                    connected_secs: u(&p["connected_secs"]),
+                    height: u(&p["height"]),
+                })
+                .collect(),
+        ),
         "error" => Response::Error(m["message"].as_str().unwrap().to_string()),
         other => panic!("unknown response type {other}"),
     }
@@ -384,6 +399,11 @@ fn the_limits_are_the_references() {
         tenero_tree::SELENE_WIDTH.max(tenero_tree::HELIOS_WIDTH)
     );
     assert_eq!(u(&l["max_mempool_list"]) as usize, MAX_MEMPOOL_LIST);
+    assert_eq!(
+        u(&l["max_peer_list"]) as usize,
+        tenero_app::control::MAX_PEER_LIST
+    );
+    assert_eq!(u(&l["max_addr"]) as usize, tenero_app::control::MAX_ADDR);
 }
 
 #[test]

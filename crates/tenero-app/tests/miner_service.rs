@@ -277,6 +277,8 @@ fn the_allowlist_is_exactly_info_template_and_submit() {
         Request::Rules,
         Request::SpendPaths { indexes: vec![0] },
         Request::Auth { cookie: [0; 32] },
+        // the node's peers are other people's addresses: never for a miner on another computer
+        Request::Peers,
     ] {
         assert!(!miner_service::allowed(&r), "{r:?} is allowed");
     }

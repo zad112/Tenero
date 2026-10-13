@@ -82,6 +82,7 @@ The answer to request `k` has kind `k | 0x80`. Any request may instead be answer
 | 18 | `mempool` | | `mempool`: total u32 (the transactions the pool holds), count u32 (0 to 4096, and never more than total), then that many *pool entries*, best fee rate first. **Added 2026-10-07** for the block explorer |
 | 19 | `chain_stats` | | `chain_stats`: tip height u64, the next block's target (32, big-endian), the tip's cumulative work (32, big-endian), the next block's reward u64, emitted u64, max supply u64, tail reward u64, block time u64 (seconds). **Added 2026-10-07** for the block explorer |
 | 21 | `submit_header` | a block header (146 bytes) | `header_submitted`: as `block_submitted`. **Added in 0.3.0**: a block found on one of this node's recent templates (the last 64 on the current tip), handed back as its header: the header's `tx_root` names the template, and the node puts the block together from the coinbase and the ids it kept, taking the transactions from its pool. **An error if no recent template has that root and parent, or one of its transactions has left the pool**: the work is stale |
+| 22 | `peers` | | `peers`: a count u32 (0 to 1024), then that many *peer entries*, outbound first. **Added 2026-10-13** for `tenerod peers`. Only the peers that have said hello (not a short visit for addresses). **Other people's addresses**: like everything on this page it is answered only with the cookie, and it is not in the miner service's allowlist |
 | 20 | `spend_paths` | a count u32 (1 to 512) and that many global indexes (u64) | `spend_paths`: the reference height u64 (the tip), its *tree* (leaves u64, layers u8, root 32), a count u32, then for each index a flag and (if 1) a *path*, in order (0 for an output not in that tree). **Added in 0.3.0**: what a wallet proves a spend with. Every path is in the tree of that ONE block; a client with more than 512 splits the list and asks again if the pieces came from different tips. **The node learns which outputs are about to be spent**: harmless for a node on the wallet's own machine, which is the only kind this interface reaches (a remote wallet needs another way, `docs/FCMP_CARROT_PLAN.md` 7) |
 
 * A **scan block** is what a wallet needs: height u64, block id (32), the global index of its first output u64, the header's
@@ -98,6 +99,10 @@ The answer to request `k` has kind `k | 0x80`. Any request may instead be answer
 * A **pool entry** (64 bytes): transaction id (32), when this node received it u64 (Unix seconds by the node's own clock; 0 if not
   known), its fee u64, its size u64 in bytes and its weight u64 (**added in 0.3.0**). Nothing a wallet's privacy rests on: no
   keys or amounts.
+* A **peer entry**: its address as a var (UTF-8, at most 128 bytes: `ip:port`, `xxxx.onion:port`, or `onion-in:N` for a peer
+  that came in through this node's onion service, whose real address Tor hides), an inbound flag, a Tor flag (the link goes
+  through Tor: an outbound one to a `.onion` address or in `tor_only` mode, or an inbound one through the onion service), how
+  long it has been connected u64 (seconds) and the height it last said it had u64.
 * `chain_stats`'s **emitted** is the schedule's total, the base rewards of blocks 1 to the tip added up
   (`Emission::paid_through`), not what coinbases paid: an oversize penalty, which creates fewer coins, is not subtracted. It
   passes **max supply** in the tail, which goes on for ever. The **network hash rate is not in any answer**: nobody can
