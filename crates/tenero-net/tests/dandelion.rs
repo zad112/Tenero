@@ -365,3 +365,147 @@ fn a_node_that_stops_announces_its_own_stem_transactions_first() {
     assert!(sim.engines[1].holds_stem(&their_id));
     assert!(!sim.engines[1].node().pool().contains(&their_id));
 }
+
+/// A node that comes back after the others moved on (behind by blocks, its pool empty) gets the transactions waiting in
+/// its peers' pools: they announce their pools when it connects (`push_pool`), it remembers what it hears while it syncs
+/// and fetches it once in step (`fetch_deferred_txs`). Up to 0.4.1 it heard only of transactions announced after it
+/// connected (seen on `gamma`, 2026-10-13: a restarted node's miner could not take in the transactions waiting elsewhere).
+#[test]
+fn a_node_that_comes_back_behind_gets_the_transactions_waiting_in_its_peers_pools() {
+    let rigs = SimRig::rigs("pool-push", 3);
+    let mut sim = Sim::new(&rigs, T0, SimConfig::default(), cfg(true, 100, 12));
+    sim.connect(0, 1);
+    sim.run_for(5 * SEC);
+    // (node 2 is away: only nodes 0 and 1 need to agree)
+    while sim.tip(0).0 < 61 {
+        sim.mine(0, None);
+        assert!(sim.run_until(60 * SEC, |s| s.tip(1) == s.tip(0)));
+        sim.run_for(61 * SEC);
+    }
+    // node 2 has been away: the others mine on, and transactions gather in their pools (fluffed: diffusers only)
+    for _ in 0..20 {
+        sim.mine(0, None);
+        sim.run_for(61 * SEC);
+    }
+    let ids: Vec<[u8; 32]> = (0..5)
+        .map(|k| {
+            let t = make_tx(&sim, 0, 800 + k);
+            let id = tx_id(&t).unwrap();
+            sim.submit_tx(0, t);
+            id
+        })
+        .collect();
+    assert!(sim.run_until(60 * SEC, |s| ids
+        .iter()
+        .all(|id| s.engines[1].node().pool().contains(id))));
+    assert!(sim.tip(2).0 < sim.tip(0).0, "node 2 is behind");
+    assert!(sim.engines[2].node().pool().is_empty());
+    // it comes back: it syncs the blocks, then has every transaction that was waiting
+    sim.connect(2, 1);
+    assert!(
+        sim.run_until(120 * SEC, |s| s.all_agree()
+            && ids.iter().all(|id| s.engines[2].node().pool().contains(id))),
+        "node 2 has {} of {} waiting transactions",
+        ids.iter()
+            .filter(|id| sim.engines[2].node().pool().contains(id))
+            .count(),
+        ids.len()
+    );
+}
+
+/// Transactions announced to a node WHILE it syncs are not fetched then (they would be judged against a chain far behind),
+/// but remembered, and asked for from whoever announced them once the sync is over (`fetch_deferred_txs`).
+#[test]
+fn transactions_announced_during_a_sync_are_asked_for_once_it_is_over() {
+    let rigs = SimRig::rigs("deferred", 3);
+    let mut sim = Sim::new(&rigs, T0, SimConfig::default(), cfg(true, 100, 13));
+    sim.connect(0, 1);
+    sim.run_for(5 * SEC);
+    while sim.tip(0).0 < 80 {
+        sim.mine(0, None);
+        assert!(sim.run_until(60 * SEC, |s| s.tip(1) == s.tip(0)));
+        sim.run_for(61 * SEC);
+    }
+    let t = make_tx(&sim, 0, 900);
+    let id = tx_id(&t).unwrap();
+    // node 2 comes back far behind and starts to sync from node 1; a peer tells it of a transaction meanwhile
+    let spy = sim.add_hostile(2, "99.9.0.3:8333");
+    sim.hostile_send(spy, hello(&rigs[2]));
+    sim.connect(2, 1);
+    assert!(sim.run_until(10 * SEC, |s| s.engines[2].is_syncing()));
+    sim.hostile_send(spy, Message::NewTx { ids: vec![id] });
+    sim.run_for(50);
+    let asked = |s: &Sim<'_>| {
+        s.hostiles[spy]
+            .inbox
+            .iter()
+            .any(|m| matches!(m, Message::GetTxs { ids } if ids.contains(&id)))
+    };
+    if sim.engines[2].is_syncing() {
+        assert!(!asked(&sim), "not fetched during the sync");
+    }
+    // once in step it asks the peer that told it
+    assert!(sim.run_until(120 * SEC, |s| !s.engines[2].is_syncing()
+        && s.tip(2) == s.tip(0)));
+    assert!(
+        sim.run_until(5 * SEC, |s| asked(s)),
+        "asked for it after the sync"
+    );
+}
+
+/// A peer that becomes ready is told what waits in our pool in announcements of at most 64 ids: a 0.4.x node asks for a
+/// whole announcement in one `get_txs`, and a request for more than 64 is refused (and costs the asker), so a bigger chunk
+/// would make every old peer misbehave.
+#[test]
+fn the_pool_is_announced_to_a_new_peer_in_chunks_an_old_node_can_ask_for() {
+    let rigs = SimRig::rigs("push-chunks", 2);
+    let mut sim = Sim::new(&rigs, T0, SimConfig::default(), cfg(true, 100, 14));
+    sim.connect(0, 1);
+    sim.run_for(5 * SEC);
+    ready_for_spends(&mut sim);
+    let ids: Vec<[u8; 32]> = (0..70)
+        .map(|k| {
+            let t = make_tx(&sim, 0, 1000 + k);
+            let id = tx_id(&t).unwrap();
+            sim.submit_tx(0, t);
+            id
+        })
+        .collect();
+    assert!(sim.run_until(300 * SEC, |s| ids
+        .iter()
+        .all(|id| s.engines[0].node().pool().contains(id))));
+    let spy = sim.add_hostile(0, "99.9.0.4:8333");
+    sim.hostile_send(spy, hello(&rigs[0]));
+    sim.run_for(SEC);
+    let pushed: Vec<Vec<[u8; 32]>> = sim.hostiles[spy]
+        .inbox
+        .iter()
+        .filter_map(|m| match m {
+            Message::NewTx { ids } => Some(ids.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(pushed.len() >= 2, "{} announcements", pushed.len());
+    assert!(pushed
+        .iter()
+        .all(|c| c.len() <= tenero_net::message::MAX_TXS));
+    let all: std::collections::HashSet<[u8; 32]> = pushed.into_iter().flatten().collect();
+    assert!(
+        ids.iter().all(|id| all.contains(id)),
+        "every waiting transaction"
+    );
+    // and asking for one of those chunks, as a 0.4.x node does, is answered in full
+    let chunk: Vec<[u8; 32]> = ids[..tenero_net::message::MAX_TXS].to_vec();
+    sim.hostile_send(spy, Message::GetTxs { ids: chunk });
+    sim.run_for(SEC);
+    let got: usize = sim.hostiles[spy]
+        .inbox
+        .iter()
+        .filter_map(|m| match m {
+            Message::Txs { txs } => Some(txs.len()),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(got, tenero_net::message::MAX_TXS);
+    assert!(!sim.hostiles[spy].disconnected);
+}

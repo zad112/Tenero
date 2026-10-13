@@ -42,6 +42,13 @@ first announcement then comes from a node some hops away, not from the one that 
   one already in the stem pool or the pool is ignored, and the pool's conflict is looked up **before** the proofs are
   checked (since 0.4.0-gamma.1's fix: before, a peer could send one conflicting transaction again and again, each costing a
   full proof check).
+* **A node that (re)starts gets what waits in the pool** (after 0.4.1-gamma.1; seen on `gamma` 2026-10-13: a restarted
+  node heard only of transactions announced after it connected, so its miner could not take in the ones already waiting).
+  When a connection becomes ready, each side announces its pool's best 2,048 transactions by fee rate with the ordinary
+  `new_tx`, 64 ids to a message (a 0.4.x node asks for a whole announcement at once, and a request may name at most 64);
+  the other fetches what it lacks with `get_txs`. No new message, so 0.4.x nodes take it as it is. A node that is syncing
+  remembers the ids it hears (at most 4,096) and asks for them once it is in step. Only the public pool is announced, never
+  a stem.
 * **Randomness.** Every choice is drawn from SHA-256 of a secret made at start (from the operating system in `tenerod`;
   from the seed in the simulator) with the epoch number and what is being chosen, so a peer cannot predict a node's
   role, its stem peers or its timers from what it sees.

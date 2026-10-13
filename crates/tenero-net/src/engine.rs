@@ -30,7 +30,7 @@ use crate::addrbook::{
     AddrBook, AddrBookConfig, BanList,
 };
 use crate::dandelion::{stem_size, Dandelion, DandelionConfig, StemEntry};
-use crate::message::{Hello, Limits, Message, PeerAddr, PROTOCOL_VERSION};
+use crate::message::{Hello, Limits, Message, PeerAddr, MAX_TXS, PROTOCOL_VERSION};
 use crate::onion::{is_onion, ONION_INBOUND};
 
 /// A handle for one connection, chosen by the transport.
@@ -171,6 +171,9 @@ pub struct EngineConfig {
     /// key: a peer who meets this node through Tor and directly must not be able to tell it is one node. Random and
     /// different from `nonce` (`tenerod` makes it at each start); 0 uses `nonce` (the simulator, which has no Tor).
     pub tor_nonce: u64,
+    /// Tell each peer that becomes ready what waits in our pool ([`Engine::push_pool`]). On by default; a test of how a node
+    /// fetches what it lacks turns it off.
+    pub push_pool: bool,
     /// At most this many new dials are started in one tick.
     pub max_connect_per_tick: usize,
     /// A dial unanswered this long counts as failed.
@@ -279,6 +282,7 @@ impl Default for EngineConfig {
             peer_target: 50,
             nonce: 0,
             tor_nonce: 0,
+            push_pool: true,
             max_connect_per_tick: 8,
             connect_timeout_ms: 10_000,
             max_outbound_per_group: 2,
@@ -534,6 +538,19 @@ const MAX_ASSEMBLING: usize = 8;
 /// limit anyone can reach from outside).
 const MAX_FORGIVABLE: usize = 4096;
 
+/// The most pool transaction ids pushed to a peer that has just become ready ([`Engine::push_pool`]: the best by fee rate).
+pub const POOL_PUSH_MAX: usize = 2048;
+/// Ids to a `new_tx` message when the pool is pushed, and to a `get_txs` request for what was announced during a sync: as
+/// many as one `txs` answer may hold ([`crate::message::MAX_TXS`]), so a 0.4.x peer, which asks for all of one announcement
+/// at once and answers in one message, is never asked for more than it can send back. 32 messages at most: well within a
+/// peer's burst of 200.
+pub const POOL_PUSH_CHUNK: usize = crate::message::MAX_TXS;
+/// The most transaction ids remembered while syncing, to fetch when it ends.
+const DEFERRED_TXS_MAX: usize = 4096;
+/// The most bytes of transactions one `txs` answer carries (a frame is at most 16 MiB; a combine's transactions are about
+/// 170 KB each).
+const TXS_ANSWER_BYTES: u64 = 8 * 1024 * 1024;
+
 enum Applied {
     /// It is (or became) part of the chain and moved the tip.
     NewTip,
@@ -597,6 +614,8 @@ pub struct Engine<'a> {
     /// Blocks being put together from their compact form, by id.
     assembling: HashMap<[u8; 32], Assembly>,
     rejected_txs: HashSet<[u8; 32]>,
+    /// Transactions announced while we were syncing, and who announced each: fetched when the sync ends.
+    deferred_txs: HashMap<[u8; 32], PeerId>,
     held: Vec<Block>,
     last_reannounce: u64,
     pub stats: Stats,
@@ -641,6 +660,7 @@ impl<'a> Engine<'a> {
             req_txs: BTreeMap::new(),
             assembling: HashMap::new(),
             rejected_txs: HashSet::new(),
+            deferred_txs: HashMap::new(),
             held: Vec::new(),
             last_reannounce: 0,
             stats: Stats::default(),
@@ -1179,6 +1199,82 @@ impl<'a> Engine<'a> {
                 self.send(peer, Message::Addrs { addrs: vec![a] }, out);
             }
         }
+        self.push_pool(peer, out);
+    }
+
+    /// Tells a peer that has just become ready which transactions wait in our pool (the best [`POOL_PUSH_MAX`] by fee rate),
+    /// with the ordinary `new_tx` announcement, [`POOL_PUSH_CHUNK`] ids to a message: it fetches what it lacks with
+    /// `get_txs`. A node that has just (re)started has an empty pool and would otherwise hear only of transactions announced
+    /// AFTER it connected (seen on `gamma`, 2026-10-13: a restarted node never got back the transactions waiting elsewhere,
+    /// so its miner could not take them in). It needs no new message, so a 0.4.x peer takes it as it is (one that does not
+    /// push its own pool simply does not help us). Stem transactions are never in it: only the public pool.
+    fn push_pool(&mut self, peer: PeerId, out: &mut Vec<Action>) {
+        if !self.cfg.push_pool
+            || self
+                .peers
+                .get(&peer)
+                .is_none_or(|p| p.feeler || p.addr_only)
+        {
+            return;
+        }
+        let ids: Vec<[u8; 32]> = self
+            .node
+            .pool()
+            .listing(POOL_PUSH_MAX)
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        if let Some(p) = self.peers.get_mut(&peer) {
+            for id in &ids {
+                if p.known_txs.len() > 4096 {
+                    p.known_txs.clear();
+                }
+                p.known_txs.insert(*id);
+            }
+        }
+        for chunk in ids.chunks(POOL_PUSH_CHUNK) {
+            self.send(
+                peer,
+                Message::NewTx {
+                    ids: chunk.to_vec(),
+                },
+                out,
+            );
+        }
+    }
+
+    /// The transactions announced to us while we were syncing (not fetched then, see `on_new_tx`): asked for now that the
+    /// sync is over, from whoever announced each, if still connected, [`POOL_PUSH_CHUNK`] to a request.
+    fn fetch_deferred_txs(&mut self, out: &mut Vec<Action>) {
+        if self.syncing.is_some() || self.deferred_txs.is_empty() {
+            return;
+        }
+        let mut by_peer: HashMap<PeerId, Vec<[u8; 32]>> = HashMap::new();
+        for (id, peer) in std::mem::take(&mut self.deferred_txs) {
+            if self.peers.contains_key(&peer)
+                && !self.node.pool().contains(&id)
+                && !self.node.pool().recently_mined(&id)
+                && !self.rejected_txs.contains(&id)
+                && !self.req_txs.contains_key(&id)
+                && !self.dand.pool.contains_key(&id)
+            {
+                by_peer.entry(peer).or_default().push(id);
+            }
+        }
+        for (peer, ids) in by_peer {
+            for chunk in ids.chunks(POOL_PUSH_CHUNK) {
+                for id in chunk {
+                    self.req_txs.insert(*id, Req { peer, at: self.now });
+                }
+                self.send(
+                    peer,
+                    Message::GetTxs {
+                        ids: chunk.to_vec(),
+                    },
+                    out,
+                );
+            }
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1564,8 +1660,27 @@ impl<'a> Engine<'a> {
                 None => missing.push(id),
             }
         }
-        if !txs.is_empty() {
-            self.send(peer, Message::Txs { txs }, out);
+        // in messages of at most TXS_ANSWER_BYTES (a request names at most MAX_TXS, and a transaction's proof is at most
+        // 64 KiB, so this only guards the frame limit should either ever grow) and MAX_TXS transactions
+        let mut batch: Vec<Transaction> = Vec::new();
+        let mut bytes = 0u64;
+        for t in txs {
+            let size = crate::dandelion::stem_size(&t).unwrap_or(0);
+            if !batch.is_empty() && (batch.len() >= MAX_TXS || bytes + size > TXS_ANSWER_BYTES) {
+                self.send(
+                    peer,
+                    Message::Txs {
+                        txs: std::mem::take(&mut batch),
+                    },
+                    out,
+                );
+                bytes = 0;
+            }
+            bytes += size;
+            batch.push(t);
+        }
+        if !batch.is_empty() {
+            self.send(peer, Message::Txs { txs: batch }, out);
         }
         if !missing.is_empty() {
             self.send(peer, Message::NotFound { ids: missing }, out);
@@ -3114,7 +3229,15 @@ impl<'a> Engine<'a> {
                 continue;
             }
             // while syncing, a new transaction is judged against a chain far behind the sender's, so it would look
-            // invalid and its honest sender would be blamed: none is fetched until the sync ends
+            // invalid and its honest sender would be blamed: none is fetched until the sync ends. It is remembered (who
+            // announced it) and asked for then (`fetch_deferred_txs`): a node that has just started is usually syncing
+            // when its peers tell it what waits in their pools (`push_pool`)
+            if self.syncing.is_some() {
+                if self.deferred_txs.len() < DEFERRED_TXS_MAX {
+                    self.deferred_txs.entry(id).or_insert(peer);
+                }
+                continue;
+            }
             if self.syncing.is_none()
                 && !self.node.pool().contains(&id)
                 // in one of the latest blocks: a peer a little behind still relays it; it is not new here
@@ -3440,6 +3563,8 @@ impl<'a> Engine<'a> {
         for tx in self.dand.take_expired(now) {
             self.fluff(tx, out);
         }
+        // what was announced while we synced, now that we do not
+        self.fetch_deferred_txs(out);
         // handshake, keepalive
         let mut drop: Vec<(PeerId, &'static str)> = Vec::new();
         let mut ping: Vec<PeerId> = Vec::new();
