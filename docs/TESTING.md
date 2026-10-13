@@ -55,9 +55,20 @@ part of this project**, so do it only on a machine you do not mind exposing, and
 ## Letting others connect to you
 
 By default your node only **dials out**: it works, but every tester then talks to the seed and not to each other, so the seed does all the work. In the wallet app, **Settings, "Let other nodes connect to me"**
-(a tick box and a TCP port; `38333` on alpha) makes the node accept connections and tell its peers where it is. It does not open your router for you:
+(a tick box and a TCP port; `38353` on gamma) makes the node accept connections and tell its peers where it is. It does not open your router or your firewall for you:
 
-1. **Forward the TCP port** on your router to this computer (the same port, inside and out), and **allow the program in Windows Firewall** (Windows asks the first time the node listens).
+1. **Forward the TCP port** on your router to this computer (the same port, inside and out; pick the computer by its name or its local address such as `192.168.1.x`, not your public address), and **allow it in Windows Firewall**.
+   **Do not count on Windows asking.** Windows asks only the first time a program that has *no rule at all* starts listening. It does not ask when:
+   - the program already has a rule, even one for another port (an earlier test network's port, for example); the new port then stays blocked, with no warning;
+   - the question was closed or answered "Cancel" once (that makes a *block* rule);
+   - the question was answered for "Private networks" only and Windows thinks your network is "Public".
+
+   The sure way is one rule of your own, in a PowerShell window opened **as Administrator** (put in the full path of the `tenerod.exe` you run, and your port):
+   ```powershell
+   New-NetFirewallRule -DisplayName "Tenero node" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 38353 -Program "C:\path\to\tenerod.exe" -Profile Any
+   ```
+   It opens that one port for that one program and nothing else. (In a new folder, after an update, the path changes: make the rule again, or leave out `-Program` to allow the port for any program.) A third-party firewall (Norton, Bitdefender Total Security, ...) has its own rules and needs the same.
+   **Test it from outside**, not from this computer: any machine on the internet can try `nc -vz -w 5 YOUR.PUBLIC.IP 38353` (or a web "open port checker"). "Succeeded" means the router and the firewall both let it through; a timeout means one of them still blocks it (on the author's PC, 2026-10-13, the router was right and the firewall was not: an old rule allowed only the beta port).
 2. **Your internet address may change; there is nothing to set.** The node tells each peer "reach me on this port, at the address you see me at" every time it connects, and an old address simply stops answering and is forgotten. You do not need a fixed IP or a
    dynamic-DNS name (seeds are plain IP addresses: this is a design choice, a name would have to be resolved by whoever dials it).
 3. **It cannot work behind CGNAT** (a provider that shares one public address between customers; your router's "internet address" is then a private one such as 100.64.x.x or 10.x.x.x): nobody can reach you, and the box does nothing.
@@ -65,7 +76,7 @@ By default your node only **dials out**: it works, but every tester then talks t
 5. **The risk:** strangers can connect to this computer, and the network code has had fuzzing and simulations, **not an audit**. A flood of connections or a bug could use this computer's memory, processor and bandwidth. Do not do this on a computer you cannot afford to slow down or restart.
 
 **What is not tested yet:** the address learned from the seed is checked only by whoever dials it; an address whose owner moved on lingers in the seed's list for up to 30 days and costs each newcomer one failed dial (it is then
-retried with growing waits). Nobody has run this across a real home router yet.
+retried with growing waits). It has been checked across one real home router (the author's, an AT&T gateway, 2026-10-13: reachable from a server once the firewall rule above was in place); others are untested.
 
 ## Telling the author
 
