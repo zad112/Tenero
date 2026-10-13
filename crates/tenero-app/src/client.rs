@@ -133,6 +133,14 @@ impl RemoteNode {
         }
     }
 
+    /// The node's peers (`tenerod peers`).
+    pub fn peers(&self) -> Result<Vec<crate::control::PeerSummary>, String> {
+        match self.request(&Request::Peers)? {
+            Response::Peers(v) => Ok(v),
+            other => Err(format!("unexpected answer: {other:?}")),
+        }
+    }
+
     pub fn info(&self) -> Result<NodeInfo, String> {
         match self.request(&Request::Info)? {
             Response::Info(i) => Ok(i),

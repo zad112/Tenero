@@ -19,6 +19,7 @@ tenerod: the Tenero node (EXPERIMENTAL, UNAUDITED; test networks only, nothing o
   tenerod --data DIR --network gamma|dev|test [...] run a node with settings on the command line
   tenerod --version                             which build this is (version and source commit)
   tenerod status --data DIR [--control IP:PORT] ask a running node about itself
+  tenerod peers  --data DIR [--control IP:PORT] list a running node's peers (address, in or out, Tor or direct, how long, height)
   tenerod stop   --data DIR [--control IP:PORT] ask a running node to shut down cleanly
   tenerod rewind --data DIR --network gamma|dev|test --to HEIGHT [--yes]
                                                 emergency: with the node STOPPED, take the newest blocks off its chain down to HEIGHT.
@@ -152,6 +153,20 @@ fn main() {
         Some("rewind") => {
             let code = rewind_command(&args[1..]);
             std::process::exit(code);
+        }
+        Some("peers") => {
+            match control_client(&args[1..]).and_then(|c| c.peers()) {
+                Ok(p) => {
+                    for line in tenero_app::ui::peer_lines(&p) {
+                        println!("{line}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return;
         }
         Some("status") => {
             match control_client(&args[1..]).and_then(|c| c.info()) {

@@ -47,10 +47,10 @@
    "note": "unknown request kind 0"
   },
   {
-   "body": "16",
+   "body": "17",
    "direction": "request",
    "error": "kind",
-   "note": "unknown request kind 22"
+   "note": "unknown request kind 23"
   },
   {
    "body": "80",
@@ -155,10 +155,10 @@
    "note": "unknown response kind 17"
   },
   {
-   "body": "96",
+   "body": "97",
    "direction": "response",
    "error": "kind",
-   "note": "unknown response kind 150"
+   "note": "unknown response kind 151"
   },
   {
    "body": "fe",
@@ -513,6 +513,18 @@
    "direction": "request",
    "error": "trailing",
    "note": "the chain's numbers: with a trailing byte"
+  },
+  {
+   "body": "1600",
+   "direction": "request",
+   "error": "trailing",
+   "note": "the node's peers: with a trailing byte"
+  },
+  {
+   "body": "1600",
+   "direction": "request",
+   "error": "trailing",
+   "note": "the node's peers: with a trailing byte"
   },
   {
    "body": "8100",
@@ -989,6 +1001,42 @@
    "note": "the chain's numbers at genesis: with a trailing byte"
   },
   {
+   "body": "9600",
+   "direction": "response",
+   "error": "malformed",
+   "note": "no peers: cut in the middle"
+  },
+  {
+   "body": "960000000000",
+   "direction": "response",
+   "error": "trailing",
+   "note": "no peers: with a trailing byte"
+  },
+  {
+   "body": "9603000000110000003230332e302e3131332e393a333833353300008d0e0000000000009e12000000000000440000007035367674357775693463756a633666736a33766b616b33687873666a7a79716e7968",
+   "direction": "response",
+   "error": "malformed",
+   "note": "three peers: out direct, out through Tor, in through the onion service: cut in the middle"
+  },
+  {
+   "body": "9603000000110000003230332e302e3131332e393a333833353300008d0e0000000000009e12000000000000440000007035367674357775693463756a633666736a33766b616b33687873666a7a79716e79686c32377361663568787376737636777234627571642e6f6e696f6e3a333833353300013d000000000000009e120000000000000a0000006f6e696f6e2d696e3a3701010000000000000000000000000000000000",
+   "direction": "response",
+   "error": "trailing",
+   "note": "three peers: out direct, out through Tor, in through the onion service: with a trailing byte"
+  },
+  {
+   "body": "9601000000800000006161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+   "direction": "response",
+   "error": "malformed",
+   "note": "a peer with the longest address and the largest numbers: cut in the middle"
+  },
+  {
+   "body": "96010000008000000061616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161610100ffffffffffffffffffffffffffffffff00",
+   "direction": "response",
+   "error": "trailing",
+   "note": "a peer with the longest address and the largest numbers: with a trailing byte"
+  },
+  {
    "body": "ff0200",
    "direction": "response",
    "error": "malformed",
@@ -1307,6 +1355,42 @@
    "note": "chain_stats: one byte short"
   },
   {
+   "body": "9601040000",
+   "direction": "response",
+   "error": "malformed",
+   "note": "peers: a list over the cap"
+  },
+  {
+   "body": "96020000000d0000003230332e302e3131332e393a31000001000000000000000200000000000000",
+   "direction": "response",
+   "error": "malformed",
+   "note": "peers: fewer entries than the count"
+  },
+  {
+   "body": "96010000000d0000003230332e302e3131332e393a31020001000000000000000200000000000000",
+   "direction": "response",
+   "error": "malformed",
+   "note": "peers: an inbound flag of 2"
+  },
+  {
+   "body": "96010000000d0000003230332e302e3131332e393a31000201000000000000000200000000000000",
+   "direction": "response",
+   "error": "malformed",
+   "note": "peers: a Tor flag of 2"
+  },
+  {
+   "body": "960100000081000000616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161000001000000000000000200000000000000",
+   "direction": "response",
+   "error": "malformed",
+   "note": "peers: an address over the cap"
+  },
+  {
+   "body": "960100000002000000fffe000001000000000000000200000000000000",
+   "direction": "response",
+   "error": "malformed",
+   "note": "peers: an address that is not UTF-8"
+  },
+  {
    "body": "0b01000000000000000000",
    "direction": "request",
    "error": "malformed",
@@ -1363,6 +1447,7 @@
    "key_image_spent": 6,
    "key_images_spent": 14,
    "mempool": 18,
+   "peers": 22,
    "rules": 7,
    "spend_paths": 20,
    "stop": 10,
@@ -1381,6 +1466,7 @@
    "headers": 145,
    "info": 137,
    "mempool": 146,
+   "peers": 150,
    "pow_checked": 144,
    "rules": 135,
    "spend_paths": 148,
@@ -1394,6 +1480,7 @@
  },
  "limits": {
   "leaf_chunk": 38,
+  "max_addr": 128,
   "max_blocks_per_request": 64,
   "max_chunk": 38,
   "max_frame": 16777216,
@@ -1401,6 +1488,7 @@
   "max_mempool_list": 4096,
   "max_name": 64,
   "max_path_layers": 32,
+  "max_peer_list": 1024,
   "max_spend_paths": 512,
   "max_text": 512
  },
@@ -2540,6 +2628,15 @@
     "type": "chain_stats"
    },
    "note": "the chain's numbers"
+  },
+  {
+   "body": "16",
+   "direction": "request",
+   "frame": "0100000016",
+   "message": {
+    "type": "peers"
+   },
+   "note": "the node's peers"
   },
   {
    "body": "81",
@@ -4353,6 +4450,66 @@
     "type": "chain_stats"
    },
    "note": "the chain's numbers at genesis"
+  },
+  {
+   "body": "9600000000",
+   "direction": "response",
+   "frame": "050000009600000000",
+   "message": {
+    "peers": [],
+    "type": "peers"
+   },
+   "note": "no peers"
+  },
+  {
+   "body": "9603000000110000003230332e302e3131332e393a333833353300008d0e0000000000009e12000000000000440000007035367674357775693463756a633666736a33766b616b33687873666a7a79716e79686c32377361663568787376737636777234627571642e6f6e696f6e3a333833353300013d000000000000009e120000000000000a0000006f6e696f6e2d696e3a37010100000000000000000000000000000000",
+   "direction": "response",
+   "frame": "a60000009603000000110000003230332e302e3131332e393a333833353300008d0e0000000000009e12000000000000440000007035367674357775693463756a633666736a33766b616b33687873666a7a79716e79686c32377361663568787376737636777234627571642e6f6e696f6e3a333833353300013d000000000000009e120000000000000a0000006f6e696f6e2d696e3a37010100000000000000000000000000000000",
+   "message": {
+    "peers": [
+     {
+      "addr": "203.0.113.9:38353",
+      "connected_secs": 3725,
+      "height": 4766,
+      "inbound": false,
+      "tor": false
+     },
+     {
+      "addr": "p56vt5wui4cujc6fsj3vkak3hxsfjzyqnyhl27saf5hxsvsv6wr4buqd.onion:38353",
+      "connected_secs": 61,
+      "height": 4766,
+      "inbound": false,
+      "tor": true
+     },
+     {
+      "addr": "onion-in:7",
+      "connected_secs": 0,
+      "height": 0,
+      "inbound": true,
+      "tor": true
+     }
+    ],
+    "type": "peers"
+   },
+   "note": "three peers: out direct, out through Tor, in through the onion service"
+  },
+  {
+   "body": "96010000008000000061616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161610100ffffffffffffffffffffffffffffffff",
+   "direction": "response",
+   "frame": "9b00000096010000008000000061616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161610100ffffffffffffffffffffffffffffffff",
+   "message": {
+    "peers": [
+     {
+      "addr": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "connected_secs": 18446744073709551615,
+      "height": 18446744073709551615,
+      "inbound": true,
+      "tor": false
+     }
+    ],
+    "type": "peers"
+   },
+   "note": "a peer with the longest address and the largest numbers"
   },
   {
    "body": "ff020000006e6f",

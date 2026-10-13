@@ -1705,3 +1705,35 @@ fn a_node_with_no_peers_is_never_said_to_be_in_sync() {
     s.peers_out = 1;
     assert_eq!(render_status_block(&s, &OFF)[2], "  sync     in sync");
 }
+
+#[test]
+fn tenerod_peers_lists_each_peer_and_sums_them_up() {
+    use tenero_app::control::PeerSummary;
+    let p = |addr: &str, inbound, tor, connected_secs, height| PeerSummary {
+        addr: addr.into(),
+        inbound,
+        tor,
+        connected_secs,
+        height,
+    };
+    let lines = tenero_app::ui::peer_lines(&[
+        p("195.26.244.245:38353", false, false, 3725, 4766),
+        p("onion-in:7", true, true, 61, 4766),
+    ]);
+    assert_eq!(
+        lines,
+        [
+            "peer                  dir  via     connected    height",
+            "195.26.244.245:38353  out  direct     1h 02m     4,766",
+            "onion-in:7            in   Tor        1m 01s     4,766",
+            "2 peers: 1 out, 1 in; 1 through Tor",
+        ]
+    );
+    assert_eq!(
+        tenero_app::ui::peer_lines(&[]),
+        [
+            "peer  dir  via     connected    height",
+            "0 peers: 0 out, 0 in; 0 through Tor"
+        ]
+    );
+}

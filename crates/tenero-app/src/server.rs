@@ -393,6 +393,20 @@ impl ControlHook {
                 }
                 Response::Headers(out)
             }
+            Request::Peers => Response::Peers(
+                engine
+                    .peer_views()
+                    .into_iter()
+                    .take(crate::control::MAX_PEER_LIST)
+                    .map(|p| crate::control::PeerSummary {
+                        addr: p.addr.chars().take(crate::control::MAX_ADDR).collect(),
+                        inbound: p.inbound,
+                        tor: p.tor,
+                        connected_secs: p.connected_ms / 1000,
+                        height: p.height,
+                    })
+                    .collect(),
+            ),
             Request::Mempool => {
                 let pool = node.pool();
                 Response::Mempool {

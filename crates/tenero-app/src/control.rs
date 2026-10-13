@@ -87,6 +87,27 @@ pub struct ChainStats {
     pub block_time: u64,
 }
 
+/// The most peers one `Peers` answer lists (a node keeps far fewer; an operator may allow any number inbound).
+pub const MAX_PEER_LIST: usize = 1024;
+/// The longest peer address in a `Peers` answer (an IPv6 `[...]:port`, a `.onion:port`, the name of an onion-service peer).
+pub const MAX_ADDR: usize = 128;
+
+/// A peer the node is connected to, as `tenerod peers` shows it. **Addresses of other people's computers**: answered only
+/// on the node's own control interface (the cookie), never by the miner service.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerSummary {
+    /// Its address: `ip:port`, `xxxx.onion:port`, or `onion-in:N` for one that came in through this node's onion service.
+    pub addr: String,
+    /// It dialled us.
+    pub inbound: bool,
+    /// The connection goes through Tor.
+    pub tor: bool,
+    /// How long it has been connected, in seconds.
+    pub connected_secs: u64,
+    /// The height it last told us of.
+    pub height: u64,
+}
+
 /// What a node says about itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeInfo {
@@ -171,6 +192,8 @@ pub enum Request {
     Mempool,
     /// The chain's numbers: difficulty, work, reward and emission.
     ChainStats,
+    /// The peers the node is connected to ([`PeerSummary`]; added for `tenerod peers`, 2026-10-13).
+    Peers,
 }
 
 /// What a miner searches, COMPACT: the header (its nonce and mix empty), the coinbase, and the ids of the transactions in
@@ -245,6 +268,8 @@ pub enum Response {
         txs: Vec<PoolEntry>,
     },
     ChainStats(ChainStats),
+    /// The node's peers, at most [`MAX_PEER_LIST`].
+    Peers(Vec<PeerSummary>),
     Error(String),
 }
 
@@ -314,6 +339,8 @@ pub const K_SUBMIT_BLOCK: u8 = 13;
 pub const K_HEADERS: u8 = 17;
 pub const K_MEMPOOL: u8 = 18;
 pub const K_CHAIN_STATS: u8 = 19;
+/// `peers`: the node's peers, for `tenerod peers` (added 2026-10-13).
+pub const K_PEERS: u8 = 22;
 pub const K_ERROR: u8 = 0xFF;
 const ANSWER: u8 = 0x80;
 
@@ -358,6 +385,7 @@ impl Request {
             Request::Headers { .. } => K_HEADERS,
             Request::Mempool => K_MEMPOOL,
             Request::ChainStats => K_CHAIN_STATS,
+            Request::Peers => K_PEERS,
         }
     }
 
@@ -372,7 +400,8 @@ impl Request {
             | Request::Info
             | Request::Stop
             | Request::Mempool
-            | Request::ChainStats => {}
+            | Request::ChainStats
+            | Request::Peers => {}
             Request::Block { height } => w.u64(*height),
             Request::CheckPow { height, header } => {
                 w.u64(*height);
@@ -455,6 +484,7 @@ impl Request {
             }
             K_MEMPOOL => Request::Mempool,
             K_CHAIN_STATS => Request::ChainStats,
+            K_PEERS => Request::Peers,
             K_BLOCK_TEMPLATE => Request::BlockTemplate {
                 spend_pubkey: r.array()?,
                 view_pubkey: r.array()?,
@@ -597,6 +627,7 @@ impl Response {
             Response::Headers(_) => K_HEADERS | ANSWER,
             Response::Mempool { .. } => K_MEMPOOL | ANSWER,
             Response::ChainStats(_) => K_CHAIN_STATS | ANSWER,
+            Response::Peers(_) => K_PEERS | ANSWER,
             Response::Error(_) => K_ERROR,
         }
     }
@@ -719,6 +750,16 @@ impl Response {
                 w.u64(c.tail_reward);
                 w.u64(c.block_time);
             }
+            Response::Peers(v) => {
+                w.count(v.len(), 0, MAX_PEER_LIST)?;
+                for p in v {
+                    text(&mut w, &p.addr, MAX_ADDR)?;
+                    put_flag(&mut w, p.inbound);
+                    put_flag(&mut w, p.tor);
+                    w.u64(p.connected_secs);
+                    w.u64(p.height);
+                }
+            }
             Response::Error(m) => text(&mut w, m, MAX_TEXT)?,
         }
         Ok(w.into_bytes())
@@ -826,6 +867,15 @@ impl Response {
                 tail_reward: r.u64()?,
                 block_time: r.u64()?,
             }),
+            x if x == K_PEERS | ANSWER => Response::Peers(r.list(0, MAX_PEER_LIST, |r| {
+                Ok(PeerSummary {
+                    addr: read_text(r, MAX_ADDR)?,
+                    inbound: flag(r)?,
+                    tor: flag(r)?,
+                    connected_secs: r.u64()?,
+                    height: r.u64()?,
+                })
+            })?),
             K_ERROR => Response::Error(read_text(&mut r, MAX_TEXT)?),
             other => return Err(ControlError::UnknownKind(other)),
         };

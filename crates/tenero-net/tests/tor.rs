@@ -562,3 +562,35 @@ fn the_tor_key_is_not_the_direct_key_and_is_new_at_each_start() {
     assert_ne!(a.tor_key.public(), b.tor_key.public());
     assert_eq!(a.key.public(), b.key.public());
 }
+
+/// What `tenerod peers` lists: the peers that said hello, with their direction and whether the link goes through Tor (an
+/// outbound `.onion` one, or an inbound one through our onion service), outbound first.
+#[test]
+fn the_peer_list_says_which_way_each_peer_is_and_whether_through_tor() {
+    let rigs = SimRig::rigs("tor-peers", 3);
+    let mut sim = Sim::new(&rigs, T0, SimConfig::default(), EngineConfig::default());
+    sim.set_node_addr(2, ONION);
+    sim.connect(0, 1);
+    sim.connect(0, 2);
+    let direct = sim.add_hostile(0, "99.1.0.9:5000");
+    let onion_in = sim.add_hostile(0, "onion-in:4");
+    for h in [direct, onion_in] {
+        sim.hostile_send(h, hello_with(&rigs[0], 0));
+    }
+    // one that never says hello is not listed
+    let _silent = sim.add_hostile(0, "99.1.0.10:5000");
+    sim.run_for(3000);
+    let v = sim.engines[0].peer_views();
+    let row = |addr: &str| v.iter().find(|p| p.addr == addr).cloned();
+    assert_eq!(v.len(), 4, "{v:?}");
+    let to_onion = row(ONION).expect("the onion peer");
+    assert!(!to_onion.inbound && to_onion.tor);
+    let i = row("onion-in:4").expect("in through the onion service");
+    assert!(i.inbound && i.tor);
+    let d = row("99.1.0.9:5000").expect("in directly");
+    assert!(d.inbound && !d.tor);
+    assert!(row("99.1.0.10:5000").is_none());
+    // outbound first
+    assert!(!v[0].inbound && !v[1].inbound && v[2].inbound && v[3].inbound);
+    assert!(v.iter().all(|p| p.connected_ms >= 2000 || p.inbound));
+}

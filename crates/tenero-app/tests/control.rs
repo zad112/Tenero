@@ -162,6 +162,7 @@ fn requests() -> Vec<Request> {
         Request::Headers { from: 0, count: 1 },
         Request::Mempool,
         Request::ChainStats,
+        Request::Peers,
     ]
 }
 
@@ -219,6 +220,14 @@ fn responses() -> Vec<Response> {
         },
         Response::Blocks(vec![]),
         Response::Blocks(vec![sample_scan_block(), sample_scan_block()]),
+        Response::Peers(vec![]),
+        Response::Peers(vec![tenero_app::control::PeerSummary {
+            addr: "onion-in:3".into(),
+            inbound: true,
+            tor: true,
+            connected_secs: 61,
+            height: 4766,
+        }]),
         Response::Error("no".into()),
     ]
 }
@@ -298,7 +307,7 @@ fn malformed_requests_are_refused_not_guessed() {
         Err(ControlError::BadLength(0))
     ));
     // 4, 5 and 15 were version 2's requests for ring members: retired, so unknown
-    for kind in [0u8, 4, 5, 15, 22, 0x80, 0xFF] {
+    for kind in [0u8, 4, 5, 15, 23, 0x80, 0xFF] {
         assert_eq!(
             Request::from_body(&[kind]),
             Err(ControlError::UnknownKind(kind))
