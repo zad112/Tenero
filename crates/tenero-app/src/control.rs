@@ -28,6 +28,16 @@ pub const MAX_TEXT: usize = 512;
 pub const MAX_MEMPOOL_LIST: usize = 4096;
 pub const MAX_NAME: usize = 64;
 
+/// How the node's refusal of a `SubmitHeader` ends when the work was STALE (its template is gone, or a transaction of it
+/// left the pool: another block took the height first). It is a lost race, not an invalid block, and a miner or a pool
+/// counts it as one ([`is_stale_work`]).
+pub const STALE_WORK: &str = "the work is stale";
+
+/// Whether a refusal says the work was stale (see [`STALE_WORK`]).
+pub fn is_stale_work(why: &str) -> bool {
+    why.ends_with(STALE_WORK)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeKind {
     /// Keeps every block's proofs.

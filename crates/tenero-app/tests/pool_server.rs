@@ -678,8 +678,17 @@ fn a_block_the_node_does_not_take_or_does_not_answer_about_credits_nobody() {
             None,
             BlockOutcome::NodeError("the node did not answer".into()),
         ),
+        // stale work (the node's own words): a lost race, not a refusal (seen on gamma at block 196, counted as refused)
+        (
+            Some(BlockVerdict::Refused(format!(
+                "no template of this node has that header's transactions (the tip moved, or it is too old): {}",
+                tenero_app::control::STALE_WORK
+            ))),
+            BlockOutcome::LostRace,
+        ),
     ] {
         let r = rig();
+        let stale = matches!(&verdict, Some(BlockVerdict::Refused(w)) if tenero_app::control::is_stale_work(w));
         r.node.state.lock().unwrap().verdict = verdict;
         let job = job_of(&r);
         let (mut s, _) = r.pool.open_session(&hello(1), ip(1)).unwrap();
@@ -696,6 +705,10 @@ fn a_block_the_node_does_not_take_or_does_not_answer_about_credits_nobody() {
         );
         assert_eq!(o.block, Some(expect));
         assert!(r.pool.accounts().pending().is_empty());
+        if stale {
+            assert_eq!(r.pool.stats.blocks_lost_race.load(Ordering::Relaxed), 1);
+            assert_eq!(r.pool.stats.blocks_refused.load(Ordering::Relaxed), 0);
+        }
     }
 }
 

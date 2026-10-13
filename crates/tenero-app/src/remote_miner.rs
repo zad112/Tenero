@@ -344,6 +344,14 @@ impl RemoteMiner {
                 ));
                 self.event(MinerEvent::LostRace { height });
             }
+            // stale work (another block took the height first) is a lost race, not a wrong block
+            BlockVerdict::Refused(why) if crate::control::is_stale_work(&why) => {
+                self.stats.blocks_lost_race += 1;
+                self.log(&format!(
+                    "block {height} lost a race: it came too late ({why})"
+                ));
+                self.event(MinerEvent::LostRace { height });
+            }
             BlockVerdict::Refused(why) => {
                 self.stats.blocks_refused += 1;
                 self.log(&format!(

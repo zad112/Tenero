@@ -1060,6 +1060,16 @@ impl Pool {
                 ));
                 BlockOutcome::LostRace
             }
+            // stale work (another block took the height first) is a lost race, not an invalid block: "refused" is kept for
+            // blocks the node judged wrong (seen on gamma at block 196, 2026-10-09, counted as refused before)
+            Ok(BlockVerdict::Refused(why)) if crate::control::is_stale_work(&why) => {
+                self.stats.blocks_lost_race.fetch_add(1, Ordering::Relaxed);
+                self.log(&format!(
+                    "block {} lost a race: it came too late ({why})",
+                    job.height
+                ));
+                BlockOutcome::LostRace
+            }
             Ok(BlockVerdict::Refused(why)) => {
                 self.stats.blocks_refused.fetch_add(1, Ordering::Relaxed);
                 self.log(&format!(
