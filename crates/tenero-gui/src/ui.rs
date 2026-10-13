@@ -2467,7 +2467,9 @@ impl App {
                         ui.label(
                             RichText::new(
                                 "Others can then fetch blocks from you, which takes load off the seeds. This app cannot open your router: forward this TCP port to this \
-                                 computer on your router, and allow the program in Windows Firewall. Your internet address may change: nothing to do, the node tells each \
+                                 computer on your router, and allow this port in Windows Firewall: Windows does not always ask (not if the program already has a rule, \
+                                 even for another port), so add the rule yourself (docs/TESTING.md, \"Letting others connect to you\", has the command) and test it \
+                                 from outside. Your internet address may change: nothing to do, the node tells each \
                                  peer the address it sees you at. Strangers will be able to connect to this computer, and this software is unaudited. Behind a provider \
                                  that shares one address between customers (CGNAT) nobody can reach you, and this does nothing.",
                             )
