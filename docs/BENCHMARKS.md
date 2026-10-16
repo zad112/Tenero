@@ -5,6 +5,28 @@
 (1.98), portable code with no `unsafe` and no hand-written SIMD. Nothing here is a GPU number, and one machine
 is one data point (KNOWN_ISSUES 13). Rerun it before relying on any figure.
 
+## 2026-10-16: driver 617.42, the gathered attempt, and the solo miner's gap per block
+
+Measured on the owner's machine (RTX 5070 Ti, Ryzen 9 5900X), the card otherwise idle unless said:
+
+| | attempts/s |
+|---|---|
+| `gather_bench`, the gathered attempt, batch 128 / 256 / 512, driver 617.42 | 41,394 / 41,442 / 41,525 (694 to 697 GB/s of column reads; a plain device copy: 775 GB/s) |
+| the same on driver 617.14 (2026-10-07 and later, above) | 43,080 to 45,412 |
+| the miner backend (`gpu_mining`), gathered, batch 128 / 256 / 512 | 41,343 / 41,454 / 41,369 |
+| the same with two batches in flight (tried, `AttemptEngine` for the gathered attempt) | 41,078 / 41,385 / 41,642: **no gain**, not kept |
+| the real solo miner on the owner's gamma node, 3 minutes, a block every ~15 s | 41,100 average |
+
+* **The driver update cost about 5 %** of the gathered attempt's speed (617.14 to 617.42), and it also reset the owner's overclock: the first run
+  after it gave about 36,000. With the overclock restored the numbers above were measured.
+* **The gathered attempt is limited by memory bandwidth**, not by the CPU's share of a batch: keeping two batches in flight changed nothing.
+* **A block found in solo mining idled the GPU** for about 0.3 to 0.45 s (from the 10-second rates; GPU samples every 50 ms showed dips of
+  about 0.5 s): up to 200 ms waiting for the miner's next poll, the node's CPU check of the block, then a new template. Since 2026-10-16 the
+  miner wakes on a solution at once (measured after: about 0.23 s a block, against a node of the earlier build), and the node's check runs
+  on its 6 dataset threads: **one attempt checked on the CPU, 176.5 ms on one thread, 89.5 on 2, 46.5 on 4, 31.4 on 6** (first design,
+  `bench --full`; the gathered attempt is the same arithmetic on other columns). Not yet measured: the miner against a node of the new build.
+* The miner's automatic batch choice measured the FIRST design (about 75,000) on a gathered chain; it now measures the design the chain mines.
+
 ## Where the time goes (real parameters: m=64, k=8192, nb=2048, 256 slices)
 
 | | default build (generic x86-64) | `RUSTFLAGS="-C target-cpu=native"` |

@@ -151,6 +151,27 @@ fn main() {
             (threads * per_thread) as f64 / t
         );
     }
+    // ---- ONE attempt split over threads: the node's check of a block (`compute_attempt_at_threads`)
+    println!("\none attempt split over threads (the node's check of a block), best of 3:");
+    let nonce = (0u64..)
+        .find(|&n| mh::attempt_slice(&mh::attempt_seed(&HEADER, n), p.num_blocks) < data.slices())
+        .expect("a nonce whose slice was built");
+    for threads in [1, 2, 4, 6] {
+        if threads > cores {
+            continue;
+        }
+        let t = best_of(3, || {
+            mh::compute_attempt_threads(&data, &HEADER, nonce, threads).expect("its slice is built")
+        });
+        println!("  first design, {threads} thread(s): {:>8.1} ms", t * 1e3);
+        if data.slices() == p.num_blocks {
+            let t = best_of(3, || {
+                mh::compute_gathered_attempt_threads(&data, &HEADER, nonce, threads)
+                    .expect("the whole dataset")
+            });
+            println!("  gathered,     {threads} thread(s): {:>8.1} ms", t * 1e3);
+        }
+    }
     println!("\nFor scale (Rule 5): the GPU baseline in docs is about 22,000 attempts/s, measured on the owner's");
     println!("RTX 5070 Ti, not here. A CPU check of a block needs ONE attempt plus the dataset.");
 }

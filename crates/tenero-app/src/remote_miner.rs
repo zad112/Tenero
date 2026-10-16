@@ -572,7 +572,17 @@ impl RemoteMiner {
                     continue;
                 }
             }
-            sleep_until(shutdown, poll);
+            // until the next poll, or at once when the backend has something to say (a block found: it is handed in
+            // and the next job started without waiting out the poll)
+            let end = Instant::now() + poll;
+            while Instant::now() < end && !shutdown.load(Ordering::SeqCst) {
+                if self
+                    .miner
+                    .wait((end - Instant::now()).min(Duration::from_millis(20)))
+                {
+                    break;
+                }
+            }
         }
         self.drop_job();
         Ok(())

@@ -313,12 +313,15 @@ impl PowCheck for MatmulPow {
 
     fn check_full(&self, header: &BlockHeader, height: u64) -> Result<bool, String> {
         let data = self.dataset_for(height)?;
-        let attempt = matmulhash::compute_attempt_at(
+        // the product on the threads that build the datasets (6 on a node): one block's check took about 175 ms on one
+        // thread, the same arithmetic in a fraction of that (review of 2026-10-16)
+        let attempt = matmulhash::compute_attempt_at_threads(
             &data,
             &ids::header_hash(header),
             header.nonce,
             height,
             self.gather_from,
+            self.inner.threads,
         )?;
         Ok(attempt.mix == header.mix)
     }
