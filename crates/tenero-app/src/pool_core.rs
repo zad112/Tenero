@@ -35,22 +35,33 @@ pub type AddrId = u32;
 
 // ---- share targets and their worth ---------------------------------------------------------------------------------------
 
-/// The share target is never easier than this (2^255: half of all attempts would be shares, which counts nothing).
+/// The share target is never easier than this (2^244: a share stands for at least 4,096 attempts), unless the block target
+/// itself is easier (a test chain). It was 2^255, and a miner that sent nothing for a few minutes drifted there: half of all
+/// made-up mixes then passed the cheap check, and each cost the pool's node a full proof-of-work check (review of
+/// 2026-10-16). 4,096 attempts is a share every 9 s for a CPU miner of about 450 attempts a second, the slowest there is.
+pub const EASIEST_SHARE_BITS: u32 = 244;
+
 pub fn easiest_share_target() -> U256 {
-    U256::pow2(255).expect("2^255 fits")
+    U256::pow2(EASIEST_SHARE_BITS).expect("2^244 fits")
 }
 
 /// The most the ratio of a share target to the block target may be.
 pub const MAX_RATIO: u64 = 1 << 40;
 
-/// The target of a share at `ratio` times the block target (ratio 1: the share is a block), never easier than 2^255 and never zero.
+/// The target of a share at `ratio` times the block target (ratio 1: the share is a block), never easier than
+/// [`easiest_share_target`] unless the block target itself is (then the share target is the block target), and never zero.
 pub fn share_target(block_target: &U256, ratio: u64) -> U256 {
     let ratio = ratio.clamp(1, MAX_RATIO);
     let t = U320::from_u256(block_target)
         .checked_mul_u64(ratio)
         .and_then(|x| x.to_u256())
-        .unwrap_or_else(easiest_share_target);
-    let cap = easiest_share_target();
+        .unwrap_or(U256::MAX);
+    let easiest = easiest_share_target();
+    let cap = if *block_target > easiest {
+        *block_target
+    } else {
+        easiest
+    };
     let t = if t > cap { cap } else { t };
     if t == U256::ZERO {
         U256::ONE
@@ -472,6 +483,17 @@ impl Accounts {
             *p = p.saturating_add(amount);
         }
         self.total_paid = self.total_paid.saturating_add(amount);
+    }
+
+    /// Undoes a [`Accounts::debit`] of `amount` to `id` (a payment that was booked but not sent).
+    pub fn undo_debit(&mut self, id: AddrId, amount: u64) {
+        if let Some(b) = self.balances.get_mut(id as usize) {
+            *b = b.saturating_add(amount);
+        }
+        if let Some(p) = self.paid.get_mut(id as usize) {
+            *p = p.saturating_sub(amount);
+        }
+        self.total_paid = self.total_paid.saturating_sub(amount);
     }
 
     pub fn id_by_text(&self, text: &str) -> Option<AddrId> {

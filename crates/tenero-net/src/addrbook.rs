@@ -23,7 +23,16 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use tenero_core::hash::sha256;
 
 use crate::message::{PeerAddr, PeerHost};
-use crate::onion::{is_onion, onion_addr, parse_onion};
+use crate::onion::{is_onion, onion_addr, parse_onion, ONION_INBOUND};
+
+/// The network group of every `.onion` address. An onion address says nothing about where its owner is, and anyone can
+/// make as many as they like, so they are ONE group (each was its own group, so the rule of at most two outbound peers per
+/// group never applied to them and an attacker's onion addresses could take every outbound slot; review of 2026-10-16).
+pub const ONION_GROUP: &str = "onion";
+/// The network group of every peer that came in through this node's own `.onion` service: they all arrive from Tor, and
+/// one attacker can open as many as it likes, so they share one group (the address book's share per source, the cached
+/// answer to `get_addrs`) and the engine's own cap ([`crate::engine::EngineConfig::max_onion_inbound`]).
+pub const ONION_INBOUND_GROUP: &str = "onion-in";
 
 /// A small deterministic generator: address selection must be a function of the configured seed.
 #[derive(Clone, Debug)]
@@ -90,6 +99,12 @@ pub fn is_routable(addr: &SocketAddr) -> bool {
 /// The network range an address belongs to, for diversity: an IPv4 /16 or an IPv6 /32. An address that is
 /// not an `ip:port` (a test name, say) is its own group.
 pub fn group_of(addr: &str) -> String {
+    if addr.starts_with(ONION_INBOUND) {
+        return ONION_INBOUND_GROUP.to_string();
+    }
+    if is_onion(addr) {
+        return ONION_GROUP.to_string();
+    }
     match addr.parse::<SocketAddr>() {
         Ok(sa) => match sa.ip() {
             IpAddr::V4(a) => format!("v4:{}.{}", a.octets()[0], a.octets()[1]),
@@ -193,6 +208,8 @@ pub struct AddrBookConfig {
     pub accept_private: bool,
     /// Keep version 3 `.onion` addresses: only a node with a Tor proxy can dial them (`docs/TOR_PLAN.md`).
     pub accept_onion: bool,
+    /// The most `.onion` addresses kept: anyone can make as many as they like, so they may not fill the book.
+    pub max_onion_entries: usize,
     /// When choosing among never-tried addresses, those reported by two or more different source groups come first. Off by
     /// default: it only helps when honest sources report overlapping lists (see `docs/SEED_POLICY.md` for the measurement).
     pub prefer_corroborated: bool,
@@ -215,6 +232,7 @@ impl Default for AddrBookConfig {
             stale_secs: 30 * 24 * 3600,
             accept_private: false,
             accept_onion: false,
+            max_onion_entries: 256,
             prefer_corroborated: false,
             seed: 0x5eed_5eed_5eed_5eed,
         }
@@ -323,6 +341,12 @@ impl AddrBook {
             return true;
         }
         if source != "seed" && self.new_from(source) >= self.cfg.max_new_per_source {
+            return false;
+        }
+        if is_onion(addr)
+            && source != "seed"
+            && self.entries.keys().filter(|a| is_onion(a)).count() >= self.cfg.max_onion_entries
+        {
             return false;
         }
         if self.entries.len() >= self.cfg.max_entries && !self.evict_one(now_secs) {
@@ -643,6 +667,11 @@ impl BanList {
     }
 
     pub fn ban(&mut self, addr: &str, until_ms: u64) {
+        // a peer that came in through our `.onion` service is a name for one connection: banning it would ban nobody, and
+        // fill the list (the transport slows the onion service down instead)
+        if addr.starts_with(ONION_INBOUND) {
+            return;
+        }
         let host = host_of(addr);
         let e = self.until.entry(host).or_insert(0);
         *e = (*e).max(until_ms);

@@ -558,7 +558,10 @@ fn an_invalid_transaction_is_punished_and_not_fetched_again() {
     let rigs = SimRig::rigs("badtx", 1);
     let mut sim = new_sim(&rigs);
     sim.mine_chain(0, 64);
-    let bad = make_tx(&sim, 0, 1, -1); // one unit under the minimum fee
+    // outputs out of order: never valid anywhere (a fee under the minimum is not held against a peer since 2026-10-16: an
+    // honest peer can hold one the minimum has risen past)
+    let mut bad = make_tx(&sim, 0, 1, 0);
+    bad.prefix.outputs.reverse();
     let id = tx_id_of(&bad);
     let h = sim.add_hostile(0, "spammer");
     sim.hostile_send(h, hello_for(&rigs[0], 64, zero_work()));

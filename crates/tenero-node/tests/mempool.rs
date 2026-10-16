@@ -1062,6 +1062,83 @@ fn a_rising_minimum_fee_drops_what_no_longer_pays_it() {
     );
 }
 
+/// A transaction may be mined only while its reference block is at most `MAX_REFERENCE_AGE` (1,440) blocks below the block.
+/// The pool used to keep one past that, and every block template then held an invalid transaction, so every block the
+/// node built was refused (found in the review of 2026-10-16: a transaction made valid for exactly one height, sent just
+/// after a block, did it to every node that took it). Now the pool refuses one that has fewer than `REFERENCE_MARGIN`
+/// blocks left, drops one the moment it can no longer be in the next block, and a template never takes one.
+#[test]
+fn a_transaction_whose_reference_ages_out_is_refused_dropped_and_never_in_a_template() {
+    use tenero_core::v3::rules::MAX_REFERENCE_AGE;
+    use tenero_node::mempool::REFERENCE_MARGIN;
+    let rig = Rig::new("aged");
+    let mut net = Net::new("aged-net", 21);
+    let mut node = rig.node(BIG);
+    grow(&mut net, &mut node, SPENDABLE + MAX_REFERENCE_AGE as usize);
+    let tip = net.height();
+    let next = tip + 1;
+    // minable for fewer than REFERENCE_MARGIN more blocks: refused, before anything else, and not as invalid
+    let mut short = net.std_tx(1, 0);
+    short.prunable.reference_height = next + REFERENCE_MARGIN - 1 - MAX_REFERENCE_AGE;
+    assert_eq!(
+        node.submit_tx(short.clone()),
+        Err(PoolError::ReferenceExpiring {
+            reference_height: short.prunable.reference_height,
+            next_height: next,
+        })
+    );
+    // exactly REFERENCE_MARGIN blocks left: taken
+    let left = 20u64;
+    let mut aging = net.std_tx(2, 0);
+    aging.prunable.reference_height = next + left - 1 - MAX_REFERENCE_AGE;
+    let id = id_of(&aging);
+    node.submit_tx(aging).unwrap();
+    let payout = |amount: u64| tenero_node::Payout {
+        onetime_address: hash_to_point(sha256(&[b"payout", &amount.to_le_bytes()])),
+        view_tag: [2; 3],
+        ephemeral_pubkey: [3; 32],
+        anchor_enc: [4; 16],
+    };
+    // it stays, and is in every template, up to the last block it may be in
+    grow(&mut net, &mut node, left as usize - 1);
+    assert!(node.pool().contains(&id), "still minable in the next block");
+    let template = node.block_template(NOW, u64::MAX, &payout).unwrap();
+    assert!(template.transactions.iter().any(|t| id_of(t) == id));
+    // a block made of the template's transactions at that height is valid
+    let last = net.build(node.block_template_txs(u64::MAX));
+    assert!(net.validator().validate_block(&last, NOW).is_ok());
+    // one block more (without it): it is gone from the pool and from every template
+    grow(&mut net, &mut node, 1);
+    assert!(
+        !node.pool().contains(&id),
+        "dropped once it cannot be mined"
+    );
+    let template = node.block_template(NOW, u64::MAX, &payout).unwrap();
+    assert!(template.transactions.is_empty());
+    // and the block the node builds is accepted
+    let b = net.extend(node.block_template_txs(u64::MAX));
+    assert!(matches!(
+        node.submit_block(&b, NOW).unwrap(),
+        Submitted::Extended(_)
+    ));
+}
+
+/// A block lists at most `MAX_BLOCK_TXS` transactions, so the pool never hands a template more, however much weight it is
+/// allowed (a template of more would not encode, and the miner would stop with an error).
+#[test]
+fn the_pool_never_selects_more_transactions_than_a_block_may_list() {
+    let rig = Rig::new("count");
+    let mut net = Net::new("count-net", 22);
+    let mut node = rig.node(BIG);
+    grow(&mut net, &mut node, SPENDABLE);
+    let n = MAX_BLOCK_TXS as u64 + 8;
+    for i in 0..n {
+        node.submit_tx(net.std_tx(10_000 + i, 0)).unwrap();
+    }
+    assert_eq!(node.pool().len() as u64, n);
+    assert_eq!(node.pool().select(u64::MAX).len(), MAX_BLOCK_TXS);
+}
+
 // ---- saving and loading the block pools --------------------------------------------------------------
 
 fn pool_path(name: &str) -> PathBuf {

@@ -521,6 +521,48 @@ fn a_run_of_bad_shares_bans_the_address_and_a_good_share_in_between_starts_the_c
     assert_eq!(r.pool.stats.bans.load(Ordering::Relaxed), 1);
 }
 
+/// A wrong mix costs the pool's node a full proof-of-work check, and an honest miner never sends one: three in a session (in a
+/// row or not) ban the address (review of 2026-10-16; it took twenty in a row, and the share target could drift so easy that a
+/// made-up mix passed the cheap check half the time).
+#[test]
+fn three_wrong_mixes_in_a_session_ban_the_address_even_with_good_shares_between() {
+    let r = rig();
+    let job = job_of(&r);
+    let (mut s, _) = r.pool.open_session(&hello(1), ip(1)).unwrap();
+    r.pool.retarget(&mut s, &job.block_target);
+    let mut n = session_first_nonce(s.prefix, s.prefix_bits);
+    let mut next = |s: &mut tenero_app::pool_server::Session| {
+        let x = find(&job, n, &s.target, false);
+        n = x + 1;
+        x
+    };
+    for k in 0..3 {
+        let bad = next(&mut s);
+        let o = r.pool.on_share(&mut s, job.id, bad, [1; 64]);
+        if k < 2 {
+            assert_eq!(
+                (o.accepted, o.reason, o.close.is_none()),
+                (false, R_BAD_MIX, true),
+                "{o:?}"
+            );
+            let good = next(&mut s);
+            assert!(r.pool.on_share(&mut s, job.id, good, [0; 64]).accepted);
+        } else {
+            assert_eq!(o.reason, R_NOT_ALLOWED, "{o:?}");
+            assert!(o.close.is_some());
+        }
+    }
+    assert_eq!(r.pool.stats.bans.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn a_silent_miner_never_drifts_to_a_share_target_easier_than_the_floor() {
+    use tenero_app::pool_core::{easiest_share_target, share_target, MAX_RATIO};
+    let block = U256::pow2(237).unwrap();
+    assert_eq!(share_target(&block, MAX_RATIO), easiest_share_target());
+    assert_eq!(easiest_share_target(), U256::pow2(244).unwrap());
+}
+
 #[test]
 fn a_connection_that_sends_too_many_shares_a_minute_is_closed() {
     let r = rig_with(|c| c.shares_per_minute = 5);
@@ -550,6 +592,8 @@ fn a_connection_that_sends_too_many_shares_a_minute_is_closed() {
 fn after_a_change_of_target_a_share_that_meets_only_the_old_one_is_taken_for_a_minute_at_its_old_worth(
 ) {
     let r = rig();
+    // a block target hard enough that the share target can move both ways under its floor of 2^244
+    r.node.state.lock().unwrap().target = U256::pow2(236).unwrap();
     let job = job_of(&r);
     let (mut s, _) = r.pool.open_session(&hello(1), ip(1)).unwrap();
     r.pool.retarget(&mut s, &job.block_target);
@@ -614,6 +658,8 @@ fn a_new_block_target_changes_the_share_target_by_the_same_ratio() {
 #[test]
 fn the_pool_watches_a_miners_rate_and_moves_its_difficulty() {
     let r = rig();
+    // a block target hard enough that the share target can move both ways under its floor of 2^244
+    r.node.state.lock().unwrap().target = U256::pow2(236).unwrap();
     let job = job_of(&r);
     let (mut s, _) = r.pool.open_session(&hello(1), ip(1)).unwrap();
     r.pool.retarget(&mut s, &job.block_target);

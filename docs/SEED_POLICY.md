@@ -62,7 +62,7 @@ honest one (the worst case). Seeds hang up after answering. The measure is the s
   already connected needs seeds much less, and an operator who got a peer's address from a person they trust is not subject to any of this.
 
 * **A full seed makes room (added 2026-10-05; tested in `crates/tenero-net/tests/discovery.rs`, NOT yet run on a real network).** A node (a seed
-  included) that is full (only when the operator has set `max_inbound`: the default is no limit, since 2026-10-05) and has another inbound peer connect to it drops an INBOUND peer that has done
+  included) that is full (`max_inbound`: 64 by default since 2026-10-16; no limit from 2026-10-05 to then) and has another inbound peer connect to it drops an INBOUND peer that has done
   nothing for `idle_evict_after_ms` (10 minutes by default; 0 turns it off), without a ban, and takes the newcomer as a real peer. "Nothing"
   means no request, announcement, block or transaction: pings, pongs, hellos and address messages do not count, and the time since it
   connected counts as quiet time, so a new connection has 10 minutes. A peer that follows the chain asks for every new block (one a minute at
@@ -96,7 +96,7 @@ seed for good (it may refuse inbound connections, but it still dials out to othe
   on for up to a day). This weakens the defence against reading the whole book (`THREAT_MODEL.md` C4): one group can take about 96 samples a day, not one.
 * **Retrying and forgetting.** The wait before retrying a failed address doubles from 30 seconds to a **30-minute** cap (it was 6 hours), and an address that never
   worked is forgotten after **48** failures, about a day (it was 10: about 8 hours, so a node whose port was shut for an evening was forgotten before it was opened).
-* **No inbound limit unless the operator sets one** (`max_inbound`, 0 = none): see `RUNNING.md`.
+* **Inbound limit 64 by default** (`max_inbound`, 0 = none; the owner's decision of 2026-10-16, after a security review): see `RUNNING.md`. One IP address holds at most 4 inbound connections, and peers through the node's `.onion` service at most 16.
 
 **Measured:** in a 30-node simulation starting from two seeds (`a_network_that_starts_from_two_seeds_ends_up_connected_to_itself_and_not_to_the_seeds`),
 **without the leaving rule 25 of 28 ordinary nodes were still connected to a seed after an hour although each had 10 to 17 peers of its own; with it, none.**

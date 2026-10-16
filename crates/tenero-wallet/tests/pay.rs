@@ -142,7 +142,7 @@ fn two_wallets_pay_each_other_through_a_node_with_real_proofs() {
     assert_eq!(size, transaction_size(built.spends.len(), 2, layers));
     let next = node.next_block().unwrap();
     let min = rules::min_fee(size as u64, next.reward, next.median).unwrap();
-    assert_eq!(built.fee, min * 125 / 100 + 1);
+    assert_eq!(built.fee, (min * 125).div_ceil(100));
     // the coins it spends are promised, so they are not offered again
     let after_send = alice.balance(&node).unwrap();
     assert!(after_send.reserved > 0);

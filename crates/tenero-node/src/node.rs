@@ -332,6 +332,11 @@ fn template_txs(
     let mut paid = v.coinbase_amount(next, 0, 0)?;
     let mut txs = Vec::with_capacity(candidates.len());
     for t in candidates {
+        // never a transaction that cannot be in THIS block (the pool drops them as blocks come; this is the last guard, as
+        // one such transaction makes the whole block invalid)
+        if !crate::mempool::reference_in_window(t.prunable.reference_height, next.height) {
+            continue;
+        }
         let w = rules::tx_weight(&t).map_err(|e| BlockError::Malformed(e.to_string()))?;
         let with = v.coinbase_amount(next, weight + w, fees + t.prefix.fee)?;
         if with > paid {

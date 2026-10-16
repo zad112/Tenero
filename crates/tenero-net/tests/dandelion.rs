@@ -278,12 +278,19 @@ fn a_stem_transaction_is_not_served_and_an_invalid_one_costs_its_sender() {
             .any(|m| matches!(m, Message::Txs { txs } if !txs.is_empty())),
         "a stem transaction was served: {answers:?}"
     );
-    // a forged one (a fee under the minimum) costs the spy, as an invalid transaction does
-    let mut bad = make_tx(&sim, 1, 80);
-    bad.prefix.fee = 1;
     let peer = sim.hostiles[spy].peer_at_node().unwrap();
     let score = |s: &Sim<'_>| s.engines[1].peer_score(peer);
+    // a fee under the minimum is refused but costs nothing: an honest peer can hold one the minimum has risen past
+    // (review of 2026-10-16)
+    let mut low = make_tx(&sim, 1, 81);
+    low.prefix.fee = 1;
     let before = score(&sim);
+    sim.hostile_send(spy, Message::StemTx(Box::new(low)));
+    sim.run_for(200);
+    assert_eq!(score(&sim), before);
+    // a forged one (outputs out of order: never valid anywhere) costs the spy, as an invalid transaction does
+    let mut bad = make_tx(&sim, 1, 80);
+    bad.prefix.outputs.reverse();
     sim.hostile_send(spy, Message::StemTx(Box::new(bad)));
     sim.run_for(200);
     assert!(score(&sim) > before, "{:?} then {:?}", before, score(&sim));

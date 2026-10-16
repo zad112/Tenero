@@ -79,6 +79,10 @@ pub struct NetConfig {
     pub onion_listen: Option<SocketAddr>,
     /// A dial through Tor may take this long (a circuit to an onion service can take tens of seconds).
     pub proxy_timeout: Duration,
+    /// How many connections a minute the `.onion` service accepts (and the burst it may take at once). Every peer that
+    /// comes through it is new to us and cannot be banned (`onion::ONION_INBOUND`), so this rate, slowed further each time
+    /// one of them earns a ban, is what bounds what an attacker behind Tor can make the node do. 0 is no limit.
+    pub onion_accepts_per_min: u32,
     /// Checks the proofs of the transactions a peer sends on the peer's own reader thread, ahead of the loop (`None`: the
     /// loop checks them, as before).
     pub precheck: Option<TxPrecheck>,
@@ -126,6 +130,7 @@ impl NetConfig {
             tor_only: false,
             onion_listen: None,
             proxy_timeout: Duration::from_secs(60),
+            onion_accepts_per_min: 30,
             precheck: None,
             key,
             tor_key: NodeKey::generate(),
@@ -260,6 +265,77 @@ enum Ev {
     },
 }
 
+/// How fast the `.onion` service takes new connections: a token bucket (a minute's worth at most), and a pause after a
+/// peer that came through it earned a ban, which doubles (up to an hour) while bans keep coming and is forgotten after a
+/// quiet hour. Peers through the onion service cannot be banned one by one (each is new), so the service as a whole slows.
+pub struct OnionGate {
+    per_min: u32,
+    state: Mutex<OnionState>,
+}
+
+struct OnionState {
+    tokens: f64,
+    at: Instant,
+    paused_until: Option<Instant>,
+    pause: Duration,
+    last_ban: Option<Instant>,
+}
+
+impl OnionGate {
+    pub fn new(per_min: u32) -> OnionGate {
+        OnionGate {
+            per_min,
+            state: Mutex::new(OnionState {
+                tokens: f64::from(per_min),
+                at: Instant::now(),
+                paused_until: None,
+                pause: Duration::from_secs(60),
+                last_ban: None,
+            }),
+        }
+    }
+
+    /// Whether one more connection may be taken now (and takes it).
+    pub fn admit(&self, now: Instant) -> bool {
+        if self.per_min == 0 {
+            return true;
+        }
+        let Ok(mut s) = self.state.lock() else {
+            return false;
+        };
+        if s.paused_until.is_some_and(|u| now < u) {
+            return false;
+        }
+        let rate = f64::from(self.per_min) / 60.0;
+        let elapsed = now.saturating_duration_since(s.at).as_secs_f64();
+        s.tokens = (s.tokens + elapsed * rate).min(f64::from(self.per_min));
+        s.at = now;
+        if s.tokens >= 1.0 {
+            s.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A peer that came through the onion service earned a ban: the service takes nobody for a while.
+    pub fn banned(&self, now: Instant) {
+        let Ok(mut s) = self.state.lock() else {
+            return;
+        };
+        if s.last_ban
+            .is_none_or(|b| now.saturating_duration_since(b) > Duration::from_secs(3600))
+        {
+            s.pause = Duration::from_secs(60);
+        } else {
+            s.pause = (s.pause * 2).min(Duration::from_secs(3600));
+        }
+        s.last_ban = Some(now);
+        s.paused_until = Some(now + s.pause);
+        s.tokens = 0.0;
+    }
+}
+
 /// Handshakes in progress, in all and per host.
 struct Pending {
     total: AtomicUsize,
@@ -279,8 +355,15 @@ impl Pending {
         if self.total.load(Ordering::SeqCst) >= self.max_total {
             return None;
         }
+        // the onion service is one host for this (`Acceptor::on_accept`) but carries every peer that comes through Tor, and a
+        // handshake through Tor is slow: it has four times one host's share, still a quarter of the whole at the defaults
+        let max = if host == ONION_INBOUND {
+            self.max_host.saturating_mul(4)
+        } else {
+            self.max_host
+        };
         let n = map.entry(host.to_string()).or_insert(0);
-        if *n >= self.max_host {
+        if *n >= max {
             return None;
         }
         *n += 1;
@@ -310,6 +393,8 @@ impl Drop for PendingGuard {
 struct Conn {
     stream: TcpStream,
     tx: Sender<Vec<u8>>,
+    /// The transactions this node asked this peer for (`get_txs`), which its reader may check ahead.
+    asked: Arc<AskedTxs>,
     queued: Arc<AtomicUsize>,
     /// Set when the connection is closed, so a reader waiting for memory or for its byte rate stops waiting.
     closed: Arc<AtomicBool>,
@@ -422,6 +507,7 @@ impl Net {
             }
         }
 
+        let onion_gate = Arc::new(OnionGate::new(cfg.onion_accepts_per_min));
         let pending = Arc::new(Pending {
             total: AtomicUsize::new(0),
             per_host: Mutex::new(HashMap::new()),
@@ -434,6 +520,7 @@ impl Net {
             let acceptor = Acceptor {
                 listener,
                 onion,
+                onion_gate: Arc::clone(&onion_gate),
                 onion_count: Arc::new(AtomicU64::new(0)),
                 // the `.onion` service shows the Tor key, never the one the IP address shows
                 key: if onion {
@@ -458,6 +545,7 @@ impl Net {
         }
 
         let mut lp = Loop {
+            onion_gate,
             cfg: &cfg,
             tx,
             banned,
@@ -499,6 +587,7 @@ struct Acceptor {
     listener: TcpListener,
     /// The `.onion` service's listener: every peer is named on its own (see `NetConfig::onion_listen`).
     onion: bool,
+    onion_gate: Arc<OnionGate>,
     onion_count: Arc<AtomicU64>,
     key: NodeKey,
     prologue: Vec<u8>,
@@ -536,7 +625,17 @@ impl Acceptor {
         } else {
             peer.to_string()
         };
-        let host = host_of(&addr).to_string();
+        // the handshakes in progress through the onion service count as one host's: one attacker could otherwise hold
+        // every slot
+        let host = if self.onion {
+            ONION_INBOUND.to_string()
+        } else {
+            host_of(&addr).to_string()
+        };
+        if self.onion && !self.onion_gate.admit(Instant::now()) {
+            self.counters.refused_busy.fetch_add(1, Ordering::Relaxed);
+            return; // closed before any cryptography
+        }
         let now = now_ms();
         let is_banned = self
             .banned
@@ -589,6 +688,7 @@ impl Acceptor {
 }
 
 struct Loop<'c> {
+    onion_gate: Arc<OnionGate>,
     cfg: &'c NetConfig,
     tx: SyncSender<Ev>,
     banned: Arc<Mutex<HashMap<String, u64>>>,
@@ -692,6 +792,7 @@ impl Loop<'_> {
             } => {
                 let peer = self.next_peer;
                 self.next_peer += 1;
+                let remote_key = secured.remote_public;
                 match self.start_conn(peer, stream, secured, &addr) {
                     Ok(()) => {
                         self.counters.connected.fetch_add(1, Ordering::Relaxed);
@@ -703,6 +804,7 @@ impl Loop<'_> {
                                 "connected to"
                             }
                         ));
+                        engine.note_remote_key(peer, remote_key);
                         let actions = engine.handle(
                             now_ms(),
                             Event::PeerConnected {
@@ -775,6 +877,7 @@ impl Loop<'_> {
         let (wtx, wrx) = channel::<Vec<u8>>();
         let queued = Arc::new(AtomicUsize::new(0));
         let closed = Arc::new(AtomicBool::new(false));
+        let asked = Arc::new(AskedTxs::default());
         let Secured { reader, writer, .. } = secured;
         {
             let (tx, counters) = (self.tx.clone(), Arc::clone(&self.counters));
@@ -784,6 +887,8 @@ impl Loop<'_> {
                 closed: Arc::clone(&closed),
                 throttle: Throttle::new(self.cfg.peer_bytes_per_sec, self.cfg.peer_burst_bytes),
                 precheck: self.cfg.precheck.clone(),
+                asked: Arc::clone(&asked),
+                stem_budget: (STEM_PRECHECK_BURST, Instant::now()),
             };
             counters.threads.fetch_add(1, Ordering::Relaxed);
             thread::spawn(move || {
@@ -808,6 +913,7 @@ impl Loop<'_> {
             Conn {
                 stream,
                 tx: wtx,
+                asked,
                 queued,
                 closed,
             },
@@ -824,6 +930,9 @@ impl Loop<'_> {
                     let Some(conn) = self.conns.get(&peer) else {
                         continue;
                     };
+                    if let Message::GetTxs { ids } = &msg {
+                        conn.asked.ask(ids);
+                    }
                     if let Message::Addrs { addrs } = &msg {
                         // what this node tells a peer about other nodes (or about itself): the only way to see what a seed announces
                         self.log(&addrs_log_line(peer, addrs));
@@ -860,6 +969,13 @@ impl Loop<'_> {
                     }
                 }
                 Action::Connect { addr } => self.dial(addr),
+                Action::Ban { addr, until_ms } if addr.starts_with(ONION_INBOUND) => {
+                    self.log(&format!(
+                        "{addr} (through our onion service) earned a ban: the onion service pauses"
+                    ));
+                    self.onion_gate.banned(Instant::now());
+                    let _ = until_ms;
+                }
                 Action::Ban { addr, until_ms } => {
                     self.log(&format!("banned {addr}"));
                     if let Ok(mut m) = self.banned.lock() {
@@ -948,6 +1064,59 @@ impl Loop<'_> {
     }
 }
 
+/// The transactions a connection was asked for: only these are checked ahead on its reader thread. A transaction nobody
+/// asked for is refused by the engine before any proof is looked at, and checking it ahead used to cost a full proof check
+/// each (64 to a message) before the peer was banned (review of 2026-10-16). Bounded: the oldest are forgotten first.
+#[derive(Default)]
+struct AskedTxs {
+    ids: Mutex<AskedIds>,
+}
+
+/// The ids, and the order they were asked in (so the oldest go first).
+#[derive(Default)]
+struct AskedIds {
+    set: HashSet<[u8; 32]>,
+    order: VecDeque<[u8; 32]>,
+}
+
+/// How many asked-for transactions a connection remembers.
+const ASKED_TXS_MAX: usize = 4096;
+/// Stem transactions (`stem_tx`, which come unasked by design) one connection may have checked ahead: this many at once, and
+/// one more every [`STEM_PRECHECK_EVERY`]. Past that the engine checks them on its loop, as before the precheck existed.
+const STEM_PRECHECK_BURST: f64 = 8.0;
+const STEM_PRECHECK_EVERY: Duration = Duration::from_secs(2);
+
+impl AskedTxs {
+    fn ask(&self, ids: &[[u8; 32]]) {
+        let Ok(mut g) = self.ids.lock() else { return };
+        let AskedIds { set, order } = &mut *g;
+        for id in ids {
+            if set.insert(*id) {
+                order.push_back(*id);
+            }
+        }
+        while order.len() > ASKED_TXS_MAX {
+            if let Some(old) = order.pop_front() {
+                set.remove(&old);
+            }
+        }
+    }
+
+    /// Whether `id` was asked for (and it is no longer: one answer each).
+    fn take(&self, id: &[u8; 32]) -> bool {
+        let Ok(mut g) = self.ids.lock() else {
+            return false;
+        };
+        let AskedIds { set, order } = &mut *g;
+        if set.remove(id) {
+            order.retain(|x| x != id);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// What a reader needs to keep its connection within bounds.
 struct ReaderInput {
     gate: Arc<Gate>,
@@ -955,6 +1124,9 @@ struct ReaderInput {
     closed: Arc<AtomicBool>,
     throttle: Throttle,
     precheck: Option<TxPrecheck>,
+    asked: Arc<AskedTxs>,
+    /// The stem transactions this connection may still have checked ahead now, and when that was last worked out.
+    stem_budget: (f64, Instant),
 }
 
 /// Checks a transaction's proofs ahead, so that the loop's own check finds the verdict remembered (`tenero_chain::Precheck`).
@@ -1007,10 +1179,32 @@ fn reader_thread(
                         Ok(Some(msg)) => {
                             // a transaction's proofs are checked HERE, on this connection's own thread, before the loop
                             // sees it: the loop's check then finds the verdict remembered instead of stalling on it
+                            // (only what this node asked this peer for, and a few stem transactions: anything else is
+                            // refused by the engine before its proofs are looked at, and would cost a check here for nothing)
                             if let Some(check) = &input.precheck {
                                 match &msg {
-                                    Message::Txs { txs } => txs.iter().for_each(|t| check(t)),
-                                    Message::StemTx(t) => check(t),
+                                    Message::Txs { txs } => {
+                                        for t in txs {
+                                            if tenero_core::v3::ids::tx_id(t)
+                                                .is_ok_and(|id| input.asked.take(&id))
+                                            {
+                                                check(t);
+                                            }
+                                        }
+                                    }
+                                    Message::StemTx(t) => {
+                                        let (budget, at) = &mut input.stem_budget;
+                                        let now = Instant::now();
+                                        *budget = (*budget
+                                            + now.saturating_duration_since(*at).as_secs_f64()
+                                                / STEM_PRECHECK_EVERY.as_secs_f64())
+                                        .min(STEM_PRECHECK_BURST);
+                                        *at = now;
+                                        if *budget >= 1.0 {
+                                            *budget -= 1.0;
+                                            check(t);
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }

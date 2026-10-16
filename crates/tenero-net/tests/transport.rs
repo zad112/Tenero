@@ -1764,7 +1764,9 @@ fn a_connection_that_reads_faster_than_its_rate_is_slowed_not_dropped() {
 
 /// The transactions a peer sends (`txs` and `stem_tx`) have their proofs checked AHEAD on the connection's reader thread
 /// (`NetConfig::precheck`), before the loop sees them: the loop's own check then finds the verdict remembered instead of
-/// stalling on it. Whatever it finds, the loop still decides.
+/// stalling on it. Whatever it finds, the loop still decides. **Only what this node asked the peer for** (and a few stem
+/// transactions): a `txs` nobody asked for is refused by the engine before its proofs are looked at, and checking it ahead
+/// cost a full proof check each before the peer was banned (review of 2026-10-16).
 #[test]
 fn a_peers_transactions_are_prechecked_on_its_reader_thread() {
     use tenero_core::v3::{Input, Output, Prunable, Transaction, TxPrefix};
@@ -1801,7 +1803,7 @@ fn a_peers_transactions_are_prechecked_on_its_reader_thread() {
             },
         }
     };
-    let (stem, loose) = (make(1), make(2));
+    let (stem, loose, unasked) = (make(1), make(2), make(3));
     let ids = [
         tenero_core::v3::ids::tx_id(&stem).unwrap(),
         tenero_core::v3::ids::tx_id(&loose).unwrap(),
@@ -1824,6 +1826,23 @@ fn a_peers_transactions_are_prechecked_on_its_reader_thread() {
                 Some(Message::Hello(_))
             ));
             c.send(&Message::StemTx(Box::new(stem.clone())));
+            // not asked for: not checked ahead
+            c.send(&Message::Txs {
+                txs: vec![unasked.clone()],
+            });
+            // announced, asked for, sent: checked ahead
+            let loose_id = tenero_core::v3::ids::tx_id(&loose).unwrap();
+            c.send(&Message::NewTx {
+                ids: vec![loose_id],
+            });
+            let end = Instant::now() + Duration::from_secs(5);
+            loop {
+                assert!(Instant::now() < end, "the node never asked for it");
+                match c.recv(Duration::from_millis(500)) {
+                    Some(Message::GetTxs { ids }) if ids.contains(&loose_id) => break,
+                    _ => {}
+                }
+            }
             c.send(&Message::Txs {
                 txs: vec![loose.clone()],
             });

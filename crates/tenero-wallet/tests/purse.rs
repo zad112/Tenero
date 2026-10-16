@@ -509,7 +509,7 @@ fn the_three_fee_levels_pay_one_and_a_quarter_two_and_five_times_the_minimum() {
         let size = tenero_core::v3::Wire::to_bytes(&built.tx).unwrap().len() as u64;
         let next = node.next_block().unwrap();
         let min = tenero_core::v3::rules::min_fee(size, next.reward, next.median).unwrap();
-        let want = min * level.percent_of_minimum() / 100 + 1;
+        let want = (min * level.percent_of_minimum()).div_ceil(100);
         assert_eq!(
             built.fee,
             want,

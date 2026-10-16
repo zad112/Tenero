@@ -31,24 +31,28 @@ address). An integrated address has its main address's keys.
 
 ## Signatures
 
-To sign the fields `bound` under a domain, as the address `(K, V)` with secrets `a, b`:
+To sign the fields `bound` under a domain, as the address `(K, V)` of network `N` (its four-letter prefix as ASCII: `TENg`,
+`TENd`, `TENt`) with secrets `a, b`:
 
 ```
 rnd   = 32 fresh random bytes
-r_g   = H_n("Tenero signature nonce v1", "G", a, b, K, V, domain, bound..., rnd)
-r_t   = H_n("Tenero signature nonce v1", "T", a, b, K, V, domain, bound..., rnd)
+r_g   = H_n("Tenero signature nonce v1", "G", a, b, K, V, N, domain, bound..., rnd)
+r_t   = H_n("Tenero signature nonce v1", "T", a, b, K, V, N, domain, bound..., rnd)
 R     = r_g G + r_t T
-c     = H_n(domain, K, V, R, bound...)
+c     = H_n(domain, N, K, V, R, bound...)
 s_g   = r_g - c a          s_t = r_t - c b          (mod l)
 signature = c | s_g | s_t  (96 bytes)
 ```
 
 To verify: `c`, `s_g` and `s_t` must be canonical scalars; `K` must decode, lie in the prime-order group and not be the
-identity; `V` must decode. Then `R' = s_g G + s_t T + c K`, and the signature holds when `H_n(domain, K, V, R', bound...) = c`.
+identity; `V` must decode. Then `R' = s_g G + s_t T + c K`, and the signature holds when `H_n(domain, N, K, V, R', bound...) = c`.
 The nonces are derived from the secrets, everything signed and fresh randomness, so a broken random source cannot make two
-signatures share a nonce. Both keys of the address are in the challenge, so a signature holds for that address only.
+signatures share a nonce. Both keys of the address and its network are in the challenge, so a signature holds for that address
+on that network only. **Version 2 (2026-10-16):** version 1 left the network out, and the same seed has the same keys on every
+network, so a signature made on the test network was one on `gamma` too; version 1 signatures no longer verify. An integrated
+address still signs as its main address (same keys, same network).
 
-* **A message signature:** the domain `"Tenero message signature v1"`, `bound = len(message) | message`. Text:
+* **A message signature:** the domain `"Tenero message signature v2"`, `bound = len(message) | message`. Text:
   `TENsig1` and the 96 bytes in Monero's block base58 (the alphabet and blocks of the address text).
 
 ## Payment proofs
@@ -72,7 +76,7 @@ exactly in its own text, the flag is 0 or 1, and nothing follows.
 3. Any other output: Carrot's sender scan with `A` and the anchor succeeds: the ephemeral key re-derives from the anchor,
    the transaction's first key image and `A` (the Janus check), the shared secret opens the output to `A`'s spend key and
    its amount commitment, and for an integrated address the payment ID is `A`'s. The amount is what the scan opened.
-4. A signature, if there is one, holds for `A` under the domain `"Tenero payment proof signature v1"` with
+4. A signature, if there is one, holds for `A` under the domain `"Tenero payment proof signature v2"` with
    `bound = h | Ko | anchor | len(message) | message`.
 
 What a proof shows, and what it does not:

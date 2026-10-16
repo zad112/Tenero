@@ -12,7 +12,7 @@ fn address(n: u8) -> Address {
 // ---- share targets ------------------------------------------------------------------------------------------------------
 
 #[test]
-fn a_share_target_is_the_block_target_times_the_ratio_and_never_easier_than_two_to_the_255() {
+fn a_share_target_is_the_block_target_times_the_ratio_and_never_easier_than_two_to_the_244() {
     let block = U256::pow2(237).unwrap();
     assert_eq!(
         share_target(&block, 1),
@@ -21,12 +21,17 @@ fn a_share_target_is_the_block_target_times_the_ratio_and_never_easier_than_two_
     );
     assert_eq!(share_target(&block, 16), U256::pow2(241).unwrap());
     assert_eq!(share_target(&block, 0), block, "a ratio of 0 is taken as 1");
-    // too easy: capped
+    // too easy: capped at 2^244
     assert_eq!(
-        share_target(&U256::pow2(250).unwrap(), 1 << 20),
+        share_target(&U256::pow2(230).unwrap(), 1 << 20),
         easiest_share_target()
     );
-    assert_eq!(share_target(&U256::MAX, 5), easiest_share_target());
+    // a block target easier than that (a test chain): the share target is the block target, never harder
+    assert_eq!(
+        share_target(&U256::pow2(250).unwrap(), 1 << 20),
+        U256::pow2(250).unwrap()
+    );
+    assert_eq!(share_target(&U256::MAX, 5), U256::MAX);
     // never zero
     assert_eq!(share_target(&U256::ZERO, 7), U256::ONE);
 }
@@ -36,13 +41,13 @@ fn a_share_is_worth_the_attempts_its_target_stands_for() {
     assert_eq!(work_of(&U256::pow2(237).unwrap()), 1 << 19);
     assert_eq!(work_of(&U256::pow2(241).unwrap()), 1 << 15);
     // a sixteenth of a block's work at a target 16 times easier, whatever the block
-    for bits in [200u32, 220, 237, 250] {
+    for bits in [200u32, 220, 237, 240] {
         let block = U256::pow2(bits).unwrap();
         assert_eq!(work_of(&block), 16 * work_of(&share_target(&block, 16)));
     }
-    // too much work for a u64 saturates, and the work of the easiest target is 2
+    // too much work for a u64 saturates, and the work of the easiest target is 4,096
     assert_eq!(work_of(&U256::ONE), u64::MAX);
-    assert_eq!(work_of(&easiest_share_target()), 2);
+    assert_eq!(work_of(&easiest_share_target()), 4096);
 }
 
 // ---- nonce prefixes ----------------------------------------------------------------------------------------------------
@@ -319,6 +324,10 @@ fn what_is_due_is_the_balances_at_the_minimum_largest_first_and_a_payment_is_tak
     a.debit(id[1], 30);
     assert_eq!((a.balance(id[1]), a.paid(id[1]), a.total_paid), (0, 30, 30));
     assert_eq!(a.due(10, 10).len(), 2);
+    // a payout books every payment BEFORE it reaches the node (so a crash never pays twice); one the node refused is owed again
+    a.debit(id[3], 20);
+    a.undo_debit(id[3], 20);
+    assert_eq!((a.balance(id[3]), a.paid(id[3]), a.total_paid), (20, 0, 30));
     // paying more than is owed leaves nothing owed, not a huge number
     a.debit(id[3], 999);
     assert_eq!(a.balance(id[3]), 0);

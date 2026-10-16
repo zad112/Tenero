@@ -316,7 +316,7 @@ fn the_words_restore_the_same_wallet_with_a_different_password_and_accounts_can_
     let ev = c3.handle(Cmd::RestoreWallet {
         name: Some("Never".into()),
         phrase: pw(&bad.join(" ")),
-        password: Password::None,
+        password: Password::Set(pw("a long enough password")),
         birth: None,
     });
     let e = errors(&ev);
@@ -324,15 +324,34 @@ fn the_words_restore_the_same_wallet_with_a_different_password_and_accounts_can_
     assert!(!other2.wallet_file.exists());
 }
 
+/// A new wallet needs a password (since the review of 2026-10-16: a file sealed with none is open to whoever copies it). One
+/// made before without a password still opens, says so, and can be given one; it cannot be set back to none.
 #[test]
-fn a_wallet_with_no_password_is_allowed_only_when_chosen_and_is_said_so() {
+fn a_new_wallet_needs_a_password_and_one_made_before_without_still_opens() {
     let rig = Rig::new("nopw", 18473);
     let mut c = rig.core();
     let ev = c.handle(Cmd::CreateWallet {
         name: None,
         password: Password::None,
     });
-    assert!(errors(&ev).is_empty());
+    let e = errors(&ev);
+    assert!(e.len() == 1 && e[0].contains("needs a password"), "{e:?}");
+    assert!(!rig.settings.wallet_file.exists(), "nothing written");
+    drop(c);
+    // a wallet file from before, sealed with no password
+    let purse =
+        tenero_wallet::Purse::create(&mut rand_core::OsRng, tenero_wallet::Network::Test, 0);
+    std::fs::create_dir_all(rig.settings.wallet_file.parent().unwrap()).unwrap();
+    purse
+        .save(
+            &rig.settings.wallet_file,
+            b"",
+            KdfParams::TEST_ONLY_WEAK,
+            &mut rand_core::OsRng,
+        )
+        .unwrap();
+    let mut c = rig.core();
+    assert!(errors(&c.handle(Cmd::Unlock { password: pw("") })).is_empty());
     assert!(!unlocked(&c).has_password);
     // adding a password later
     c.handle(Cmd::ChangePassword {
@@ -1107,7 +1126,7 @@ fn an_old_settings_draft_does_not_stop_other_settings_from_applying_while_a_wall
     draft.miner_pace_secs = 9;
     c.handle(Cmd::CreateWallet {
         name: Some("Main".into()),
-        password: Password::None,
+        password: Password::Set(pw("a long enough password")),
     });
     assert_ne!(
         c.settings().wallet_file,
@@ -1149,7 +1168,7 @@ fn settings_cannot_be_changed_under_a_running_node_or_an_open_wallet() {
     let mut c = rig.core();
     c.handle(Cmd::CreateWallet {
         name: None,
-        password: Password::None,
+        password: Password::Set(pw("a long enough password")),
     });
     let mut s = rig.settings.clone();
     s.wallet_file = rig.dir.join("other.twl");
@@ -1220,7 +1239,7 @@ fn several_wallets_are_made_listed_and_switched_and_none_overwrites_another() {
     // another cannot be made or restored while this one is open
     let ev = c.handle(Cmd::CreateWallet {
         name: Some("Second".into()),
-        password: Password::None,
+        password: Password::Set(pw("a long enough password")),
     });
     assert_eq!(errors(&ev).len(), 1);
     assert!(errors(&ev)[0].contains("lock the open wallet"));
@@ -1260,7 +1279,7 @@ fn several_wallets_are_made_listed_and_switched_and_none_overwrites_another() {
     ] {
         let ev = c.handle(Cmd::CreateWallet {
             name: Some(bad.to_string()),
-            password: Password::None,
+            password: Password::Set(pw("a long enough password")),
         });
         assert_eq!(errors(&ev).len(), 1, "`{bad}` was accepted");
     }
@@ -1349,7 +1368,7 @@ fn several_wallets_are_made_listed_and_switched_and_none_overwrites_another() {
     c.handle(Cmd::Lock);
     let ev = c.handle(Cmd::RestoreWallet {
         phrase: pw(&words_main),
-        password: Password::None,
+        password: Password::Set(pw("a long enough password")),
         birth: None,
         name: Some("Savings stash".into()),
     });
@@ -1374,7 +1393,7 @@ fn a_wallet_file_from_before_names_is_listed_and_the_folder_cannot_change_under_
     // no name: the selected file's own place (what the older app did)
     let ev = c.handle(Cmd::CreateWallet {
         name: None,
-        password: Password::None,
+        password: Password::Set(pw("a long enough password")),
     });
     assert!(errors(&ev).is_empty());
     assert!(rig.settings.wallet_file.is_file());
@@ -1389,7 +1408,7 @@ fn a_wallet_file_from_before_names_is_listed_and_the_folder_cannot_change_under_
     c.handle(Cmd::Lock);
     c.handle(Cmd::CreateWallet {
         name: Some("Newer".into()),
-        password: Password::None,
+        password: Password::Set(pw("a long enough password")),
     });
     let names: Vec<String> = c
         .snapshot()
@@ -1759,7 +1778,7 @@ fn a_view_only_wallet_is_made_from_a_view_key_and_refuses_what_needs_the_words_o
     // a bad key is refused and nothing is written
     let ev = c.handle(Cmd::RestoreViewOnly {
         key: pw("TENview1notakey"),
-        password: Password::None,
+        password: Password::Set(pw("a long enough password")),
         name: Some("Bad".into()),
     });
     assert_eq!(errors(&ev).len(), 1);

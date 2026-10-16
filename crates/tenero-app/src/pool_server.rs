@@ -213,6 +213,9 @@ pub struct PoolConfig {
     pub shares_per_minute: usize,
     /// Bad shares in a row (above the target, a wrong mix) before the address is banned.
     pub bad_shares_ban: u32,
+    /// Shares with a wrong mix in one session (in a row or not) before the address is banned. Each costs the pool's node a full
+    /// proof-of-work check, and an honest miner never sends one (its GPU's results are what the node computes too).
+    pub bad_mix_ban: u32,
     pub ban_secs: u64,
 }
 
@@ -237,8 +240,11 @@ impl PoolConfig {
             job_ttl: 120,
             refresh_every: Duration::from_secs(30),
             max_weight: u64::MAX,
-            shares_per_minute: 600,
+            // (a miner is aimed at a share every 15 s: 120 a minute is room for bursts, and bounds the full checks one
+            // connection can ask of the pool's node)
+            shares_per_minute: 120,
             bad_shares_ban: 20,
+            bad_mix_ban: 3,
             ban_secs: 600,
         }
     }
@@ -330,6 +336,8 @@ pub struct Session {
     block_target: U256,
     pub shares: u64,
     bad_in_row: u32,
+    /// Shares with a wrong mix in this session.
+    bad_mixes: u32,
     /// How many refused shares of this miner have been written in the log (only the first few are: a miner that sends junk must not fill it).
     refused_logged: u32,
     recent: VecDeque<u64>,
@@ -391,6 +399,13 @@ pub struct Pool {
 
 /// The shares the estimated hash rates are worked out from: the last ten minutes.
 pub const STATS_WINDOW_SECS: u64 = 600;
+/// A miner's last share in the stats file is rounded down to this many seconds.
+pub const LAST_SHARE_ROUNDING: u64 = 600;
+
+/// How the stats file and the log name a miner: the SHA-256 of its address as text, in hexadecimal.
+pub fn stats_key(address_text: &str) -> String {
+    hex(&tenero_core::hash::sha256(&[address_text.as_bytes()]))
+}
 /// The most shares remembered for that (256 miners at 600 a minute for ten minutes, and some).
 const MAX_RECENT_WORK: usize = 2_000_000;
 /// The blocks' record, beside the books' file.
@@ -661,6 +676,7 @@ impl Pool {
             block_target,
             shares: 0,
             bad_in_row: 0,
+            bad_mixes: 0,
             refused_logged: 0,
             recent: VecDeque::new(),
         };
@@ -675,10 +691,11 @@ impl Pool {
             pool_name: self.cfg.name.clone(),
             pays_pool: true,
         };
+        // the log names the miner by the key of the stats file, not its address: the log is kept for the pool's life
         self.log(&format!(
-            "miner {} from {ip}: {} ({}), prefix {prefix}/{bits} bits, share target ratio {}",
+            "miner {} from {ip}: address key {} ({}), prefix {prefix}/{bits} bits, share target ratio {}",
             id,
-            hello.address,
+            &stats_key(&address.to_text())[..16],
             if hello.worker.is_empty() {
                 "no worker name"
             } else {
@@ -834,12 +851,17 @@ impl Pool {
         match self.pow.check_full(&header, job.height) {
             Ok(true) => {}
             Ok(false) => {
+                s.bad_mixes += 1;
+                if s.bad_mixes >= self.cfg.bad_mix_ban {
+                    // (counted as bad shares too, so the stats see it)
+                    s.bad_in_row = self.cfg.bad_shares_ban.saturating_sub(1);
+                }
                 return self.reject(
                     s,
                     R_BAD_MIX,
                     "the mix is not what the proof of work gives",
                     true,
-                )
+                );
             }
             Err(e) => {
                 // the pool could not check (no memory for the dataset): not the miner's fault, and not counted
@@ -956,11 +978,13 @@ impl Pool {
                 continue;
             }
             let Some(addr) = a.address(id) else { continue };
-            let key = hex(&tenero_core::hash::sha256(&[addr.to_text().as_bytes()]));
+            let key = stats_key(&addr.to_text());
+            // to the ten minutes: anyone who knows an address can read its line, so it tells when a miner mines, not the
+            // second of each share (review of 2026-10-16)
             let last = if last == 0 {
                 "null".to_string()
             } else {
-                last.to_string()
+                (last / LAST_SHARE_ROUNDING * LAST_SHARE_ROUNDING).to_string()
             };
             miners.push(format!(
                 "\"{key}\":{{\"online\":{on},\"hashrate_estimate\":{},\"shares_recent\":{shares},\"last_share\":{last},\"window_percent\":{},\"maturing\":{mat},\"owed\":{owed},\"paid\":{paid}}}",
@@ -1256,23 +1280,54 @@ impl Pool {
                 return Err(format!("cannot build the payout: {e}"));
             }
         };
+        // Every payment is taken off what is owed, and the books are SAVED, before any transaction reaches the node: a crash
+        // after the node has a payment but before the books said so used to leave it owed, and the next round paid it again
+        // (review of 2026-10-16). A crash in between now leaves a payment booked that may not have been sent; that is in the
+        // payments log as a `# ... booked` line (no `sent` line after it), for the operator to settle, and is never paid twice.
+        let id_of = |text: &str| self.accounts.lock().ok().and_then(|a| a.id_by_text(text));
+        for built in &plan.txs {
+            for part in &built.parts {
+                let text = part.to.to_text();
+                if let Some(id) = id_of(&text) {
+                    self.with_accounts(|a| a.debit(id, part.amount));
+                    paylog(&format!(
+                        "# {now} booked {} {} {}",
+                        tenero_core::hash::hex_lower(&built.id),
+                        text,
+                        part.amount
+                    ));
+                }
+            }
+        }
+        self.save_state();
         let sent = wallet.send_batch(node, &plan.txs);
         let mut report = PayoutReport {
             sent_any: sent.sent > 0,
             transactions: sent.sent,
             ..PayoutReport::default()
         };
-        for built in &plan.txs[..sent.sent] {
-            report.fees += built.fee;
+        for (k, built) in plan.txs.iter().enumerate() {
+            let went = k < sent.sent;
+            if went {
+                report.fees += built.fee;
+            }
             for part in &built.parts {
                 let text = part.to.to_text();
-                let id = self.accounts.lock().ok().and_then(|a| a.id_by_text(&text));
-                if let Some(id) = id {
-                    self.with_accounts(|a| a.debit(id, part.amount));
+                let Some(id) = id_of(&text) else { continue };
+                if went {
                     report.paid += part.amount;
                     report.payments += 1;
                     paylog(&format!(
                         "{now} {} {} {}",
+                        tenero_core::hash::hex_lower(&built.id),
+                        text,
+                        part.amount
+                    ));
+                } else {
+                    // not sent: owed again
+                    self.with_accounts(|a| a.undo_debit(id, part.amount));
+                    paylog(&format!(
+                        "# {now} not sent {} {} {}",
                         tenero_core::hash::hex_lower(&built.id),
                         text,
                         part.amount

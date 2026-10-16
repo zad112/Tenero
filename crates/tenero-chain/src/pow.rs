@@ -28,6 +28,14 @@ pub trait PowCheck: Send + Sync {
     /// "valid proof of work claimed, but wrong"; `Err` is "could not check" (for example no memory).
     fn check_full(&self, header: &BlockHeader, height: u64) -> Result<bool, String>;
 
+    /// Whether the full check of a block at `height` can be made now without building anything (the epoch's dataset is
+    /// held). A side-branch block whose check cannot be made now has it put off until its branch would become the chain
+    /// (`crate::chain`): otherwise a forged header on an old parent (whose cheap check costs the forger microseconds) made
+    /// a low-memory node free its 4 GiB dataset, build another epoch's and then the current one again. True by default.
+    fn can_check_now(&self, _height: u64) -> bool {
+        true
+    }
+
     /// A hint that blocks at about `height` will be checked soon: a proof of work that needs a dataset builds it in
     /// the background now, so the first block of a new epoch does not wait for it. Does nothing by default, and
     /// never blocks.
@@ -313,6 +321,10 @@ impl PowCheck for MatmulPow {
             self.gather_from,
         )?;
         Ok(attempt.mix == header.mix)
+    }
+
+    fn can_check_now(&self, height: u64) -> bool {
+        self.has_dataset(height)
     }
 
     fn prefetch(&self, height: u64) {

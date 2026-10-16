@@ -53,8 +53,12 @@ pub const DEFAULT_MAX_ORPHAN_BYTES: usize = 32 * 1024 * 1024;
 /// The most blocks a pool file may hold, and its largest size: a file is untrusted input.
 const MAX_POOL_FILE_BLOCKS: usize = 4096;
 const MAX_POOL_FILE_BYTES: usize = 512 * 1024 * 1024;
-/// How many block ids remembered as invalid before the list is cleared.
+/// How many block ids are remembered as invalid (the oldest forgotten first).
 const MAX_INVALID: usize = 8192;
+/// How many side-branch blocks whose full proof of work was put off ([`PowCheck::can_check_now`]) are held at once, the
+/// oldest dropped first: a share of the side pool of their own, so that forged headers (which pass the cheap check for
+/// almost nothing) cannot push the checked side blocks out.
+pub const MAX_UNCHECKED_SIDE_BLOCKS: usize = 64;
 
 /// What became of a submitted block.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,6 +96,9 @@ struct SideBlock {
     block: Block,
     /// The record the branch's later blocks are judged by (only the fields the rules read are filled).
     index: BlockIndex,
+    /// Whether its full proof of work has been checked. A block whose epoch's dataset was not at hand when it came is held
+    /// with only the cheap check, and checked when its branch is about to become the chain, before anything is undone.
+    pow_checked: bool,
 }
 
 /// The store, the rules, and the blocks that are not (yet) on the chain.
@@ -103,6 +110,8 @@ pub struct Chain<'a> {
     side: HashMap<[u8; 32], SideBlock>,
     order: VecDeque<[u8; 32]>,
     invalid: HashSet<[u8; 32]>,
+    /// The order the invalid ids came in, so the oldest is forgotten first.
+    invalid_order: VecDeque<[u8; 32]>,
     max_side_blocks: usize,
     last_reorg: Option<ReorgReport>,
     assumed: Option<Arc<HashSet<[u8; 32]>>>,
@@ -134,6 +143,7 @@ impl<'a> Chain<'a> {
             side: HashMap::new(),
             order: VecDeque::new(),
             invalid: HashSet::new(),
+            invalid_order: VecDeque::new(),
             max_side_blocks: DEFAULT_MAX_SIDE_BLOCKS,
             last_reorg: None,
             assumed: None,
@@ -334,11 +344,21 @@ impl<'a> Chain<'a> {
         self.side.contains_key(block_id)
     }
 
-    fn mark_invalid(&mut self, id: [u8; 32]) {
-        if self.invalid.len() >= MAX_INVALID {
-            self.invalid.clear();
+    /// Remembers `id` as invalid, forgetting the oldest one when the list is full. (It used to be cleared whole when full, so
+    /// a peer that sent enough invalid blocks made the node forget the bad ones it should keep refusing.)
+    fn remember_invalid(&mut self, id: [u8; 32]) {
+        if self.invalid.insert(id) {
+            self.invalid_order.push_back(id);
+            while self.invalid_order.len() > MAX_INVALID {
+                if let Some(old) = self.invalid_order.pop_front() {
+                    self.invalid.remove(&old);
+                }
+            }
         }
-        self.invalid.insert(id);
+    }
+
+    fn mark_invalid(&mut self, id: [u8; 32]) {
+        self.remember_invalid(id);
         self.remove_side(&id);
         // and everything built on it
         loop {
@@ -358,11 +378,11 @@ impl<'a> Chain<'a> {
                 break;
             }
             for c in children {
-                self.invalid.insert(c);
+                self.remember_invalid(c);
                 self.remove_side(&c);
             }
             for c in orphan_children {
-                self.invalid.insert(c);
+                self.remember_invalid(c);
                 self.remove_orphan(&c);
             }
         }
@@ -374,8 +394,22 @@ impl<'a> Chain<'a> {
     }
 
     fn insert_side(&mut self, id: [u8; 32], entry: SideBlock) {
+        let unchecked = !entry.pow_checked;
         if self.side.insert(id, entry).is_none() {
             self.order.push_back(id);
+        }
+        if unchecked {
+            // the unchecked ones have a share of their own: the oldest of them goes first
+            let mut held: Vec<[u8; 32]> = self
+                .order
+                .iter()
+                .filter(|k| self.side.get(*k).is_some_and(|e| !e.pow_checked))
+                .copied()
+                .collect();
+            while held.len() > MAX_UNCHECKED_SIDE_BLOCKS {
+                let old = held.remove(0);
+                self.remove_side(&old);
+            }
         }
         while self.side.len() > self.max_side_blocks {
             match self.order.pop_front() {
@@ -418,7 +452,9 @@ impl<'a> Chain<'a> {
         let height = parent_height + 1;
         let v = self.validator();
         let next = v.next_block_from(height, &recent, &lt)?;
-        let checked = match v.validate_block_on(block, &next, now, false) {
+        // the full proof of work now only if its dataset is at hand; else when the branch could become the chain
+        let full_pow = self.pow.can_check_now(height);
+        let checked = match v.validate_block_with(block, &next, now, false, full_pow) {
             Ok(o) => o,
             Err(e) => return Err(self.note_failure(id, e)),
         };
@@ -443,6 +479,7 @@ impl<'a> Chain<'a> {
             SideBlock {
                 block: block.clone(),
                 index,
+                pow_checked: full_pow,
             },
         );
         if work > U256::from_be_bytes(&tip.cumulative_work) {
@@ -524,6 +561,45 @@ impl<'a> Chain<'a> {
                 fork_height,
                 pruned_below,
             });
+        }
+
+        // 0. the full proof of work of every block of the branch that has not had it, oldest first, BEFORE anything is undone:
+        // a branch of forged headers (which pass the cheap check for almost nothing) is found out here, costing a check and
+        // not a reorganisation and its undoing
+        for (i, bid) in path.iter().enumerate() {
+            let Some(e) = self.side.get(bid) else {
+                return Ok(Submitted::Orphan);
+            };
+            if e.pow_checked || self.is_assumed(bid) {
+                continue;
+            }
+            let height = fork_height + 1 + i as u64;
+            match self.pow.check_full(&e.block.header, height) {
+                Ok(true) => {
+                    if let Some(e) = self.side.get_mut(bid) {
+                        e.pow_checked = true;
+                    }
+                }
+                Ok(false) => {
+                    let bad = *bid;
+                    self.mark_invalid(bad);
+                    return Err(BlockError::BranchInvalid {
+                        block_id: bad,
+                        reason: format!(
+                            "{:?}",
+                            BlockError::PowInvalid(
+                                "the mix is not what the proof of work gives".into()
+                            )
+                        ),
+                    });
+                }
+                // could not check (no memory for the dataset): says nothing about the block; try again with the next one
+                Err(e) => {
+                    return Err(BlockError::Store(format!(
+                        "could not check a block's proof of work: {e}"
+                    )))
+                }
+            }
         }
 
         // 1. undo the old chain down to the fork point, keeping every block so it can be put back
@@ -618,6 +694,7 @@ impl<'a> Chain<'a> {
                 SideBlock {
                     block: blk.clone(),
                     index,
+                    pow_checked: true,
                 },
             );
         }

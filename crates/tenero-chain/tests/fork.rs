@@ -5,8 +5,8 @@
 use std::path::PathBuf;
 
 use tenero_chain::{
-    BlockError, Chain, ChainParams, ProofCheck, ProofsNotChecked, Sha256Pow, Submitted, TxContext,
-    Validator,
+    BlockError, Chain, ChainParams, PowCheck, ProofCheck, ProofsNotChecked, Sha256Pow, Submitted,
+    TxContext, Validator,
 };
 use tenero_core::hash::sha256;
 use tenero_core::u256::U256;
@@ -1064,4 +1064,129 @@ fn a_pool_file_is_refused_for_a_damaged_checksum_for_too_many_blocks_and_for_bei
     for short in [&b"TPL1"[..], &b"TPL1\0\0"[..], &b"TPL1\0\0\0"[..]] {
         assert!(Chain::decode_pool(&seal(short.to_vec())).is_err());
     }
+}
+
+// ---- side blocks whose full proof of work is put off --------------------------------------------------------------
+
+/// The SHA-256 rules, but as if no dataset were at hand for any side block: `can_check_now` says no above `from`, the full
+/// check of a block in `forged` says "wrong" (a forged mix), and every full check is recorded by height.
+struct Deferring {
+    from: u64,
+    forged: std::collections::HashSet<[u8; 32]>,
+    calls: std::sync::Mutex<Vec<u64>>,
+}
+
+impl PowCheck for Deferring {
+    fn kind(&self) -> PowKind {
+        PowKind::Sha256
+    }
+    fn check_full(&self, header: &BlockHeader, height: u64) -> Result<bool, String> {
+        self.calls.lock().unwrap().push(height);
+        Ok(!self
+            .forged
+            .contains(&ids::block_id(header, PowKind::Sha256)))
+    }
+    fn can_check_now(&self, height: u64) -> bool {
+        height <= self.from
+    }
+}
+
+/// A forged header on an old parent used to cost a low-memory node a full check, and with it a dataset built for another
+/// epoch (found in the review of 2026-10-16). Now a side block whose dataset is not at hand is held with only the cheap
+/// check; the full checks are made when its branch would become the chain, oldest first, and BEFORE anything is undone: the
+/// first forged block stops it, and the chain is not touched.
+#[test]
+fn a_side_branch_whose_check_was_put_off_is_checked_before_anything_is_undone() {
+    let (a, _b, shared, main, side) = two_branches("defer-forged", 4, 6, 7, 60);
+    let pow = Deferring {
+        from: 4,
+        forged: [id_of(&side[1])].into_iter().collect(),
+        calls: std::sync::Mutex::new(vec![]),
+    };
+    let node = Node::new("defer-forged-node");
+    let mut chain = Chain::new(&node.store, &node.params, &pow, &ProofsNotChecked);
+    submit_all(&mut chain, &shared);
+    submit_all(&mut chain, &main);
+    pow.calls.lock().unwrap().clear();
+    for r in submit_all(&mut chain, &side[..6]) {
+        assert!(matches!(r, Submitted::SideChain { .. }), "{r:?}");
+    }
+    assert!(
+        pow.calls.lock().unwrap().is_empty(),
+        "no full check while the branch cannot win"
+    );
+    let before = (node.digest(), node.tip());
+    assert_eq!(
+        chain.submit_block(&side[6], NOW).unwrap_err(),
+        BlockError::BranchInvalid {
+            block_id: id_of(&side[1]),
+            reason: format!(
+                "{:?}",
+                BlockError::PowInvalid("the mix is not what the proof of work gives".into())
+            ),
+        }
+    );
+    assert_eq!(
+        *pow.calls.lock().unwrap(),
+        vec![5, 6],
+        "checked oldest first, up to the forged one"
+    );
+    assert_eq!((node.digest(), node.tip()), before, "nothing was undone");
+    assert_eq!(before.0, a.digest());
+    assert!(chain.is_known_invalid(&id_of(&side[1])));
+    assert!(
+        chain.is_known_invalid(&id_of(&side[6])),
+        "and what was built on it"
+    );
+}
+
+#[test]
+fn a_side_branch_whose_check_was_put_off_still_wins_when_it_is_valid() {
+    let (_a, b, shared, main, side) = two_branches("defer-honest", 4, 6, 7, 60);
+    let pow = Deferring {
+        from: 4,
+        forged: Default::default(),
+        calls: std::sync::Mutex::new(vec![]),
+    };
+    let node = Node::new("defer-honest-node");
+    let mut chain = Chain::new(&node.store, &node.params, &pow, &ProofsNotChecked);
+    submit_all(&mut chain, &shared);
+    submit_all(&mut chain, &main);
+    let results = submit_all(&mut chain, &side);
+    assert!(
+        matches!(results[6], Submitted::Reorganised { connected: 7, .. }),
+        "{:?}",
+        results[6]
+    );
+    assert_eq!(node.tip(), (11, b.tip_id()));
+    assert_eq!(node.digest(), b.digest());
+}
+
+#[test]
+fn side_blocks_held_unchecked_have_a_bounded_share_of_the_side_pool() {
+    let cap = tenero_chain::chain::MAX_UNCHECKED_SIDE_BLOCKS;
+    let (_a, _b, shared, main, side) = two_branches("defer-cap", 4, cap + 20, cap + 10, 60);
+    let pow = Deferring {
+        from: 4,
+        forged: Default::default(),
+        calls: std::sync::Mutex::new(vec![]),
+    };
+    let node = Node::new("defer-cap-node");
+    let mut chain = Chain::new(&node.store, &node.params, &pow, &ProofsNotChecked);
+    submit_all(&mut chain, &shared);
+    submit_all(&mut chain, &main);
+    for (i, b) in side.iter().enumerate() {
+        let r = chain.submit_block(b, NOW).unwrap();
+        // once the first ones are dropped, the rest of the branch no longer leads back to the chain
+        assert!(
+            matches!(r, Submitted::SideChain { .. } | Submitted::Orphan),
+            "{i}: {r:?}"
+        );
+    }
+    assert!(
+        chain.side_block_count() <= cap,
+        "{}",
+        chain.side_block_count()
+    );
+    assert!(pow.calls.lock().unwrap().len() == main.len() + shared.len());
 }

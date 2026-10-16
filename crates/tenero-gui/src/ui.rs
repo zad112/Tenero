@@ -673,14 +673,8 @@ impl App {
         } else {
             "It only locks the file. Your 24 words restore the wallet anywhere, with or without it."
         });
-        ui.checkbox(
-            &mut self.welcome.no_password,
-            if view_only {
-                "No password (anyone who can read the wallet file can see what it sees)"
-            } else {
-                "No password (anyone who can read the wallet file can spend what is in it)"
-            },
-        );
+        // (a wallet without a password is no longer offered: anyone who copied the file could open it)
+        self.welcome.no_password = false;
         if !self.welcome.no_password {
             ui.horizontal(|ui| {
                 ui.label("Password (8 or more characters)");
@@ -1119,7 +1113,8 @@ impl App {
                             ui.label("Current password");
                             ui.add(egui::TextEdit::singleline(&mut **old).password(true));
                         });
-                        ui.checkbox(none, "No password from now on");
+                        // (no longer offered: a file with no password is open to whoever copies it)
+                        *none = false;
                         if !*none {
                             ui.horizontal(|ui| {
                                 ui.label(format!("New password ({MIN_PASSWORD}+ characters)"));

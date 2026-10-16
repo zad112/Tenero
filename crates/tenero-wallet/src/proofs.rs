@@ -39,8 +39,11 @@ pub const MAX_PROOF_MESSAGE: usize = 4096;
 /// How far a check of an anchor alone ([`check_anchor`]) searches, in blocks.
 pub const MAX_ANCHOR_SEARCH: u64 = 20_000;
 
-const MESSAGE_DOMAIN: &str = "Tenero message signature v1";
-const PAYMENT_DOMAIN: &str = "Tenero payment proof signature v1";
+/// Version 2 (the review of 2026-10-16): the signed challenge also binds the address's NETWORK (its four-letter prefix), so a
+/// signature made on the test network is not one on `gamma` for the same keys. Version 1 bound only the keys; its signatures
+/// do not verify any more.
+const MESSAGE_DOMAIN: &str = "Tenero message signature v2";
+const PAYMENT_DOMAIN: &str = "Tenero payment proof signature v2";
 const NONCE_DOMAIN: &str = "Tenero signature nonce v1";
 
 /// Why a signature or a proof was refused, or could not be made.
@@ -95,9 +98,9 @@ impl std::error::Error for ProofError {}
 
 // ---- signatures ------------------------------------------------------------------------------------------------------------
 
-/// A signature by an address: `(c, s_g, s_t)`, each a canonical scalar. With `K` the address's spend key and `V` its view
-/// key, it verifies when `c = H_n(domain, K, V, R, bound...)` for `R = s_g G + s_t T + c K` (a Schnorr proof of knowledge of
-/// `a, b` with `K = a G + b T`).
+/// A signature by an address: `(c, s_g, s_t)`, each a canonical scalar. With `N` the address's network prefix (`TENg`), `K`
+/// its spend key and `V` its view key, it verifies when `c = H_n(domain, N, K, V, R, bound...)` for `R = s_g G + s_t T + c K`
+/// (a Schnorr proof of knowledge of `a, b` with `K = a G + b T`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Signature {
     pub c: [u8; 32],
@@ -142,20 +145,23 @@ impl Signature {
 
 fn challenge(
     domain: &str,
+    network: &[u8],
     spend: &[u8; 32],
     view: &[u8; 32],
     r: &[u8; 32],
     bound: &[&[u8]],
 ) -> Scalar {
-    let mut fields: Vec<&[u8]> = vec![spend, view, r];
+    let mut fields: Vec<&[u8]> = vec![network, spend, view, r];
     fields.extend_from_slice(bound);
     tenero_carrot::hash_to_scalar(domain, &fields)
 }
 
 /// Signs `bound` under `domain` with the secrets `a, b` of the spend key `spend` (`spend = a G + b T`). The nonces are
 /// derived from the secrets, everything signed and 32 fresh random bytes, so a broken random source cannot repeat one.
+#[allow(clippy::too_many_arguments)]
 fn sign_raw(
     domain: &str,
+    network: &[u8],
     a: &Scalar,
     b: &Scalar,
     spend: &[u8; 32],
@@ -172,6 +178,7 @@ fn sign_raw(
             b.as_bytes(),
             spend,
             view,
+            network,
             domain.as_bytes(),
         ];
         fields.extend_from_slice(bound);
@@ -180,7 +187,7 @@ fn sign_raw(
     };
     let (r_g, r_t) = (Zeroizing::new(nonce(b"G")), Zeroizing::new(nonce(b"T")));
     let r = EdwardsPoint::mul_base(&r_g) + *T * *r_t;
-    let c = challenge(domain, spend, view, &compress(&r), bound);
+    let c = challenge(domain, network, spend, view, &compress(&r), bound);
     Signature {
         c: c.to_bytes(),
         s_g: (*r_g - c * a).to_bytes(),
@@ -190,6 +197,7 @@ fn sign_raw(
 
 fn verify_raw(
     domain: &str,
+    network: &[u8],
     spend: &[u8; 32],
     view: &[u8; 32],
     bound: &[&[u8]],
@@ -213,7 +221,7 @@ fn verify_raw(
         return false;
     }
     let r = EdwardsPoint::mul_base(&s_g) + *T * s_t + k * c;
-    challenge(domain, spend, view, &compress(&r), bound) == c
+    challenge(domain, network, spend, view, &compress(&r), bound) == c
 }
 
 fn message_bound(message: &[u8]) -> [u8; 8] {
@@ -231,6 +239,7 @@ pub fn sign_message(
     let len = message_bound(message);
     sign_raw(
         MESSAGE_DOMAIN,
+        address.network.prefix().as_bytes(),
         a,
         b,
         &address.spend_pubkey,
@@ -246,6 +255,7 @@ pub fn verify_message(address: &Address, message: &[u8], sig: &Signature) -> boo
     let len = message_bound(message);
     verify_raw(
         MESSAGE_DOMAIN,
+        address.network.prefix().as_bytes(),
         &address.spend_pubkey,
         &address.view_pubkey,
         &[&len, message],
@@ -364,6 +374,7 @@ impl PaymentProof {
         let bound = proof_bound(&h, &self.onetime_address, &self.anchor, &len, message);
         self.signature = Some(sign_raw(
             PAYMENT_DOMAIN,
+            self.address.network.prefix().as_bytes(),
             a,
             b,
             &self.address.spend_pubkey,
@@ -383,6 +394,7 @@ impl PaymentProof {
         let bound = proof_bound(&h, &self.onetime_address, &self.anchor, &len, message);
         verify_raw(
             PAYMENT_DOMAIN,
+            self.address.network.prefix().as_bytes(),
             &self.address.spend_pubkey,
             &self.address.view_pubkey,
             &bound,

@@ -37,7 +37,9 @@ pub struct DandelionConfig {
     /// Room kept for this node's OWN transactions, apart from the peers' share: a pool the peers filled must never make
     /// this node announce its own transaction itself (that would show the world where it came from).
     pub max_own_stem_txs: usize,
-    /// The secret every choice is drawn from. `tenerod` makes it from the operating system at start.
+    /// The secret every choice is drawn from. **The default is a fixed test value** (the simulator and the tests depend on
+    /// it being the same in every run): a node on a real network must set its own, and `tenerod` makes one from the operating
+    /// system at every start. With the default, a peer could predict this node's role, stem peers and timers.
     pub secret: [u8; 32],
 }
 
