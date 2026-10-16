@@ -519,7 +519,7 @@ fn in_the_fee_s_minute_the_blocks_pay_the_fee_s_address_and_the_screen_says_so()
     )
     .unwrap();
     let c2 = Arc::clone(&clock);
-    fee.elapsed = Arc::new(move || Duration::from_secs(c2.load(Ordering::SeqCst)));
+    fee.clock = Arc::new(move || Duration::from_secs(c2.load(Ordering::SeqCst)));
     let (cfg, events) = cfg_events();
     let stop = Arc::new(AtomicBool::new(false));
     let now = (T0 + 60 * 500) * 1000;

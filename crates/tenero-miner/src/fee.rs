@@ -8,9 +8,14 @@
 //! pays no fee (on `gamma` the NVIDIA and AMD backends have one; at main-net its own addresses replace them). The CPU and SHA-256
 //! test backends never carry a fee. It is a time share, as in other open miners, so it is fair on average and not block by block: a small miner may
 //! find no block in its fee minutes, or find one there.
+//!
+//! **The fee's minutes follow the wall clock** (since the review of 2026-10-16): the minute in each hundred is fixed by the fee's
+//! address, not counted from the miner's start. Counted from the start, a script that restarted the miner when its fee minute
+//! began paid almost nothing (the next fee minute was then about 50 minutes away); now a restart in the fee minute is still in
+//! it, and the only way not to mine for the fee is not to mine for that minute.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tenero_core::hash::sha256;
 
@@ -21,9 +26,9 @@ pub const FEE_CYCLE: Duration = Duration::from_secs(100 * 60);
 /// The time mined for the fee in each cycle: [`FEE_PERCENT`] of [`FEE_CYCLE`].
 pub const FEE_SLICE: Duration = Duration::from_secs(FEE_CYCLE.as_secs() * FEE_PERCENT as u64 / 100);
 
-/// When the fee's slices fall, counted from the miner's start: one of `slice` in every `cycle`, the first `first` after the
-/// start. A random `first` (as [`FeeSchedule::standard`] picks) makes a miner that is started and stopped often pay the same
-/// share on average as one that runs for days.
+/// When the fee's slices fall, on a clock (the wall clock: seconds since 1970): one of `slice` in every `cycle`, starting
+/// `first` into each cycle (the cycles counted from 1970). [`FeeSchedule::standard`] fixes `first` by the fee's address, so it is
+/// the same in every run: a restart neither skips nor brings forward a fee minute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FeeSchedule {
     pub cycle: Duration,
@@ -32,19 +37,11 @@ pub struct FeeSchedule {
 }
 
 impl FeeSchedule {
-    /// [`FEE_SLICE`] in every [`FEE_CYCLE`], the first slice starting at a random point of the first cycle.
-    pub fn standard() -> FeeSchedule {
+    /// [`FEE_SLICE`] in every [`FEE_CYCLE`], at a point of each cycle fixed by the fee's address (`key`, its text): the same
+    /// in every run of every miner that pays that address.
+    pub fn standard(key: &str) -> FeeSchedule {
         let span = (FEE_CYCLE - FEE_SLICE).as_secs();
-        // not a secret, only a spread: the clock's nanoseconds and the process, hashed
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let h = sha256(&[
-            b"tenero miner fee start",
-            &nanos.to_le_bytes(),
-            &std::process::id().to_le_bytes(),
-        ]);
+        let h = sha256(&[b"tenero miner fee minute", key.as_bytes()]);
         let r = u64::from_le_bytes(h[..8].try_into().expect("eight bytes"));
         FeeSchedule {
             cycle: FEE_CYCLE,
@@ -53,12 +50,12 @@ impl FeeSchedule {
         }
     }
 
-    /// Whether `elapsed` (time since the miner started) falls in one of the fee's slices.
-    pub fn is_fee_time(&self, elapsed: Duration) -> bool {
-        if self.cycle.is_zero() || elapsed < self.first {
+    /// Whether the clock reading `t` falls in one of the fee's slices.
+    pub fn is_fee_time(&self, t: Duration) -> bool {
+        if self.cycle.is_zero() || t < self.first {
             return false;
         }
-        let into = (elapsed - self.first).as_millis() % self.cycle.as_millis();
+        let into = (t - self.first).as_millis() % self.cycle.as_millis();
         into < self.slice.as_millis()
     }
 }
@@ -71,8 +68,14 @@ pub struct MiningFee {
     /// Who it pays, for the screen: "the NVIDIA backend's author".
     pub to: String,
     pub schedule: FeeSchedule,
-    /// The time since the miner started (a clock from the start by default; a test gives another).
-    pub elapsed: Arc<dyn Fn() -> Duration + Send + Sync>,
+    /// The clock the schedule is read on: the wall clock (time since 1970) by default; a test gives another.
+    pub clock: Arc<dyn Fn() -> Duration + Send + Sync>,
+}
+
+fn wall_clock() -> Duration {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
 }
 
 impl MiningFee {
@@ -83,18 +86,17 @@ impl MiningFee {
         schedule: FeeSchedule,
     ) -> Option<MiningFee> {
         crate::WalletPayout::new(address)?;
-        let start = Instant::now();
         Some(MiningFee {
             address,
             to: to.to_string(),
             schedule,
-            elapsed: Arc::new(move || start.elapsed()),
+            clock: Arc::new(wall_clock),
         })
     }
 
     /// Whether the miner should be working for the fee now.
     pub fn due(&self) -> bool {
-        self.schedule.is_fee_time((self.elapsed)())
+        self.schedule.is_fee_time((self.clock)())
     }
 
     /// The fee's address as text.
@@ -127,10 +129,12 @@ mod tests {
         assert_eq!(FEE_PERCENT, 1);
         assert_eq!(FEE_SLICE, Duration::from_secs(60));
         assert_eq!(FEE_CYCLE, Duration::from_secs(6000));
-        for _ in 0..50 {
-            let s = FeeSchedule::standard();
+        for k in 0..50 {
+            let s = FeeSchedule::standard(&format!("address {k}"));
             assert!(s.first <= FEE_CYCLE - FEE_SLICE, "{s:?}");
         }
+        // the same address, the same minute, in every run
+        assert_eq!(FeeSchedule::standard("x"), FeeSchedule::standard("x"));
     }
 
     #[test]
@@ -153,11 +157,29 @@ mod tests {
 
     #[test]
     fn over_a_long_run_the_share_is_one_percent() {
-        let s = FeeSchedule::standard();
+        let s = FeeSchedule::standard("an address");
         let total = 6000 * 50;
         let fee = (0..total).filter(|&t| at(&s, t)).count() as u64;
         // 50 whole cycles after the first slice: 50 or 49 slices of 60 s, depending on where the first one fell
         assert!((49 * 60..=50 * 60).contains(&fee), "{fee} s of {total}");
+    }
+
+    /// A miner restarted when its fee minute begins is still in the fee minute when it comes back: the schedule is read on
+    /// the wall clock, not counted from the start (a script that restarted it used to skip the fee almost entirely).
+    #[test]
+    fn a_restart_does_not_move_the_fee_minute() {
+        let s = FeeSchedule::standard("an address");
+        let t = Duration::from_secs(1_800_000_000);
+        let begins = (0..6000)
+            .map(|k| t + Duration::from_secs(k))
+            .find(|x| s.is_fee_time(*x) && !s.is_fee_time(*x - Duration::from_secs(1)))
+            .expect("a fee minute in one cycle");
+        // two schedules made at different times (two runs) agree on every second
+        let again = FeeSchedule::standard("an address");
+        for k in 0..60 {
+            let x = begins + Duration::from_secs(k);
+            assert!(s.is_fee_time(x) && again.is_fee_time(x));
+        }
     }
 
     #[test]

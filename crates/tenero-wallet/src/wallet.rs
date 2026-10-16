@@ -1918,11 +1918,15 @@ fn own_plan(
     Ok(plan)
 }
 
-/// The fee for a transaction of `size` bytes at a fee level: the level's share of the minimum the next block needs, and
-/// at least one unit more.
+/// The fee for a transaction of `size` bytes at a fee level: the level's share of the minimum the next block needs, rounded
+/// up (so never under the minimum). It was rounded down and one unit added, which marked every transaction of this wallet
+/// (review of 2026-10-16).
 fn fee_for_size(rules: &Rules, level: FeeLevel, size: u64) -> Result<u64, WalletError> {
     let min = rules::min_fee(size, rules.reward, rules.median).map_err(WalletError::Chain)?;
-    Ok(min.saturating_mul(level.percent_of_minimum()) / 100 + 1)
+    Ok(min
+        .saturating_mul(level.percent_of_minimum())
+        .div_ceil(100)
+        .max(min))
 }
 
 /// What one more input adds to the fee of a 2-output transaction.

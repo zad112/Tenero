@@ -615,6 +615,9 @@ impl Hooks for Maintenance {
                     "the proof pre-check could not read the trees: {e}"
                 ));
             }
+            if let Ok(next) = engine.node().next_block() {
+                self.precheck.set_fee_basis(next.reward, next.median);
+            }
         }
         let health = engine.health();
         for (begun, text) in alarm_changes(&mut self.alarms, &health.alarms) {
@@ -914,7 +917,8 @@ pub fn run(
                 cfg.data.display()
             )
         })?;
-    let key = NodeKey::load_or_create(&cfg.data.join("node.key"))?;
+    // a new key at every start: a key kept for the node's life let peers recognise it wherever it connects from
+    let key = NodeKey::create_fresh(&cfg.data.join("node.key"))?;
     let pow: &dyn PowCheck = match &chain.matmul {
         Some(m) => &**m,
         None => &Sha256Pow,
@@ -992,6 +996,9 @@ pub fn run(
         log.warn(&format!(
             "the proof pre-check could not read the trees: {e}"
         ));
+    }
+    if let Ok(next) = engine.node().next_block() {
+        precheck.set_fee_basis(next.reward, next.median);
     }
     let tx_precheck: tenero_net::transport::TxPrecheck = {
         let p = Arc::clone(&precheck);

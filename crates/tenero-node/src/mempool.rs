@@ -63,6 +63,26 @@ pub enum PoolError {
     ReferenceAhead {
         reference_height: u64,
     },
+    /// Its reference block is so old that the transaction could be mined only in the next [`REFERENCE_MARGIN`] blocks at
+    /// most (`rules::MAX_REFERENCE_AGE`). Policy, not a rule: a pool that kept it would hand miners a transaction that
+    /// becomes invalid a few blocks later, and every block template built with it would then be refused (a transaction
+    /// valid for exactly one height made every node's templates invalid until a restart; found in the review of
+    /// 2026-10-16). Not the sender's fault either: an honest transaction that waited long can come to this.
+    ReferenceExpiring {
+        reference_height: u64,
+        next_height: u64,
+    },
+}
+
+/// How many blocks a transaction must still be minable for when the pool takes it: one whose reference block leaves the
+/// allowed window (`rules::MAX_REFERENCE_AGE`) sooner is refused ([`PoolError::ReferenceExpiring`]). A wallet references the
+/// tip, so its transactions have about 1,440 blocks (a day) to be mined.
+pub const REFERENCE_MARGIN: u64 = 10;
+
+/// Whether a transaction with reference block `reference_height` may still be in the block at `height`
+/// (`rules::reference_ok` without the tree; the reference is below the block and at most `MAX_REFERENCE_AGE` under it).
+pub fn reference_in_window(reference_height: u64, height: u64) -> bool {
+    reference_height < height && reference_height.saturating_add(rules::MAX_REFERENCE_AGE) >= height
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -259,6 +279,17 @@ impl Mempool {
                 });
             }
         }
+        // a reference about to leave the window: refused before the proofs (a look-up of the tip's height)
+        let next_height = validator.next_height().map_err(PoolError::Invalid)?;
+        let r = tx.prunable.reference_height;
+        if r < next_height
+            && r.saturating_add(rules::MAX_REFERENCE_AGE) < next_height + REFERENCE_MARGIN
+        {
+            return Err(PoolError::ReferenceExpiring {
+                reference_height: r,
+                next_height,
+            });
+        }
         let info = validator.check_pool_tx(tx).map_err(|e| match e {
             BlockError::BadReference {
                 reference_height, ..
@@ -348,8 +379,28 @@ impl Mempool {
     pub fn on_block_connected(&mut self, validator: &Validator<'_>, block: &Block) -> Vec<TxId> {
         self.remember_mined(block);
         let mut removed = self.remove_spent_by(block);
+        removed.extend(self.drop_expired(validator));
         removed.extend(self.drop_below_min_fee(validator));
         removed
+    }
+
+    /// Drops what can no longer be in the next block because its reference block has left the window
+    /// (`rules::MAX_REFERENCE_AGE`). Without this, such a transaction stayed in the pool for ever and every block template
+    /// took it, so every block the node built was invalid.
+    fn drop_expired(&mut self, validator: &Validator<'_>) -> Vec<TxId> {
+        let Ok(next) = validator.next_height() else {
+            return Vec::new();
+        };
+        let old: Vec<TxId> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| !reference_in_window(e.tx.prunable.reference_height, next))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &old {
+            self.remove_entry(id);
+        }
+        old
     }
 
     /// Removes the pooled transactions that share a key image with a transaction of `block`.
@@ -423,6 +474,7 @@ impl Mempool {
                 let _ = self.add(validator, t.clone());
             }
         }
+        removed.extend(self.drop_expired(validator));
         removed.extend(self.drop_below_min_fee(validator));
         removed
     }
@@ -436,6 +488,10 @@ impl Mempool {
         let mut out = Vec::new();
         let (mut weight, mut bytes) = (0u64, 0u64);
         for e in all {
+            // (and never more transactions than a block may list: a template of more would not encode)
+            if out.len() >= tenero_core::v3::MAX_BLOCK_TXS {
+                break;
+            }
             if weight + e.weight <= max_weight && bytes + e.size <= rules::MAX_BLOCK_BYTES {
                 weight += e.weight;
                 bytes += e.size;

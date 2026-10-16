@@ -27,7 +27,7 @@ use tenero_node::{AddOutcome, Node, PoolError};
 
 use crate::addrbook::{
     group_of, host_of, host_with_port, is_unspecified, peer_addr_to_string, string_to_peer_addr,
-    AddrBook, AddrBookConfig, BanList,
+    AddrBook, AddrBookConfig, BanList, ONION_GROUP, ONION_INBOUND_GROUP,
 };
 use crate::dandelion::{stem_size, Dandelion, DandelionConfig, StemEntry};
 use crate::message::{Hello, Limits, Message, PeerAddr, MAX_TXS, PROTOCOL_VERSION};
@@ -180,6 +180,15 @@ pub struct EngineConfig {
     pub connect_timeout_ms: u64,
     /// The most outbound connections to one network group (an IPv4 /16, an IPv6 /32).
     pub max_outbound_per_group: usize,
+    /// The most outbound connections to `.onion` addresses (they are one group, `addrbook::ONION_GROUP`, with this limit
+    /// instead of `max_outbound_per_group`).
+    pub max_outbound_onion: usize,
+    /// The most inbound connections from one IP address at once (a household behind one router may run a few nodes). One
+    /// host cannot take every inbound slot. 0 turns it off.
+    pub max_inbound_per_host: usize,
+    /// The most peers at once that came in through this node's `.onion` service (they all arrive from Tor and cannot be told
+    /// apart, so one attacker could otherwise open them without end). 0 turns it off.
+    pub max_onion_inbound: usize,
     /// Addresses to start from when the address book is empty (they are never forgotten).
     pub seeds: Vec<String>,
     /// Our own public address, if we have one: announced once to each peer, never dialled.
@@ -286,6 +295,9 @@ impl Default for EngineConfig {
             max_connect_per_tick: 8,
             connect_timeout_ms: 10_000,
             max_outbound_per_group: 2,
+            max_outbound_onion: 4,
+            max_inbound_per_host: 4,
+            max_onion_inbound: 16,
             seeds: Vec::new(),
             advertise: None,
             advertise_onion: None,
@@ -328,6 +340,9 @@ pub struct Stats {
     pub assumed_blocks: u64,
     /// Replies that came after the request they answered had timed out, and were forgiven ("slow is not hostile").
     pub late_replies_forgiven: u64,
+    /// Blocks of a heavier branch that forks below what this pruned node keeps (`BlockError::ReorgTooDeep`): kept aside, and
+    /// not held against the peer.
+    pub reorgs_too_deep: u64,
     /// Anchor peers dialled first after a restart.
     pub anchors_dialled: u64,
     /// Times the tip went stale (no new block for `stale_tip_ms`), and the extra outbound peers dialled because of it.
@@ -459,8 +474,8 @@ struct Peer {
     ping_sent: Option<u64>,
     milli_tokens: u64,
     last_refill: u64,
-    known_blocks: HashSet<[u8; 32]>,
-    known_txs: HashSet<[u8; 32]>,
+    known_blocks: RecentSet,
+    known_txs: RecentSet,
     /// We sent `GetAddrs` and have not had the answer.
     asked_addrs: bool,
     /// We have answered its `GetAddrs` (once per connection).
@@ -605,6 +620,9 @@ pub struct Engine<'a> {
     /// Addresses that turned out to be this node itself (a dial that connected to our own nonce): never dialled again. A node with a changing
     /// IP address learns its own address from its peers' answers, and must not waste a connection on it.
     self_addrs: HashSet<String>,
+    /// Each connection's remote static Noise key, as the peer PROVED it in the handshake ([`Engine::note_remote_key`]): what
+    /// tells two links to one node apart from a stranger who claims another node's nonce.
+    remote_keys: HashMap<PeerId, [u8; 32]>,
     req_blocks: BTreeMap<[u8; 32], Req>,
     /// Every (peer, block id) we have asked for and not yet had an answer to: a block that arrives from a
     /// peer we asked is never "unsolicited", even if another peer delivered it first.
@@ -613,7 +631,7 @@ pub struct Engine<'a> {
     req_txs: BTreeMap<[u8; 32], Req>,
     /// Blocks being put together from their compact form, by id.
     assembling: HashMap<[u8; 32], Assembly>,
-    rejected_txs: HashSet<[u8; 32]>,
+    rejected_txs: RecentSet,
     /// Transactions announced while we were syncing, and who announced each: fetched when the sync ends.
     deferred_txs: BTreeMap<[u8; 32], PeerId>,
     held: Vec<Block>,
@@ -654,12 +672,13 @@ impl<'a> Engine<'a> {
             addr_answers: HashMap::new(),
             cooldown: HashMap::new(),
             self_addrs: HashSet::new(),
+            remote_keys: HashMap::new(),
             req_blocks: BTreeMap::new(),
             asked: BTreeMap::new(),
             announcers: HashMap::new(),
             req_txs: BTreeMap::new(),
             assembling: HashMap::new(),
-            rejected_txs: HashSet::new(),
+            rejected_txs: RecentSet::new(REJECTED_TXS_MAX),
             deferred_txs: BTreeMap::new(),
             held: Vec::new(),
             last_reannounce: 0,
@@ -859,7 +878,16 @@ impl<'a> Engine<'a> {
             tip_height: h,
             cumulative_work: i.cumulative_work,
             tip_id: i.block_id,
-            pruned_below: self.node.store().pruned_below().unwrap_or(0),
+            pruned_below: {
+                let p = self.node.store().pruned_below().unwrap_or(0);
+                // rounded on a link through Tor only: the exact height tied the two identities together, and on a direct
+                // link it lets a peer just behind still sync from us
+                if self.tor_identity(peer) {
+                    shown_pruned_below(p)
+                } else {
+                    p
+                }
+            },
             nonce: self.nonce_for(peer),
         }
     }
@@ -937,6 +965,7 @@ impl<'a> Engine<'a> {
 
     /// Forgets everything that waited on `peer`, and looks for another way to get it.
     fn cleanup_peer(&mut self, peer: PeerId, out: &mut Vec<Action>) {
+        self.remote_keys.remove(&peer);
         let candidates = self.stem_candidates();
         self.dand.peer_gone(peer, &candidates);
         if self.syncing.as_ref().is_some_and(|s| s.peer == peer) {
@@ -1012,6 +1041,38 @@ impl<'a> Engine<'a> {
             });
             return;
         }
+        // one host, or the onion service, may not take every inbound slot (not on a private test network, where every node
+        // is the same host)
+        if inbound && !self.cfg.addrbook.accept_private {
+            let group = group_of(&addr);
+            let (same, limit, why) = if group == ONION_INBOUND_GROUP {
+                (
+                    self.peers
+                        .values()
+                        .filter(|p| p.inbound && group_of(&p.addr) == ONION_INBOUND_GROUP)
+                        .count(),
+                    self.cfg.max_onion_inbound,
+                    "too many peers through the onion service",
+                )
+            } else {
+                let host = host_of(&addr);
+                (
+                    self.peers
+                        .values()
+                        .filter(|p| p.inbound && host_of(&p.addr) == host)
+                        .count(),
+                    self.cfg.max_inbound_per_host,
+                    "too many connections from one address",
+                )
+            };
+            if limit > 0 && same >= limit {
+                out.push(Action::Disconnect {
+                    peer,
+                    reason: why.into(),
+                });
+                return;
+            }
+        }
         let full = |e: &Engine<'_>| {
             let regular = e.peers.values().filter(|p| !p.addr_only);
             let inbound_now = regular.clone().filter(|p| p.inbound).count();
@@ -1053,8 +1114,8 @@ impl<'a> Engine<'a> {
                 ping_sent: None,
                 milli_tokens: self.cfg.burst * 1000,
                 last_refill: self.now,
-                known_blocks: HashSet::new(),
-                known_txs: HashSet::new(),
+                known_blocks: RecentSet::new(KNOWN_PER_PEER),
+                known_txs: RecentSet::new(KNOWN_PER_PEER),
                 asked_addrs: false,
                 answered_addrs: false,
                 self_announced: false,
@@ -1105,6 +1166,13 @@ impl<'a> Engine<'a> {
     /// link and an onion link and see which one we drop ("duplicate") — either answer would tie the `.onion` address to
     /// the IP address. The price: a dial that reaches ourselves across the two (a `tor_only` dial to our own IP address)
     /// is not recognised by its nonce.
+    /// The static Noise key `peer` proved in the handshake (the transport tells it before the connection is reported). With
+    /// it, two links are taken for one node only if they show the same key; the nonce alone is what the peer says, and a
+    /// stranger who said another node's nonce used to make this node drop its own link to that node (review of 2026-10-16).
+    pub fn note_remote_key(&mut self, peer: PeerId, key: [u8; 32]) {
+        self.remote_keys.insert(peer, key);
+    }
+
     fn resolve_duplicate(&mut self, peer: PeerId, nonce: u64, out: &mut Vec<Action>) -> bool {
         // the nonce this node showed on THIS link (the Tor one or the other)
         let ours = self.nonce_for(peer);
@@ -1120,6 +1188,7 @@ impl<'a> Engine<'a> {
             self.drop_peer(peer, "connected to ourselves", false, out);
             return false;
         }
+        let key = self.remote_keys.get(&peer).copied();
         let other = self
             .peers
             .iter()
@@ -1127,6 +1196,11 @@ impl<'a> Engine<'a> {
                 **id != peer
                     && p.hello.as_ref().is_some_and(|h| h.nonce == nonce)
                     && self.tor_identity(**id) == tor
+                    // the same node only if it proved the same key (when both keys are known; the simulator has none)
+                    && match (key, self.remote_keys.get(*id)) {
+                        (Some(a), Some(b)) => a == *b,
+                        _ => true,
+                    }
             })
             .map(|(id, p)| (*id, p.inbound));
         let Some((other_id, other_inbound)) = other else {
@@ -1226,9 +1300,6 @@ impl<'a> Engine<'a> {
             .collect();
         if let Some(p) = self.peers.get_mut(&peer) {
             for id in &ids {
-                if p.known_txs.len() > 4096 {
-                    p.known_txs.clear();
-                }
                 p.known_txs.insert(*id);
             }
         }
@@ -1876,7 +1947,14 @@ impl<'a> Engine<'a> {
         for a in self.ordinary_dials() {
             *groups.entry(group_of(a)).or_default() += 1;
         }
-        let per_group = self.cfg.max_outbound_per_group;
+        let (per_group, per_onion) = (self.cfg.max_outbound_per_group, self.cfg.max_outbound_onion);
+        let limit_of = |g: &str| {
+            if g == ONION_GROUP {
+                per_onion
+            } else {
+                per_group
+            }
+        };
         let own = self.own_addrs();
         let selfs = &self.self_addrs;
         let bans = &self.bans;
@@ -1891,7 +1969,7 @@ impl<'a> Engine<'a> {
                 // enough peers of our own: a seed is not dialled again (it is when we hold fewer)
                 || (leaving_seeds && !seeds_only && seed_list.iter().any(|s| s == a))
         };
-        let full = |g: &str| groups.get(g).copied().unwrap_or(0) >= per_group;
+        let full = |g: &str| groups.get(g).copied().unwrap_or(0) >= limit_of(g);
         let mut candidates = self
             .book
             .candidates_with(now, want * 4, &skip, &full, seeds_only);
@@ -1904,8 +1982,9 @@ impl<'a> Engine<'a> {
                 break;
             }
             let g = group_of(&a);
+            let limit = limit_of(&g);
             let count = groups.entry(g).or_default();
-            if *count >= per_group || !chosen_hosts.insert(host_of(&a)) {
+            if *count >= limit || !chosen_hosts.insert(host_of(&a)) {
                 continue;
             }
             *count += 1;
@@ -3130,6 +3209,14 @@ impl<'a> Engine<'a> {
                 Applied::NotYet
             }
             Err(BlockError::Store(_)) => Applied::Ours,
+            // a valid branch with more work that forks below what this pruned node keeps: it cannot switch (it could not
+            // put its own blocks back), but the peer did nothing wrong (it was banned as for an invalid block; review of
+            // 2026-10-16). The block stays on the side; an archive node can take the branch.
+            Err(e @ BlockError::ReorgTooDeep { .. }) => {
+                debug_assert!(!block_refusal_blames_sender(&e));
+                self.stats.reorgs_too_deep += 1;
+                Applied::Kept
+            }
             Err(e) => {
                 if let Some(p) = from {
                     // the height, the id and the rule it broke, in the line that bans the peer: when a rule is wrong somewhere, the first
@@ -3196,9 +3283,6 @@ impl<'a> Engine<'a> {
             .collect();
         for pid in targets {
             if let Some(p) = self.peers.get_mut(&pid) {
-                if p.known_blocks.len() > 4096 {
-                    p.known_blocks.clear();
-                }
                 p.known_blocks.insert(id);
             }
             self.send(
@@ -3219,9 +3303,6 @@ impl<'a> Engine<'a> {
         let mut want = Vec::new();
         for id in ids {
             if let Some(p) = self.peers.get_mut(&peer) {
-                if p.known_txs.len() > 4096 {
-                    p.known_txs.clear();
-                }
                 p.known_txs.insert(id);
             }
             // in its stem here and now announced by someone: it is public, so it joins the pool (no need to fetch it)
@@ -3280,20 +3361,15 @@ impl<'a> Engine<'a> {
                 // it spends what the chain here has spent: confirmed in a block the peer has not seen yet, or the loser
                 // of two honest spends, or confirmed on a branch the peer has and this node has not. Refused, not
                 // fetched again, and not held against the peer: from its chain it may be valid.
-                Err(PoolError::Invalid(BlockError::KeyImageSpent { .. })) => {
-                    if self.rejected_txs.len() > 8192 {
-                        self.rejected_txs.clear();
-                    }
+                // (and one whose reference block has aged out, or whose fee the minimum has risen past: valid when it was
+                // made, and an honest peer may still hold it; see `tx_refusal_blames_sender`)
+                Err(e @ (PoolError::Invalid(_) | PoolError::TooLarge { .. })) => {
                     self.rejected_txs.insert(id);
-                }
-                Err(PoolError::Invalid(_)) | Err(PoolError::TooLarge { .. }) => {
-                    if self.rejected_txs.len() > 8192 {
-                        self.rejected_txs.clear();
-                    }
-                    self.rejected_txs.insert(id);
-                    self.penalize(peer, 20, "an invalid transaction", out);
-                    if !self.peers.contains_key(&peer) {
-                        return;
+                    if tx_refusal_blames_sender(&e) {
+                        self.penalize(peer, 20, "an invalid transaction", out);
+                        if !self.peers.contains_key(&peer) {
+                            return;
+                        }
                     }
                 }
                 // already known, in conflict, no room, or built on a block this node does not have yet: not the peer's
@@ -3314,9 +3390,6 @@ impl<'a> Engine<'a> {
             .collect();
         for pid in targets {
             if let Some(p) = self.peers.get_mut(&pid) {
-                if p.known_txs.len() > 4096 {
-                    p.known_txs.clear();
-                }
                 p.known_txs.insert(id);
             }
             self.send(pid, Message::NewTx { ids: vec![id] }, out);
@@ -3514,9 +3587,6 @@ impl<'a> Engine<'a> {
             return;
         };
         if let Some(p) = self.peers.get_mut(&peer) {
-            if p.known_txs.len() > 4096 {
-                p.known_txs.clear();
-            }
             p.known_txs.insert(id);
         }
         // known, just mined, already in a stem here (a loop: the embargo will see to it), or refused before
@@ -3530,20 +3600,12 @@ impl<'a> Engine<'a> {
         }
         match self.node.check_pool_tx(&tx) {
             Ok(()) => {}
-            // spends what the chain here has spent: not held against the peer (see `on_txs`)
-            Err(PoolError::Invalid(BlockError::KeyImageSpent { .. })) => {
-                if self.rejected_txs.len() > 8192 {
-                    self.rejected_txs.clear();
-                }
+            // refused: held against the peer only if it says the peer misbehaved (see `on_txs`)
+            Err(e @ (PoolError::Invalid(_) | PoolError::TooLarge { .. })) => {
                 self.rejected_txs.insert(id);
-                return;
-            }
-            Err(PoolError::Invalid(_)) | Err(PoolError::TooLarge { .. }) => {
-                if self.rejected_txs.len() > 8192 {
-                    self.rejected_txs.clear();
+                if tx_refusal_blames_sender(&e) {
+                    self.penalize(peer, 20, "an invalid transaction", out);
                 }
-                self.rejected_txs.insert(id);
-                self.penalize(peer, 20, "an invalid transaction", out);
                 return;
             }
             // in conflict with the pool, or built on a block this node does not have yet: not the peer's fault
@@ -3710,6 +3772,89 @@ impl<'a> Engine<'a> {
         self.maybe_start_sync(out);
     }
 }
+
+/// What a hello through Tor says of where this node's pruning stops: the real height rounded UP to a multiple of
+/// [`PRUNED_BELOW_STEP`]. The exact height depends on when this node last pruned and how much it keeps, and was the same on
+/// its Tor and direct links, so it tied a node's `.onion` identity to its IP one (review of 2026-10-16). Rounding up never
+/// claims a block the node does not have: a peer only ever asks it for less. Direct links keep the exact height (a peer a
+/// few blocks behind a pruned node can then still sync from it).
+pub fn shown_pruned_below(pruned_below: u64) -> u64 {
+    pruned_below
+        .div_ceil(PRUNED_BELOW_STEP)
+        .saturating_mul(PRUNED_BELOW_STEP)
+}
+
+/// See [`shown_pruned_below`].
+pub const PRUNED_BELOW_STEP: u64 = 1000;
+
+/// Whether a transaction's refusal says the peer that sent it misbehaved (and so costs it points). Not when it spends what
+/// this chain has spent (it may be valid on the peer's chain), nor when its reference block has left the window or its fee
+/// is under a minimum that has risen since it was made: an honest peer's pool may hold such a transaction (a restarted node
+/// is handed the whole pool), and five of them banned it (review of 2026-10-16). Cheap to judge either way: each is found
+/// before the proofs.
+pub fn tx_refusal_blames_sender(e: &PoolError) -> bool {
+    match e {
+        PoolError::Invalid(
+            BlockError::KeyImageSpent { .. }
+            | BlockError::BadReference { .. }
+            | BlockError::FeeTooLow { .. },
+        ) => false,
+        PoolError::Invalid(_) | PoolError::TooLarge { .. } => true,
+        _ => false,
+    }
+}
+
+/// Whether a block's refusal says the peer that sent it misbehaved: not a failure of our own store, and not a branch this
+/// pruned node cannot switch to.
+pub fn block_refusal_blames_sender(e: &BlockError) -> bool {
+    !matches!(e, BlockError::Store(_) | BlockError::ReorgTooDeep { .. })
+}
+
+/// A set of ids that forgets its OLDEST entry when full. The engine's bounded sets (the transactions it refused, what each
+/// peer is known to have) used to be cleared whole when full, so a peer that sent enough refused transactions made the node
+/// forget all of them at once and fetch and check them again (review of 2026-10-16).
+pub struct RecentSet {
+    set: HashSet<[u8; 32]>,
+    order: VecDeque<[u8; 32]>,
+    cap: usize,
+}
+
+impl RecentSet {
+    pub fn new(cap: usize) -> RecentSet {
+        RecentSet {
+            set: HashSet::new(),
+            order: VecDeque::new(),
+            cap: cap.max(1),
+        }
+    }
+
+    pub fn insert(&mut self, id: [u8; 32]) {
+        if self.set.insert(id) {
+            self.order.push_back(id);
+            while self.order.len() > self.cap {
+                if let Some(old) = self.order.pop_front() {
+                    self.set.remove(&old);
+                }
+            }
+        }
+    }
+
+    pub fn contains(&self, id: &[u8; 32]) -> bool {
+        self.set.contains(id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.set.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.set.is_empty()
+    }
+}
+
+/// How many refused transactions the engine remembers, and how many block and transaction ids per peer.
+pub const REJECTED_TXS_MAX: usize = 8192;
+pub const KNOWN_PER_PEER: usize = 4096;
 
 /// A block's compact form: its header, its coinbase and its transactions' ids. `None` if it does not encode.
 fn compact_of(b: &Block) -> Option<Message> {

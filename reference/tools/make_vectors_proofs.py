@@ -34,8 +34,9 @@ SIGNATURE_PREFIX = "TENsig1"
 PROOF_PREFIX = "TENpay1"
 PROOF_VERSION = 1
 MAX_PROOF_MESSAGE = 4096
-MESSAGE_DOMAIN = "Tenero message signature v1"
-PAYMENT_DOMAIN = "Tenero payment proof signature v1"
+# version 2 (2026-10-16): the challenge binds the address's network prefix too, so a signature is valid on one network only
+MESSAGE_DOMAIN = "Tenero message signature v2"
+PAYMENT_DOMAIN = "Tenero payment proof signature v2"
 NONCE_DOMAIN = "Tenero signature nonce v1"
 
 # ---- Ed25519 ----------------------------------------------------------------------------------------------------------
@@ -127,16 +128,21 @@ def canonical(b):
 
 
 # ---- signatures -------------------------------------------------------------------------------------------------------
-def sign_raw(domain, a, b, spend, view, bound, rnd):
+def net_bytes(network):
+    return A.NETWORKS[network].encode()
+
+
+def sign_raw(domain, a, b, spend, view, network, bound, rnd):
     def nonce(which):
-        return hash_to_scalar(NONCE_DOMAIN, which, le32(a), le32(b), spend, view, domain.encode(), *bound, rnd)
+        return hash_to_scalar(NONCE_DOMAIN, which, le32(a), le32(b), spend, view, net_bytes(network), domain.encode(),
+                              *bound, rnd)
     r_g, r_t = nonce(b"G"), nonce(b"T")
     r = encode(add(mul(r_g, G), mul(r_t, T)))
-    c = hash_to_scalar(domain, spend, view, r, *bound)
+    c = hash_to_scalar(domain, net_bytes(network), spend, view, r, *bound)
     return le32(c) + le32(r_g - c * a) + le32(r_t - c * b)
 
 
-def verify_raw(domain, spend, view, bound, sig):
+def verify_raw(domain, spend, view, network, bound, sig):
     if len(sig) != 96:
         return False
     c, s_g, s_t = canonical(sig[:32]), canonical(sig[32:64]), canonical(sig[64:])
@@ -147,19 +153,19 @@ def verify_raw(domain, spend, view, bound, sig):
     if k is None or mul(L, k) != IDENTITY or k == IDENTITY or decode(view) is None:
         return False
     r = encode(add(add(mul(s_g, G), mul(s_t, T)), mul(c, k)))
-    return hash_to_scalar(domain, spend, view, r, *bound) == c
+    return hash_to_scalar(domain, net_bytes(network), spend, view, r, *bound) == c
 
 
 def message_bound(message):
     return [u64(len(message)), message]
 
 
-def sign_message(a, b, spend, view, message, rnd):
-    return sign_raw(MESSAGE_DOMAIN, a, b, spend, view, message_bound(message), rnd)
+def sign_message(a, b, spend, view, network, message, rnd):
+    return sign_raw(MESSAGE_DOMAIN, a, b, spend, view, network, message_bound(message), rnd)
 
 
-def verify_message(spend, view, message, sig):
-    return verify_raw(MESSAGE_DOMAIN, spend, view, message_bound(message), sig)
+def verify_message(spend, view, network, message, sig):
+    return verify_raw(MESSAGE_DOMAIN, spend, view, network, message_bound(message), sig)
 
 
 def signature_text(sig):
@@ -234,13 +240,17 @@ SMALL_ORDER = bytes.fromhex("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13
 
 def signature_cases():
     out = []
-    for i, msg in enumerate([b"", b"hello", "fee, pay, rent: €5".encode(), bytes(range(256)) * 3]):
+    for i, (network, msg) in enumerate([("gamma", b""), ("gamma", b"hello"), ("test", "fee, pay, rent: €5".encode()),
+                                        ("dev", bytes(range(256)) * 3)]):
         a, b, spend, view = keys(f"sig {i}")
         rnd = det(f"sig rnd {i}")
-        sig = sign_message(a, b, spend, view, msg, rnd)
-        assert verify_message(spend, view, msg, sig)
-        out.append({"a": le32(a).hex(), "b": le32(b).hex(), "spend": spend.hex(), "view": view.hex(),
-                    "message": msg.hex(), "rnd": rnd.hex(), "signature": sig.hex(), "text": signature_text(sig)})
+        sig = sign_message(a, b, spend, view, network, msg, rnd)
+        assert verify_message(spend, view, network, msg, sig)
+        for other in A.NETWORKS:
+            assert other == network or not verify_message(spend, view, other, msg, sig)
+        out.append({"network": network, "a": le32(a).hex(), "b": le32(b).hex(), "spend": spend.hex(),
+                    "view": view.hex(), "message": msg.hex(), "rnd": rnd.hex(), "signature": sig.hex(),
+                    "text": signature_text(sig)})
     return out
 
 
@@ -248,10 +258,11 @@ def refused_signature_cases():
     """Signatures that must NOT verify, each with why."""
     a, b, spend, view = keys("refused")
     msg = b"the message"
-    sig = sign_message(a, b, spend, view, msg, det("refused rnd"))
+    sig = sign_message(a, b, spend, view, "gamma", msg, det("refused rnd"))
     _, _, other_spend, other_view = keys("refused other")
     torsioned = encode(add(decode(spend), decode(SMALL_ORDER)))
     cases = [
+        ("another network (the network is bound)", spend, view, msg, sig, "test"),
         ("another message", spend, view, b"the messagE", sig),
         ("another address's spend key", other_spend, view, msg, sig),
         ("another view key (the address is bound)", spend, other_view, msg, sig),
@@ -266,9 +277,12 @@ def refused_signature_cases():
         ("cut short", spend, view, msg, sig[:95]),
     ]
     out = []
-    for note, sp, vw, m, s in cases:
-        assert not verify_message(sp, vw, m, s), note
-        out.append({"note": note, "spend": sp.hex(), "view": vw.hex(), "message": m.hex(), "signature": s.hex()})
+    for case in cases:
+        note, sp, vw, m, s = case[:5]
+        network = case[5] if len(case) > 5 else "gamma"
+        assert not verify_message(sp, vw, network, m, s), note
+        out.append({"note": note, "network": network, "spend": sp.hex(), "view": vw.hex(), "message": m.hex(),
+                    "signature": s.hex()})
     return out
 
 
@@ -283,12 +297,17 @@ def proof_cases():
         height, onetime, anchor = 1000 + 37 * i, det(f"proof ko {i}"), det(f"proof anchor {i}", 16)
         sig = None
         if signed:
-            sig = sign_raw(PAYMENT_DOMAIN, a, b, spend, view, proof_bound(height, onetime, anchor, message),
+            sig = sign_raw(PAYMENT_DOMAIN, a, b, spend, view, network, proof_bound(height, onetime, anchor, message),
                            det(f"proof rnd {i}"))
-            assert verify_raw(PAYMENT_DOMAIN, spend, view, proof_bound(height, onetime, anchor, message), sig)
-            # bound to the message and to every field
-            assert not verify_raw(PAYMENT_DOMAIN, spend, view, proof_bound(height + 1, onetime, anchor, message), sig)
-            assert not verify_raw(MESSAGE_DOMAIN, spend, view, proof_bound(height, onetime, anchor, message), sig)
+            assert verify_raw(PAYMENT_DOMAIN, spend, view, network, proof_bound(height, onetime, anchor, message), sig)
+            # bound to the message, to every field and to the network
+            assert not verify_raw(PAYMENT_DOMAIN, spend, view, network,
+                                  proof_bound(height + 1, onetime, anchor, message), sig)
+            assert not verify_raw(MESSAGE_DOMAIN, spend, view, network,
+                                  proof_bound(height, onetime, anchor, message), sig)
+            other = "dev" if network != "dev" else "gamma"
+            assert not verify_raw(PAYMENT_DOMAIN, spend, view, other,
+                                  proof_bound(height, onetime, anchor, message), sig)
         b_ = proof_bytes(address, height, onetime, anchor, sig)
         parsed = parse_proof(b_)
         assert parsed["address"] == address and parsed["height"] == height

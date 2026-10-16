@@ -1052,6 +1052,38 @@ fn of_two_links_to_one_node_the_one_dialled_by_the_smaller_nonce_survives_whatev
     assert_eq!(e.peer_count(), 1);
 }
 
+/// The nonce is only what a peer says. A stranger who learned node X's nonce (by connecting to X once) used to connect to us,
+/// say X's nonce, and make us drop our own link to X as a "duplicate" (review of 2026-10-16). Two links are one node only if
+/// they also show the same static key, which only X holds (the transport tells the engine what each peer proved).
+#[test]
+fn a_stranger_who_says_another_nodes_nonce_is_not_taken_for_that_node() {
+    let t = T0 * 1000;
+    let rigs = SimRig::rigs("dup-spoof", 1);
+    // our nonce 300 > X's 200: under the nonce alone, the inbound link would win and our dial to X would go
+    let mut e = engine_with_nonce(&rigs[0], 300);
+    open(&mut e, 1, "60.1.1.1:8333", false, t);
+    e.note_remote_key(1, [0xAA; 32]);
+    assert!(disconnected(&say_hello(&mut e, &rigs[0], 1, 200, t + 10)).is_empty());
+    e.note_remote_key(2, [0xBB; 32]);
+    open(&mut e, 2, "61.1.1.1:41000", true, t + 20);
+    let actions = say_hello(&mut e, &rigs[0], 2, 200, t + 30);
+    assert!(disconnected(&actions).is_empty(), "{actions:?}");
+    assert_eq!((e.outbound_count(), e.inbound_count()), (1, 1));
+
+    // the same key on both links is the same node: the usual rule applies
+    let rigs = SimRig::rigs("dup-same-key", 1);
+    let mut e = engine_with_nonce(&rigs[0], 300);
+    e.note_remote_key(1, [0xAA; 32]);
+    open(&mut e, 1, "60.1.1.1:8333", false, t);
+    assert!(disconnected(&say_hello(&mut e, &rigs[0], 1, 200, t + 10)).is_empty());
+    e.note_remote_key(2, [0xAA; 32]);
+    open(&mut e, 2, "60.1.1.1:41000", true, t + 20);
+    assert_eq!(
+        disconnected(&say_hello(&mut e, &rigs[0], 2, 200, t + 30)),
+        vec![(1, "duplicate connection".to_string())]
+    );
+}
+
 #[test]
 fn without_a_nonce_on_either_side_nothing_is_taken_for_a_duplicate() {
     let t = T0 * 1000;

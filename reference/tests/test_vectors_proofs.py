@@ -19,28 +19,31 @@ def test_the_committed_proof_vectors_are_current(capsys):
 def test_every_signature_verifies_and_every_refused_one_does_not():
     v = load()
     for c in v["signatures"]:
-        assert p.verify_message(bytes.fromhex(c["spend"]), bytes.fromhex(c["view"]), bytes.fromhex(c["message"]),
-                                bytes.fromhex(c["signature"]))
+        assert p.verify_message(bytes.fromhex(c["spend"]), bytes.fromhex(c["view"]), c["network"],
+                                bytes.fromhex(c["message"]), bytes.fromhex(c["signature"]))
         assert c["text"].startswith("TENsig1")
     for c in v["refused_signatures"]:
-        assert not p.verify_message(bytes.fromhex(c["spend"]), bytes.fromhex(c["view"]), bytes.fromhex(c["message"]),
-                                    bytes.fromhex(c["signature"])), c["note"]
+        assert not p.verify_message(bytes.fromhex(c["spend"]), bytes.fromhex(c["view"]), c["network"],
+                                    bytes.fromhex(c["message"]), bytes.fromhex(c["signature"])), c["note"]
 
 
-def test_a_signature_is_bound_to_the_message_and_both_keys_on_random_keys():
+def test_a_signature_is_bound_to_the_message_both_keys_and_the_network_on_random_keys():
     rng = random.Random(20261008)
     for i in range(12):
         a, b = rng.randrange(1, p.L), rng.randrange(1, p.L)
         spend = p.encode(p.add(p.mul(a, p.G), p.mul(b, p.T)))
         view = p.encode(p.mul(rng.randrange(1, p.L), p.G))
         msg = rng.randbytes(rng.randrange(0, 40))
-        sig = p.sign_message(a, b, spend, view, msg, rng.randbytes(32))
-        assert p.verify_message(spend, view, msg, sig)
-        assert not p.verify_message(spend, view, msg + b"!", sig)
-        assert not p.verify_message(spend, p.encode(p.mul(3, p.G)), msg, sig)
+        net = ["gamma", "dev", "test"][i % 3]
+        sig = p.sign_message(a, b, spend, view, net, msg, rng.randbytes(32))
+        assert p.verify_message(spend, view, net, msg, sig)
+        assert not p.verify_message(spend, view, net, msg + b"!", sig)
+        assert not p.verify_message(spend, p.encode(p.mul(3, p.G)), net, msg, sig)
+        # the same keys on another network: not a signature there
+        assert not p.verify_message(spend, view, ["gamma", "dev", "test"][(i + 1) % 3], msg, sig)
         # knowing only one of the two secrets is not enough: the wrong b gives a signature that fails
-        bad = p.sign_message(a, (b + 1) % p.L, spend, view, msg, rng.randbytes(32))
-        assert not p.verify_message(spend, view, msg, bad)
+        bad = p.sign_message(a, (b + 1) % p.L, spend, view, net, msg, rng.randbytes(32))
+        assert not p.verify_message(spend, view, net, msg, bad)
 
 
 def test_the_proofs_read_back_and_their_signatures_hold():
@@ -55,7 +58,7 @@ def test_the_proofs_read_back_and_their_signatures_hold():
             spend, view = p.A.decode(c["address"], c["network"])[1:3]
             bound = p.proof_bound(c["height"], bytes.fromhex(c["onetime_address"]), bytes.fromhex(c["anchor"]),
                                   bytes.fromhex(c["message"]))
-            assert p.verify_raw(p.PAYMENT_DOMAIN, spend, view, bound, bytes.fromhex(c["signature"]))
+            assert p.verify_raw(p.PAYMENT_DOMAIN, spend, view, c["network"], bound, bytes.fromhex(c["signature"]))
     for c in v["invalid_proofs"]:
         try:
             p.parse_proof(bytes.fromhex(c["bytes"]))

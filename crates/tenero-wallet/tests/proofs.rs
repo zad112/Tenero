@@ -55,10 +55,16 @@ fn scalar(v: &serde_json::Value) -> Scalar {
     Option::from(Scalar::from_canonical_bytes(b32(v))).unwrap()
 }
 
-/// An address made of raw keys (the vectors' refused cases use keys no real address has).
-fn raw_address(spend: [u8; 32], view: [u8; 32]) -> Address {
+/// An address made of raw keys (the vectors' refused cases use keys no real address has), on the vector's network.
+fn raw_address(network: &serde_json::Value, spend: [u8; 32], view: [u8; 32]) -> Address {
+    let network = match network.as_str().unwrap() {
+        "gamma" => Network::Gamma,
+        "dev" => Network::Dev,
+        "test" => Network::Test,
+        other => panic!("{other}"),
+    };
     Address {
-        network: Network::Gamma,
+        network,
         kind: Kind::Main,
         spend_pubkey: spend,
         view_pubkey: view,
@@ -81,7 +87,7 @@ fn signatures_are_the_references_byte_for_byte_and_the_refused_ones_are_refused(
     let cases = v["signatures"].as_array().unwrap();
     assert!(cases.len() >= 4);
     for c in cases {
-        let address = raw_address(b32(&c["spend"]), b32(&c["view"]));
+        let address = raw_address(&c["network"], b32(&c["spend"]), b32(&c["view"]));
         let msg = h(&c["message"]);
         let sig = sign_message(
             &scalar(&c["a"]),
@@ -96,7 +102,7 @@ fn signatures_are_the_references_byte_for_byte_and_the_refused_ones_are_refused(
         assert!(verify_message(&address, &msg, &sig));
     }
     for c in v["refused_signatures"].as_array().unwrap() {
-        let address = raw_address(b32(&c["spend"]), b32(&c["view"]));
+        let address = raw_address(&c["network"], b32(&c["spend"]), b32(&c["view"]));
         let ok = Signature::from_bytes(&h(&c["signature"]))
             .is_ok_and(|s| verify_message(&address, &h(&c["message"]), &s));
         assert!(!ok, "{}", c["note"]);

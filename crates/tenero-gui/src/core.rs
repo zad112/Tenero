@@ -219,17 +219,22 @@ struct MoveJob {
     thread: Option<std::thread::JoinHandle<Result<(), String>>>,
 }
 
+/// The password a NEW wallet file (or a changed password) is sealed with. **A password is required** (since the review of
+/// 2026-10-16): a file sealed with none can be opened by anyone who copies it, so its encryption protects nothing. A wallet
+/// made before, with no password, still opens (unlocking takes an empty password), and can be given one.
 fn pass_ok(p: &Password) -> Result<Zeroizing<Vec<u8>>, String> {
     match p {
         Password::Set(s) => {
             if s.chars().count() < MIN_PASSWORD {
                 return Err(format!(
-                    "the password must be at least {MIN_PASSWORD} characters (or choose no password)"
+                    "the password must be at least {MIN_PASSWORD} characters"
                 ));
             }
             Ok(Zeroizing::new(s.as_bytes().to_vec()))
         }
-        Password::None => Ok(Zeroizing::new(Vec::new())),
+        Password::None => Err(format!(
+            "a wallet needs a password of at least {MIN_PASSWORD} characters: without one, anyone who copies the file can open it"
+        )),
     }
 }
 

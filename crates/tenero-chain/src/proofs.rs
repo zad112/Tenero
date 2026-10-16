@@ -15,6 +15,9 @@ use tenero_store::TreeState;
 /// membership proof was made against).
 pub struct TxContext<'a> {
     pub chain_id: [u8; 32],
+    /// The height of the block the transaction is (to be) in. **A proof check must not depend on it**: a check made ahead
+    /// (`crate::Precheck`) does not know it and gives the reference height plus one, and its verdict is remembered for the
+    /// real check (the verdict's key leaves the height out).
     pub height: u64,
     pub tx: &'a Transaction,
     pub tree: TreeState,

@@ -16,8 +16,8 @@
 use std::collections::BTreeMap;
 use std::sync::RwLock;
 
-use tenero_core::v3::rules::MAX_REFERENCE_AGE;
-use tenero_core::v3::Transaction;
+use tenero_core::v3::rules::{self, MAX_REFERENCE_AGE};
+use tenero_core::v3::{Transaction, Wire};
 use tenero_store::{Store, TreeState};
 
 use crate::proofs::{ProofCheck, TxContext};
@@ -29,6 +29,9 @@ pub struct Precheck {
     chain_id: [u8; 32],
     proofs: &'static dyn ProofCheck,
     trees: RwLock<BTreeMap<u64, TreeState>>,
+    /// The next block's reward and block-weight median, the inputs of the minimum fee (`None` until the loop says): a
+    /// transaction that pays less is refused by the loop before its proofs, and is not checked here either.
+    fee_basis: RwLock<Option<(u64, u64)>>,
 }
 
 impl Precheck {
@@ -37,6 +40,15 @@ impl Precheck {
             chain_id,
             proofs,
             trees: RwLock::new(BTreeMap::new()),
+            fee_basis: RwLock::new(None),
+        }
+    }
+
+    /// The next block's reward and median (`Validator::next_block`), so that a transaction under the minimum fee costs no
+    /// proof check here (a peer could otherwise send them without end: a fee that is merely too low is not held against it).
+    pub fn set_fee_basis(&self, reward: u64, median: u64) {
+        if let Ok(mut b) = self.fee_basis.write() {
+            *b = Some((reward, median));
         }
     }
 
@@ -77,6 +89,15 @@ impl Precheck {
         if !self.proofs.checks_proofs() {
             return;
         }
+        let basis = self.fee_basis.read().ok().and_then(|b| *b);
+        if let Some((reward, median)) = basis {
+            let Ok(bytes) = tx.to_bytes() else { return };
+            if rules::min_fee(bytes.len() as u64, reward, median)
+                .is_ok_and(|min| tx.prefix.fee < min)
+            {
+                return;
+            }
+        }
         let r = tx.prunable.reference_height;
         let tree = match self.trees.read() {
             Ok(t) => t.get(&r).cloned(),
@@ -87,9 +108,84 @@ impl Precheck {
         };
         let _ = self.proofs.check_tx(&TxContext {
             chain_id: self.chain_id,
+            // (not the height of a block it will be in, which is not known here; no proof check depends on it)
             height: r + 1,
             tx,
             tree,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tenero_core::v3::{Input, Output, Prunable, TxPrefix, VERSION};
+
+    struct Counting(AtomicUsize);
+
+    impl ProofCheck for Counting {
+        fn check_tx(&self, _ctx: &TxContext<'_>) -> Result<(), String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        fn checks_proofs(&self) -> bool {
+            true
+        }
+    }
+
+    fn tx(fee: u64) -> Transaction {
+        let output = |k: u8| Output {
+            onetime_address: [k; 32],
+            amount_commitment: [k; 32],
+            amount_enc: [k; 8],
+            view_tag: [k; 3],
+            anchor_enc: [k; 16],
+        };
+        Transaction {
+            prefix: TxPrefix {
+                version: VERSION,
+                inputs: vec![Input { key_image: [9; 32] }],
+                outputs: vec![output(1), output(2)],
+                ephemeral_pubkeys: vec![[3; 32]],
+                fee,
+                encrypted_payment_id: [0; 8],
+            },
+            prunable: Prunable {
+                reference_height: 7,
+                proof_data: vec![0; 100],
+            },
+        }
+    }
+
+    /// A transaction under the minimum fee is refused by the loop before its proofs, and is not held against its sender (it
+    /// may only be stale), so checking its proofs ahead would let a peer make the node verify proofs for nothing.
+    #[test]
+    fn a_transaction_under_the_minimum_fee_is_not_checked_ahead() {
+        let proofs: &'static Counting = Box::leak(Box::new(Counting(AtomicUsize::new(0))));
+        let p = Precheck::new([1; 32], proofs);
+        p.trees.write().unwrap().insert(
+            7,
+            TreeState {
+                n_leaves: 1,
+                n_layers: 1,
+                root: [0; 32],
+            },
+        );
+        // no basis yet: checked
+        p.check(&tx(0));
+        assert_eq!(proofs.0.load(Ordering::SeqCst), 1);
+        let (reward, median) = (2_000_000_000, 150_000);
+        p.set_fee_basis(reward, median);
+        let size = tx(0).to_bytes().unwrap().len() as u64;
+        let min = rules::min_fee(size, reward, median).unwrap();
+        p.check(&tx(min - 1));
+        assert_eq!(
+            proofs.0.load(Ordering::SeqCst),
+            1,
+            "under the minimum: not checked"
+        );
+        p.check(&tx(min));
+        assert_eq!(proofs.0.load(Ordering::SeqCst), 2);
     }
 }

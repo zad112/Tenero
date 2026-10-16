@@ -167,7 +167,7 @@ fn in_the_fee_s_minute_the_node_s_own_miner_pays_the_fee_s_address_and_says_so()
     )
     .unwrap();
     let s = Arc::clone(&seconds);
-    fee.elapsed = Arc::new(move || Duration::from_secs(s.load(Ordering::SeqCst)));
+    fee.clock = Arc::new(move || Duration::from_secs(s.load(Ordering::SeqCst)));
     let mut hook = hook_with(
         || Ok(Sha256Backend),
         MinerConfig {

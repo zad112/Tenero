@@ -38,6 +38,9 @@ pub const REAL_POW_EPOCH_BLOCKS: u64 = 100;
 /// consensus). A seed or a block explorer sets `prune_keep = 0` (an archive node): a node syncing from scratch needs a
 /// peer that still has every proof.
 pub const DEFAULT_PRUNE_KEEP: u64 = 5_500;
+/// The most inbound peers unless the operator says otherwise (the owner's decision, 2026-10-16: it was no limit from
+/// 2026-10-05; `0` still means no limit set by the program, for an operator who wants that).
+pub const DEFAULT_MAX_INBOUND: usize = 64;
 
 impl Network {
     pub fn parse(s: &str) -> Option<Network> {
@@ -227,6 +230,7 @@ pub struct Config {
     /// Peers pinned by the operator (`ip:port`, got out of band): always dialled, whenever not connected.
     pub trusted_peers: Vec<String>,
     pub peer_target: usize,
+    /// The most inbound peers ([`DEFAULT_MAX_INBOUND`]; 0: no limit set by the program).
     pub max_inbound: usize,
     pub allow_private_peers: bool,
     pub control: SocketAddr,
@@ -630,7 +634,7 @@ impl Raw {
         }
         let peer_target: usize = self.parse("peers", 50)?;
         // 0 (the default) is no limit set by the program: an operator limits inbound peers only if they want to
-        let max_inbound: usize = self.parse("max_inbound", 0)?;
+        let max_inbound: usize = self.parse("max_inbound", DEFAULT_MAX_INBOUND)?;
         if peer_target == 0 {
             return Err(bad(
                 "peers",

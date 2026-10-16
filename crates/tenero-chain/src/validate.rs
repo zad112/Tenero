@@ -237,6 +237,12 @@ impl<'a> Validator<'a> {
         window.saturating_add(1).max(fees::MEDIAN_WINDOW)
     }
 
+    /// The height of the next block on top of the current tip (the tip's height plus one): a cheap look-up, where
+    /// [`Validator::next_block`] reads the recent blocks and works out the rules.
+    pub fn next_height(&self) -> Result<u64, BlockError> {
+        Ok(self.store.tip()?.0 + 1)
+    }
+
     /// The next block on top of the current tip.
     pub fn next_block(&self) -> Result<NextBlock, BlockError> {
         let (tip_height, _) = self.store.tip()?;
@@ -348,6 +354,20 @@ impl<'a> Validator<'a> {
         now: u64,
         check_state: bool,
     ) -> Result<Outcome, BlockError> {
+        self.validate_block_with(block, next, now, check_state, true)
+    }
+
+    /// [`Validator::validate_block_on`], and with `full_pow` false without the full proof of work (step 3; the cheap check
+    /// is always made). For a side-branch block whose full check is put off until its branch could become the chain
+    /// (`crate::chain`), where it is made before anything is undone. Never for a block that is to join the chain now.
+    pub fn validate_block_with(
+        &self,
+        block: &Block,
+        next: &NextBlock,
+        now: u64,
+        check_state: bool,
+        full_pow: bool,
+    ) -> Result<Outcome, BlockError> {
         let header = &block.header;
 
         // 1. the header: version, parent, time
@@ -381,7 +401,7 @@ impl<'a> Validator<'a> {
         // 3. the full proof of work (not for a block assumed valid)
         let block_id = ids::block_id(header, self.pow.kind());
         let assumed = self.assumed.as_ref().is_some_and(|s| s.contains(&block_id));
-        if !assumed {
+        if !assumed && full_pow {
             match self.pow.check_full(header, next.height) {
                 Ok(true) => {}
                 Ok(false) => {

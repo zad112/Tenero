@@ -38,7 +38,7 @@ fn the_defaults_are_what_the_documentation_says() {
     assert_eq!(c.listen, None);
     assert!(c.seeds.is_empty());
     // 0 inbound limit: the program sets none (an operator limits inbound peers only if they want to)
-    assert_eq!((c.peer_target, c.max_inbound), (50, 0));
+    assert_eq!((c.peer_target, c.max_inbound), (50, 64));
     assert!(
         c.allow_private_peers,
         "the test network may run on one machine"

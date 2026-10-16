@@ -334,7 +334,7 @@ fn fee_to(address: Address) -> (tenero_miner::fee::MiningFee, Arc<AtomicU64>) {
     )
     .unwrap();
     let c = Arc::clone(&clock);
-    fee.elapsed = Arc::new(move || Duration::from_secs(c.load(Ordering::SeqCst)));
+    fee.clock = Arc::new(move || Duration::from_secs(c.load(Ordering::SeqCst)));
     (fee, clock)
 }
 

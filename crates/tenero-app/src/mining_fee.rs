@@ -68,7 +68,7 @@ pub fn fee_from(
     }
     let address = tenero_wallet::Address::parse(r.address, network.wallet_network())
         .map_err(|e| format!("the fee's address for {backend} on {}: {e}", network.name()))?;
-    MiningFee::new(address, r.who, FeeSchedule::standard())
+    MiningFee::new(address, r.who, FeeSchedule::standard(r.address))
         .map(Some)
         .ok_or_else(|| {
             format!(

@@ -20,7 +20,7 @@
 | **Payouts** | once every `payout-every` seconds (**default 3600: an hour**; the next time is kept in the state file, so a restart does not bring a payout forward), every miner owed at least `min-payout` (**default 0.1 coins**) is paid, largest first, at most 500 a round, in as many transactions as it takes (15 recipients to a transaction; `Wallet::build_batch`). Coins that come back as change are spendable after 10 blocks, so a round that runs out of separate coins pays what it can and the rest waits for the next round (10 minutes later). |
 | **Network fees** | **paid by the pool**, out of its wallet, not taken from the miners. |
 | **What a miner needs** | an address to be paid at. Anyone may use anyone's address: the pool does not know who a miner is. |
-| **The record** | `payments.log` in the pool's data folder: one line for every payment, `time transaction-id address amount-in-units`, so a miner can check what it was paid against the chain. |
+| **The record** | `payments.log` in the pool's data folder: one line for every payment, `time transaction-id address amount-in-units`, so a miner can check what it was paid against the chain. Lines that start with `#` are the pool's own notes: `# time booked ...` is written (and the books saved) **before** a payment goes to the node, so a crash can never pay a round twice; a `booked` line with no payment line after it is one the operator should check by hand; `# time not sent ...` is a payment the node refused, owed again. |
 
 ## What fee to set (an estimate, to be replaced by a measurement)
 
@@ -168,15 +168,18 @@ reader never sees half a file). Nothing listens for it: a web server serves the 
   they are kept in `pool-blocks.dat`, next to the books (a pool that has none yet starts from the blocks its books credited; losing the
   file loses only these counts). Shares stale and refused count from the pool's start;
 * `miners`: for every miner with anything to show, **keyed by the SHA-256 of its address as text** (hexadecimal), its connections
-  online, estimated hash rate, shares of the last ten minutes, last share, share of the PPLNS window (percent), and what is
+  online, estimated hash rate, shares of the last ten minutes, last share (rounded down to ten minutes), share of the PPLNS window (percent), and what is
   maturing, owed and paid, in units (`units_per_coin`, 100,000,000).
 
-**The file lists no address**: a page finds a miner by hashing the address a person types. Anyone who already knows an address
-can still look it up, as on any public pool, and confirm it mines here. Hash rates are estimates from shares, not measurements.
+**The file lists no address**: a page finds a miner by hashing the address a person types. **Anyone who already knows an address
+can still look it up**, as on any public pool: whoever you were paid by, or paid, can see that you mine here, how fast, what you are
+owed and paid, and (to ten minutes) when you last mined. Tell your miners so; a miner who does not want that should use an address
+for mining only. Hash rates are estimates from shares, not measurements. The pool's log names a miner by the first 16 digits of the
+same key, not by its address.
 
 ## Limits and defaults
 
-256 miners at once, 4 connections from one address, 10 s to finish the handshake, 5 minutes of silence closes a connection, 600 shares a minute for one connection, and 20 bad shares in a row ban the address for 10 minutes. All are settings or constants in `pool_server.rs`; **none has been measured**.
+256 miners at once, 4 connections from one address, 10 s to finish the handshake, 5 minutes of silence closes a connection, 120 shares a minute for one connection, 20 bad shares in a row or 3 shares with a wrong mix in one connection ban the address for 10 minutes, and a share target never easier than 2^244 (4,096 attempts) unless the block target is. All are settings or constants in `pool_server.rs`; **none has been measured**.
 
 ## What this pool does not do
 

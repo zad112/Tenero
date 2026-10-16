@@ -136,6 +136,21 @@ impl NodeKey {
         self.private
     }
 
+    /// Makes a fresh key and saves it at `path`, replacing any key there (written aside, then renamed): a key for this run
+    /// only. A node's direct-link key is made new at each start (review of 2026-10-16): a key kept for the node's life
+    /// let every peer recognise it wherever it connected from, which linked its IP addresses over time (a laptop at home,
+    /// at work). Nothing pins a node key yet, so nothing is lost. The file is there so a test can check the key never
+    /// reaches a log.
+    pub fn create_fresh(path: &Path) -> Result<NodeKey, String> {
+        let key = NodeKey::generate();
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = std::path::PathBuf::from(tmp);
+        std::fs::write(&tmp, key.private).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+        Ok(key)
+    }
+
     /// Reads the key at `path`, or makes one and saves it there (written aside, then renamed).
     pub fn load_or_create(path: &Path) -> Result<NodeKey, String> {
         match std::fs::read(path) {
