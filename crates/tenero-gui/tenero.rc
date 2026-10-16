@@ -18,8 +18,8 @@ BEGIN
         BEGIN
             VALUE "ProductName", "Tenero\0"
             VALUE "FileDescription", "Tenero wallet app (experimental, unaudited, no value)\0"
-            VALUE "FileVersion", "0.4.1-gamma.1\0"
-            VALUE "ProductVersion", "0.4.1-gamma.1\0"
+            VALUE "FileVersion", "0.4.2-gamma.1\0"
+            VALUE "ProductVersion", "0.4.2-gamma.1\0"
             VALUE "LegalCopyright", "BSD-3-Clause, see LICENSE\0"
             VALUE "OriginalFilename", "tenero-wallet-gui.exe\0"
         END
