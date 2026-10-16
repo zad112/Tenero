@@ -121,10 +121,12 @@ fn a_real_card_is_measured_and_a_batch_is_chosen() {
         eprintln!("  {m}");
         lines.lock().unwrap().push(m.to_string());
     };
+    // the gathered attempt (gamma and dev mine it from block 0)
     let rates = measure_batches(
         0,
         tenero_core::matmulhash::Params::DEFAULT,
         100,
+        0,
         &AUTO_BATCHES,
         3.0,
         &log,
@@ -134,7 +136,14 @@ fn a_real_card_is_measured_and_a_batch_is_chosen() {
         // the speed of this card is in the tens of thousands (BENCHMARKS.md); anything near 0 or absurd is a broken measurement
         assert!(*r > 5_000.0 && *r < 200_000.0, "batch {b}: {r}");
     }
-    let chosen = auto_batch(0, tenero_core::matmulhash::Params::DEFAULT, 100, 128, &log);
+    let chosen = auto_batch(
+        0,
+        tenero_core::matmulhash::Params::DEFAULT,
+        100,
+        0,
+        128,
+        &log,
+    );
     assert!(AUTO_BATCHES.contains(&chosen));
 }
 

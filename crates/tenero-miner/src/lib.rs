@@ -30,6 +30,7 @@ pub mod gpu;
 pub mod gpu_stats;
 pub mod rate;
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -371,6 +372,8 @@ pub enum Msg {
 pub struct Miner {
     jobs: Option<Sender<Job>>,
     results: Receiver<Msg>,
+    /// A message [`Miner::wait`] took off the channel, handed out first by [`Miner::try_msg`].
+    held: std::cell::RefCell<VecDeque<Msg>>,
     handle: Option<JoinHandle<()>>,
     stale: Option<Arc<AtomicBool>>,
     pub counters: Arc<Counters>,
@@ -424,6 +427,7 @@ impl Miner {
         Miner {
             jobs: Some(jtx),
             results: rrx,
+            held: std::cell::RefCell::new(VecDeque::new()),
             handle: Some(handle),
             stale: None,
             counters,
@@ -448,7 +452,27 @@ impl Miner {
 
     /// The next message from the thread, if there is one.
     pub fn try_msg(&self) -> Option<Msg> {
+        if let Some(m) = self.held.borrow_mut().pop_front() {
+            return Some(m);
+        }
         self.results.try_recv().ok()
+    }
+
+    /// Waits at most `d` for a message from the thread (a solution, the end of a job), and says whether one is waiting
+    /// ([`Miner::try_msg`] then hands it out). A caller that polls its node can wait here instead of sleeping, so a block
+    /// found is handed in at once and not at the next poll (up to 200 ms of an idle GPU after every block; review of
+    /// 2026-10-16).
+    pub fn wait(&self, d: Duration) -> bool {
+        if !self.held.borrow().is_empty() {
+            return true;
+        }
+        match self.results.recv_timeout(d) {
+            Ok(m) => {
+                self.held.borrow_mut().push_back(m);
+                true
+            }
+            Err(_) => false,
+        }
     }
 }
 

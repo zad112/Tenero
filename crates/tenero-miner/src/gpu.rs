@@ -238,6 +238,7 @@ pub fn measure_batches(
     ordinal: usize,
     params: Params,
     epoch_blocks: u64,
+    gather_from: u64,
     candidates: &[usize],
     secs: f64,
     log: &dyn Fn(&str),
@@ -249,8 +250,10 @@ pub fn measure_batches(
 
     let mut out = vec![];
     for &batch in candidates {
+        // the design the chain mines: on a gathered chain (gamma, dev: from block 0) the first design's speed says nothing
+        // about the right batch (it was measured, 75,000 against the gathered 41,000, review of 2026-10-16)
         let mut backend = match GpuBackend::new(ordinal, params, epoch_blocks, batch) {
-            Ok(b) => b,
+            Ok(b) => b.gathered_from(gather_from),
             Err(e) => {
                 log(&format!("batch {batch}: cannot start ({e}); left out"));
                 continue;
@@ -267,7 +270,8 @@ pub fn measure_batches(
                 nonce: 0,
                 mix: [0; 64],
             },
-            height: 1,
+            // the height the chain's design is judged at: gathered from `gather_from` on
+            height: gather_from.max(1),
             target: U256::ZERO, // never met
             stale: Arc::clone(&stale),
             nonce_start: None,
@@ -297,17 +301,27 @@ pub fn measure_batches(
     out
 }
 
-/// Picks the batch size for this card by measuring (`AUTO_BATCHES`, 4 s each): about 20 seconds at start-up. Falls back to `fallback`,
-/// saying so in `log`, if nothing could be measured.
+/// Picks the batch size for this card by measuring (`AUTO_BATCHES`, 4 s each) the design the chain mines (gathered from
+/// `gather_from` on, `Network::gather_from`): about 20 seconds at start-up. Falls back to `fallback`, saying so in `log`, if
+/// nothing could be measured.
 pub fn auto_batch(
     ordinal: usize,
     params: Params,
     epoch_blocks: u64,
+    gather_from: u64,
     fallback: usize,
     log: &dyn Fn(&str),
 ) -> usize {
     log("choosing the batch size by measuring (about 20 seconds)...");
-    let results = measure_batches(ordinal, params, epoch_blocks, &AUTO_BATCHES, 4.0, log);
+    let results = measure_batches(
+        ordinal,
+        params,
+        epoch_blocks,
+        gather_from,
+        &AUTO_BATCHES,
+        4.0,
+        log,
+    );
     match choose_batch(&results) {
         Some(b) => {
             log(&format!("batch {b} chosen"));

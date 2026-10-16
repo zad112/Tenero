@@ -268,6 +268,62 @@ pub fn product(x: &[i8], slice: &[u8], p: &Params) -> Vec<i32> {
     product_of_columns(x, |n| &slice[n * p.k..(n + 1) * p.k], p)
 }
 
+/// [`product_of_columns`] on up to `threads` threads, each taking a range of columns. **The same result, bit for bit**: each
+/// entry of C is the same dot product in the same order whichever thread computes it; only which thread does it changes.
+/// For the node's check of ONE attempt (a block), which on one thread took about 175 ms at the real parameters (review of
+/// 2026-10-16); a miner that runs many attempts at once on its own threads keeps the one-thread form.
+fn product_of_columns_threads<'a>(
+    x: &[i8],
+    column: impl Fn(usize) -> &'a [u8] + Sync,
+    p: &Params,
+    threads: usize,
+) -> Vec<i32> {
+    let threads = threads.clamp(1, p.nb);
+    if threads == 1 {
+        return product_of_columns(x, column, p);
+    }
+    let per = p.nb.div_ceil(threads);
+    let column = &column;
+    // each thread: the entries (i, n) of its columns n0..n1, as `part[i * width + (n - n0)]`
+    let parts: Vec<(usize, Vec<i32>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..p.nb)
+            .step_by(per)
+            .map(|n0| {
+                let n1 = (n0 + per).min(p.nb);
+                s.spawn(move || {
+                    let width = n1 - n0;
+                    let mut part = vec![0i32; p.m * width];
+                    for n in n0..n1 {
+                        let w = column(n);
+                        for i in 0..p.m {
+                            let row = &x[i * p.k..(i + 1) * p.k];
+                            part[i * width + (n - n0)] = row
+                                .iter()
+                                .zip(w)
+                                .map(|(&a, &b)| i32::from(a) * i32::from(b as i8))
+                                .sum();
+                        }
+                    }
+                    (n0, part)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("a product thread does not panic"))
+            .collect()
+    });
+    let mut c = vec![0i32; p.m * p.nb];
+    for (n0, part) in parts {
+        let width = part.len() / p.m;
+        for i in 0..p.m {
+            c[i * p.nb + n0..i * p.nb + n0 + width]
+                .copy_from_slice(&part[i * width..(i + 1) * width]);
+        }
+    }
+    c
+}
+
 /// `C = X @ W` where column `n` of W is the `k` bytes `column(n)` (as int8): the product of both designs.
 fn product_of_columns<'a>(x: &[i8], column: impl Fn(usize) -> &'a [u8], p: &Params) -> Vec<i32> {
     let mut c = vec![0i32; p.m * p.nb];
@@ -337,6 +393,16 @@ pub fn compute_attempt(
     header_hash: &[u8; 32],
     nonce: u64,
 ) -> Result<Attempt, String> {
+    compute_attempt_threads(data, header_hash, nonce, 1)
+}
+
+/// [`compute_attempt`] with its product on up to `threads` threads: the same attempt, bit for bit.
+pub fn compute_attempt_threads(
+    data: &Dataset,
+    header_hash: &[u8; 32],
+    nonce: u64,
+    threads: usize,
+) -> Result<Attempt, String> {
     let p = data.params();
     let seed = attempt_seed(header_hash, nonce);
     let slice_index = attempt_slice(&seed, p.num_blocks);
@@ -346,7 +412,12 @@ pub fn compute_attempt(
             data.slices()
         )
     })?;
-    let c = product(&make_x(&seed, p), slice, p);
+    let c = product_of_columns_threads(
+        &make_x(&seed, p),
+        |n| &slice[n * p.k..(n + 1) * p.k],
+        p,
+        threads,
+    );
     let sums = fold_sums(&c);
     let mix = mix_bytes(&sums);
     let digest = digest_of(&seed, &mix);
@@ -389,6 +460,16 @@ pub fn pick_columns(seed: &[u8; 32], p: &Params) -> Vec<u32> {
 
 /// `C = X @ W` where column `n` of W is dataset column `cols[n]` (`pick_columns`). Needs the whole dataset.
 pub fn gathered_product(x: &[i8], data: &Dataset, cols: &[u32]) -> Result<Vec<i32>, String> {
+    gathered_product_threads(x, data, cols, 1)
+}
+
+/// [`gathered_product`] on up to `threads` threads: the same product, bit for bit.
+fn gathered_product_threads(
+    x: &[i8],
+    data: &Dataset,
+    cols: &[u32],
+    threads: usize,
+) -> Result<Vec<i32>, String> {
     let p = data.params();
     let columns = p.num_blocks * p.nb;
     if data.slices() != p.num_blocks
@@ -398,13 +479,14 @@ pub fn gathered_product(x: &[i8], data: &Dataset, cols: &[u32]) -> Result<Vec<i3
         return Err("a gathered product needs the whole dataset and nb columns inside it".into());
     }
     let bytes = data.bytes();
-    Ok(product_of_columns(
+    Ok(product_of_columns_threads(
         x,
         |n| {
             let j = cols[n] as usize;
             &bytes[j * p.k..(j + 1) * p.k]
         },
         p,
+        threads,
     ))
 }
 
@@ -415,6 +497,16 @@ pub fn compute_gathered_attempt(
     header_hash: &[u8; 32],
     nonce: u64,
 ) -> Result<Attempt, String> {
+    compute_gathered_attempt_threads(data, header_hash, nonce, 1)
+}
+
+/// [`compute_gathered_attempt`] with its product on up to `threads` threads: the same attempt, bit for bit.
+pub fn compute_gathered_attempt_threads(
+    data: &Dataset,
+    header_hash: &[u8; 32],
+    nonce: u64,
+    threads: usize,
+) -> Result<Attempt, String> {
     let p = data.params();
     if data.slices() != p.num_blocks {
         return Err(format!(
@@ -424,7 +516,7 @@ pub fn compute_gathered_attempt(
         ));
     }
     let seed = attempt_seed(header_hash, nonce);
-    let c = gathered_product(&make_x(&seed, p), data, &pick_columns(&seed, p))?;
+    let c = gathered_product_threads(&make_x(&seed, p), data, &pick_columns(&seed, p), threads)?;
     let sums = fold_sums(&c);
     let mix = mix_bytes(&sums);
     let digest = digest_of(&seed, &mix);
@@ -446,10 +538,23 @@ pub fn compute_attempt_at(
     height: u64,
     gather_from: u64,
 ) -> Result<Attempt, String> {
+    compute_attempt_at_threads(data, header_hash, nonce, height, gather_from, 1)
+}
+
+/// [`compute_attempt_at`] with the product on up to `threads` threads (the node's check of a block): the same attempt, bit
+/// for bit.
+pub fn compute_attempt_at_threads(
+    data: &Dataset,
+    header_hash: &[u8; 32],
+    nonce: u64,
+    height: u64,
+    gather_from: u64,
+    threads: usize,
+) -> Result<Attempt, String> {
     if height >= gather_from {
-        compute_gathered_attempt(data, header_hash, nonce)
+        compute_gathered_attempt_threads(data, header_hash, nonce, threads)
     } else {
-        compute_attempt(data, header_hash, nonce)
+        compute_attempt_threads(data, header_hash, nonce, threads)
     }
 }
 

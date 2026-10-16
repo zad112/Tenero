@@ -821,6 +821,7 @@ fn miner_hook(
                     device,
                     Params::DEFAULT,
                     epoch,
+                    cfg.network.gather_from(),
                     cfg.gpu_batch,
                     &move |m| l.info(&format!("miner: {m}")),
                 )

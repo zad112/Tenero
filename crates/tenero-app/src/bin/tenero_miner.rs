@@ -589,6 +589,7 @@ fn main() {
                     device,
                     Params::DEFAULT,
                     epoch,
+                    network.gather_from(),
                     args.gpu_batch,
                     &move |m| l.info(&format!("miner: {m}")),
                 )
