@@ -1608,7 +1608,10 @@ fn combining_coins_is_previewed_cancelled_sent_and_never_shown_as_money_received
     assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
     let q = c.snapshot().prepared.expect("a combine waits for a yes");
     assert!(q.coins >= 3 && q.own.is_some(), "{} coins", q.coins);
-    let (coins, fee) = (q.coins, q.fee);
+    // how many transactions the sweep takes depends on how many rewards had matured by now (a slow machine mines more
+    // blocks while the test waits), so the plan's count is what the proofs and the sending are checked against
+    let (coins, fee, txs) = (q.coins, q.fee, q.transactions);
+    assert!(txs >= 1);
     assert!(q.proof_secs.is_some());
     // the proofs are made at the yes, and how far they are is told where the window can read it while it waits
     let work = c.work_state();
@@ -1651,10 +1654,10 @@ fn combining_coins_is_previewed_cancelled_sent_and_never_shown_as_money_received
     );
     assert!(errors(&ev).is_empty(), "{:?}", errors(&ev));
     let w = work.lock().unwrap().clone().unwrap();
-    assert_eq!((w.what, w.done, w.total), ("Making the proofs", 1, 1));
-    assert!(ev
-        .iter()
-        .any(|e| matches!(e, Event::Sent { transactions: 1, fee: f, .. } if *f == fee)));
+    assert_eq!((w.what, w.done, w.total), ("Making the proofs", txs, txs));
+    assert!(ev.iter().any(
+        |e| matches!(e, Event::Sent { transactions: t, fee: f, .. } if *t == txs && *f == fee)
+    ));
     assert!(c.snapshot().prepared.is_none());
     assert!(coins >= 3);
 
