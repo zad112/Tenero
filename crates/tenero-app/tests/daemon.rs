@@ -787,15 +787,8 @@ fn the_miner_program_mines_for_a_node_in_another_process() {
     );
     node.wait_height(8, 60);
     drop(node.client());
-    // the node, which was not mining itself, has a chain made by the other process, and its rewards are Alice's
-    {
-        use tenero_wallet::ChainView;
-        let c = node.client();
-        alice.sync(&c).unwrap();
-        let tip = c.tip().unwrap().0;
-        assert_eq!(alice.owned().len() as u64, tip, "one reward in every block");
-    }
-    // stopping the miner leaves the node running and the chain where it was
+    // stopping the miner leaves the node running and the chain where it was (a block it had already handed in may
+    // still land)
     let h = node.height();
     let _ = child.0.kill();
     let _ = child.0.wait();
@@ -805,6 +798,15 @@ fn the_miner_program_mines_for_a_node_in_another_process() {
         "the node carries on without the miner"
     );
     assert!(node.client().info().is_ok());
+    // the node, which was not mining itself, has a chain made by the other process, and its rewards are Alice's (counted
+    // with the miner gone: while it mined at pace 0, a block could land between the wallet's sync and reading the tip)
+    {
+        use tenero_wallet::ChainView;
+        let c = node.client();
+        alice.sync(&c).unwrap();
+        let tip = c.tip().unwrap().0;
+        assert_eq!(alice.owned().len() as u64, tip, "one reward in every block");
+    }
 }
 
 #[test]
