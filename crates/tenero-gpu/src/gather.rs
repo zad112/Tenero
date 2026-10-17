@@ -7,14 +7,15 @@
 //! is then set by int8 multiply throughput, not memory (`THREAT_MODEL.md` E11). A gathered attempt picks its `nb` columns
 //! (8 KiB each) one by one from the WHOLE dataset, so two attempts share almost none, and no two columns are shared by
 //! the same set of attempts: sharing a column read would mean bringing their X matrices (512 KiB each) together for one
-//! 8 KiB column, which costs more memory traffic than it saves. Measured on the owner's card while it was a prototype
-//! (`BENCHMARKS.md`): about 45,000 attempts/s, at the card's memory bandwidth.
+//! 8 KiB column, which costs more memory traffic than it saves. The kernel reads nothing but the columns: X is computed
+//! from the seed inside it and the fold is done on its tile of C before C leaves the registers (`gather.cu`). Measured
+//! on the owner's card (`BENCHMARKS.md`, 2026-10-16): at the card's memory bandwidth.
 
 use crate::{key_words_i64, DeviceDataset, Gpu, GpuError, THREADS};
 use cudarc::driver::{CudaSlice, LaunchConfig, PushKernelArg};
 use tenero_core::matmulhash::{self as mh, Attempt};
 
-/// Batches of attempts on the GPU with our own multiply (`gather.cu`), one batch at a time: the gathered attempt
+/// Batches of attempts on the GPU with our own multiply and fold (`gather.cu`), one batch at a time: the gathered attempt
 /// (`attempts`) or the first design (`slice_attempts`).
 pub struct GatherEngine<'a> {
     gpu: &'a Gpu,
@@ -23,11 +24,9 @@ pub struct GatherEngine<'a> {
     batch: usize,
     keys: CudaSlice<i64>,
     pick_keys: CudaSlice<i64>,
-    x: CudaSlice<u8>,
     idx: CudaSlice<u8>,
     /// The slice of each attempt, for the first design (`slice_attempts`).
     slices: CudaSlice<u32>,
-    c: CudaSlice<i32>,
     sums: CudaSlice<u64>,
 }
 
@@ -65,10 +64,8 @@ impl<'a> GatherEngine<'a> {
             batch,
             keys: s.alloc_zeros::<i64>(batch * 8)?,
             pick_keys: s.alloc_zeros::<i64>(batch * 8)?,
-            x: s.alloc_zeros::<u8>(batch * p.m * p.k)?,
             idx: s.alloc_zeros::<u8>(batch * p.nb * 4)?,
             slices: s.alloc_zeros::<u32>(batch)?,
-            c: s.alloc_zeros::<i32>(batch * p.m * p.nb)?,
             sums: s.alloc_zeros::<u64>(batch * 8)?,
         })
     }
@@ -159,11 +156,9 @@ impl<'a> GatherEngine<'a> {
         }
         let gpu = self.gpu;
         let stream = &gpu.stream;
+        // the seeds' words: the kernel computes X from them
         let keys: Vec<i64> = seeds.iter().flat_map(key_words_i64).collect();
         stream.memcpy_htod(&keys, &mut self.keys.slice_mut(0..n * 8))?;
-        // X
-        let bpk = (p.m * p.k / 64) as u64;
-        gpu.launch_keystream(&self.keys, &self.x, bpk, 0, n as u64 * bpk)?;
         let nb = p.nb as u32;
         let columns = (p.num_blocks * p.nb) as u32;
         let idx_stride: u32 = match cols {
@@ -194,24 +189,22 @@ impl<'a> GatherEngine<'a> {
         };
 
         // SAFETY of the launch (`Gpu::launch_multiply`): m == 64, k % 128 == 0 and nb % 128 == 0 and the whole dataset
-        // were checked in `new`; x, c, idx and slices hold `batch >= n` attempts' worth; slices were checked to be inside
-        // the dataset in `slice_attempts`, and gathered columns are taken modulo `columns`, all inside the dataset.
+        // were checked in `new`; keys, sums, idx and slices hold `batch >= n` attempts' worth; slices were checked to be
+        // inside the dataset in `slice_attempts`, and gathered columns are taken modulo `columns`, all inside the dataset.
+        stream.memset_zeros(&mut self.sums)?;
         gpu.launch_multiply(
-            &self.x,
+            &self.keys,
             &self.data.buf,
             &self.idx,
             match cols {
                 Columns::Slices(_) => Some(&self.slices),
                 Columns::Gathered { .. } => None,
             },
-            &self.c,
+            &self.sums,
             (p.k, p.nb, columns as usize),
             idx_stride,
             n,
         )?;
-
-        stream.memset_zeros(&mut self.sums)?;
-        gpu.launch_fold(&self.c, &self.sums, (p.m * p.nb / 16) as u64, n as u32)?;
         let sums = stream.clone_dtoh(&self.sums.slice(0..n * 8))?;
         Ok(seeds
             .iter()

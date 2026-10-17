@@ -35,13 +35,15 @@ pub const KERNEL_SOURCE: &str = include_str!("../kernels/matmulhash.cu");
 /// Compiled after `KERNEL_SOURCE`, in one module, because it uses its ChaCha20 functions.
 pub const FAST_KERNEL_SOURCE: &str = include_str!("../kernels/fast.cu");
 
-/// The multiply of both proof-of-work designs (`gather.cu`).
+/// The multiply and fold of both proof-of-work designs (`gather.cu`). Compiled after the device functions of
+/// `KERNEL_SOURCE` (the part before its kernels), in one module, because it uses its ChaCha20 functions (for X and the
+/// fold).
 pub const GATHER_KERNEL_SOURCE: &str = include_str!("../kernels/gather.cu");
 
 /// `KERNEL_SOURCE` and `FAST_KERNEL_SOURCE`, compiled ahead of time (`kernels/build_kernels.py`).
 pub const MATMULHASH_FATBIN: &[u8] = include_bytes!("../kernels/matmulhash.fatbin");
 
-/// `GATHER_KERNEL_SOURCE`, compiled ahead of time.
+/// `KERNEL_SOURCE`'s device functions and `GATHER_KERNEL_SOURCE`, compiled ahead of time.
 pub const GATHER_FATBIN: &[u8] = include_bytes!("../kernels/gather.fatbin");
 
 /// The source hashes the fat binaries were built from (`kernels.sha256`; a test checks they are current).
@@ -51,8 +53,8 @@ pub const KERNEL_HASHES: &str = include_str!("../kernels/kernels.sha256");
 /// `mma.sync m16n8k32`).
 pub const MIN_COMPUTE_CAPABILITY: (i32, i32) = (8, 0);
 
-/// `G_SMEM` in `gather.cu`: 3 stages of (64 + 128) rows of 144 bytes of shared memory.
-const GATHER_SMEM: u32 = 3 * (64 + 128) * 144;
+/// `G_SMEM` in `gather.cu`: 4 stages of (64 + 128) rows of 128 bytes of shared memory (96 KiB).
+const GATHER_SMEM: u32 = 4 * (64 + 128) * 128;
 
 const THREADS: u32 = 256;
 const FOLD_BLOCKS: u32 = 4;
@@ -163,18 +165,19 @@ impl Gpu {
         })
     }
 
-    /// `C = X @ W` for `n` attempts on the tensor cores (`gather_gemm`): attempt `a`'s 64 rows of X at `a * 64 * k` in
-    /// `x`, its result at `a * 64 * nb` in `c`. Its columns are, in slice mode (`slices: Some`), the `nb` columns of
-    /// slice `slices[a]` of `data` (the first design); otherwise dataset column `idx[a * idx_stride + n] % columns`
-    /// (the gathered attempt). The caller guarantees the buffer sizes and slice numbers (see the SAFETY comment).
+    /// `C = X @ W` and its fold for `n` attempts on the tensor cores (`gather_gemm`): attempt `a`'s X is computed from its
+    /// seed (8 words at `a * 8` in `keys`), and the fold's 8 sums are ADDED to the u64 words at `a * 8` in `sums` (zero
+    /// them first). Its columns are, in slice mode (`slices: Some`), the `nb` columns of slice `slices[a]` of `data` (the
+    /// first design); otherwise dataset column `idx[a * idx_stride + n] % columns` (the gathered attempt). The caller
+    /// guarantees the buffer sizes and slice numbers (see the SAFETY comment).
     #[allow(clippy::too_many_arguments)]
     fn launch_multiply(
         &self,
-        x: &CudaSlice<u8>,
+        keys: &CudaSlice<i64>,
         data: &CudaSlice<u8>,
         idx: &CudaSlice<u8>,
         slices: Option<&CudaSlice<u32>>,
-        c: &CudaSlice<i32>,
+        sums: &CudaSlice<u64>,
         (k, nb, columns): (usize, usize, usize),
         idx_stride: u32,
         n: usize,
@@ -188,10 +191,10 @@ impl Gpu {
         let slice_mode: u32 = u32::from(slices.is_some());
         // in gathered mode the kernel never reads `slices`; any device buffer will do for the argument
         let mut b = self.stream.launch_builder(&self.gather_fn);
-        b.arg(x)
+        b.arg(keys)
             .arg(data)
             .arg(idx)
-            .arg(c)
+            .arg(sums)
             .arg(&k)
             .arg(&nb)
             .arg(&columns)
@@ -201,9 +204,9 @@ impl Gpu {
             None => b.arg(idx),
         };
         b.arg(&slice_mode);
-        // SAFETY: the kernel is `gather_gemm(u64 x, u64 data, u64 idx, u64 c, u32 k, u32 nb, u32 columns, u32 stride,
+        // SAFETY: the kernel is `gather_gemm(u64 keys, u64 data, u64 idx, u64 sums, u32 k, u32 nb, u32 columns, u32 stride,
         // u64 slices, u32 slice_mode)` and the arguments have those types. The callers guarantee: m == 64, k % 128 == 0,
-        // nb % 128 == 0; `x` holds n * 64 * k bytes and `c` n * 64 * nb int32; in slice mode `slices` holds n numbers,
+        // nb % 128 == 0; `keys` holds n * 8 words and `sums` n * 8 u64; in slice mode `slices` holds n numbers,
         // each with (slice + 1) * nb * k <= data's length; in gathered mode `idx` holds the words a * stride + [0, nb)
         // for every a < n and `columns * k` <= data's length. The function was allowed GATHER_SMEM bytes of shared
         // memory in `new`, which this launch asks for.
@@ -302,46 +305,6 @@ impl Gpu {
             b.launch(cfg)?;
         }
         Ok(())
-    }
-
-    /// `x @ w` on the tensor cores, from host arrays: `x` is `m*k` int8 (row-major), `w` is one slice
-    /// as stored (`nb*k` bytes, the transposed matrix); the result is `m*nb` int32 (row-major). `m` must be a
-    /// multiple of 64 and `k` and `nb` multiples of 128 (the kernel's tiles; the chain's 64, 8192 and 2048 are).
-    pub fn int8_matmul(
-        &self,
-        x: &[i8],
-        w: &[u8],
-        m: usize,
-        k: usize,
-        nb: usize,
-    ) -> Result<Vec<i32>, GpuError> {
-        if x.len() != m * k || w.len() != nb * k {
-            return Err(GpuError::new("x must be m*k and w nb*k"));
-        }
-        if m == 0 || !m.is_multiple_of(64) || !k.is_multiple_of(128) || !nb.is_multiple_of(128) {
-            return Err(GpuError::new(
-                "the multiply needs m a multiple of 64 and k and nb multiples of 128",
-            ));
-        }
-        // every 64 rows of X are one "attempt" against slice 0, which is `w`
-        let n = m / 64;
-        let x_dev = self
-            .stream
-            .clone_htod(&x.iter().map(|&v| v as u8).collect::<Vec<u8>>())?;
-        let w_dev = self.stream.clone_htod(w)?;
-        let slices = self.stream.alloc_zeros::<u32>(n)?;
-        let c_dev = self.stream.alloc_zeros::<i32>(m * nb)?;
-        self.launch_multiply(
-            &x_dev,
-            &w_dev,
-            &w_dev,
-            Some(&slices),
-            &c_dev,
-            (k, nb, nb),
-            0,
-            n,
-        )?;
-        Ok(self.stream.clone_dtoh(&c_dev)?)
     }
 
     /// Builds the first `slices` slices of the epoch's dataset in device memory (all of them when
@@ -455,8 +418,6 @@ impl Gpu {
                 slices_host: unsafe_pinned_u32(ctx, batch)?,
                 keys: self.stream.alloc_zeros::<i64>(batch * 8)?,
                 keys_host,
-                x: self.stream.alloc_zeros::<u8>(batch * p.m * p.k)?,
-                c: self.stream.alloc_zeros::<i32>(batch * p.m * p.nb)?,
                 sums: self.stream.alloc_zeros::<u64>(batch * 8)?,
                 sums_host,
                 pending: None,
@@ -514,8 +475,6 @@ struct Slot {
     slices_host: PinnedHostSlice<u32>,
     keys: CudaSlice<i64>,
     keys_host: PinnedHostSlice<i64>,
-    x: CudaSlice<u8>,
-    c: CudaSlice<i32>,
     sums: CudaSlice<u64>,
     sums_host: PinnedHostSlice<u64>,
     /// The batch in these buffers, submitted and not yet collected.
@@ -617,7 +576,7 @@ impl AttemptEngine<'_> {
         let mut order: Vec<usize> = (0..n).collect();
         order.sort_by_key(|&i| slices[i]);
 
-        // 1. X for every attempt: the keystream keyed by its seed (and each attempt's slice, in the same order)
+        // 1. every attempt's seed words (the kernel computes X from them) and slice, in the same order
         {
             // waits until the last copy out of these buffers has finished (it has: the batch was collected)
             let keys_host = slot.keys_host.as_mut_slice()?;
@@ -631,43 +590,22 @@ impl AttemptEngine<'_> {
         }
         stream.memcpy_htod(&slot.keys_host, &mut slot.keys)?;
         stream.memcpy_htod(&slot.slices_host, &mut slot.slices)?;
-        let bpk = (p.m * p.k / 64) as u64;
-        let total = n as u64 * bpk;
-        let cfg = LaunchConfig {
-            grid_dim: (grid(total), 1, 1),
-            block_dim: (THREADS, 1, 1),
-            shared_mem_bytes: 0,
-        };
-        let mut b = stream.launch_builder(&self.gpu.keystream_fn);
-        b.arg(&slot.keys)
-            .arg(&slot.x)
-            .arg(&bpk)
-            .arg(&0u64)
-            .arg(&total);
-        // SAFETY: as in `Gpu::launch_keystream`: `keys` holds at least `n * 8` words and `x` holds
-        // `batch * m * k >= n * bpk * 64` bytes.
-        #[allow(unsafe_code)]
-        unsafe {
-            b.launch(cfg)?;
-        }
 
-        // 2. C = X @ W_b for every attempt, in one launch (slice mode; `idx` is not read, the keys buffer stands in)
-        let mnb = p.m * p.nb;
+        // 2. X, C = X @ W_b and the fold of every attempt, in one launch (slice mode; `idx` is not read, the dataset
+        // buffer stands in), the sums into zeroed `sums`
+        stream.memset_zeros(&mut slot.sums)?;
         self.gpu.launch_multiply(
-            &slot.x,
+            &slot.keys,
             &self.data.buf,
-            &slot.x,
+            &self.data.buf,
             Some(&slot.slices),
-            &slot.c,
+            &slot.sums,
             (p.k, p.nb, self.data.slices * p.nb),
             0,
             n,
         )?;
 
-        // 3. the fold of every product, into the sums, and the sums to the host (without waiting)
-        stream.memset_zeros(&mut slot.sums)?;
-        self.gpu
-            .launch_fold(&slot.c, &slot.sums, (mnb / 16) as u64, n as u32)?;
+        // 3. the sums to the host (without waiting)
         stream.memcpy_dtoh(&slot.sums, &mut slot.sums_host)?;
 
         slot.pending = Some(Pending {
@@ -758,7 +696,17 @@ mod tests {
                 "matmulhash",
                 format!("{}\n{}", lf(KERNEL_SOURCE), lf(FAST_KERNEL_SOURCE)),
             ),
-            ("gather", lf(GATHER_KERNEL_SOURCE)),
+            (
+                "gather",
+                format!(
+                    "{}\n{}",
+                    lf(KERNEL_SOURCE)
+                        .split_once("extern \"C\"")
+                        .expect("matmulhash.cu has kernels")
+                        .0,
+                    lf(GATHER_KERNEL_SOURCE)
+                ),
+            ),
         ];
         for (name, source) in modules {
             let want = KERNEL_HASHES

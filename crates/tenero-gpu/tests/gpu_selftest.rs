@@ -29,9 +29,6 @@ impl Rng {
         self.0 ^= self.0 << 17;
         self.0
     }
-    fn i8s(&mut self, n: usize) -> Vec<i8> {
-        (0..n).map(|_| self.next() as i8).collect()
-    }
     fn i32s(&mut self, n: usize) -> Vec<i32> {
         (0..n).map(|_| self.next() as i32).collect()
     }
@@ -100,57 +97,6 @@ fn the_fold_kernel_matches_the_cpu_on_random_values_and_the_int32_extremes() {
             "product {i}"
         );
     }
-}
-
-#[test]
-#[ignore = "needs an NVIDIA GPU"]
-fn the_int8_matmul_is_exact_at_the_extremes() {
-    let g = gpu();
-    let (m, k, nb) = (64, 4096, 128);
-    for (xv, wv) in [(-128i8, -128i8), (127, -128), (127, 127)] {
-        let c = g
-            .int8_matmul(&vec![xv; m * k], &vec![wv as u8; nb * k], m, k, nb)
-            .unwrap();
-        let want = k as i32 * i32::from(xv) * i32::from(wv);
-        assert!(
-            c.iter().all(|&v| v == want),
-            "{xv} x {wv}: got {} want {want}",
-            c[0]
-        );
-    }
-}
-
-#[test]
-#[ignore = "needs an NVIDIA GPU"]
-fn the_int8_matmul_matches_the_cpu_in_the_real_layout() {
-    let g = gpu();
-    let mut rng = Rng(11);
-    let (m, k, nb) = (128, 1024, 1024);
-    let x = rng.i8s(m * k);
-    let w: Vec<u8> = rng.i8s(nb * k).iter().map(|&v| v as u8).collect();
-    let p = Params {
-        m,
-        k,
-        nb,
-        num_blocks: 1,
-    };
-    let want = mh::product(&x, &w, &p);
-    assert_eq!(g.int8_matmul(&x, &w, m, k, nb).unwrap(), want);
-    // the shape of the real chain (m=64, nb=2048, k=8192) too
-    let (m, k, nb) = (64, 8192, 2048);
-    let x = rng.i8s(m * k);
-    let w: Vec<u8> = rng.i8s(nb * k).iter().map(|&v| v as u8).collect();
-    let p = Params {
-        m,
-        k,
-        nb,
-        num_blocks: 1,
-    };
-    assert_eq!(
-        g.int8_matmul(&x, &w, m, k, nb).unwrap(),
-        mh::product(&x, &w, &p),
-        "real shape"
-    );
 }
 
 #[test]

@@ -13,7 +13,7 @@ Run it after ANY change to a .cu file in this folder, and commit the .fatbin fil
 
 Two modules, as the program loads them:
   matmulhash.fatbin   matmulhash.cu then fast.cu (fast.cu uses matmulhash.cu's ChaCha20 functions)
-  gather.fatbin       gather.cu
+  gather.fatbin       the device functions of matmulhash.cu (the part before its kernels: ChaCha20) then gather.cu
 
 Each fat binary holds machine code (SASS) for the GPU generations in TARGETS, which a driver for CUDA 13 (R580 or newer)
 loads as it is, and PTX for compute_80, which the driver compiles for a GPU newer than all of them (that needs a driver
@@ -43,9 +43,12 @@ TARGETS = [
 ]
 PTX_FALLBACK = "80"
 
+# gather.cu computes X and the fold with matmulhash.cu's ChaCha20 device functions, which are everything in that file before
+# its kernels (`extern "C"`); the kernels themselves are not compiled into the gather module a second time
+CHACHA_FUNCTIONS = 'matmulhash.cu before extern "C"'
 MODULES = {
     "matmulhash": ["matmulhash.cu", "fast.cu"],
-    "gather": ["gather.cu"],
+    "gather": [CHACHA_FUNCTIONS, "gather.cu"],
 }
 HASH_FILE = os.path.join(HERE, "kernels.sha256")
 
@@ -54,8 +57,12 @@ def source_of(module):
     """The module's source as nvcc sees it: its files joined by a newline, with LF line endings."""
     parts = []
     for name in MODULES[module]:
-        with open(os.path.join(HERE, name), "rb") as f:
-            parts.append(f.read().replace(b"\r\n", b"\n"))
+        functions_only = name == CHACHA_FUNCTIONS
+        with open(os.path.join(HERE, "matmulhash.cu" if functions_only else name), "rb") as f:
+            text = f.read().replace(b"\r\n", b"\n")
+        if functions_only:
+            text = text[:text.index(b'extern "C"')]
+        parts.append(text)
     return b"\n".join(parts)
 
 
