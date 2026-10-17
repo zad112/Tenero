@@ -5,6 +5,48 @@
 (1.98), portable code with no `unsafe` and no hand-written SIMD. Nothing here is a GPU number, and one machine
 is one data point (KNOWN_ISSUES 13). Rerun it before relying on any figure.
 
+## 2026-10-16 (later): the kernel reads nothing but the columns
+
+`gather.cu` was rewritten the same day: X is computed from the seed inside the kernel (one half of the threads, 128 ChaCha20
+blocks a stage, taking turns), the fold is done on each block's 64 x 128 tile of C before C leaves the registers (through
+shared memory, then one atomic add per sum per warp), and W comes through a four-stage `cp.async` pipeline into XOR-swizzled
+shared memory (24 KiB a stage, 96 KiB in all) instead of three padded stages (27 KiB each). An attempt's memory traffic is
+then its 16 MiB of columns alone: before, X was written by `keystream_fast` and read back and C written and read back by
+`fold_fast`, about 2 MiB more an attempt (the two helper kernels were 9 % of the GPU's time in `nsys`).
+
+Measured with `gather_bench --seconds 2`, the OLD and the NEW build run alternately in one session (old, new, old, new; the
+card otherwise idle, Wallpaper Engine paused, driver 617.42, the owner's memory overclock on: 16 GHz against the stock 14):
+
+| | old kernel (396e1bf) | new kernel |
+|---|---|---|
+| the gathered attempt, batch 128 / 256 / 512 | 43,945 to 44,735 attempts/s (737 to 751 GB/s of columns) | **48,954 to 50,240 (821 to 843 GB/s)** |
+| the same with every attempt reading attempt 0's columns (the compute ceiling; wrong results) | 77,594 to 80,170 | 59,006 to 61,367 |
+| the first design, grouped 8 to 32 a slice, batch 256 / 512 (`gather_bench --seconds 5`) | 74,741 to 75,850 | 59,609 to 61,018 |
+| the columns read alone, 128-byte pieces (the same kernel in both) | 878 to 882 GB/s | 878 to 882 GB/s |
+| device-to-device copy | 804 to 837 GB/s | 837 to 839 GB/s |
+| power while the gathered attempt ran | about 256 W | **315 W: the card's limit** |
+
+* **About 12 to 13 % more gathered attempts a second**, and the kernel now reads the columns at about 95 % of what the pure
+  read pattern reaches. The card sits at its power limit while it runs, so the power limit is now part of the ceiling: a
+  card with a lower limit, or a hotter one, will see less.
+* **The compute ceiling fell** (the "all the same" line, and the first design): every column tile of an attempt computes
+  the whole X again (16 times an attempt) and folds its tile. The gathered attempt is far from that ceiling and loses
+  nothing; the first design (`alpha`, and `beta` below block 500: the 0.2.0 programs, which do not have this kernel) is
+  about 20 % slower on our own multiply. No network the 0.3.0 programs run mines the first design.
+* **Compare only within a session.** The first run of the day gave the old kernel 41,100 to 41,786 (the figures of the
+  section below, and of the handoff that started this work) and the unchanged read-only kernel 819 GB/s; an hour later the
+  same binary gave 44,100 to 44,735 and 880 GB/s. What changed on the machine is not known (the memory clock read 16 GHz
+  both times).
+* **Bit for bit:** `gather_selftest` (the gathered attempt and the first design, small shapes and the real parameters, against
+  the CPU) and `gpu_selftest` pass on the new kernel (the two host-array `int8_matmul` tests are gone with that function:
+  the kernel takes X from the seed and keeps C to itself).
+* **The miner backend** (`gpu_mining`, 15 s a batch size, no node), gathered, batch 128 / 256 / 512: **48,494 / 49,816 / 50,210**
+  attempts/s (41,343 / 41,454 / 41,369 on the old kernel that morning, the section below); the first design 60,628 / 61,746 /
+  61,815. Its end-to-end run (20 blocks, all accepted by the node's CPU check) passes with the default first design and
+  with the gather fork at height 10.
+* **Not yet measured on the new kernel:** the real solo miner against the owner's node (about 2 % below the backend before,
+  for the gap at each found block).
+
 ## 2026-10-16: driver 617.42, the gathered attempt, and the solo miner's gap per block
 
 Measured on the owner's machine (RTX 5070 Ti, Ryzen 9 5900X), the card otherwise idle unless said:
