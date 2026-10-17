@@ -1791,7 +1791,14 @@ impl Core {
             return Ok(());
         };
         let syncing = self.node_info().is_none_or(|i| i.syncing);
-        let (tip, _) = node.tip()?;
+        // the tip the scan last looked at: the wallet is synced when it has read every block it was told about then. (A
+        // fresh read here would see the block a miner on an easy test chain found since the scan, a few blocks a second,
+        // and a wallet that reads every block would never count as synced: the window kept "catching up" and would not
+        // send.) Before the first scan, the node's tip.
+        let tip = match self.last_tip {
+            Some(t) => t,
+            None => node.tip()?.0,
+        };
         let purse = self.purse.as_mut().ok_or("locked")?;
         let mut accounts = Vec::new();
         let labels: Vec<String> = purse
